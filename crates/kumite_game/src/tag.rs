@@ -439,16 +439,21 @@ impl TagGame {
         self.step_camera();
     }
 
-    /// Human pads, or each CPU's (only while it is standing), each against its own target.
+    /// Human pads, or each CPU's (only while it is standing), each against its own target: the one the step
+    /// fights (picked first), the CPU's memory of the last one let go.
     fn input(&mut self, pads: [Pad; 4]) -> [Pad; 4] {
         let mut out = pads;
         let chest: Vec<f32> = (0..4).map(|i| self.chest(i)).collect();
+        let changed = self.melee.retarget_now();
         let m = &self.melee;
         for (i, pad) in out.iter_mut().enumerate() {
             let Some(ai) = self.cpu[i].as_mut() else { continue };
             let o = m.facing(i);
-            let s = Sight { gd: &m.fight.data, me: &m.actors[i], op: &m.actors[o], facing_right: m.facing_right(i), opp_chest: chest[o], ball: None, force: None };
+            let s = Sight { gd: &m.fight.data, me: &m.actors[i], op: &m.actors[o], facing_right: m.facing_right(i), opp_chest: chest[o], ball: None, force: None, melee: true };
             ai.prepare(&self.ai_data, &mut self.ai_rng, &s);
+            if changed.contains(&i) {
+                ai.retarget(&self.ai_data, &s);
+            }
             *pad = if m.actors[i].health > 0 { ai.think(&self.ai_data, &mut self.ai_rng, &s) } else { Pad::default() };
         }
         out

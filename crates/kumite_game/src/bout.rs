@@ -749,6 +749,7 @@ impl Bout {
                 ball,
                 // (a Force player seat: the stage around it)
                 force: (self.force && kumite_sim::Fight::is_player(i)).then_some(ForceSight { fight: f, me: i, pickups: &self.game.pickups }),
+                melee: false,
             }
         };
         // the round setup of both CPUs comes before either thinks
@@ -769,7 +770,7 @@ impl Bout {
                 sight(2)
             } else {
                 let facing_right = (e.root() - f.fighters[0].root()).dot(f.screen_right) < 0.0;
-                Sight { gd: &f.data, me: e, op: &f.fighters[0], facing_right, opp_chest: chest[0].max(1425.0), ball: None, force: None }
+                Sight { gd: &f.data, me: e, op: &f.fighters[0], facing_right, opp_chest: chest[0].max(1425.0), ball: None, force: None, melee: false }
             };
             ai.prepare(&self.ai_data, &mut self.ai_rng, &s);
             extra_pad = ai.think(&self.ai_data, &mut self.ai_rng, &s);

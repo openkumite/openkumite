@@ -28,6 +28,10 @@ pub enum MeleeState {
 
 /// A retarget waits until another opponent is this much closer (game units).
 const RETARGET_MARGIN: f32 = 300.0;
+/// The tag brawl's picks count a foe straight behind as this much further (game units; to the side half of it):
+/// a foe closing in behind is taken on when clearly nearer, not each time he edges past the one in front, which
+/// would leave the actor turning round again and again.
+pub const BEHIND_COST: f32 = 600.0;
 /// Nobody strays further than this from the group's centre (game units): the camera keeps all four in view
 /// without leaving the stage's backdrop (two fighters alone rarely stand 4 m apart).
 pub const LEASH: f32 = 2000.0;
@@ -50,6 +54,9 @@ pub struct Melee {
     pub hits: Vec<HitEvent>,
     /// The distance nobody strays beyond from the group's centre (None: no leash).
     pub leash: Option<f32>,
+    /// How much further a foe straight behind counts in the picks of a target (game units; Force's co-op: 0,
+    /// the nearest).
+    pub behind_cost: f32,
 }
 
 impl Melee {
@@ -75,7 +82,7 @@ impl Melee {
             })
             .collect();
         let target = (0..4).map(|i| (0..4).map(|d| (i + 2 + d) % 4).find(|&j| team[j] != team[i]).unwrap_or(i)).collect();
-        Self { fight, actors, team, target, links: Vec::new(), clock: ROUND_FRAMES, state: MeleeState::Fighting, hits: Vec::new(), leash: Some(LEASH) }
+        Self { fight, actors, team, target, links: Vec::new(), clock: ROUND_FRAMES, state: MeleeState::Fighting, hits: Vec::new(), leash: Some(LEASH), behind_cost: BEHIND_COST }
     }
 
     /// How many teams there are.
@@ -88,7 +95,7 @@ impl Melee {
     pub fn with_actors(data: Arc<GameData>, actors: Vec<Fighter>, team: Vec<usize>) -> Self {
         let fight = Fight::new(data, actors[0].moveset.clone(), actors[1].moveset.clone());
         let target = (0..actors.len()).map(|i| (0..actors.len()).find(|&j| team[j] != team[i]).unwrap_or(i)).collect();
-        let mut m = Self { fight, actors, team, target, links: Vec::new(), clock: ROUND_FRAMES, state: MeleeState::Fighting, hits: Vec::new(), leash: None };
+        let mut m = Self { fight, actors, team, target, links: Vec::new(), clock: ROUND_FRAMES, state: MeleeState::Fighting, hits: Vec::new(), leash: None, behind_cost: 0.0 };
         m.retarget();
         m
     }
@@ -160,13 +167,34 @@ impl Melee {
         }
     }
 
+    /// The targets picked now, as the next step picks them (from where everyone stands), and each actor that
+    /// changed target turned to see the new one: the tag brawl's CPUs think before the step, so against the
+    /// opponent the step fights and its pad's sides. Returns the actors that changed target.
+    pub fn retarget_now(&mut self) -> Vec<usize> {
+        let before = self.target.clone();
+        self.retarget();
+        let changed: Vec<usize> = (0..self.actors.len()).filter(|&i| self.target[i] != before[i]).collect();
+        for &i in &changed {
+            let o = self.facing(i);
+            self.actors[i].opponent = sight_of(&self.actors[o], &self.fight.data);
+        }
+        changed
+    }
+
     fn retarget(&mut self) {
         for i in 0..self.actors.len() {
             if self.linked_with(i).is_some() {
                 continue;
             }
             let me = self.actors[i].root();
-            let dist = |j: usize| (self.actors[j].root() - me).length();
+            let (sin, cos) = self.actors[i].yaw.dsin_cos();
+            let dist = |j: usize| {
+                let d = self.actors[j].root() - me;
+                let len = d.length();
+                // (1 - cos of the angle off my facing) / 2: 0 in front, 1 straight behind
+                let behind = if len > 1.0 { (1.0 - (d.x * sin + d.z * cos) / len) / 2.0 } else { 0.0 };
+                len + self.behind_cost * behind
+            };
             // (actors out of play are nobody's target)
             let foes: Vec<usize> = (0..self.actors.len()).filter(|&j| self.team[j] != self.team[i] && !self.actors[j].inactive).collect();
             let standing: Vec<usize> = foes.iter().copied().filter(|&j| self.standing(j)).collect();
@@ -359,5 +387,54 @@ impl Melee {
                 self.state = MeleeState::TimeUp { winner: (top.len() == 1).then(|| top[0]) };
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// The game data and a model's move set for all four, or None without converted assets.
+    fn melee() -> Option<Melee> {
+        let root = std::env::var_os("OPENKUMITE_ASSETS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets"));
+        let g = root.join("gamedata");
+        if !kumite_fs::exists(&g.join("movesets/index.json")) {
+            eprintln!("skipping: no converted assets in {}", root.display());
+            return None;
+        }
+        let data = Arc::new(GameData::load(&g).ok()?);
+        let index: serde_json::Value = crate::data::load(&g.join("movesets/index.json")).ok()?;
+        let file = index["models"][0]["moveset_file"].as_str()?;
+        let set = Arc::new(crate::data::load::<Moveset>(&g.join("movesets").join(file)).ok()?);
+        Some(Melee::new(data, [set.clone(), set.clone(), set.clone(), set]))
+    }
+
+    #[test]
+    fn a_foe_behind_is_taken_on_only_when_clearly_nearer() {
+        let Some(mut m) = melee() else { return };
+        // actor 0 at the centre facing +x, its target (2) in front; its mate far off
+        let face = |m: &mut Melee, i: usize, at: Vec3, yaw: f32| {
+            (m.actors[i].position, m.actors[i].yaw, m.actors[i].root_yaw) = (at, yaw, yaw);
+        };
+        let east = std::f32::consts::FRAC_PI_2;
+        face(&mut m, 0, Vec3::ZERO, east);
+        face(&mut m, 1, Vec3::new(0.0, 0.0, 1900.0), east);
+        face(&mut m, 2, Vec3::new(1000.0, 0.0, 0.0), -east);
+        m.target[0] = 2;
+        // the other foe behind, 500 nearer (past the retarget margin): the one in front stays
+        face(&mut m, 3, Vec3::new(-500.0, 0.0, 0.0), east);
+        assert!(!m.retarget_now().contains(&0));
+        assert_eq!(m.target[0], 2);
+        // ... right behind (950 nearer): him, and the actor sees him from then on
+        face(&mut m, 3, Vec3::new(-50.0, 0.0, 0.0), east);
+        assert!(m.retarget_now().contains(&0));
+        assert_eq!(m.target[0], 3);
+        assert_eq!(m.actors[0].opponent.root, m.actors[3].root());
+        // the same foe 500 nearer in front: him at once
+        m.target[0] = 2;
+        face(&mut m, 3, Vec3::new(500.0, 0.0, 0.0), -east);
+        assert!(m.retarget_now().contains(&0));
+        assert_eq!(m.target[0], 3);
     }
 }

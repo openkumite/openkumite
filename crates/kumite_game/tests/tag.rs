@@ -54,13 +54,14 @@ fn targets_are_the_nearest_foes() {
         g.step([Pad::default(); 4]);
     }
     assert_eq!(g.phase, TagPhase::Fight);
-    // each fights a foe no more than the retarget margin further than the nearest
+    // each fights a foe no more than the retarget margin further than the nearest (one behind counting further)
     let m = &g.melee;
     for i in 0..4 {
         let d = |j: usize| (m.actors[j].root() - m.actors[i].root()).length();
         let nearest = (0..4).filter(|&j| m.team[j] != m.team[i]).map(d).fold(f32::MAX, f32::min);
         assert_ne!(m.team[i], m.team[m.target[i]]);
-        assert!(d(m.target[i]) <= nearest + 300.0, "actor {i} targets {} at {} (nearest {nearest})", m.target[i], d(m.target[i]));
+        let bound = nearest + 300.0 + kumite_sim::melee::BEHIND_COST;
+        assert!(d(m.target[i]) <= bound, "actor {i} targets {} at {} (nearest {nearest})", m.target[i], d(m.target[i]));
     }
     // the leash keeps everyone near the group's centre
     let centre = m.actors.iter().map(|f| f.root()).sum::<glam::Vec3>() / 4.0;
