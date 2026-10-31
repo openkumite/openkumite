@@ -27,7 +27,7 @@ pub enum MeleeState {
 }
 
 /// A retarget waits until another opponent is this much closer (game units).
-const RETARGET_MARGIN: f32 = 300.0;
+pub const RETARGET_MARGIN: f32 = 300.0;
 /// The tag brawl's picks count a foe straight behind as this much further (game units; to the side half of it):
 /// a foe closing in behind is taken on when clearly nearer, not each time he edges past the one in front, which
 /// would leave the actor turning round again and again.
@@ -181,20 +181,23 @@ impl Melee {
         changed
     }
 
+    /// How far actor `j` counts for actor `i` in the picks of a target: the distance, a foe behind counting
+    /// further ([`Melee::behind_cost`]).
+    pub fn pick_cost(&self, i: usize, j: usize) -> f32 {
+        let (sin, cos) = self.actors[i].yaw.dsin_cos();
+        let d = self.actors[j].root() - self.actors[i].root();
+        let len = d.length();
+        // (1 - cos of the angle off my facing) / 2: 0 in front, 1 straight behind
+        let behind = if len > 1.0 { (1.0 - (d.x * sin + d.z * cos) / len) / 2.0 } else { 0.0 };
+        len + self.behind_cost * behind
+    }
+
     fn retarget(&mut self) {
         for i in 0..self.actors.len() {
             if self.linked_with(i).is_some() {
                 continue;
             }
-            let me = self.actors[i].root();
-            let (sin, cos) = self.actors[i].yaw.dsin_cos();
-            let dist = |j: usize| {
-                let d = self.actors[j].root() - me;
-                let len = d.length();
-                // (1 - cos of the angle off my facing) / 2: 0 in front, 1 straight behind
-                let behind = if len > 1.0 { (1.0 - (d.x * sin + d.z * cos) / len) / 2.0 } else { 0.0 };
-                len + self.behind_cost * behind
-            };
+            let dist = |j: usize| self.pick_cost(i, j);
             // (actors out of play are nobody's target)
             let foes: Vec<usize> = (0..self.actors.len()).filter(|&j| self.team[j] != self.team[i] && !self.actors[j].inactive).collect();
             let standing: Vec<usize> = foes.iter().copied().filter(|&j| self.standing(j)).collect();

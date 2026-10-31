@@ -1200,7 +1200,7 @@ impl Ai {
         self.dist_prev = (d.x * d.x + d.z * d.z).sqrt() as i32;
         self.thr_op = data.thresholds(s.op.character);
         self.h_vs = data.handlers_of(s.op.moveset.moveset_id).0;
-        (self.hseq, self.hopt, self.hstart, self.mrec, self.pwait, self.until) = (-1, 0, 0, 0, -1, 999);
+        (self.hseq, self.hopt, self.hstart, self.mrec, self.pwait) = (-1, 0, 0, 0, -1);
         (self.glatch, self.evade, self.ring, self.ringi) = (0, 0, [None; 8], 0);
     }
 
