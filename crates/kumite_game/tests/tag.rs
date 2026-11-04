@@ -63,7 +63,14 @@ fn targets_are_the_cheapest_foes() {
     g.melee.retarget_now();
     let m = &g.melee;
     for i in 0..4 {
-        let cheapest = (0..4).filter(|&j| m.team[j] != m.team[i]).map(|j| m.pick_cost(i, j)).fold(f32::MAX, f32::min);
+        // the pick's own pool: one in a throw keeps his foe; foes standing, else all those in play
+        if m.linked_with(i).is_some() {
+            continue;
+        }
+        let foes: Vec<usize> = (0..4).filter(|&j| m.team[j] != m.team[i] && !m.actors[j].inactive).collect();
+        let standing: Vec<usize> = foes.iter().copied().filter(|&j| m.standing(j)).collect();
+        let pool = if standing.is_empty() { &foes } else { &standing };
+        let cheapest = pool.iter().map(|&j| m.pick_cost(i, j)).fold(f32::MAX, f32::min);
         let t = m.target[i];
         assert_ne!(m.team[i], m.team[t]);
         assert!(m.pick_cost(i, t) <= cheapest + RETARGET_MARGIN, "actor {i} targets {t} at cost {} (cheapest {cheapest})", m.pick_cost(i, t));
