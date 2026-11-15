@@ -16,57 +16,19 @@
 //! part of the Tekken 3 pack's own.
 
 use anyhow::{bail, Context, Result};
-use ok_converter_common::io::{Ctx, DiscFile, Layered, StdDisc, StdFs, Vfs};
-use serde_json::{json, Value};
+pub use kumite_packs::Part;
+use ok_converter_common::io::{Ctx, DiscFile, StdDisc, StdFs, Vfs};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 pub const PACKS: &str = "packs";
 pub const EXTRAS: &str = "extras";
 
-/// The game data's parts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Part {
-    /// Tekken 3: the game (required), ROOT itself.
-    T3,
-    /// Tekken 2: its fighters (optional), a pack.
-    T2,
-    /// Counter-Strike: its levels as arenas (optional), a pack.
-    Cs,
-}
-
-impl Part {
-    pub const ALL: [Part; 3] = [Part::T3, Part::T2, Part::Cs];
-    /// The packs, in their install order (kumite_converter's: Counter-Strike's then Tekken 2's).
-    const PACKS: [Part; 2] = [Part::Cs, Part::T2];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Part::T3 => "Tekken 3",
-            Part::T2 => "Tekken 2",
-            Part::Cs => "Counter-Strike",
-        }
-    }
-
-    /// The pack's folder (Tekken 3: ROOT).
-    pub fn dir(self, root: &Path) -> PathBuf {
-        match self {
-            Part::T3 => root.to_path_buf(),
-            Part::T2 => root.join(PACKS).join(ok_tekken2_converter::pack::KIND),
-            Part::Cs => root.join(PACKS).join(ok_hl_cs_converter::pack::KIND),
-        }
-    }
-
-    /// The pack's manifest, when it holds one of the format this game reads.
-    pub fn manifest(self, root: &Path) -> Option<Value> {
-        let dir = StdFs(self.dir(root));
-        match self {
-            Part::T3 => {
-                kumite_assets::Assets::new(root).ok()?;
-                serde_json::from_slice(&std::fs::read(root.join("manifest.json")).ok()?).ok()
-            }
-            Part::T2 => ok_tekken2_converter::pack::manifest(&dir).ok(),
-            Part::Cs => ok_hl_cs_converter::pack::manifest(&dir).ok(),
-        }
+/// The part's folder (Tekken 3: ROOT).
+pub fn dir(part: Part, root: &Path) -> PathBuf {
+    match part {
+        Part::T3 => root.to_path_buf(),
+        p => root.join(PACKS).join(p.kind()),
     }
 }
 
@@ -74,49 +36,31 @@ impl Part {
 #[derive(Clone, Debug, Default)]
 pub struct State {
     /// Each part's manifest (None: not converted, or another format: converted again).
-    pub t3: Option<Value>,
-    pub t2: Option<Value>,
-    pub cs: Option<Value>,
+    pub manifests: kumite_packs::Manifests,
     /// The packs there are installed, as they are (the extras are theirs).
     pub installed: bool,
 }
 
 impl State {
     pub fn of(root: &Path) -> Self {
-        let mut s = Self { t3: Part::T3.manifest(root), t2: Part::T2.manifest(root), cs: Part::Cs.manifest(root), installed: false };
-        s.installed = !s.has_packs() || read_json(&root.join(EXTRAS).join("manifest.json")).is_some_and(|m| s.t3.is_some() && m["installed"] == s.stamp());
-        s
+        let m = |p: Part| p.manifest(&StdFs(dir(p, root)));
+        let manifests = kumite_packs::Manifests { t3: m(Part::T3), t2: m(Part::T2), cs: m(Part::Cs) };
+        let installed = manifests.installed(&StdFs(root.join(EXTRAS)));
+        Self { manifests, installed }
     }
 
     pub fn get(&self, part: Part) -> Option<&Value> {
-        match part {
-            Part::T3 => self.t3.as_ref(),
-            Part::T2 => self.t2.as_ref(),
-            Part::Cs => self.cs.as_ref(),
-        }
+        self.manifests.get(part)
     }
 
     pub fn has_packs(&self) -> bool {
-        self.t2.is_some() || self.cs.is_some()
+        self.manifests.has_packs()
     }
 
     /// The game can start: Tekken 3 converted, the packs installed.
     pub fn playable(&self) -> bool {
-        self.t3.is_some() && self.installed
+        self.manifests.t3.is_some() && self.installed
     }
-
-    /// What the extras are made of: when it changes they are installed again.
-    fn stamp(&self) -> Value {
-        json!({
-            "t3": self.t3.as_ref().map(|m| m["fingerprint"].clone()),
-            "t2": self.t2.as_ref().map(|m| json!({"format": m["format"], "source": m["source"]})),
-            "cs": self.cs.as_ref().map(|m| json!({"format": m["format"], "levels": m["levels"]})),
-        })
-    }
-}
-
-fn read_json(path: &Path) -> Option<Value> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
 /// The layers the game reads over ROOT, the first first: the extras, then the packs' own files.
@@ -126,7 +70,7 @@ fn layers(root: &Path, state: &State) -> Vec<PathBuf> {
     }
     let mut out = vec![root.join(EXTRAS)];
     for part in Part::PACKS.into_iter().rev() {
-        let assets = part.dir(root).join(ok_tekken2_converter::pack::ASSETS);
+        let assets = dir(part, root).join(kumite_packs::ASSETS);
         if state.get(part).is_some() && assets.is_dir() {
             out.push(assets);
         }
@@ -159,7 +103,7 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
     let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
     match job {
         Job::Convert(part, from) => {
-            let out = StdFs(part.dir(root));
+            let out = StdFs(dir(*part, root));
             let ctx = Ctx { out: &out, log, jobs };
             match part {
                 Part::T3 => {
@@ -168,14 +112,15 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
                     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                     ok_tekken3_converter::convert_all::convert_resumable(&ctx, &disc, track2.as_ref().map(|t| t as &dyn DiscFile), &now)?;
                 }
+                // (a pack cut off is no pack: removed, the one before with it)
                 Part::T2 => {
                     let disc = disc(from)?;
                     let cdda = [2, 3].map(|n| beside(from, n).map(|t| Box::new(t) as Box<dyn DiscFile>));
-                    ok_tekken2_converter::pack::convert(&ctx, &disc, &cdda)?;
+                    ok_tekken2_converter::pack::convert(&ctx, &disc, &cdda).inspect_err(|_| drop(remove(&dir(Part::T2, root))))?;
                 }
                 Part::Cs => {
                     let (game, _) = ok_hl_cs_converter::game::game_root(from)?;
-                    ok_hl_cs_converter::pack::convert(&ctx, &StdFs(game))?;
+                    ok_hl_cs_converter::pack::convert(&ctx, &StdFs(game)).inspect_err(|_| drop(remove(&dir(Part::Cs, root))))?;
                 }
             }
         }
@@ -185,53 +130,18 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
                 remove(&root.join(dir))?;
             }
         }
-        Job::Remove(part) => remove(&part.dir(root))?,
+        Job::Remove(part) => remove(&dir(*part, root))?,
         Job::Install => {}
     }
     install(root, log)
 }
 
-/// Installs the packs there are into the extras (made anew), with its manifest; nothing when there is no Tekken 3
-/// pack or no other.
+/// Installs the packs there are into the extras (made anew), with the whole's manifest; nothing when there is no
+/// Tekken 3 pack or no other.
 pub fn install(root: &Path, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
-    let extras = root.join(EXTRAS);
-    remove(&extras)?;
-    let state = State::of(root);
-    if state.t3.is_none() || !state.has_packs() {
-        return Ok(());
-    }
-    let (top, base) = (StdFs(extras.clone()), StdFs(root.to_path_buf()));
-    let below: Vec<StdFs> = layers(root, &state).into_iter().skip(1).map(StdFs).collect();
-    let mut view = Layered { top: &top, below: below.iter().map(|l| l as &dyn Vfs).collect() };
-    view.below.push(&base);
-    let ctx = Ctx { out: &view, log, jobs: 1 };
-    let mut packs = serde_json::Map::new();
-    for part in Part::PACKS {
-        let Some(m) = state.get(part) else { continue };
-        let pack = StdFs(part.dir(root));
-        log(&format!("[install] {}", part.name()));
-        match part {
-            Part::Cs => {
-                ok_hl_cs_converter::pack::install(&ctx, &pack).context("Counter-Strike")?;
-                packs.insert("cs".into(), m["levels"].clone());
-            }
-            Part::T2 => {
-                ok_tekken2_converter::pack::install(&ctx, &pack).context("Tekken 2")?;
-                packs.insert("t2".into(), m["source"].clone());
-            }
-            Part::T3 => {}
-        }
-    }
-    // the Tekken 3 manifest, with the packs (as kumite_converter wrote it with extras) and what they were installed
-    // from; its fingerprint the whole's
-    let mut manifest = state.t3.clone().and_then(|m| m.as_object().cloned()).unwrap_or_default();
-    manifest.insert("fingerprint".into(), json!(""));
-    manifest.insert("packs".into(), Value::Object(packs));
-    manifest.insert("installed".into(), state.stamp());
-    log("[install] the fingerprint");
-    manifest.insert("fingerprint".into(), json!(ok_tekken3_converter::convert_all::fingerprint(&view)?));
-    top.write("manifest.json", serde_json::to_string_pretty(&Value::Object(manifest))?.as_bytes())?;
-    Ok(())
+    let packs: Vec<(Part, StdFs)> = Part::PACKS.into_iter().map(|p| (p, StdFs(dir(p, root)))).collect();
+    let packs: Vec<(Part, &dyn Vfs)> = packs.iter().map(|(p, fs)| (*p, fs as &dyn Vfs)).collect();
+    kumite_packs::install(&StdFs(root.to_path_buf()), &packs, &StdFs(root.join(EXTRAS)), log)
 }
 
 fn disc(path: &Path) -> Result<StdDisc> {
@@ -285,7 +195,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ok_packs_none_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let s = State::of(&dir);
-        assert!(s.t3.is_none() && !s.has_packs() && s.installed && !s.playable());
+        assert!(s.get(Part::T3).is_none() && !s.has_packs() && s.installed && !s.playable());
         assert!(layers(&dir, &s).is_empty());
         install(&dir, &|_| {}).unwrap();
         assert!(!dir.join(EXTRAS).exists());
@@ -305,13 +215,13 @@ mod tests {
             run(&root, &Job::Convert(part, var(from).into()), &log).unwrap();
         }
         let state = activate(&root);
-        assert!(state.playable() && state.t2.is_some() && state.cs.is_some());
+        assert!(state.playable() && state.get(Part::T2).is_some() && state.get(Part::Cs).is_some());
         let assets = kumite_assets::Assets::new(&root).unwrap();
         assert_eq!(assets.fingerprint(), var("OK_PACKS_FINGERPRINT"));
         // the layers: a Tekken 2 fighter's model from the extras, its music from the pack, Tekken 3's own from ROOT
         assert!(kumite_fs::resolve(&root.join("characters/model_900.glb")).starts_with(root.join(EXTRAS)));
         let music = kumite_fs::resolve(&root.join("audio/music/t2_00.flac"));
-        assert!(music.starts_with(Part::T2.dir(&root)), "{}", music.display());
+        assert!(music.starts_with(super::dir(Part::T2, &root)), "{}", music.display());
         assert_eq!(kumite_fs::resolve(&root.join("characters/model_000.glb")), root.join("characters/model_000.glb"));
         // removed again: Tekken 3 alone, no layers
         run(&root, &Job::Remove(Part::T2), &log).unwrap();

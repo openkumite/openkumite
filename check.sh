@@ -20,7 +20,7 @@ lint() {
     step clippy
     cargo clippy --workspace --all-targets --release -q -- -D warnings
     step "clippy (wasm)"
-    cargo clippy --release --target wasm32-unknown-unknown -p openkumite -q -- -D warnings
+    cargo clippy --release --target wasm32-unknown-unknown -p openkumite -p kumite_convert_web -q -- -D warnings
     step "clippy (fuzz targets)"
     # (its own target directory: a fuzz run may hold fuzz/target meanwhile, with nightly)
     CARGO_TARGET_DIR="$here/target/fuzz-check" cargo clippy --manifest-path fuzz/Cargo.toml --release -q -- -D warnings

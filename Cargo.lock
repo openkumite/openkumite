@@ -2622,6 +2622,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kumite_convert_web"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "kumite_packs",
+ "ok_converter_common",
+ "ok_hl_cs_converter",
+ "ok_tekken2_converter",
+ "ok_tekken3_converter",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "kumite_fs"
 version = "0.1.2"
 dependencies = [
@@ -2654,6 +2668,19 @@ dependencies = [
  "ggrs",
  "kumite_sim",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "kumite_packs"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "kumite_assets",
+ "ok_converter_common",
+ "ok_hl_cs_converter",
+ "ok_tekken2_converter",
+ "ok_tekken3_converter",
  "serde_json",
 ]
 
@@ -3738,6 +3765,7 @@ dependencies = [
  "kumite_fs",
  "kumite_game",
  "kumite_net",
+ "kumite_packs",
  "kumite_render",
  "kumite_sim",
  "log",

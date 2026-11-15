@@ -24,9 +24,10 @@ import java.util.zip.ZipInputStream;
 
 /**
  * The game's activity: Android's NativeActivity (the game is libopenkumite.so: lib.rs android_main) with what native
- * code cannot do. The system's pickers for the converted game data (a folder, or a .zip of it), copied on a thread of
- * its own into the app's files folder as assets.part (android.rs reads the progress below, checks the copy and makes
- * it assets/); and the system bars hidden (immersive full screen).
+ * code cannot do. The system's pickers for the player's game files (a disc image's folder, the Half-Life folder, a
+ * folder kumite_converter wrote, or a .zip of any), copied on a thread of their own into the app's files folder as
+ * assets.part (android.rs reads the progress below and converts the copy, or checks and keeps a converted one); and
+ * the system bars hidden (immersive full screen).
  */
 public class OpenKumiteActivity extends NativeActivity {
     /** The copy, read by android.rs: 0 none, 1 copying, 2 done, 3 failed (importError says why). */
@@ -35,7 +36,10 @@ public class OpenKumiteActivity extends NativeActivity {
     public volatile long importDone, importTotal;
     public volatile String importError;
 
-    private static final int PICK_FOLDER = 1, PICK_ZIP = 2;
+    /** What pick() picks: a folder kumite_converter wrote (manifest.json), a .zip, the folder of a disc image (its
+     *  .bin and .cue files), the Half-Life folder (its levels and textures: .bsp, .wad). */
+    public static final int CONVERTED = 0, ZIP = 1, DISC = 2, GAME = 3;
+    private static final int PICK = 0x4F4B;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -57,13 +61,16 @@ public class OpenKumiteActivity extends NativeActivity {
             | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
     }
 
-    /** From the game (any thread): the system's folder picker, or its file picker for a .zip. */
-    public void pick(final boolean zip) {
+    private volatile int picking;
+
+    /** From the game (any thread): the system's folder picker, or its file picker for a .zip (`what`: CONVERTED ...). */
+    public void pick(final int what) {
         runOnUiThread(() -> {
-            Intent i = zip ? new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/zip")
+            picking = what;
+            Intent i = what == ZIP ? new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/zip")
                 : new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
             try {
-                startActivityForResult(i, zip ? PICK_ZIP : PICK_FOLDER);
+                startActivityForResult(i, PICK);
             } catch (ActivityNotFoundException e) {
                 fail("This device has no file picker.");
             }
@@ -78,7 +85,8 @@ public class OpenKumiteActivity extends NativeActivity {
     @Override
     protected void onActivityResult(final int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (result != RESULT_OK || data == null || data.getData() == null || importState == 1) return;
+        if (request != PICK || result != RESULT_OK || data == null || data.getData() == null || importState == 1) return;
+        final int what = picking;
         final Uri uri = data.getData();
         importDone = 0;
         importTotal = 0;
@@ -88,7 +96,7 @@ public class OpenKumiteActivity extends NativeActivity {
             File out = new File(getExternalFilesDir(null), "assets.part");
             try {
                 delete(out);
-                if (request == PICK_ZIP) unzip(uri, out); else copyTree(uri, out);
+                if (what == ZIP) unzip(uri, out); else copyTree(uri, out, what);
                 importState = 2;
             } catch (Exception e) {
                 delete(out);
@@ -103,26 +111,37 @@ public class OpenKumiteActivity extends NativeActivity {
         importState = 3;
     }
 
-    /** The picked folder's files below its shallowest manifest.json (hidden ones left out), copied into `out`. */
-    private void copyTree(Uri tree, File out) throws IOException {
+    /** The picked folder's files (hidden ones left out) copied into `out`: a converted game's below its shallowest
+     *  manifest.json; a disc image's .bin and .cue files in the folder itself; the game's levels and textures. */
+    private void copyTree(Uri tree, File out, int what) throws IOException {
         ContentResolver cr = getContentResolver();
         List<Object[]> all = new ArrayList<>();
         list(cr, tree, DocumentsContract.getTreeDocumentId(tree), "", all);
-        String base = null;
-        for (Object[] f : all) {
-            String p = (String) f[1];
-            if ((p.equals("manifest.json") || p.endsWith("/manifest.json")) && (base == null || p.length() - p.replace("/", "").length() < base.length() - base.replace("/", "").length())) {
-                base = p.substring(0, p.length() - "manifest.json".length());
+        String base = "";
+        if (what == CONVERTED) {
+            base = null;
+            for (Object[] f : all) {
+                String p = (String) f[1];
+                if ((p.equals("manifest.json") || p.endsWith("/manifest.json")) && (base == null || p.length() - p.replace("/", "").length() < base.length() - base.replace("/", "").length())) {
+                    base = p.substring(0, p.length() - "manifest.json".length());
+                }
             }
+            if (base == null) throw new IOException("That folder has no manifest.json, so it isn’t a converted game. Choose the folder kumite_converter wrote.");
         }
-        if (base == null) throw new IOException("That folder has no manifest.json, so it isn’t a converted game. Choose the folder kumite_converter wrote.");
         List<Object[]> files = new ArrayList<>();
         long need = 0;
         for (Object[] f : all) {
-            if (((String) f[1]).startsWith(base)) {
+            String p = ((String) f[1]).toLowerCase(java.util.Locale.ROOT);
+            boolean wanted = what == DISC ? !p.contains("/") && (p.endsWith(".bin") || p.endsWith(".cue"))
+                : what == GAME ? p.endsWith(".bsp") || p.endsWith(".wad") : true;
+            if (wanted && ((String) f[1]).startsWith(base)) {
                 files.add(f);
                 need += (Long) f[2];
             }
+        }
+        if (files.isEmpty()) {
+            throw new IOException(what == DISC ? "That folder has no disc image (.bin) in it. Choose the folder that holds the disc image's files."
+                : "That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.");
         }
         File dir = out.getParentFile();
         if (dir.getUsableSpace() < need) {

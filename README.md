@@ -155,11 +155,13 @@ and brotli too under PowerShell 7); serve with `cargo run --release -p serve -- 
 
 The page takes the game data from the first of:
 
-1. the copy the browser keeps: drop the folder kumite_converter wrote (the one with `manifest.json`) anywhere on the
-   page, or pick it with **Choose folder…**. The page copies it into the browser's storage (OPFS, as `assets.pack` and
-   `assets.idx`, the same pack kumite_converter's browser page writes), then starts. The **Game data** button over
-   the game shows its size and whether the browser protects it from clean-ups, and replaces or removes it; dropping
-   another folder on the game replaces it too.
+1. the conversion the browser keeps: on the page's setup, choose each game's files (Tekken 3's disc image tracks,
+   and optionally Tekken 2's, and the Half-Life folder) and the page converts them in a worker (`web/convert_worker.js`
+   running `crates/kumite_convert_web`), into the browser's storage (OPFS): the Tekken 3 pack as `assets.pack` and
+   `assets.idx`, the Tekken 2 and Counter-Strike packs as `t2.*` and `cs.*`, and the packs installed as `extras.*`,
+   read over the Tekken 3 pack. A folder kumite_converter wrote can still be dropped on the page (or picked with
+   **Choose folder…**) and is copied in as the Tekken 3 pack. The **Game data** button over the game shows the size and
+   whether the browser protects it from clean-ups, converts games, and replaces or removes the data.
 2. a folder remembered in Chrome or Edge (kumite_converter's browser page writing to a folder on the disk)
 3. the server's `assets/`, unless the page was built with `--no-server-assets`
 

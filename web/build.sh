@@ -19,6 +19,9 @@ rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
 [ -x target/tools/bin/wasm-bindgen ] || cargo install wasm-bindgen-cli --version 0.2.129 --root target/tools
 cargo build --profile "$profile" --target wasm32-unknown-unknown -p openkumite
 target/tools/bin/wasm-bindgen --target web --no-typescript --out-dir web/pkg "target/wasm32-unknown-unknown/$profile/openkumite.wasm"
+# the converter, which convert_worker.js runs: the player's discs into the game data, in the browser
+cargo build --profile "$profile" --target wasm32-unknown-unknown -p kumite_convert_web
+target/tools/bin/wasm-bindgen --target web --no-typescript --out-dir web/pkg "target/wasm32-unknown-unknown/$profile/kumite_convert_web.wasm"
 # this build's name (index.html fetches the game by it: no browser keeps an old copy)
 version=$(shasum -a 256 web/pkg/openkumite_bg.wasm)
 version=${version%% *}

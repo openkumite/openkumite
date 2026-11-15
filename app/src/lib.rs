@@ -51,6 +51,8 @@ mod blobshadow;
 mod controls;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 mod datascreen;
+#[cfg(not(target_arch = "wasm32"))]
+mod dataui;
 mod debug;
 mod demo;
 #[cfg(not(target_arch = "wasm32"))]
