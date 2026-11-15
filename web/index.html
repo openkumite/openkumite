@@ -842,12 +842,15 @@
     $('pick').hidden = $('setup-close').hidden = true;
     const lines = [];
     const tick = setInterval(() => { $('sun-sub').textContent = `${Math.round((Date.now() - started) / 1000)} s · keep this tab open`; }, 1000);
-    const result = await job(data, (line) => { lines.push(line); $('work').textContent = lines.slice(-4).join('\n'); });
+    const result = await job(data, (line) => { console.info(line); lines.push(line); $('work').textContent = lines.slice(-4).join('\n'); });
     clearInterval(tick);
     working = false;
+    // (the last job's outcome, kept across the reload: for scripts that drive the page, web/headless.mjs)
+    try { sessionStorage.setItem('okjob', JSON.stringify({ what, error: result.error ?? null, fingerprint: result.done?.fingerprint ?? null })); } catch {}
     $('work').hidden = true;
     setup.dataset.state = 'idle';
     if (result.error) {
+      console.error(`${what}: ${result.error}`);
       idle();
       rows(await job({ job: 'state' }, () => {}).then((r) => r.done ?? null));
       return message(result.quota ? 'Not enough space in this browser for that. Free some disk space, then try again.' : result.error);
