@@ -1224,8 +1224,8 @@ mod tests {
             let mut g = GridSelect::new(r.grid.clone(), 1, VsRecord::default());
             let cell = g.data.cells.iter().position(|x| x.2 == c.id).unwrap();
             let (row, col) = g.data.place(cell);
-            for k in 0..2 {
-                (g.players[k].row, g.players[k].col) = (row, col);
+            for p in &mut g.players {
+                (p.row, p.col) = (row, col);
             }
             g.key(0, Key::Button(0), &r);
             g.key(1, Key::Button(0), &r);
@@ -1245,8 +1245,8 @@ mod tests {
         // both cursors on it; P2 takes it, then P1 tries
         let cell = g.data.cells.iter().position(|c| c.2 == one).unwrap();
         let (row, col) = g.data.place(cell);
-        for k in 0..2 {
-            (g.players[k].row, g.players[k].col) = (row, col);
+        for p in &mut g.players {
+            (p.row, p.col) = (row, col);
         }
         g.key(1, Key::Button(0), &r);
         assert_eq!(g.players[1].pick, Some((one, 0)));

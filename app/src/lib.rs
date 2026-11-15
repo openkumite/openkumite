@@ -665,8 +665,8 @@ impl App {
             Some(Mode::Force) => {}
             Some(Mode::Ball) => {
                 let Some(s) = setup.as_ref() else { anyhow::bail!("the mode's setup is missing") };
-                for k in 0..2 {
-                    if self.ball_cpu[k] {
+                for (k, &cpu) in self.ball_cpu.iter().enumerate() {
+                    if cpu {
                         bout.set_cpu(k, Some((s.difficulty, s.level)));
                     }
                 }
@@ -695,8 +695,8 @@ impl App {
             }
         }
         if let (Some(p), Some(s)) = (replaying, setup.as_ref()) {
-            for k in 0..2 {
-                bout.set_cpu(k, p.cpu[k].then_some((s.difficulty, s.level)));
+            for (k, &cpu) in p.cpu.iter().enumerate() {
+                bout.set_cpu(k, cpu.then_some((s.difficulty, s.level)));
             }
             bout.interlude_check = p.interlude_check;
         }
