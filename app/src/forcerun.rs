@@ -247,7 +247,6 @@ impl ForceRun {
 
     /// The Force HUD over the fight (`project`: world metres to screen).
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         painter: &egui::Painter,

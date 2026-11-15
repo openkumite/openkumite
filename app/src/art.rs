@@ -397,8 +397,6 @@ impl Art {
         self.quad(painter, screen, sources, t, w, h, [x, y, w as f32, h as f32], [tint; 4]);
     }
 
-    /// `text` in font `font`, colour `colour` (the printf `%c`), top-left at screen (x, y).
-    #[allow(clippy::too_many_arguments)]
     /// `text` at `scale` of the font's size (OpenKumite's own small lines: online's ping).
     #[allow(clippy::too_many_arguments)]
     pub fn text_scaled(&self, painter: &egui::Painter, screen: &Screen, font: usize, colour: u32, x: f32, y: f32, scale: f32, text: &str, tint: Color32) {
@@ -414,6 +412,8 @@ impl Art {
         }
     }
 
+    /// `text` in font `font`, colour `colour` (the printf `%c`), top-left at screen (x, y).
+    #[allow(clippy::too_many_arguments)]
     pub fn text(&self, painter: &egui::Painter, screen: &Screen, font: usize, colour: u32, x: f32, y: f32, text: &str, tint: Color32) {
         let Some(f) = self.fonts.get(font) else { return };
         let clut = f.clut(colour);

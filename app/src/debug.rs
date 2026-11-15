@@ -762,11 +762,11 @@ impl Debug {
     }
 
     fn setup_ui(&mut self, ui: &mut egui::Ui, catalog: &Catalog) {
-        for p in 0..2 {
-            let label = catalog.characters.iter().find(|c| c.0 == self.pick_models[p]).map_or("?".to_string(), |c| c.1.clone());
+        for (p, pick) in self.pick_models.iter_mut().enumerate() {
+            let label = catalog.characters.iter().find(|c| c.0 == *pick).map_or("?".to_string(), |c| c.1.clone());
             egui::ComboBox::from_label(format!("P{}", p + 1)).selected_text(label).height(400.0).show_ui(ui, |ui| {
                 for (record, name) in &catalog.characters {
-                    ui.selectable_value(&mut self.pick_models[p], *record, name);
+                    ui.selectable_value(pick, *record, name);
                 }
             });
         }

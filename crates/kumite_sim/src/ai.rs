@@ -579,6 +579,8 @@ pub struct Sight<'a> {
     pub ball: Option<crate::ball::BallSight>,
     /// A Force player seat: the stage around it (None: the game's CPU, the soldiers' too).
     pub force: Option<ForceSight<'a>>,
+    /// The tag brawl (OpenKumite's own): others around, the opponent the target of the moment.
+    pub melee: bool,
 }
 
 /// What a CPU Force player sees of the stage (OpenKumite's own: the game's Force player is never a CPU).
@@ -613,6 +615,7 @@ struct Cx<'a> {
     op_moveset: i64,
     opp_chest: f32,
     ball: Option<crate::ball::BallSight>,
+    melee: bool,
 }
 
 impl Cx<'_> {
@@ -1189,6 +1192,18 @@ impl Ai {
         self.mvcd40 = 30 + rng.randint(30);
     }
 
+    /// The tag brawl's target changed to `s.op` (OpenKumite's own): what the CPU keeps of its opponent from
+    /// frame to frame starts over on the new one (his reach and handlers, his string, the distance it closes),
+    /// so the first frames on him do not read the old one's (a jump in the distance reads as him rushing in).
+    pub fn retarget(&mut self, data: &AiData, s: &Sight) {
+        let d = s.op.root() - s.me.root();
+        self.dist_prev = (d.x * d.x + d.z * d.z).sqrt() as i32;
+        self.thr_op = data.thresholds(s.op.character);
+        self.h_vs = data.handlers_of(s.op.moveset.moveset_id).0;
+        (self.hseq, self.hopt, self.hstart, self.mrec, self.pwait) = (-1, 0, 0, 0, -1);
+        (self.glatch, self.evade, self.ring, self.ringi) = (0, 0, [None; 8], 0);
+    }
+
     /// 0x80061488: the profile copy for (difficulty, level); arguments below 1 take the global ones.
     fn load_profile(&mut self, data: &AiData, me: &Fighter, op: &Fighter, diff: i32, level: i32) {
         let d = if diff < 1 { self.difficulty as i32 } else { diff };
@@ -1315,6 +1330,7 @@ impl Ai {
             op_moveset: op.moveset.moveset_id.unwrap_or(-1),
             opp_chest: s.opp_chest,
             ball: s.ball,
+            melee: s.melee,
         };
         self.run(&mut cx);
         self.post(&mut cx);
@@ -1624,6 +1640,18 @@ impl Ai {
 
         // ---- 4.G lying / wake-up [0x8005AE94..0x8005B594]
         if !cx.me_air && self.m4 & 0x404 != 0 && self.wake_up(cx) {
+            return;
+        }
+
+        // the tag brawl (OpenKumite's own): turned more than 90° away from the target, on its feet, turn round
+        // before anything else (an attack's start-up and active frames run on, no follow-up after them into the
+        // air). Back, as `turn_by_facing` has it: back turns round in every move set, forward not in all, and an
+        // attack from there in some sets goes off away from him. (The game's routine turns round now and then,
+        // forward by his zone, and attacks with its back turned while he is near: with one opponent he is seldom
+        // behind; with three he often is, the target changing to one behind)
+        if cx.melee && self.turn > 0x4000 && (!self.atk || cx.mf > m.ae) && !cx.me_air && cx.me.posture(cx.gd) & crate::posture::LYING == 0 {
+            (self.walk38, self.run3a, self.mvcd40) = (8, 0, 0x30);
+            self.out = 0x8000;
             return;
         }
 
@@ -3869,7 +3897,7 @@ mod tests {
 
     /// P2's pad from its CPU.
     fn think(ai: &mut Ai, data: &AiData, rng: &mut AiRng, f: &Fight) -> Pad {
-        let s = Sight { gd: &f.data, me: &f.fighters[1], op: &f.fighters[0], facing_right: f.facing_right(1), opp_chest: 1425.0, ball: None, force: None };
+        let s = Sight { gd: &f.data, me: &f.fighters[1], op: &f.fighters[0], facing_right: f.facing_right(1), opp_chest: 1425.0, ball: None, force: None, melee: false };
         ai.think(data, rng, &s)
     }
 
@@ -4031,5 +4059,54 @@ mod tests {
         assert!(guards >= 10, "guarded {guards} of 30");
         assert!(blocking >= 5, "standing guard in {blocking} of 30");
         assert!(counters >= 3, "countered {counters} of 30");
+    }
+
+    /// The move set files the models play (index.json), each once.
+    fn playable_sets(g: &std::path::Path) -> Vec<String> {
+        let index: serde_json::Value = crate::data::load(&g.join("movesets/index.json")).unwrap();
+        let mut files: Vec<String> = index["models"].as_array().into_iter().flatten().filter_map(|m| m["moveset_file"].as_str().map(str::to_string)).collect();
+        files.sort();
+        files.dedup();
+        files
+    }
+
+    #[test]
+    fn in_the_tag_brawl_a_cpu_with_its_back_to_him_turns_round() {
+        // the target straight behind, out of reach (where the game's routine turns forward, which in some move
+        // sets is no turn), the other one idle: in every move set the CPU on its feet faces him within a second and
+        // a half
+        let Some(g) = gamedata() else { return };
+        let gd = Arc::new(GameData::load(&g).unwrap());
+        let data = AiData::load(&g.join("ai.json")).unwrap();
+        let (mut stuck, mut tried) = (Vec::new(), 0);
+        let sets = playable_sets(&g);
+        for file in &sets {
+            let ms = Arc::new(crate::data::load::<Moveset>(&g.join("movesets").join(file)).unwrap());
+            let mut f = Fight::new(gd.clone(), ms.clone(), ms);
+            f.fighters[0].position.x = -1250.0;
+            f.fighters[1].position.x = 1250.0;
+            for _ in 0..60 {
+                step(&mut f, [Pad::default(); 2]);
+            }
+            // (a set whose fighter lies about at rest has no back to turn)
+            if f.fighters[1].posture(&f.data) & crate::posture::LYING != 0 {
+                continue;
+            }
+            tried += 1;
+            let yaw = f.fighters[1].yaw + std::f32::consts::PI;
+            (f.fighters[1].yaw, f.fighters[1].root_yaw) = (yaw, yaw);
+            let (mut ai, mut r) = (Ai::new(2, 9, 1), rng(1));
+            let turned = (0..90).any(|_| {
+                let s = Sight { gd: &f.data, me: &f.fighters[1], op: &f.fighters[0], facing_right: f.facing_right(1), opp_chest: 1425.0, ball: None, force: None, melee: true };
+                let pad = ai.think(&data, &mut r, &s);
+                step(&mut f, [Pad::default(), pad]);
+                f.fighters[1].angles().turn < 0x2000
+            });
+            if !turned {
+                stuck.push(file.as_str());
+            }
+        }
+        assert!(tried > sets.len() / 2, "{tried} of {} move sets on their feet", sets.len());
+        assert!(stuck.is_empty(), "back turned for good: {stuck:?} of {tried} move sets");
     }
 }

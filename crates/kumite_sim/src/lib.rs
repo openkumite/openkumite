@@ -2611,11 +2611,10 @@ impl Fight {
             }
         }
         // an attack on its last active frame without contact whiffed (+0xD2, 0x80044374)
-        for a in 0..2 {
-            let f = &self.fighters[a];
+        for (a, f) in self.fighters.iter_mut().enumerate() {
             let m = f.current_move(gd);
             if m.active[0] != 0 && f.frame == m.active[1] && !f.connected && !hits.iter().any(|h| h.0 == a) {
-                self.fighters[a].whiffed = true;
+                f.whiffed = true;
             }
         }
         // reversals and parries (0x80045104), before any damage, P1 first on odd frames: a struck fighter whose list

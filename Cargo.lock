@@ -2542,7 +2542,6 @@ dependencies = [
  "glam",
  "gltf",
  "kumite_fs",
- "log",
  "serde",
  "serde_json",
 ]

@@ -9,6 +9,7 @@ ignore = [
     { id = "RUSTSEC-2024-0384", reason = "instant: ggrs's timer" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser: egui's font loading (our own embedded fonts only)" },
     { id = "RUSTSEC-2024-0436", reason = "paste: a compile-time macro of rav1e (replays to video); nothing at run time" },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils: nix 0.26's, under webrtc-util (online play)" },
     # a vulnerability with no fix reachable yet: drop when webrtc's dtls takes a crypto-bigint >= 0.7.6
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 (timing leaks): webrtc's DTLS handshake (p256/p384) in online play; no 0.5 fix, dtls needs elliptic-curve 0.13" },
 ]
