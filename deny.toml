@@ -30,3 +30,5 @@ allow-wildcard-paths = true
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# the converters' repositories (ok_converter_common, ok_tekken3_converter, ok_tekken2_converter, ok_hl_cs_converter)
+allow-org = { github = ["openkumite"] }

@@ -10,11 +10,11 @@ publish.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 kumite_assets.workspace = true
-# the converters (path dependencies until they are published)
-ok_converter_common = { path = "../../../../02_converters/ok_converter_common", default-features = false }
-ok_tekken3_converter = { path = "../../../../02_converters/ok_tekken3_converter" }
-ok_tekken2_converter = { path = "../../../../02_converters/ok_tekken2_converter" }
-ok_hl_cs_converter = { path = "../../../../02_converters/ok_hl_cs_converter" }
+# the converters (their repositories)
+ok_converter_common = { git = "https://github.com/openkumite/ok_converter_common", branch = "main", default-features = false }
+ok_tekken3_converter = { git = "https://github.com/openkumite/ok_tekken3_converter", branch = "main" }
+ok_tekken2_converter = { git = "https://github.com/openkumite/ok_tekken2_converter", branch = "main" }
+ok_hl_cs_converter = { git = "https://github.com/openkumite/ok_hl_cs_converter", branch = "main" }
 
 [lints]
 workspace = true
