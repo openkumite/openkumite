@@ -20,10 +20,23 @@ pub fn find(args: &[String], env: &dyn Fn(&str) -> Option<OsString>, exe: Option
     }
     let list: String = places.iter().map(|d| format!("\n  {}", d.display())).collect();
     anyhow::bail!(
-        "no converted game found; looked in:{list}\nConvert your game disc with kumite_converter \
-         (its README says how) into one of these folders, or give the folder it wrote with \
+        "no converted game found; looked in:{list}\nStart OpenKumite without --shot, --quit-after and the like \
+         to convert your game discs on its Game data screen, or give a converted folder with \
          --assets DIR or OPENKUMITE_ASSETS=DIR"
     )
+}
+
+/// Where a conversion made in the game goes when there is none yet (desktops: the Game data screen): the per-user
+/// place of [`places`] (macOS `~/Library/Application Support/OpenKumite/assets`, Windows `%APPDATA%\OpenKumite\assets`,
+/// elsewhere `$XDG_DATA_HOME/openkumite/assets`).
+#[cfg_attr(any(target_os = "android", target_arch = "wasm32"), allow(dead_code))]
+pub fn user_place(env: &dyn Fn(&str) -> Option<OsString>, os: &str) -> Option<PathBuf> {
+    let var = |k: &str| env(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    match os {
+        "macos" => home(env).map(|h| h.join("Library/Application Support/OpenKumite/assets")),
+        "windows" => var("APPDATA").map(|a| a.join("OpenKumite").join("assets")),
+        _ => var("XDG_DATA_HOME").filter(|d| d.is_absolute()).or_else(|| home(env).map(|h| h.join(".local/share"))).map(|d| d.join("openkumite/assets")),
+    }
 }
 
 /// A conversion copied into `dir` (Android's import of the folder or the .zip the player chose): `dir` itself when it
@@ -113,6 +126,10 @@ mod tests {
         assert_eq!(unix[..3], [p("/h/.local/share/openkumite/assets"), p("/usr/local/share/openkumite/assets"), p("/usr/share/openkumite/assets")]);
         let win = |k: &str| (k == "APPDATA").then(|| OsString::from("/ad"));
         assert_eq!(places(&win, None, "windows"), [p("/ad/OpenKumite/assets"), repo.clone()]);
+        // a conversion made in the game: the per-user place
+        assert_eq!(user_place(&env, "macos"), Some(user.clone()));
+        assert_eq!(user_place(&win, "windows"), Some(p("/ad/OpenKumite/assets")));
+        assert_eq!(user_place(&xdg, "linux"), Some(p("/d/openkumite/assets")));
 
         // the first holding manifest.json; --assets, then OPENKUMITE_ASSETS, taken as given
         let none: [String; 1] = ["openkumite".into()];
@@ -135,7 +152,7 @@ mod tests {
         let nowhere = |k: &str| (k == "HOME").then(|| root.join("nobody").into_os_string());
         let e = find(&none, &nowhere, Some(&root.join("bin/openkumite")), "macos").map_or_else(|e| e.to_string(), |d| d.display().to_string());
         if !repo.join("manifest.json").is_file() {
-            assert!(e.contains(&root.join("bin/assets").display().to_string()) && e.contains("kumite_converter"), "{e}");
+            assert!(e.contains(&root.join("bin/assets").display().to_string()) && e.contains("Game data"), "{e}");
         }
         std::fs::remove_dir_all(&root).unwrap();
     }

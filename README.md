@@ -3,9 +3,10 @@
 A 3D fighting game engine in Rust that plays converted game data 1:1, as the original does. It runs natively
 (wgpu + winit) and in the browser (WebAssembly), with local two-player and online rollback netplay.
 
-The repository contains **no game data**. Everything game-specific is produced once by
-[kumite_converter](https://github.com/openkumite/kumite_converter) (a separate project) from your own copy of the game, as standard formats: glTF 2.0,
-PNG, JSON, WAV/FLAC and AVI.
+The repository contains **no game data**. Everything game-specific is converted once, in the game, from your own copy
+of the game, into standard formats: glTF 2.0, PNG, JSON, WAV/FLAC and AVI. The converters are separate crates the game
+links: ok_tekken3_converter (the game, required), ok_tekken2_converter and ok_hl_cs_converter (optional packs beside
+it), on ok_converter_common.
 
 ## Repository layout
 
@@ -28,8 +29,29 @@ PNG, JSON, WAV/FLAC and AVI.
 
 ## Assets
 
-Convert your own copy of the game with [kumite_converter](https://github.com/openkumite/kumite_converter), then put its output in `assets/` (git-ignored), or point
-the game at it. The native game looks for the assets in this order:
+The game converts your own copies itself, on its **Game data** screen: it opens when there is no game data yet, and
+from the Game data button on the title screen. Choose:
+
+| | | Gives |
+|---|---|---|
+| Tekken 3 (PlayStation, USA, SLUS-00402) | the disc image's `Track 1` `.bin` (Track 2 beside it) | the game (required) |
+| Tekken 2 (PlayStation, USA v1.1) | the disc image's `Track 1` `.bin` | its fighters in the roster (optional) |
+| Counter-Strike (Half-Life) | the Half-Life folder, with `cstrike/` and `valve/` | its levels as arenas, two more Tekken Force stages (optional) |
+
+The Tekken 3 conversion takes about a minute and 1.4 GB; Tekken 2 adds about 1.7 GB, Counter-Strike 0.1 GB. Packs can
+be added, converted again or removed later. In the game data's folder:
+
+```text
+manifest.json, characters/, stages/, ...   the Tekken 3 pack (as kumite_converter wrote it)
+packs/t2/, packs/cs/                       the Tekken 2 and Counter-Strike packs (each from its own copy alone)
+extras/                                    the packs installed: what they add to or change in Tekken 3's
+```
+
+The game reads `extras/` over the packs' `assets/` over the Tekken 3 pack, and `extras/manifest.json` is the whole's (its
+fingerprint is what online play compares). The packs are installed again when the Tekken 3 pack changes
+(`app/src/packs.rs`).
+
+The native game looks for the game data in this order (a folder of it holds `manifest.json`):
 
 1. `--assets DIR`
 2. the `OPENKUMITE_ASSETS` environment variable
@@ -39,7 +61,8 @@ the game at it. The native game looks for the assets in this order:
    `$XDG_DATA_DIRS` (`/usr/local/share`, `/usr/share`)
 5. the repository's `assets/`
 
-A folder counts as a conversion when it holds `manifest.json`.
+With none found (and no folder given), the Game data screen converts into the per-user place of 4. A folder that
+kumite_converter wrote still plays as it is.
 
 On Android the app asks for the converted folder on its first screen and keeps a copy (see [Android build](#android-build)).
 

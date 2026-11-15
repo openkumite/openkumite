@@ -82,7 +82,7 @@ impl Audio {
             return;
         }
         let (Some(path), Some(sink)) = (path, self.sink.as_ref()) else { return };
-        match File::open(path).map_err(anyhow::Error::from).and_then(|f| Decoder::try_from(f).map_err(anyhow::Error::from)) {
+        match File::open(kumite_fs::resolve(path)).map_err(anyhow::Error::from).and_then(|f| Decoder::try_from(f).map_err(anyhow::Error::from)) {
             Ok(src) => {
                 let player = Player::connect_new(sink.mixer());
                 player.set_volume(if self.muted { 0.0 } else { self.music_volume });
@@ -109,7 +109,7 @@ impl Audio {
         let Some(sink) = self.sink.as_ref() else { return };
         let clip = match self.cache.get(path) {
             Some(c) => c.clone(),
-            None => match File::open(path).map_err(anyhow::Error::from).and_then(|f| Decoder::try_from(f).map_err(anyhow::Error::from)) {
+            None => match File::open(kumite_fs::resolve(path)).map_err(anyhow::Error::from).and_then(|f| Decoder::try_from(f).map_err(anyhow::Error::from)) {
                 Ok(d) => {
                     let c = d.buffered();
                     self.cache.insert(path.to_path_buf(), c.clone());
@@ -181,7 +181,7 @@ mod tests {
         for bank in index["sfx"].as_array().unwrap() {
             for s in bank["samples"].as_array().unwrap() {
                 let path = a.join("audio/sfx").join(s["file"].as_str().unwrap());
-                let d = Decoder::try_from(File::open(&path).unwrap()).unwrap();
+                let d = Decoder::try_from(File::open(kumite_fs::resolve(&path)).unwrap()).unwrap();
                 let rate = d.sample_rate().get() as f32;
                 let n = d.count() as f32;
                 let secs = s["seconds"].as_f64().unwrap() as f32;
@@ -196,7 +196,7 @@ mod tests {
         let movies = movies.map(|v| ("video", &v["audio_file"], &v["seconds"]));
         for (dir, file, secs) in music.chain(movies) {
             let path = a.join(dir).join(file.as_str().unwrap());
-            let d = Decoder::try_from(File::open(&path).unwrap()).unwrap();
+            let d = Decoder::try_from(File::open(kumite_fs::resolve(&path)).unwrap()).unwrap();
             let rate = (d.sample_rate().get() * d.channels().get() as u32) as f64;
             let (n, secs) = (d.count() as f64, secs.as_f64().unwrap());
             assert!((n / rate - secs).abs() < 0.1, "{}: {} s decoded, index says {secs}", path.display(), n / rate);
