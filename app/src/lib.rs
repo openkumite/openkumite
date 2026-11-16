@@ -49,7 +49,7 @@ mod audio;
 mod ballview;
 mod blobshadow;
 mod controls;
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[cfg(not(target_os = "android"))]
 mod datascreen;
 #[cfg(not(target_arch = "wasm32"))]
 mod dataui;
@@ -59,6 +59,7 @@ mod demo;
 mod direct;
 mod files;
 mod forcerun;
+mod gamedata;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 mod gamepad;
 #[cfg(target_arch = "wasm32")]
@@ -501,8 +502,7 @@ struct App {
     audio: Option<audio::Audio>,
     /// Android: the app in the background, its window's surface gone (nothing drawn or stepped).
     suspended: bool,
-    /// The Game data screen asked for (its button on the title and the main menu; not in a browser).
-    #[cfg(not(target_arch = "wasm32"))]
+    /// The Game data screen asked for (its button on the title and the main menu; a browser's is the page's).
     game_data: bool,
     /// Free-camera drag: last cursor position while the left button is held.
     drag: Option<(f64, f64)>,
@@ -4418,10 +4418,9 @@ impl App {
         // controls buttons on the title and the main menu, Touch controls in a fight's pause
         #[cfg(target_os = "android")]
         let mut touch = self.gamepads.as_ref().map(|g| g.touch.clone()).filter(|t| t.shown || t.edit.is_some());
-        #[cfg(not(target_arch = "wasm32"))]
         let at_title = matches!(self.screen, Some(Screen::Title { .. } | Screen::Menu(_)));
-        // desktops: the Game data button on the title and the main menu
-        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        // desktops and browsers: the Game data button on the title and the main menu
+        #[cfg(not(target_os = "android"))]
         let mut game_data = false;
         #[cfg(target_os = "android")]
         let in_pause = self.fight.as_ref().is_some_and(|f| f.pause.is_some()) || self.tag.as_ref().is_some_and(|t| t.pause.is_some());
@@ -4608,6 +4607,11 @@ impl App {
                     if at_title && !debug.enabled {
                         game_data = datascreen::game_data_button(ctx);
                     }
+                    // (a browser's button is the page's: asked there, taken on the title)
+                    #[cfg(target_arch = "wasm32")]
+                    if crate::gamedata::web::open_asked() && at_title {
+                        game_data = true;
+                    }
                     #[cfg(target_os = "android")]
                     {
                         if let Some(t) = touch.as_mut() {
@@ -4626,7 +4630,7 @@ impl App {
                     let dp = self.window.as_ref().map_or(1.0, |w| w.scale_factor() as f32);
                     android::touch_ui(self.gamepads.as_mut(), &mut self.game_data, &mut self.debug, android::TouchFrame { touch, top, panel, chosen_size, size: [size[0] as f32, size[1] as f32], dp });
                 }
-                #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+                #[cfg(not(target_os = "android"))]
                 {
                     self.game_data |= game_data;
                 }
@@ -6458,7 +6462,7 @@ pub fn main() -> Result<()> {
         log::warn!("the packs in {} are not installed: Tekken 3 alone", root.display());
     }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-    if !batch && !state.playable() {
+    if !batch && (!state.playable() || args.iter().any(|a| a == "--game-data")) {
         EventLoop::new()?.run_app(&mut datascreen::Root::data(root, args))?;
         return Ok(());
     }
@@ -6569,6 +6573,7 @@ Headless (no window; the save is not written):
   --variant N, --coop, --chicken, --boss
                                ... the screen's variant (some screens)
 
+  --game-data                  open the Game data screen (convert, add or remove games) first
   -h, --help                   this help
 
 In a browser the options go in the page's query: http://127.0.0.1:8770/?--stats&--arcade&10
@@ -6583,6 +6588,15 @@ pub fn main() {
     let query = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
     let mut args = vec!["openkumite".to_string()];
     args.extend(query.trim_start_matches('?').split('&').filter(|a| !a.is_empty()).map(|a| a.replace("%20", " ")));
+    // (no game data in this browser yet: the Game data screen first)
+    if gamedata::web::no_data() {
+        use winit::platform::web::EventLoopExtWebSys;
+        match EventLoop::new() {
+            Ok(l) => l.spawn_app(datascreen::Root::data("assets".into(), args)),
+            Err(e) => page_error(&format!("The game did not start: {e}")),
+        }
+        return;
+    }
     if let Err(e) = run("assets".into(), args) {
         log::error!("{e:#}");
         page_error(&format!("The game did not start: {e:#}"));
@@ -6786,7 +6800,6 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         gamepads: None,
         audio: None,
         suspended: false,
-        #[cfg(not(target_arch = "wasm32"))]
         game_data: false,
         assets,
         models,
@@ -6972,7 +6985,7 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
     #[cfg(target_arch = "wasm32")]
     {
         use winit::platform::web::EventLoopExtWebSys;
-        EventLoop::new()?.spawn_app(app);
+        EventLoop::new()?.spawn_app(datascreen::Root::game(root, args, app));
     }
     Ok(())
 }

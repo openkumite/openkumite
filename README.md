@@ -29,8 +29,12 @@ it), on ok_converter_common.
 
 ## Assets
 
-The game converts your own copies itself, on its **Game data** screen: it opens when there is no game data yet, and
-from the Game data button on the title screen. Choose:
+The game converts your own copies itself, on its **Game data** screen: it opens when there is no game data yet, from
+the Game data button on the title screen, and with `--game-data`. It is the same screen on the desktops, in a browser
+and on Android (`app/src/gamedata/`), drawn by the engine in the manner of the game's menus, and it takes the keyboard
+(arrows, Enter, Esc), the mouse or a touchpad, touches and gamepads; a disc image dropped on the window goes to the game
+under the pointer. A conversion shows its progress and the time left, can be cancelled, and its log can be read and
+copied; the space it needs is checked before it starts. Choose:
 
 | | | Gives |
 |---|---|---|
