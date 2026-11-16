@@ -1,25 +1,21 @@
-# The browser version on GitHub Pages (https://openkumite.github.io/openkumite/), from main. Built with
-# --no-server-assets: the site holds no game data; each player drops the folder kumite_converter wrote onto the page,
-# and their browser keeps it (OPFS, the same pack kumite_converter's own page on this site writes).
+# The browser version on GitHub Pages (https://openkumite.github.io/openkumite/), from a release only: release.yml
+# calls this after it publishes a release (vX.Y.Z; not a pre-release), so the site is always a released version. Run
+# by hand (Actions, pages, Run workflow), it deploys only from a version tag ("Use workflow from": the tag), to put a
+# release on the site again; the github-pages environment takes deployments from v* tags alone. Built with
+# --no-server-assets: the site holds no game data; each player converts their own copies on the page, and their
+# browser keeps the result (OPFS).
 name: pages
 
 on:
-  push:
-    branches: [main]
-    # (the site has no Markdown in it: a docs-only change leaves it as it is)
-    paths-ignore: ["**.md", "**/LICENSE*", "LICENSE*"]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# (one deployment at a time; a newer push waits for the running one)
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
 jobs:
   build:
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -45,6 +41,10 @@ jobs:
 
   deploy:
     needs: build
+    # (one deployment at a time; a newer one waits for the running one)
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write
