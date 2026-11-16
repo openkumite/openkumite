@@ -1684,7 +1684,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3878,7 +3878,7 @@ dependencies = [
 [[package]]
 name = "ok_converter_common"
 version = "0.3.0"
-source = "git+https://github.com/openkumite/ok_converter_common?branch=main#aad758cd9d5c725f522435e173b999fa9f75547b"
+source = "git+https://github.com/openkumite/ok_converter_common?branch=main#859ac5402265ba7b242b2299dc9082f1c040327e"
 dependencies = [
  "anyhow",
  "chd",
@@ -3897,7 +3897,7 @@ dependencies = [
 [[package]]
 name = "ok_hl_cs_converter"
 version = "0.1.0"
-source = "git+https://github.com/openkumite/ok_hl_cs_converter?branch=main#64207c7893fbeb7b03b4227dc422fa72885ceeeb"
+source = "git+https://github.com/openkumite/ok_hl_cs_converter?branch=main#b1eb92de2610dfba87a07707654066a0e637cf03"
 dependencies = [
  "anyhow",
  "libm",
@@ -3910,7 +3910,7 @@ dependencies = [
 [[package]]
 name = "ok_tekken2_converter"
 version = "0.3.0"
-source = "git+https://github.com/openkumite/ok_tekken2_converter?branch=main#e5f4329854d1e903568109c464d1d201f78947ff"
+source = "git+https://github.com/openkumite/ok_tekken2_converter?branch=main#a1d47bcd73eb7f0c90d6c94b595400a25094e5f4"
 dependencies = [
  "anyhow",
  "image",
@@ -3924,7 +3924,7 @@ dependencies = [
 [[package]]
 name = "ok_tekken3_converter"
 version = "0.3.0"
-source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#ec931856af2309f535314e97393e3098d935b892"
+source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#764fb5663b6c1fb1e268d69419395ffa819e7bd8"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4051,7 +4051,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4891,7 +4891,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6757,7 +6757,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7034,7 +7034,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
