@@ -173,8 +173,9 @@ The page takes the game data from the first of:
 3. the server's `assets/`, unless the page was built with `--no-server-assets`
 
 `sh web/build.sh --no-server-assets` (`web\build.bat --no-server-assets`) builds a page that never reads the
-server's `assets/`: every player brings their own copy. Every push to `main` deploys that build to GitHub Pages:
-https://openkumite.github.io/openkumite/. kumite_converter's browser page at
+server's `assets/`: every player brings their own copy. Each release (`vX.Y.Z`, not a pre-release) deploys that build
+to GitHub Pages once its downloads are published (release.yml calls pages.yml), so the site is always the latest
+release: https://openkumite.github.io/openkumite/. kumite_converter's browser page at
 https://openkumite.github.io/kumite_converter/ is on the same site, so a game it converts there is found by the
 game's page directly.
 
