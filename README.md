@@ -34,9 +34,16 @@ from the Game data button on the title screen. Choose:
 
 | | | Gives |
 |---|---|---|
-| Tekken 3 (PlayStation, USA, SLUS-00402) | the disc image's `Track 1` `.bin` (Track 2 beside it) | the game (required) |
-| Tekken 2 (PlayStation, USA v1.1) | the disc image's `Track 1` `.bin` | its fighters in the roster (optional) |
+| Tekken 3 (PlayStation, USA, SLUS-00402) | its disc image | the game (required) |
+| Tekken 2 (PlayStation, USA v1.1) | its disc image | its fighters in the roster (optional) |
 | Counter-Strike (Half-Life) | the Half-Life folder, with `cstrike/` and `valve/` | its levels as arenas, two more Tekken Force stages (optional) |
+
+A disc image in any of these formats (ok_converter_common's `disc` module): a `.cue` with its `.bin` files (or a
+`.bin` alone: a `.cue` beside it is found, and a split image's `Track 2` and `Track 3`), `.chd`, CloneCD `.ccd` with its
+`.img`, Alcohol `.mds` with its `.mdf`, `.ecm`, a popstation `EBOOT.PBP`, or an `.iso`. In the browser, choose all of
+the image's files (the `.cue` and its `.bin` files) at once. An `.iso` keeps only each sector's data: the game plays
+from it, without the movies and the streamed (XA) music, and the Game data screen says so; a full image converted again
+adds them. The fingerprint (online play) is the same either way: it covers no music or movies.
 
 The Tekken 3 conversion takes about a minute and 1.4 GB; Tekken 2 adds about 1.7 GB, Counter-Strike 0.1 GB. Packs can
 be added, converted again or removed later. In the game data's folder:

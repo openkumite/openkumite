@@ -37,8 +37,10 @@ public class OpenKumiteActivity extends NativeActivity {
     public volatile String importError;
 
     /** What pick() picks: a folder kumite_converter wrote (manifest.json), a .zip, the folder of a disc image (its
-     *  .bin and .cue files), the Half-Life folder (its levels and textures: .bsp, .wad). */
+     *  files: DISC_FILES), the Half-Life folder (its levels and textures: .bsp, .wad). */
     public static final int CONVERTED = 0, ZIP = 1, DISC = 2, GAME = 3;
+    /** A disc image's files, in every format the converters read (ok_converter_common's disc module). */
+    private static final String[] DISC_FILES = {".cue", ".bin", ".iso", ".chd", ".ccd", ".img", ".mds", ".mdf", ".ecm", ".pbp", ".wav"};
     private static final int PICK = 0x4F4B;
 
     @Override
@@ -106,13 +108,20 @@ public class OpenKumiteActivity extends NativeActivity {
         }, "import").start();
     }
 
+    private static boolean isDiscFile(String lower) {
+        for (String e : DISC_FILES) {
+            if (lower.endsWith(e)) return true;
+        }
+        return false;
+    }
+
     private void fail(String message) {
         importError = message;
         importState = 3;
     }
 
     /** The picked folder's files (hidden ones left out) copied into `out`: a converted game's below its shallowest
-     *  manifest.json; a disc image's .bin and .cue files in the folder itself; the game's levels and textures. */
+     *  manifest.json; a disc image's files (DISC_FILES) in the folder itself; the game's levels and textures. */
     private void copyTree(Uri tree, File out, int what) throws IOException {
         ContentResolver cr = getContentResolver();
         List<Object[]> all = new ArrayList<>();
@@ -132,7 +141,7 @@ public class OpenKumiteActivity extends NativeActivity {
         long need = 0;
         for (Object[] f : all) {
             String p = ((String) f[1]).toLowerCase(java.util.Locale.ROOT);
-            boolean wanted = what == DISC ? !p.contains("/") && (p.endsWith(".bin") || p.endsWith(".cue"))
+            boolean wanted = what == DISC ? !p.contains("/") && isDiscFile(p)
                 : what == GAME ? p.endsWith(".bsp") || p.endsWith(".wad") : true;
             if (wanted && ((String) f[1]).startsWith(base)) {
                 files.add(f);
@@ -140,7 +149,7 @@ public class OpenKumiteActivity extends NativeActivity {
             }
         }
         if (files.isEmpty()) {
-            throw new IOException(what == DISC ? "That folder has no disc image (.bin) in it. Choose the folder that holds the disc image's files."
+            throw new IOException(what == DISC ? "That folder has no disc image in it (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm or .pbp). Choose the folder that holds the disc image's files."
                 : "That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.");
         }
         File dir = out.getParentFile();

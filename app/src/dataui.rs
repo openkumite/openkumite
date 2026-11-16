@@ -121,8 +121,8 @@ impl Jobs {
         let busy = self.busy();
         for (k, part) in Part::ALL.into_iter().enumerate() {
             let (what, needs) = match part {
-                Part::T3 => ("Tekken 3 (PlayStation, USA, SLUS-00402): the game. Needed.", "its disc image (Track 1 .bin, Track 2 beside it)"),
-                Part::T2 => ("Tekken 2 (PlayStation, USA v1.1): its fighters join the roster. Optional.", "its disc image (Track 1 .bin)"),
+                Part::T3 => ("Tekken 3 (PlayStation, USA, SLUS-00402): the game. Needed.", "its disc image (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm or .pbp)"),
+                Part::T2 => ("Tekken 2 (PlayStation, USA v1.1): its fighters join the roster. Optional.", "its disc image (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm or .pbp)"),
                 Part::Cs => ("Counter-Strike (Half-Life): its levels as arenas, two more Tekken Force stages. Optional.", "the Half-Life folder (with cstrike/ and valve/)"),
             };
             let done = self.state.get(part).is_some();
@@ -132,6 +132,9 @@ impl Jobs {
                 ui.label(what);
                 if done {
                     ui.label(egui::RichText::new(format!("Converted: {:.1} GB", self.sizes[k] as f64 / 1e9)).color(egui::Color32::from_rgb(140, 220, 150)));
+                    if let Some(note) = self.state.get(part).and_then(kumite_packs::missing_note) {
+                        ui.label(egui::RichText::new(note).color(egui::Color32::from_rgb(255, 210, 140)));
+                    }
                 } else {
                     let how = if pick_folder && part != Part::Cs { format!("the folder with {needs}") } else { needs.to_string() };
                     ui.label(egui::RichText::new(format!("Not converted. Choose {how}.")).weak());
@@ -205,29 +208,26 @@ impl Jobs {
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-/// In a copied folder (Android's picker; a .zip unpacked), the input for `part`: the disc image's track 1 (the .bin
-/// named Track 1, else the largest .bin), or the Half-Life folder (the copy itself: the converter finds cstrike/ in
-/// it, or takes it as a cstrike folder).
+/// In a copied folder (Android's picker; a .zip unpacked), the input for `part`: the disc image (a sheet, .cue, .ccd or
+/// .mds, else a .chd or .pbp, else the image named Track 1, else the largest: ok_converter_common's `main_image`; the
+/// folder's own files first, then its sub-folders'), or the Half-Life folder (the copy itself: the converter finds
+/// cstrike/ in it, or takes it as a cstrike folder).
 pub fn input_in(dir: &Path, part: Part) -> anyhow::Result<PathBuf> {
     if part == Part::Cs {
         return Ok(dir.to_path_buf());
     }
-    let mut bins: Vec<(PathBuf, u64)> = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d)?.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("bin")) {
-                bins.push((p, e.metadata().map_or(0, |m| m.len())));
-            }
+    let mut dirs = vec![dir.to_path_buf()];
+    let mut k = 0;
+    while let Some(d) = dirs.get(k).cloned() {
+        if let Some(name) = ok_converter_common::disc::main_image(&ok_converter_common::disc::StdFolder(d.clone())) {
+            return Ok(d.join(name));
         }
+        let mut subs: Vec<PathBuf> = std::fs::read_dir(&d)?.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        subs.sort();
+        dirs.extend(subs);
+        k += 1;
     }
-    bins.sort();
-    let track1 = bins.iter().find(|(p, _)| p.file_name().is_some_and(|n| n.to_string_lossy().contains("Track 1")));
-    let largest = bins.iter().max_by_key(|(_, n)| *n);
-    track1.or(largest).map(|(p, _)| p.clone()).ok_or_else(|| anyhow::anyhow!("There is no disc image (.bin) in that folder. Choose the folder that holds {}'s disc image.", part.name()))
+    anyhow::bail!("There is no disc image in that folder (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm or .pbp). Choose the folder that holds {}'s disc image.", part.name())
 }
 
 #[cfg(test)]
@@ -239,11 +239,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ok_dataui_input_{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         assert!(input_in(&dir, Part::T3).is_err());
-        std::fs::write(dir.join("sub/game.bin"), vec![0u8; 10]).unwrap();
+        std::fs::write(dir.join("sub/game.chd"), vec![0u8; 10]).unwrap();
+        assert_eq!(input_in(&dir, Part::T2).unwrap(), dir.join("sub/game.chd"), "in a sub-folder");
         std::fs::write(dir.join("other.BIN"), vec![0u8; 5]).unwrap();
-        assert_eq!(input_in(&dir, Part::T2).unwrap(), dir.join("sub/game.bin"), "the largest");
+        std::fs::write(dir.join("big.bin"), vec![0u8; 9]).unwrap();
+        assert_eq!(input_in(&dir, Part::T2).unwrap(), dir.join("big.bin"), "the folder's own, the largest");
         std::fs::write(dir.join("Game (Track 1).bin"), vec![0u8; 1]).unwrap();
         assert_eq!(input_in(&dir, Part::T3).unwrap(), dir.join("Game (Track 1).bin"), "track 1 first");
+        std::fs::write(dir.join("Game.cue"), b"FILE").unwrap();
+        assert_eq!(input_in(&dir, Part::T3).unwrap(), dir.join("Game.cue"), "the sheet first");
         assert_eq!(input_in(&dir, Part::Cs).unwrap(), dir);
         std::fs::remove_dir_all(&dir).unwrap();
     }

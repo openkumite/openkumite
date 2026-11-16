@@ -11,6 +11,10 @@
 *.chd
 *.ecm
 *.pbp
+*.ccd
+*.sub
+*.mds
+*.mdf
 
 # OS
 .DS_Store

@@ -9,10 +9,12 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use kumite_packs::Part;
+use ok_converter_common::disc::{main_image, Disc, Folder};
 use ok_converter_common::io::{list_paths, path_exists, Ctx, DiscFile, Entry, PackVfs, ReadSeek, Store, Vfs};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
+use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -82,10 +84,22 @@ impl Seek for Reader {
     }
 }
 
-/// A picked folder (the Half-Life folder): its files by path (below the picked folder), read only.
-struct Folder(BTreeMap<String, u32>);
+/// The files picked for a disc image (a .cue with its .bin files, a .chd, ...), by name.
+struct Picked(BTreeMap<String, u32>);
 
-impl Vfs for Folder {
+impl Folder for Picked {
+    fn files(&self) -> Vec<(String, u64)> {
+        self.0.iter().map(|(n, &id)| (n.clone(), okc_input_size(id) as u64)).collect()
+    }
+    fn file(&self, name: &str) -> Option<Arc<dyn DiscFile>> {
+        self.0.get(name).map(|&id| Arc::new(Input(id)) as Arc<dyn DiscFile>)
+    }
+}
+
+/// A picked folder (the Half-Life folder): its files by path (below the picked folder), read only.
+struct GameFolder(BTreeMap<String, u32>);
+
+impl Vfs for GameFolder {
     fn read(&self, path: &str) -> Result<Vec<u8>> {
         let &id = self.0.get(path).with_context(|| format!("no {path} in the folder"))?;
         let mut buf = vec![0; okc_input_size(id) as usize];
@@ -147,9 +161,10 @@ fn start() {
     std::panic::set_hook(Box::new(|info| okc_panic(&info.to_string())));
 }
 
-/// Runs a job: `options` is JSON, `{"job": "convert", "part": "t3" | "t2" | "cs", "files": [track 1, track 2?, ...]
-/// (file ids; Counter-Strike: [[path, id], ...]), "now": "YYYY-MM-DD HH:MM:SS"}`, `{"job": "remove", "part": ...}` or
-/// `{"job": "install"}`; then the packs installed again. The state after it ([`state`]'s).
+/// Runs a job: `options` is JSON, `{"job": "convert", "part": "t3" | "t2" | "cs", "files": [[path, id], ...] (the
+/// picked files: a disc image's, by name, the image found among them; Counter-Strike: the folder's, by path below
+/// it), "now": "YYYY-MM-DD HH:MM:SS"}`, `{"job": "remove", "part": ...}` or `{"job": "install"}`; then the packs
+/// installed again. The state after it ([`state`]'s).
 #[wasm_bindgen]
 pub fn run(options: &str) -> Result<String, String> {
     job(options).map_err(|e| format!("{e:#}"))
@@ -182,31 +197,37 @@ fn job(options: &str) -> Result<String> {
     match o["job"].as_str().unwrap_or_default() {
         "convert" => {
             let part = part(o["part"].as_str().unwrap_or_default())?;
-            let ids: Vec<u32> = o["files"].as_array().into_iter().flatten().filter_map(|v| v.as_u64().map(|i| i as u32)).collect();
+            let file = |f: &Value| Some((f.get(0)?.as_str()?.to_string(), f.get(1)?.as_u64()? as u32));
+            let files: BTreeMap<String, u32> = o["files"].as_array().into_iter().flatten().filter_map(file).collect();
+            // a disc image among the files picked (Tekken 3, Tekken 2)
+            let disc = || -> Result<Disc> {
+                let picked = Picked(files.clone());
+                let image = main_image(&picked).context("there is no disc image among the files chosen (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm or .pbp)")?;
+                let disc = Disc::open(&picked, &image)?;
+                log(&disc.summary());
+                Ok(disc)
+            };
             let out = pack(Some(part))?;
             let ctx = Ctx { out: &out, log: &log, jobs: 1 };
             let converted = (|| -> Result<()> {
                 match part {
                     Part::T3 => {
-                        let track1 = Input(*ids.first().context("no Tekken 3 disc image")?);
-                        let track2 = ids.get(1).map(|&i| Input(i));
+                        let disc = disc()?;
                         let now = o["now"].as_str().unwrap_or_default();
-                        ok_tekken3_converter::convert_all::convert_resumable(&ctx, &track1, track2.as_ref().map(|t| t as &dyn DiscFile), now)?;
+                        ok_tekken3_converter::convert_all::convert_resumable(&ctx, disc.data()?, disc.audio(2).map(|t| t as &dyn DiscFile), now)?;
                     }
                     Part::T2 => {
-                        let track1 = Input(*ids.first().context("no Tekken 2 disc image")?);
-                        let cdda = [1, 2].map(|k| ids.get(k).map(|&i| Box::new(Input(i)) as Box<dyn DiscFile>));
-                        ok_tekken2_converter::pack::convert(&ctx, &track1, &cdda)?;
+                        let disc = disc()?;
+                        let cdda = [2, 3].map(|n| disc.audio(n).map(|t| Box::new(t.clone()) as Box<dyn DiscFile>));
+                        ok_tekken2_converter::pack::convert(&ctx, disc.data()?, &cdda)?;
                     }
                     Part::Cs => {
-                        let file = |f: &Value| Some((f.get(0)?.as_str()?.to_string(), f.get(1)?.as_u64()? as u32));
-                        let files: BTreeMap<String, u32> = o["files"].as_array().into_iter().flatten().filter_map(file).collect();
                         // (the folder picked is the Half-Life folder, or its cstrike/: then the levels are the game's)
-                        let folder = Folder(files);
+                        let folder = GameFolder(files.clone());
                         let game: Box<dyn Vfs> = if folder.exists("cstrike") || !folder.exists("maps") {
                             Box::new(folder)
                         } else {
-                            Box::new(Folder(folder.0.into_iter().map(|(p, i)| (format!("cstrike/{p}"), i)).collect()))
+                            Box::new(GameFolder(folder.0.into_iter().map(|(p, i)| (format!("cstrike/{p}"), i)).collect()))
                         };
                         ok_hl_cs_converter::pack::convert(&ctx, game.as_ref())?;
                     }

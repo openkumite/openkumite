@@ -15,9 +15,10 @@
 //! installed again. The fingerprint covers characters/, stages/ and gamedata/ only, so packs/ and extras/ are no
 //! part of the Tekken 3 pack's own.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 pub use kumite_packs::Part;
-use ok_converter_common::io::{Ctx, DiscFile, StdDisc, StdFs, Vfs};
+use ok_converter_common::disc::Disc;
+use ok_converter_common::io::{Ctx, DiscFile, StdFs, Vfs};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -88,7 +89,8 @@ pub fn activate(root: &Path) -> State {
 /// A job of the Game data screen.
 #[derive(Clone, Debug)]
 pub enum Job {
-    /// Convert a part from the player's copy: a disc image's track 1 (Tekken 3, Tekken 2) or the Half-Life folder
+    /// Convert a part from the player's copy: a disc image in any format ok_converter_common reads (Tekken 3, Tekken 2:
+    /// .cue, .bin, .iso, .chd, .ccd, .mds, .ecm, .pbp; the files it names beside it) or the Half-Life folder
     /// (Counter-Strike); then the packs installed again.
     Convert(Part, PathBuf),
     /// Remove a pack (or the Tekken 3 pack's files); the rest installed again.
@@ -107,16 +109,17 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
             let ctx = Ctx { out: &out, log, jobs };
             match part {
                 Part::T3 => {
-                    let disc = disc(from)?;
-                    let track2 = beside(from, 2);
+                    let disc = Disc::open_path(from)?;
+                    log(&disc.summary());
                     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                    ok_tekken3_converter::convert_all::convert_resumable(&ctx, &disc, track2.as_ref().map(|t| t as &dyn DiscFile), &now)?;
+                    ok_tekken3_converter::convert_all::convert_resumable(&ctx, disc.data()?, disc.audio(2).map(|t| t as &dyn DiscFile), &now)?;
                 }
                 // (a pack cut off is no pack: removed, the one before with it)
                 Part::T2 => {
-                    let disc = disc(from)?;
-                    let cdda = [2, 3].map(|n| beside(from, n).map(|t| Box::new(t) as Box<dyn DiscFile>));
-                    ok_tekken2_converter::pack::convert(&ctx, &disc, &cdda).inspect_err(|_| drop(remove(&dir(Part::T2, root))))?;
+                    let disc = Disc::open_path(from)?;
+                    log(&disc.summary());
+                    let cdda = [2, 3].map(|n| disc.audio(n).map(|t| Box::new(t.clone()) as Box<dyn DiscFile>));
+                    ok_tekken2_converter::pack::convert(&ctx, disc.data()?, &cdda).inspect_err(|_| drop(remove(&dir(Part::T2, root))))?;
                 }
                 Part::Cs => {
                     let (game, _) = ok_hl_cs_converter::game::game_root(from)?;
@@ -144,21 +147,6 @@ pub fn install(root: &Path, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
     kumite_packs::install(&StdFs(root.to_path_buf()), &packs, &StdFs(root.join(EXTRAS)), log)
 }
 
-fn disc(path: &Path) -> Result<StdDisc> {
-    if !path.is_file() {
-        bail!("there is no disc image at {}", path.display());
-    }
-    Ok(StdDisc(path.to_path_buf()))
-}
-
-/// The disc's track `n` beside its track 1 (`... (Track 1).bin`), when it is there.
-fn beside(track1: &Path, n: usize) -> Option<StdDisc> {
-    let name = track1.file_name()?.to_string_lossy();
-    let other = name.replace("Track 1", &format!("Track {n}"));
-    let path = track1.with_file_name(other);
-    (path != track1 && path.is_file()).then_some(StdDisc(path))
-}
-
 fn remove(path: &Path) -> Result<()> {
     let r = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
     match r {
@@ -177,20 +165,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_tracks_beside_track_1() {
-        let dir = std::env::temp_dir().join(format!("ok_packs_beside_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for t in [1, 2] {
-            std::fs::write(dir.join(format!("Game (Track {t}).bin")), b"").unwrap();
-        }
-        let t1 = dir.join("Game (Track 1).bin");
-        assert_eq!(beside(&t1, 2).map(|d| d.0), Some(dir.join("Game (Track 2).bin")));
-        assert!(beside(&t1, 3).is_none());
-        assert!(beside(&dir.join("game.bin"), 2).is_none());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn no_packs_no_layers_and_nothing_to_install() {
         let dir = std::env::temp_dir().join(format!("ok_packs_none_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -204,6 +178,7 @@ mod tests {
 
     /// The Game data screen's jobs from the player's copies to the game's view:
     /// `OK_T3_BIN=... OK_T2_BIN=... OK_CS_DIR=... OK_PACKS_ROOT=<an empty folder> OK_PACKS_FINGERPRINT=<kumite_convert's>
+    /// (the disc images in any format)
     /// cargo test --release -p openkumite -- --ignored the_packs_converted_in_the_game`.
     #[test]
     #[ignore]

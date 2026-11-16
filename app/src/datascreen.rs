@@ -206,13 +206,16 @@ impl Data {
     }
 }
 
+/// The disc images the dialog offers (a sheet with the files it names beside it, or one file), both cases.
+const IMAGES: [&str; 20] = ["cue", "bin", "iso", "chd", "ccd", "img", "mds", "mdf", "ecm", "pbp", "CUE", "BIN", "ISO", "CHD", "CCD", "IMG", "MDS", "MDF", "ECM", "PBP"];
+
 /// The system's dialog for the part's input: a disc image, or the game folder.
 fn choose(part: Part) -> Option<PathBuf> {
-    let title = format!("{}: {}", part.name(), if part == Part::Cs { "the Half-Life folder" } else { "the disc image's Track 1" });
+    let title = format!("{}: {}", part.name(), if part == Part::Cs { "the Half-Life folder" } else { "the disc image (.cue, .bin, .chd, .iso, ...)" });
     let d = rfd::FileDialog::new().set_title(title);
     match part {
         Part::Cs => d.pick_folder(),
-        _ => d.add_filter("Disc image (raw .bin)", &["bin", "BIN"]).pick_file(),
+        _ => d.add_filter("Disc image (.cue, .bin, .iso, .chd, .ccd, .img, .mds, .mdf, .ecm, .pbp)", &IMAGES).pick_file(),
     }
 }
 
