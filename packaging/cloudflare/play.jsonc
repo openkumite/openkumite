@@ -1,0 +1,13 @@
+// The browser game on Cloudflare (Workers static assets, Cloudflare's current Pages), at play.openkumiteengine.dev:
+// pages.yml deploys the GitHub Pages build (site/, --no-server-assets) with it, a release only.
+// By hand: npx wrangler deploy -c packaging/cloudflare/play.jsonc --assets DIR
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "openkumite-play",
+  "compatibility_date": "2026-11-01",
+  "assets": { "directory": "../../site" },
+  "routes": [{ "pattern": "play.openkumiteengine.dev", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": false }
+}

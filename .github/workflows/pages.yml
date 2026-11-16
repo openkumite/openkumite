@@ -1,5 +1,6 @@
-# The browser version on GitHub Pages (https://openkumite.github.io/openkumite/) and on Cloudflare Pages (project
-# openkumite-play, https://play.openkumiteengine.dev; its secrets in the "cloudflare" environment), from a release only: release.yml
+# The browser version on GitHub Pages (https://openkumite.github.io/openkumite/) and on Cloudflare (Workers static
+# assets: packaging/cloudflare/play.jsonc, https://play.openkumiteengine.dev; its secrets in the "cloudflare"
+# environment), from a release only: release.yml
 # calls this after it publishes a release (vX.Y.Z; not a pre-release), so the site is always a released version. Run
 # by hand (Actions, pages, Run workflow), it deploys only from a version tag ("Use workflow from": the tag), to put a
 # release on the site again; the github-pages environment takes deployments from v* tags alone. Built with
@@ -61,7 +62,7 @@ jobs:
       - id: deployment
         uses: actions/deploy-pages@v5
 
-  # the same site on Cloudflare Pages
+  # the same site on Cloudflare
   cloudflare:
     needs: build
     concurrency:
@@ -71,10 +72,8 @@ jobs:
       name: cloudflare
       url: https://play.openkumiteengine.dev
     runs-on: ubuntu-latest
-    env:
-      PROJECT: openkumite-play
-      WRANGLER: "4.163.0"
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: site
@@ -85,7 +84,5 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           TAG: ${{ github.ref_name }}
         run: |
-          w() { npx --yes "wrangler@$WRANGLER" "$@"; }
-          w pages project list | grep -qw "$PROJECT" || w pages project create "$PROJECT" --production-branch main
-          w pages deploy site --project-name "$PROJECT" --branch main --commit-hash "$GITHUB_SHA" --commit-message "$TAG"
+          npx --yes wrangler@4.163.0 deploy -c packaging/cloudflare/play.jsonc --message "$TAG"
           echo "### $TAG on https://play.openkumiteengine.dev" >> "$GITHUB_STEP_SUMMARY"

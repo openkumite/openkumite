@@ -35,3 +35,6 @@ openkumite_save.json
 
 # agents' git worktrees
 .claude/worktrees/
+
+# wrangler (Cloudflare) local state
+.wrangler/

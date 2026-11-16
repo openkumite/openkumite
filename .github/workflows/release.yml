@@ -11,7 +11,7 @@
 #   macos-universal               OpenKumite.app (packaging/macos), arm64 + x86_64, macOS 11+
 #   web                           the browser build (web/build.sh): to serve from a site
 # Then the files go on the download CDN as well (cdn.yml: https://download.openkumiteengine.dev/TAG/), and a release (not a
-# pre-release) goes on GitHub Pages and Cloudflare Pages (pages.yml): the sites are always the latest release.
+# pre-release) goes on GitHub Pages and Cloudflare (pages.yml): the sites are always the latest release.
 # Run by hand (Actions, release, Run workflow) on any branch, it builds all of it without publishing: the files are
 # the run's artifacts, named vX.Y.Z-dev.<commit>.
 name: release
@@ -379,7 +379,7 @@ jobs:
       tag: ${{ needs.version.outputs.tag }}
     secrets: inherit
 
-  # the browser version on GitHub Pages and Cloudflare Pages: a release only (a pre-release leaves the site as it is)
+  # the browser version on GitHub Pages and Cloudflare: a release only (a pre-release leaves the site as it is)
   pages:
     if: github.ref_type == 'tag' && !contains(needs.version.outputs.tag, '-')
     needs: [version, release]

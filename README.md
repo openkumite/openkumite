@@ -180,7 +180,7 @@ The page takes the game data from the first of:
 
 `sh web/build.sh --no-server-assets` (`web\build.bat --no-server-assets`) builds a page that never reads the
 server's `assets/`: every player brings their own copy. Each release (`vX.Y.Z`, not a pre-release) deploys that build
-to Cloudflare Pages and GitHub Pages once its downloads are published (release.yml calls pages.yml), so the site is
+to Cloudflare and GitHub Pages once its downloads are published (release.yml calls pages.yml), so the site is
 always the latest release: https://play.openkumiteengine.dev (and https://openkumite.github.io/openkumite/). Each
 site's browser keeps its own copy of the game data, so a game converted on one is converted again on the other.
 kumite_converter's browser page at
@@ -189,7 +189,8 @@ game's page on GitHub Pages directly.
 
 Each release's downloads are also on Cloudflare's CDN (R2), at `https://download.openkumiteengine.dev/vX.Y.Z/NAME`, with
 `vX.Y.Z/release.json` (the files, sizes and SHA-256) and `latest.json` (the latest release's): release.yml calls cdn.yml,
-which runs `packaging/cdn/upload.sh`. Both deploys take `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the
+which runs `packaging/cdn/upload.sh`; the Cloudflare copy of the browser version is `packaging/cloudflare/play.jsonc`
+(Workers static assets, Cloudflare's current Pages). Both deploys take `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the
 repository's `cloudflare` environment. An earlier release goes on the CDN by hand: Actions, cdn, Run workflow, its tag.
 
 The page is a PWA: the browser offers to install it (Chrome and Edge: the install icon in the address bar; Android:
