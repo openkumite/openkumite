@@ -1632,7 +1632,7 @@ impl Screen {
     }
 
     pub fn draw(&self, ctx: &egui::Context, art: &Art, roster: &Roster) {
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("menu")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("menu")));
         let window = ctx.content_rect();
         // CONTINUE? and GAME OVER draw over the fight's loser shot
         if !matches!(self, Screen::Continue { .. } | Screen::GameOver { .. } | Screen::Records(_)) {

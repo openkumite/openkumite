@@ -4477,7 +4477,7 @@ impl App {
                     if embu_white > 0 {
                         // the embu's additive white
                         let view = art::Screen::fit(ctx.content_rect());
-                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("embu_fade")));
+                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("embu_fade")));
                         Art::shade(&painter, &view, [0.0, 0.0, art::SCREEN_W, art::SCREEN_H], [art::additive(egui::Color32::from_gray(embu_white)); 4]);
                     }
                     if let Some(screen) = screen {
@@ -4486,7 +4486,7 @@ impl App {
                         // the scene has no HUD; its white fade adds over the picture
                         if cs.scene.white > 0 {
                             let view = art::Screen::fit(ctx.content_rect());
-                            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("scene_fade")));
+                            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("scene_fade")));
                             let full = [0.0, 0.0, art::SCREEN_W, art::SCREEN_H];
                             Art::shade(&painter, &view, full, [art::additive(egui::Color32::from_gray(cs.scene.white)); 4]);
                         }
@@ -4499,7 +4499,7 @@ impl App {
                         }
                         // TAG ARCADE lost: "CONTINUE? n", then GAME OVER, in the big font (as the arcade's)
                         let view = art::Screen::fit(ctx.content_rect());
-                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("tag_continue")));
+                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("tag_continue")));
                         if let Some(c) = t.cont {
                             Art::shade(&painter, &view, [0.0, 0.0, art::SCREEN_W, art::SCREEN_H], [egui::Color32::from_black_alpha(140); 4]);
                             art.text(&painter, &view, 2, 9, 63.0, 200.0, &roster.ui.continue_text.replace("%d", &c.div_ceil(menu::CONTINUE_STEP).to_string()), egui::Color32::WHITE);
@@ -4528,7 +4528,7 @@ impl App {
                             let view = art::Screen::fit(ctx.content_rect());
                             let window = ctx.content_rect();
                             let project = |m: glam::Vec3| project_point(&cam, size, window, &view, m);
-                            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("force_hud"))).with_clip_rect(view.rect);
+                            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("force_hud"))).with_clip_rect(view.rect);
                             run.draw(&painter, &view, art, hud, roster, &f.bout.game, frames, &project);
                         }
                         if let Some(p) = &f.practice {
@@ -4573,7 +4573,7 @@ impl App {
                     }
                     if let Some((got, total, _)) = loading {
                         let view = art::Screen::fit(ctx.content_rect());
-                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("loading")));
+                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("loading")));
                         // bottom right of the 368 x 480 screen
                         art.text(&painter, &view, 0, 6, 352.0 - art.text_w(0, "NOW LOADING"), 436.0, "NOW LOADING", egui::Color32::WHITE);
                         if total > 0 {
@@ -4584,7 +4584,7 @@ impl App {
                     }
                     if let Some(secs) = setup_secs {
                         let view = art::Screen::fit(ctx.content_rect());
-                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("setup_clock")));
+                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("setup_clock")));
                         let t = format!("{secs:02}");
                         Art::shade(&painter, &view, [160.0, 0.0, 48.0, 30.0], [egui::Color32::from_black_alpha(170); 4]);
                         art.text(&painter, &view, 1, if secs <= 5 && frames & 0x10 != 0 { 2 } else { 6 }, crate::art::CENTRE - art.text_w(1, &t) / 2.0, 4.0, &t, egui::Color32::WHITE);
@@ -4592,13 +4592,13 @@ impl App {
                     // online: the connection's line (CONNECTING, the ping, a desync) under the timer
                     if let Some(t) = &names_line {
                         let view = art::Screen::fit(ctx.content_rect());
-                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("net_names")));
+                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("net_names")));
                         Art::shade(&painter, &view, [0.0, 452.0, art::SCREEN_W, 22.0], [egui::Color32::from_black_alpha(170); 4]);
                         art.text(&painter, &view, 0, 6, crate::art::CENTRE - art.text_w(0, t) / 2.0, 456.0, t, egui::Color32::WHITE);
                     }
                     if let Some(t) = &net_status {
                         let view = art::Screen::fit(ctx.content_rect());
-                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("net_status")));
+                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("net_status")));
                         // small, over the timer (its digits start at y 22)
                         let scale = 0.75;
                         art.text_scaled(&painter, &view, 0, if t.starts_with("PING") { 6 } else { 1 }, crate::art::CENTRE - art.text_w(0, t) * scale / 2.0, 7.0, scale, t, egui::Color32::WHITE);
@@ -5207,7 +5207,7 @@ const PAUSE_ITEMS: [usize; 2] = [0, 2];
 /// and "nP PAUSE" blinking in font 1 on the side of the player who paused.
 /// Ball's rules card (0x800B3BC0): a black shadow, a white border and the card (record 55's picture).
 fn draw_rules(ctx: &egui::Context, art: &Art) {
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("rules")));
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("rules")));
     let v = art::Screen::fit(ctx.content_rect());
     let painter = painter.with_clip_rect(v.rect);
     Art::shade(&painter, &v, [60.0, 132.0, 264.0, 220.0], [egui::Color32::BLACK; 4]);
@@ -5220,7 +5220,7 @@ fn draw_rules(ctx: &egui::Context, art: &Art) {
 
 #[allow(clippy::too_many_arguments)]
 fn draw_pause(ctx: &egui::Context, art: &Art, items: &[String], cursor: usize, player: usize, frame: u64, ball: bool) {
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("pause")));
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("pause")));
     let v = art::Screen::fit(ctx.content_rect());
     let painter = painter.with_clip_rect(v.rect);
     let mut shown: Vec<&str> = PAUSE_ITEMS.iter().map(|&k| items.get(k).map_or("", String::as_str)).collect();

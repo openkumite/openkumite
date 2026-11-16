@@ -12,6 +12,8 @@ updates:
     ignore:
       # pinned on purpose: kumite_net reads ggrs's messages' layout by hand (crates/kumite_net/Cargo.toml)
       - dependency-name: ggrs
+      # kumite_net frames ggrs's messages in bincode 1, as ggrs encodes them (the rollback packets' wire format): with ggrs
+      - dependency-name: bincode
       # patched in vendor/ (Cargo.toml's [patch.crates-io]): updated by hand with their patches
       - dependency-name: matchbox_socket
       - dependency-name: winit

@@ -10,7 +10,8 @@ use crate::dataui::{Jobs, RowAction};
 use crate::debug::EguiLayer;
 use crate::packs::{Job, Part};
 use crate::App;
-use jni::objects::{JObject, JString, JValue};
+use jni::objects::{JObject, JString};
+use jni::{jni_sig, jni_str, JValue};
 use kumite_render::Renderer;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -128,7 +129,7 @@ fn save_touch(g: &crate::gamepad::Gamepads, debug: &mut crate::debug::Debug) {
 
 /// The top buttons drawn; the one pressed.
 pub fn top_buttons(ctx: &egui::Context, with_data: bool) -> Option<TopButton> {
-    let area = egui::Area::new(egui::Id::new("game_data_button")).anchor(egui::Align2::CENTER_TOP, [0.0, 8.0]);
+    let area = egui::Area::new(egui::Id::unique("game_data_button")).anchor(egui::Align2::CENTER_TOP, [0.0, 8.0]);
     area.show(ctx, |ui| {
         ui.horizontal(|ui| {
             let data = with_data && ui.button("Game data").clicked();
@@ -379,11 +380,11 @@ impl Data {
         let now = import(android);
         match &now {
             Some(i) if i.state == 2 => {
-                java(android, |env, a| env.call_method(a, "importSeen", "()V", &[]).map(|_| ()));
+                java(android, |env, a| env.call_method(a, jni_str!("importSeen"), jni_sig!("()V"), &[]).map(|_| ()));
                 self.copied(files);
             }
             Some(i) if i.state == 3 => {
-                java(android, |env, a| env.call_method(a, "importSeen", "()V", &[]).map(|_| ()));
+                java(android, |env, a| env.call_method(a, jni_str!("importSeen"), jni_sig!("()V"), &[]).map(|_| ()));
                 self.picking = None;
                 self.jobs.message = i.error.clone();
             }
@@ -398,7 +399,7 @@ impl Data {
             ctx.layer_painter(egui::LayerId::background()).rect_filled(screen, 0.0, egui::Color32::from_rgb(12, 13, 17));
             // (its id the window's size: turned, the area starts over, nothing of the other way round kept)
             let key = (screen.width() as i32, screen.height() as i32);
-            let area = egui::Area::new(egui::Id::new(("game_data", key))).anchor(egui::Align2::CENTER_TOP, [0.0, 8.0]);
+            let area = egui::Area::new(egui::Id::unique(("game_data", key))).anchor(egui::Align2::CENTER_TOP, [0.0, 8.0]);
             area.show(ctx, |ui| {
                 egui::ScrollArea::vertical().max_height(screen.height() - 16.0).show(ui, |ui| {
                     ui.set_width((screen.width() - 32.0).min(680.0));
@@ -437,7 +438,7 @@ impl Data {
         };
         if let Some(what) = pick {
             self.jobs.message = None;
-            java(android, |env, a| env.call_method(a, "pick", "(I)V", &[JValue::Int(what)]).map(|_| ()));
+            java(android, |env, a| env.call_method(a, jni_str!("pick"), jni_sig!("(I)V"), &[JValue::Int(what)]).map(|_| ()));
         }
         self.play |= back;
     }
@@ -467,24 +468,23 @@ fn keep(files: &Path) -> anyhow::Result<()> {
 /// The copy as the activity tells it (None: it could not be asked).
 fn import(android: &AndroidApp) -> Option<Import> {
     java(android, |env, a| {
-        let error = env.get_field(a, "importError", "Ljava/lang/String;")?.l()?;
-        let error = if error.is_null() { None } else { Some(env.get_string(&JString::from(error))?.into()) };
-        Ok(Import { state: env.get_field(a, "importState", "I")?.i()?, done: env.get_field(a, "importDone", "J")?.j()?, total: env.get_field(a, "importTotal", "J")?.j()?, error })
+        let error = env.get_field(a, jni_str!("importError"), jni_sig!("Ljava/lang/String;"))?.l()?;
+        let error = if error.is_null() { None } else { Some(env.cast_local::<JString>(error)?.try_to_string(env)?) };
+        let long = |env: &mut jni::Env, name| env.get_field(a, name, jni_sig!("J"))?.j();
+        Ok(Import { state: env.get_field(a, jni_str!("importState"), jni_sig!("I"))?.i()?, done: long(env, jni_str!("importDone"))?, total: long(env, jni_str!("importTotal"))?, error })
     })
 }
 
-/// Run `f` on the activity (OpenKumiteActivity.java) from this thread; a JNI failure logged, None.
+/// Run `f` on the activity (OpenKumiteActivity.java) from this thread (attached to the VM for it); a JNI failure, or
+/// a Java exception it raised, logged: None.
 #[allow(unsafe_code)] // JNI: the VM and the activity android-activity holds
-fn java<T>(android: &AndroidApp, f: impl FnOnce(&mut jni::JNIEnv, &JObject) -> jni::errors::Result<T>) -> Option<T> {
+fn java<T>(android: &AndroidApp, f: impl FnOnce(&mut jni::Env, &JObject) -> jni::errors::Result<T>) -> Option<T> {
     // SAFETY: android-activity's pointers to the process's Java VM and to its global reference of the activity, both
     // valid while the activity runs (this event loop)
-    let vm = unsafe { jni::JavaVM::from_raw(android.vm_as_ptr().cast()) }.map_err(|e| log::error!("JNI: {e}")).ok()?;
-    let mut env = vm.attach_current_thread().map_err(|e| log::error!("JNI: {e}")).ok()?;
-    let activity = unsafe { JObject::from_raw(android.activity_as_ptr().cast()) };
-    let out = f(&mut env, &activity);
-    if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_describe();
-        let _ = env.exception_clear();
-    }
+    let vm = unsafe { jni::JavaVM::from_raw(android.vm_as_ptr().cast()) };
+    let out = vm.attach_current_thread(|env| {
+        let activity = unsafe { JObject::from_raw(env, android.activity_as_ptr().cast()) };
+        f(env, &activity)
+    });
     out.map_err(|e| log::error!("JNI: {e}")).ok()
 }

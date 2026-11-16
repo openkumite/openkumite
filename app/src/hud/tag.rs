@@ -72,7 +72,7 @@ impl TagHud {
 
     pub fn draw(&self, ctx: &egui::Context, art: &Art, d: &super::HudData, g: &TagGame, info: &TagInfo) {
         let v = View::fit(ctx.content_rect());
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("hud"))).with_clip_rect(v.rect);
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("hud"))).with_clip_rect(v.rect);
         let src: &[&str] = &["exe"];
         for i in 0..4 {
             let (team, row) = place(g, i);
@@ -115,7 +115,7 @@ impl TagHud {
             art.text(&painter, &v, 0, 6, crate::art::CENTRE - art.text_w(0, &t) / 2.0, d.gem_y + ROW_DY + 4.0, &t, Color32::WHITE);
         }
         crate::debug::mark_under(&painter);
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("hud_front"))).with_clip_rect(v.rect);
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("hud_front"))).with_clip_rect(v.rect);
         let first = usize::from(g.round != 1);
         match g.phase {
             TagPhase::Call if g.is_final_round() => d.final_round.draw(&painter, &v, art),

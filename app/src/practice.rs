@@ -463,7 +463,7 @@ impl Practice {
     /// the open menu. `project`: a point in metres to the 368x480 screen.
     pub fn draw(&self, ctx: &egui::Context, art: &Art, intro: bool, project: &dyn Fn(glam::Vec3) -> Option<(f32, f32)>) {
         let v = View::fit(ctx.content_rect());
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("practice"))).with_clip_rect(v.rect);
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("practice"))).with_clip_rect(v.rect);
         if intro {
             let t = &self.data.intro;
             art.text(&painter, &v, t.font, t.colour, t.x, t.y, &t.text, Color32::WHITE);

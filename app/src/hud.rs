@@ -504,7 +504,7 @@ impl Hud {
 
     /// The HUD; `under` paints more 2D behind the fighters (Force's pickups).
     pub fn draw_with(&self, ctx: &egui::Context, art: &Art, bout: &Bout, info: &HudInfo, under: &dyn Fn(&egui::Painter, &View)) {
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("hud")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("hud")));
         let v = View::fit(ctx.content_rect());
         let painter = painter.with_clip_rect(v.rect);
         let d = &self.data;
@@ -622,7 +622,7 @@ impl Hud {
         under(&painter, &v);
         // everything above is drawn behind the fighters (the game's 2D list B); the round texts are in front
         crate::debug::mark_under(&painter);
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("hud_front"))).with_clip_rect(v.rect);
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("hud_front"))).with_clip_rect(v.rect);
         if info.demo {
             d.demo.draw(&painter, &v, art);
         }

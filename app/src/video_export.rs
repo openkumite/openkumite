@@ -32,7 +32,7 @@ impl Dialog {
 
     pub fn ui(&mut self, ctx: &egui::Context) -> Option<DialogAction> {
         let mut action = None;
-        egui::Area::new(egui::Id::new("video_dialog")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).order(egui::Order::Foreground).show(ctx, |ui| {
+        egui::Area::new(egui::Id::unique("video_dialog")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).order(egui::Order::Foreground).show(ctx, |ui| {
             egui::Frame::new().fill(Color32::from_rgba_unmultiplied(16, 16, 22, 245)).corner_radius(14).inner_margin(18).stroke(egui::Stroke::new(1.0, Color32::from_white_alpha(35))).show(ui, |ui| {
                 ui.set_width(420.0);
                 ui.label(RichText::new("Make a video").size(22.0).strong().color(Color32::WHITE));
@@ -176,7 +176,7 @@ impl Export {
             (p.done, p.all, p.finished.clone())
         };
         let mut action = None;
-        egui::Area::new(egui::Id::new("video_export")).anchor(Align2::LEFT_TOP, [14.0, 14.0]).order(egui::Order::Foreground).show(ctx, |ui| {
+        egui::Area::new(egui::Id::unique("video_export")).anchor(Align2::LEFT_TOP, [14.0, 14.0]).order(egui::Order::Foreground).show(ctx, |ui| {
             egui::Frame::new().fill(Color32::from_black_alpha(215)).corner_radius(10).inner_margin(12).show(ui, |ui| {
                 ui.set_width(330.0);
                 match &finished {

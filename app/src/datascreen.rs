@@ -175,7 +175,7 @@ impl Data {
         let mut frame = egui.run(self.window.as_deref(), r.size(), |ctx| {
             let screen = ctx.content_rect();
             ctx.layer_painter(egui::LayerId::background()).rect_filled(screen, 0.0, egui::Color32::from_rgb(12, 13, 17));
-            egui::Area::new(egui::Id::new("game_data")).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            egui::Area::new(egui::Id::unique("game_data")).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
                 ui.set_width((screen.width() - 48.0).min(680.0));
                 jobs.heading(ui);
                 action = jobs.rows(ui, false);
@@ -218,6 +218,6 @@ fn choose(part: Part) -> Option<PathBuf> {
 
 /// The title screen's Game data button (top right); pressed.
 pub fn game_data_button(ctx: &egui::Context) -> bool {
-    let area = egui::Area::new(egui::Id::new("game_data_button")).anchor(egui::Align2::RIGHT_TOP, [-10.0, 10.0]);
+    let area = egui::Area::new(egui::Id::unique("game_data_button")).anchor(egui::Align2::RIGHT_TOP, [-10.0, 10.0]);
     area.show(ctx, |ui| ui.button("Game data").clicked()).inner
 }

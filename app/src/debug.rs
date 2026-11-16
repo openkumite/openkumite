@@ -450,7 +450,7 @@ impl Debug {
             egui::Color32::from_rgb(255, 90, 90)
         };
         let mono = |t: String| egui::RichText::new(t).monospace().size(11.0).color(egui::Color32::from_gray(225));
-        egui::Area::new(egui::Id::new("video_stats")).anchor(egui::Align2::LEFT_BOTTOM, [6.0, -6.0]).interactable(false).show(ctx, |ui| {
+        egui::Area::new(egui::Id::unique("video_stats")).anchor(egui::Align2::LEFT_BOTTOM, [6.0, -6.0]).interactable(false).show(ctx, |ui| {
             egui::Frame::new().fill(egui::Color32::from_black_alpha(170)).corner_radius(3.0).inner_margin(6.0).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
@@ -491,7 +491,7 @@ impl Debug {
             let at = shown.get().unwrap_or_else(Instant::now);
             shown.set(Some(at));
             if at.elapsed() < Duration::from_secs(4) {
-                egui::Area::new(egui::Id::new("message")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -12.0]).show(ctx, |ui| {
+                egui::Area::new(egui::Id::unique("message")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -12.0]).show(ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| ui.add(egui::Label::new(text.as_str()).wrap_mode(egui::TextWrapMode::Extend)));
                 });
             }
@@ -1059,11 +1059,11 @@ mod under_tests {
         let mut shapes = 0;
         let mut out = ctx.run_ui(egui::RawInput::default(), |root| {
             let ctx = root.ctx().clone();
-            let back = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("hud")));
+            let back = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("hud")));
             back.rect_filled(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(10.0, 10.0)), 0.0, egui::Color32::RED);
             back.rect_filled(egui::Rect::from_min_size(egui::pos2(20.0, 0.0), egui::vec2(10.0, 10.0)), 0.0, egui::Color32::RED);
             mark_under(&back);
-            let front = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("front")));
+            let front = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("front")));
             front.rect_filled(egui::Rect::from_min_size(egui::pos2(0.0, 20.0), egui::vec2(10.0, 10.0)), 0.0, egui::Color32::BLUE);
             shapes += 1;
         });
