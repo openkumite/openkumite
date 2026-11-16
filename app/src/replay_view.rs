@@ -101,7 +101,7 @@ impl View {
         }
         let at = at.min(self.total);
         let mut req = Vec::new();
-        egui::Area::new(egui::Id::new("replay_bar")).anchor(Align2::CENTER_BOTTOM, [0.0, -14.0]).show(ctx, |ui| {
+        egui::Area::new(egui::Id::unique("replay_bar")).anchor(Align2::CENTER_BOTTOM, [0.0, -14.0]).show(ctx, |ui| {
             egui::Frame::new().fill(Color32::from_black_alpha(200)).corner_radius(10).inner_margin(12).stroke(egui::Stroke::new(1.0, Color32::from_white_alpha(30))).show(ui, |ui| {
                 ui.set_width(620.0f32.min(ctx.content_rect().width() - 40.0));
                 ui.horizontal(|ui| {
@@ -210,7 +210,7 @@ impl View {
             for (i, (name, input)) in inputs.iter().enumerate() {
                 let (anchor, x, k) = if i < half { (Align2::LEFT_CENTER, 14.0, i) } else { (Align2::RIGHT_CENTER, -14.0, i - half) };
                 let y = (k as f32 - (half as f32 - 1.0) / 2.0) * 330.0 / half as f32;
-                egui::Area::new(egui::Id::new(("replay_inputs", i))).anchor(anchor, [x, y]).show(ctx, |ui| {
+                egui::Area::new(egui::Id::unique(("replay_inputs", i))).anchor(anchor, [x, y]).show(ctx, |ui| {
                     egui::Frame::new().fill(Color32::from_black_alpha(170)).corner_radius(8).inner_margin(8).show(ui, |ui| {
                         ui.label(RichText::new(name).strong().color(Color32::WHITE));
                         let text = crate::debug::input_history(input, 60);
@@ -322,7 +322,7 @@ impl Browser {
     pub fn ui(&mut self, ctx: &egui::Context) -> Option<BrowserAction> {
         let mut action = None;
         let now = replay::now();
-        egui::Area::new(egui::Id::new("replays")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        egui::Area::new(egui::Id::unique("replays")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
             egui::Frame::new().fill(Color32::from_rgba_unmultiplied(16, 16, 22, 240)).corner_radius(14).inner_margin(18).stroke(egui::Stroke::new(1.0, Color32::from_white_alpha(35))).show(ui, |ui| {
                 let width = 640.0f32.min(ctx.content_rect().width() - 40.0);
                 ui.set_width(width);

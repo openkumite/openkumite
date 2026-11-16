@@ -24,7 +24,8 @@ kumite_sim.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 kumite_game.workspace = true
-egui = "0.37"
+# (its own fonts for the debug panel and the Game data screen: no longer on by default)
+egui = { version = "0.37", features = ["default_fonts"] }
 egui-wgpu = "0.37"
 web-time = "1"
 zune-jpeg = "0.5"

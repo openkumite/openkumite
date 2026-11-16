@@ -421,7 +421,7 @@ impl TouchPad {
         let l = layout(w, h, dp, &self.settings);
         let held = self.held(w, h, dp);
         let a = self.settings.opacity;
-        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("touch_pad")));
+        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("touch_pad")));
         let at = |x: f32, y: f32| egui::pos2(x / dp, y / dp);
         let rgb = |c: u32| Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8).gamma_multiply(a);
         let fill = |on: bool| (if on { Color32::from_white_alpha(115) } else { Color32::from_black_alpha(90) }).gamma_multiply(a);
@@ -522,7 +522,7 @@ pub fn panel(ctx: &egui::Context, pad: &mut TouchPad, chosen_size: &mut Option<f
     let mut action = None;
     let chosen = pad.edit.as_ref().and_then(|e| e.chosen);
     let current = chosen.and_then(|c| pad.settings.placed(c)).map_or(1.0, |p| p.size);
-    egui::Area::new(egui::Id::new("touch_controls_panel")).anchor(egui::Align2::CENTER_TOP, [0.0, 50.0]).order(egui::Order::Foreground).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique("touch_controls_panel")).anchor(egui::Align2::CENTER_TOP, [0.0, 50.0]).order(egui::Order::Foreground).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_max_width(420.0);
             ui.vertical_centered(|ui| {
