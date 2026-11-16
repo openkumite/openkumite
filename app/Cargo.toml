@@ -67,6 +67,10 @@ gilrs = "0.11"
 # the system's file dialogs (replays exported and imported, videos saved); on Linux the desktop's portal, no GTK
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 
+[target.'cfg(windows)'.dependencies]
+# a window of its own, no console beside it; a terminal that started it gets its output (main.rs)
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
 # (not Windows: MSVC's cl does not take rav1e's .S assembly, and the release's Windows ARM64 build failed on it)
 [target.'cfg(all(target_arch = "aarch64", not(any(target_os = "android", target_os = "windows"))))'.dependencies]
 rav1e = { version = "0.8", default-features = false, features = ["threading", "asm"] }
