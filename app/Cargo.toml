@@ -24,8 +24,8 @@ kumite_sim.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 kumite_game.workspace = true
-egui = "0.36"
-egui-wgpu = "0.36"
+egui = "0.37"
+egui-wgpu = "0.37"
 web-time = "1"
 zune-jpeg = "0.5"
 zune-core = "0.5"
@@ -41,8 +41,8 @@ futures = "0.3"
 # (matchbox's signalling runs on tokio: its loop is polled inside async-compat's tokio context)
 async-compat = "0.2"
 env_logger.workspace = true
-egui-winit = "0.36"
-rodio = { version = "0.22", default-features = false, features = ["playback", "flac", "mp3", "wav"] }
+egui-winit = "0.37"
+rodio = { version = "0.23", default-features = false, features = ["playback", "flac", "mp3", "wav"] }
 # replays to video (video.rs): AV1 (rav1e), Opus (pure Rust), MP4 (muxide). rav1e's assembly on ARM only: x86's
 # needs nasm to build
 rav1e = { version = "0.8", default-features = false, features = ["threading"] }
@@ -63,7 +63,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 gilrs = "0.11"
 # the system's file dialogs (replays exported and imported, videos saved); on Linux the desktop's portal, no GTK
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 
 # (not Windows: MSVC's cl does not take rav1e's .S assembly, and the release's Windows ARM64 build failed on it)
 [target.'cfg(all(target_arch = "aarch64", not(any(target_os = "android", target_os = "windows"))))'.dependencies]
@@ -74,7 +74,7 @@ rav1e = { version = "0.8", default-features = false, features = ["threading", "a
 [target.'cfg(target_os = "android")'.dependencies]
 winit = { workspace = true, features = ["android-native-activity"] }
 android_logger = "0.15"
-jni = "0.21"
+jni = "0.22"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ggrs = { version = "=0.13.0", features = ["wasm-bindgen"] }
@@ -103,7 +103,7 @@ workspace = true
 
 [dev-dependencies]
 # (a peer on a bare websocket, in online.rs's tests: already in the tree under matchbox's)
-tungstenite = "0.28"
+tungstenite = "0.30"
 cargo-husky = { version = "1.5.0", default-features = false, features = ["user-hooks"] }
 
 [build-dependencies]
