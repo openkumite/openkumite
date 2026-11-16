@@ -6,9 +6,10 @@
 //! converted folder too) and removes the copy. A folder kumite_converter wrote is still taken as it is. The save is in
 //! the app's internal folder; the log in logcat (tag `openkumite`).
 
-use crate::dataui::{Jobs, RowAction};
+use crate::dataui::Jobs;
 use crate::debug::EguiLayer;
-use crate::packs::{Job, Part};
+use crate::gamedata::{Abilities, Command, Screen};
+use crate::packs::Part;
 use crate::App;
 use jni::objects::{JObject, JString};
 use jni::{jni_sig, jni_str, JValue};
@@ -242,13 +243,15 @@ impl ApplicationHandler for Root {
     }
 }
 
-/// The Game data screen: each game's state, the pickers, the copy's and the conversion's progress; back to the game.
+/// The Game data screen (crate::gamedata): each game's state, the pickers and the copy (the activity's), the job;
+/// back to the game.
 struct Data {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     egui: Option<EguiLayer>,
     suspended: bool,
     jobs: Jobs,
+    screen: Screen,
     /// The part whose files are being picked or copied.
     picking: Option<Part>,
     /// Start the game (the data converted, or the player back to it).
@@ -269,10 +272,13 @@ const PICK_ZIP: i32 = 1;
 const PICK_DISC: i32 = 2;
 const PICK_GAME: i32 = 3;
 
+/// What Android can do on the Game data screen: folders picked (the system's picker), a .zip imported.
+const CAN: Abilities = Abilities { quit: false, folders: true, copy: false, drop: false, import: Some("IMPORT A .ZIP") };
+
 impl Data {
     fn new(files: &Path, window: Option<Arc<Window>>, renderer: Option<Renderer>) -> Self {
         let egui = renderer.as_ref().map(|r| EguiLayer::new(r.device(), r.overlay_format(), window.as_deref()));
-        Self { window, renderer, egui, suspended: false, jobs: Jobs::new(&files.join("assets")), picking: None, play: false }
+        Self { window, renderer, egui, suspended: false, jobs: Jobs::new(&files.join("assets")), screen: Screen::new(), picking: None, play: false }
     }
 
     fn set_message(&mut self, m: String) {
@@ -316,6 +322,19 @@ impl Data {
         if let (Some(e), Some(w)) = (&mut self.egui, &self.window) {
             e.on_event(w, &event);
         }
+        // back on the games' list: to the game, else out (not while copying or converting); elsewhere the screen's
+        if let WindowEvent::KeyboardInput { event: KeyEvent { physical_key: BACK, state: ElementState::Pressed, repeat: false, .. }, .. } = &event {
+            let copying = import(android).is_some_and(|i| i.state == 1);
+            if self.screen.at_home() && !copying && !self.jobs.busy() && self.jobs.pending.is_none() && self.jobs.outcome.is_none() {
+                if self.jobs.state.playable() {
+                    self.play = true;
+                } else {
+                    event_loop.exit();
+                }
+                return;
+            }
+        }
+        self.screen.event(&event);
         match event {
             WindowEvent::Resized(s) => {
                 if let Some(r) = self.renderer.as_mut() {
@@ -323,16 +342,6 @@ impl Data {
                 }
             }
             WindowEvent::CloseRequested => event_loop.exit(),
-            // back: to the game, else out (not while copying or converting)
-            WindowEvent::KeyboardInput { event: KeyEvent { physical_key: BACK, state: ElementState::Pressed, repeat: false, .. }, .. } => {
-                if import(android).is_none_or(|i| i.state != 1) && !self.jobs.busy() {
-                    if self.jobs.state.playable() {
-                        self.play = true;
-                    } else {
-                        event_loop.exit();
-                    }
-                }
-            }
             WindowEvent::RedrawRequested if !self.suspended => self.redraw(android, files),
             _ => {}
         }
@@ -366,7 +375,7 @@ impl Data {
             return;
         }
         match crate::dataui::input_in(&scratch, part) {
-            Ok(input) => self.jobs.start(Job::Convert(part, input), Some(scratch)),
+            Ok(input) => self.jobs.convert(part, input, Some(scratch)),
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&scratch);
                 self.set_message(format!("{e:#}"));
@@ -390,57 +399,40 @@ impl Data {
             }
             _ => {}
         }
+        let mut status = self.jobs.status(CAN);
+        status.picking = self.picking;
+        status.copy = now.filter(|i| i.state == 1).map(|i| (i.done.max(0) as u64, i.total.max(0) as u64));
         let (Some(egui), Some(r)) = (self.egui.as_mut(), self.renderer.as_mut()) else { return };
-        let copying = now.filter(|i| i.state == 1);
-        let (mut action, mut zip, mut back) = (None, false, false);
-        let jobs = &mut self.jobs;
-        let mut frame = egui.run(self.window.as_deref(), r.size(), |ctx| {
-            let screen = ctx.content_rect();
-            ctx.layer_painter(egui::LayerId::background()).rect_filled(screen, 0.0, egui::Color32::from_rgb(12, 13, 17));
-            // (its id the window's size: turned, the area starts over, nothing of the other way round kept)
-            let key = (screen.width() as i32, screen.height() as i32);
-            let area = egui::Area::new(egui::Id::unique(("game_data", key))).anchor(egui::Align2::CENTER_TOP, [0.0, 8.0]);
-            area.show(ctx, |ui| {
-                egui::ScrollArea::vertical().max_height(screen.height() - 16.0).show(ui, |ui| {
-                    ui.set_width((screen.width() - 32.0).min(680.0));
-                    jobs.heading(ui);
-                    if let Some(i) = &copying {
-                        let gb = |b: i64| b as f64 / 1e9;
-                        let part = if i.total > 0 { i.done as f32 / i.total as f32 } else { 0.0 };
-                        ui.add(egui::ProgressBar::new(part).show_percentage());
-                        ui.label(format!("{:.1} GB of {:.1} GB copied", gb(i.done), gb(i.total)));
-                        return;
-                    }
-                    action = jobs.rows(ui, true);
-                    zip = !jobs.busy() && ui.button("Choose a .zip…").on_hover_text("a .zip of a disc image's folder, of the Half-Life folder, or of a converted game").clicked();
-                    ui.add_space(6.0);
-                    jobs.progress(ui);
-                    ui.add_space(12.0);
-                    back = ui.add_enabled(!jobs.busy() && jobs.state.playable(), egui::Button::new(egui::RichText::new("Play").size(18.0)).min_size([160.0, 48.0].into())).clicked();
-                })
-            });
-        });
+        let screen = &mut self.screen;
+        let mut commands = Vec::new();
+        let mut frame = egui.run(self.window.as_deref(), r.size(), |ctx| commands = screen.frame(ctx, &status));
         let cam = kumite_render::Camera::new(glam::Vec3::Z, glam::Vec3::ZERO, 1.0);
         if let Err(e) = r.render_with(&cam, &[], &[], &[], None, &[], Some(&mut frame)) {
             log::error!("render: {e:#}");
         }
-        let pick = match action {
-            Some(RowAction::Choose(part)) => {
-                self.picking = Some(part);
-                Some(if part == Part::Cs { PICK_GAME } else { PICK_DISC })
+        drop(frame);
+        for c in commands {
+            let pick = match self.jobs.command(c) {
+                Some(Command::Pick(part)) => {
+                    self.picking = Some(part);
+                    Some(if part == Part::Cs { PICK_GAME } else { PICK_DISC })
+                }
+                // (a .zip: for the first game not converted yet, or Tekken 3)
+                Some(Command::Import) => {
+                    self.picking = Some(Part::ALL.into_iter().find(|p| self.jobs.state.get(*p).is_none()).unwrap_or(Part::T3));
+                    Some(PICK_ZIP)
+                }
+                Some(Command::Play) if self.jobs.state.playable() && !self.jobs.busy() => {
+                    self.play = true;
+                    None
+                }
+                _ => None,
+            };
+            if let Some(what) = pick {
+                self.jobs.message = None;
+                java(android, |env, a| env.call_method(a, jni_str!("pick"), jni_sig!("(I)V"), &[JValue::Int(what)]).map(|_| ()));
             }
-            // (a .zip: for the first game not converted yet, or Tekken 3)
-            _ if zip => {
-                self.picking = Some(Part::ALL.into_iter().find(|p| self.jobs.state.get(*p).is_none()).unwrap_or(Part::T3));
-                Some(PICK_ZIP)
-            }
-            _ => None,
-        };
-        if let Some(what) = pick {
-            self.jobs.message = None;
-            java(android, |env, a| env.call_method(a, jni_str!("pick"), jni_sig!("(I)V"), &[JValue::Int(what)]).map(|_| ()));
         }
-        self.play |= back;
     }
 }
 

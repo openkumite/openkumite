@@ -1,17 +1,23 @@
-//! What the Game data screens share (the desktops' datascreen.rs, Android's android.rs): the parts' rows, the job on
-//! its thread and its progress. How a part's input is chosen is theirs (a system dialog; Android's picker and copy).
+//! The Game data screen's host natively (the desktops' datascreen.rs, Android's android.rs): the game data's state, the
+//! job on its thread (cancelled through its output: `packs::Cancellable`), the space check before a conversion, the
+//! job's outcome; as the screen ([`crate::gamedata`]) shows them. How a part's input is chosen is the platform's (a
+//! system dialog; Android's picker and copy).
 
+use crate::gamedata::progress::Kind;
+use crate::gamedata::{Abilities, JobView, Outcome, PartView, Pending, Status};
 use crate::packs::{self, Job, Part, State};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-/// A job running: its log, and the thread.
+/// A job running: its log, its cancel flag, and the thread.
 pub struct Running {
     pub job: Job,
     log: Arc<Mutex<Vec<String>>>,
+    cancel: Arc<AtomicBool>,
     thread: Option<JoinHandle<anyhow::Result<()>>>,
-    started: std::time::Instant,
+    started: web_time::Instant,
 }
 
 /// The game data's state and its job.
@@ -21,23 +27,51 @@ pub struct Jobs {
     /// Each part's size on disk (`Part::ALL`'s order).
     pub sizes: [u64; 3],
     pub running: Option<Running>,
-    /// What went wrong last, or what was done.
+    /// The last job's, until seen.
+    pub outcome: Option<Outcome>,
+    /// A conversion waiting for the player: the space looks short (and the folder its input was copied to).
+    pub pending: Option<(Pending, Job, Option<PathBuf>)>,
+    /// What went wrong outside a job (a pick), until the next command.
     pub message: Option<String>,
-    /// Remove asked for this part: waiting for its confirmation.
-    pub confirm: Option<Part>,
 }
 
-/// A row's button pressed.
-pub enum RowAction {
-    Choose(Part),
-    Remove(Part),
+/// A part's job kind.
+fn kind(job: &Job) -> Kind {
+    match job {
+        Job::Convert(p, _) => Kind::Convert(*p),
+        Job::Remove(_) => Kind::Remove,
+        Job::Install => Kind::Install,
+    }
+}
+
+/// About how much a part's conversion writes (its pack, and the extras it installs), with an archive's unpacked image.
+pub fn needed(part: Part, input: &Path) -> u64 {
+    let base: u64 = match part {
+        Part::T3 => 1_500_000_000,
+        Part::T2 => 1_800_000_000,
+        Part::Cs => 200_000_000,
+    };
+    let name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let unpacked = if ok_converter_common::disc::is_archive(&name) { 900_000_000 } else { 0 };
+    base + unpacked
+}
+
+/// The space free where `path` is (its nearest folder that exists).
+pub fn free_space(path: &Path) -> Option<u64> {
+    let mut p = path;
+    loop {
+        if p.exists() {
+            return fs4::available_space(p).ok();
+        }
+        p = p.parent()?;
+    }
 }
 
 impl Jobs {
     /// The game data in `root`; packs found uninstalled (their Tekken 3 pack changed, or a game before this one) are
     /// installed at once.
     pub fn new(root: &Path) -> Self {
-        let mut j = Self { root: root.to_path_buf(), state: State::default(), sizes: [0; 3], running: None, message: None, confirm: None };
+        let mut j = Self { root: root.to_path_buf(), state: State::default(), sizes: [0; 3], running: None, outcome: None, pending: None, message: None };
         j.refresh();
         if j.state.get(Part::T3).is_some() && !j.state.installed {
             j.start(Job::Install, None);
@@ -59,10 +93,45 @@ impl Jobs {
         });
     }
 
+    /// A part's input chosen: converted now, or first a question when the space looks short (`scratch`: a folder of the
+    /// input's copy, removed when the job ends or the player drops it).
+    pub fn convert(&mut self, part: Part, input: PathBuf, scratch: Option<PathBuf>) {
+        self.message = None;
+        let need = needed(part, &input);
+        let free = free_space(&self.root);
+        match free {
+            Some(free) if free < need => {
+                let image = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.pending = Some((Pending { part, image, needed: need, free }, Job::Convert(part, input), scratch));
+            }
+            _ => self.start(Job::Convert(part, input), scratch),
+        }
+    }
+
+    /// The pending conversion started (`go`) or dropped.
+    pub fn pending(&mut self, go: bool) {
+        if let Some((_, job, scratch)) = self.pending.take() {
+            if go {
+                self.start(job, scratch);
+            } else if let Some(s) = scratch {
+                let _ = std::fs::remove_dir_all(s);
+            }
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        if let Some(r) = &self.running {
+            r.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
     /// Starts `job` on a thread (`scratch`: a folder removed when it ends).
     pub fn start(&mut self, job: Job, scratch: Option<PathBuf>) {
+        self.message = None;
+        self.outcome = None;
         let log = Arc::new(Mutex::new(Vec::new()));
-        let (root, job2, log2, scratch2) = (self.root.clone(), job.clone(), log.clone(), scratch.clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (root, job2, log2, cancel2, scratch2) = (self.root.clone(), job.clone(), log.clone(), cancel.clone(), scratch.clone());
         let thread = std::thread::Builder::new().name("game data".into()).spawn(move || {
             let say = move |line: &str| {
                 log::info!("{line}");
@@ -70,27 +139,24 @@ impl Jobs {
                     l.push(line.to_string());
                 }
             };
-            let r = packs::run(&root, &job2, &say);
+            let r = packs::run(&root, &job2, &say, &cancel2);
             if let Some(s) = scratch2 {
                 let _ = std::fs::remove_dir_all(s);
             }
             r
         });
         match thread {
-            Ok(t) => {
-                self.message = None;
-                self.running = Some(Running { job, log, thread: Some(t), started: std::time::Instant::now() });
-            }
+            Ok(t) => self.running = Some(Running { job, log, cancel, thread: Some(t), started: web_time::Instant::now() }),
             Err(e) => {
                 if let Some(s) = scratch {
                     let _ = std::fs::remove_dir_all(s);
                 }
-                self.message = Some(format!("could not start: {e}"));
+                self.message = Some(format!("The job could not start: {e}"));
             }
         }
     }
 
-    /// A job finished: its result said, the state again. True when one did.
+    /// A job finished: its outcome kept, the state again. True when one did.
     pub fn follow(&mut self) -> bool {
         let Some(r) = self.running.as_mut() else { return false };
         if !r.thread.as_ref().is_some_and(|t| t.is_finished()) {
@@ -98,117 +164,84 @@ impl Jobs {
         }
         let result = r.thread.take().map(|t| t.join());
         let job = r.job.clone();
+        let log = r.log.lock().map(|l| l.clone()).unwrap_or_default();
         self.running = None;
         self.refresh();
-        self.message = Some(match result {
-            Some(Ok(Ok(()))) => match job {
-                Job::Convert(p, _) => format!("{} converted.", p.name()),
-                Job::Remove(p) => format!("{} removed.", p.name()),
-                Job::Install => "The game data is ready.".into(),
+        let note = |p: Part| self.state.get(p).and_then(crate::gamedata::missing_note);
+        let (ok, cancelled, message) = match result {
+            Some(Ok(Ok(()))) => match &job {
+                // (removing and installing say nothing when they work: the screen shows the state)
+                Job::Remove(_) | Job::Install => return true,
+                Job::Convert(p, _) => {
+                    let done = match p {
+                        Part::T3 => "Tekken 3 is converted: the game can start.",
+                        Part::T2 => "Tekken 2 is converted: its fighters are in the roster.",
+                        Part::Cs => "Counter-Strike is converted: its levels are arenas now.",
+                    };
+                    (true, false, note(*p).map_or(done.to_string(), |n| format!("{done} {n}")))
+                }
             },
+            Some(Ok(Err(e))) if packs::is_cancelled(&e) => (
+                false,
+                true,
+                match &job {
+                    Job::Convert(p, _) => format!("{} was not converted. Convert it again whenever you like.", p.name()),
+                    _ => "Stopped. The game data is installed again the next time OpenKumite starts.".into(),
+                },
+            ),
             Some(Ok(Err(e))) => {
                 log::error!("{e:#}");
-                format!("{e:#}")
+                (false, false, format!("{e:#}"))
             }
-            _ => "the conversion stopped unexpectedly".into(),
-        });
+            _ => (false, false, "The conversion stopped unexpectedly.".into()),
+        };
+        self.outcome = Some(Outcome { kind: kind(&job), ok, cancelled, message, log });
         true
     }
 
-    /// Every part's row; the button pressed (Remove after its confirmation).
-    pub fn rows(&mut self, ui: &mut egui::Ui, pick_folder: bool) -> Option<RowAction> {
-        let mut out = None;
-        let busy = self.busy();
-        for (k, part) in Part::ALL.into_iter().enumerate() {
-            let (what, needs) = match part {
-                Part::T3 => {
-                    ("Tekken 3 (PlayStation, USA, SLUS-00402): the game. Needed.", "its disc image (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm, .pbp, or a .zip, .7z, .tar, .gz, .xz or .zst of it)")
-                }
-                Part::T2 => (
-                    "Tekken 2 (PlayStation, USA v1.1): its fighters join the roster. Optional.",
-                    "its disc image (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm, .pbp, or a .zip, .7z, .tar, .gz, .xz or .zst of it)",
-                ),
-                Part::Cs => ("Counter-Strike (Half-Life): its levels as arenas, two more Tekken Force stages. Optional.", "the Half-Life folder (with cstrike/ and valve/)"),
-            };
-            let done = self.state.get(part).is_some();
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(egui::RichText::new(part.name()).strong().size(16.0));
-                ui.label(what);
-                if done {
-                    ui.label(egui::RichText::new(format!("Converted: {:.1} GB", self.sizes[k] as f64 / 1e9)).color(egui::Color32::from_rgb(140, 220, 150)));
-                    if let Some(note) = self.state.get(part).and_then(kumite_packs::missing_note) {
-                        ui.label(egui::RichText::new(note).color(egui::Color32::from_rgb(255, 210, 140)));
-                    }
-                } else {
-                    let how = if pick_folder && part != Part::Cs { format!("the folder with {needs}") } else { needs.to_string() };
-                    ui.label(egui::RichText::new(format!("Not converted. Choose {how}.")).weak());
-                }
-                ui.horizontal(|ui| {
-                    if self.confirm == Some(part) {
-                        ui.label("Remove it?");
-                        if ui.button("Remove").clicked() {
-                            out = Some(RowAction::Remove(part));
-                            self.confirm = None;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.confirm = None;
-                        }
-                        return;
-                    }
-                    let pick = match (done, part, pick_folder) {
-                        (true, ..) => "Convert again…",
-                        (_, Part::Cs, _) | (_, _, true) => "Choose folder…",
-                        _ => "Choose disc image…",
-                    };
-                    if ui.add_enabled(!busy, egui::Button::new(pick).min_size([150.0, 32.0].into())).clicked() {
-                        out = Some(RowAction::Choose(part));
-                    }
-                    if done && ui.add_enabled(!busy, egui::Button::new("Remove").min_size([90.0, 32.0].into())).clicked() {
-                        self.confirm = Some(part);
-                    }
-                });
-            });
-            ui.add_space(8.0);
-        }
-        if let Some(RowAction::Remove(p)) = &out {
-            self.start(Job::Remove(*p), None);
-            out = None;
-        }
-        out
-    }
-
-    /// The job's progress (its last lines), else the last message.
-    pub fn progress(&self, ui: &mut egui::Ui) {
-        if let Some(run) = &self.running {
-            let lines = run.log.lock().map(|l| l.clone()).unwrap_or_default();
-            let what = match &run.job {
-                Job::Convert(p, _) => format!("Converting {}", p.name()),
-                Job::Remove(p) => format!("Removing {}", p.name()),
-                Job::Install => "Installing the packs".into(),
-            };
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(format!("{what}… {} s", run.started.elapsed().as_secs()));
-            });
-            for l in lines.iter().rev().take(4).rev() {
-                ui.label(egui::RichText::new(l).small().monospace().weak());
-            }
-        } else if let Some(m) = &self.message {
-            ui.colored_label(egui::Color32::from_rgb(255, 190, 140), m);
-        }
-    }
-
-    /// The heading and the words above the rows.
-    pub fn heading(&self, ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            ui.heading(egui::RichText::new("OpenKumite").size(30.0).strong());
-            ui.label("Game data");
+    /// The state as the screen shows it.
+    pub fn status(&self, can: Abilities) -> Status {
+        let parts = Part::ALL.map(|p| {
+            let m = self.state.get(p);
+            let k = Part::ALL.iter().position(|q| *q == p).unwrap_or(0);
+            PartView { converted: m.is_some(), size: self.sizes[k], note: m.and_then(crate::gamedata::missing_note) }
         });
-        ui.add_space(10.0);
-        ui.label("OpenKumite plays the games you own. It converts them once, here on this device, and keeps the result; nothing is uploaded.");
-        ui.label(egui::RichText::new(format!("Kept in {}", self.root.display())).small().weak());
-        ui.add_space(12.0);
+        let job = self.running.as_ref().map(|r| JobView {
+            kind: kind(&r.job),
+            seconds: r.started.elapsed().as_secs_f64(),
+            log: r.log.lock().map(|l| l.clone()).unwrap_or_default(),
+            cancellable: !matches!(r.job, Job::Remove(_)),
+            cancelling: r.cancel.load(Ordering::Relaxed),
+        });
+        Status {
+            parts,
+            playable: self.state.playable(),
+            loading: false,
+            job,
+            outcome: self.outcome.clone(),
+            pending: self.pending.as_ref().map(|p| p.0.clone()),
+            picking: None,
+            copy: None,
+            dropped: false,
+            hovering: false,
+            message: self.message.clone(),
+            can,
+        }
+    }
+
+    /// The screen's commands every platform does alike; the others back (picking, playing, quitting: the
+    /// platform's).
+    pub fn command(&mut self, c: crate::gamedata::Command) -> Option<crate::gamedata::Command> {
+        use crate::gamedata::Command as C;
+        match c {
+            C::Remove(p) if !self.busy() => self.start(Job::Remove(p), None),
+            C::Cancel => self.cancel(),
+            C::ConvertAnyway => self.pending(true),
+            C::DropPending => self.pending(false),
+            C::Seen => self.outcome = None,
+            other => return Some(other),
+        }
+        None
     }
 }
 
@@ -238,6 +271,28 @@ pub fn input_in(dir: &Path, part: Part) -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A conversion cancelled stops within moments and says so (`OK_T3_BIN=<a disc image> cargo test --release -p
+    /// openkumite -- --ignored a_conversion_cancelled`).
+    #[test]
+    #[ignore]
+    fn a_conversion_cancelled_stops_and_says_so() {
+        let root = std::env::temp_dir().join(format!("ok_cancel_{}", std::process::id()));
+        let mut jobs = Jobs::new(&root);
+        jobs.start(Job::Convert(Part::T3, std::env::var("OK_T3_BIN").unwrap().into()), None);
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        assert!(jobs.busy());
+        jobs.cancel();
+        let asked = std::time::Instant::now();
+        while !jobs.follow() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let o = jobs.outcome.clone().unwrap();
+        println!("stopped {:.2} s after cancel: {}", asked.elapsed().as_secs_f64(), o.message);
+        assert!(o.cancelled && !o.ok && asked.elapsed().as_secs() < 10);
+        assert!(!jobs.state.playable());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn the_disc_image_in_a_copied_folder() {

@@ -15,11 +15,13 @@ The patch replaces its TLS backend with rustls.
 A patched copy of [winit](https://github.com/rust-windowing/winit) by the winit contributors, licensed Apache-2.0
 ([its text](vendor/winit/LICENSE)). The patch leaves a gamepad's stick and hat motion on Android to the system.
 
-## Big Shoulders Display (`web/fonts/`)
+## Big Shoulders Display (`web/fonts/`, `app/fonts/`)
 
-The browser version's display typeface, [Big Shoulders Display](https://github.com/xotypeco/big_shoulders) by
-Patric King (XO Type Co), licensed under the SIL Open Font License 1.1 ([its text](web/fonts/OFL.txt)). The file is
-the variable font's Latin subset, as packaged by [Fontsource](https://fontsource.org).
+The Game data screen's typeface (its ExtraBold and Medium weights, built into the program: `app/fonts/`), and the
+browser page's, [Big Shoulders Display](https://github.com/xotypeco/big_shoulders) by
+Patric King (XO Type Co), licensed under the SIL Open Font License 1.1 ([its text](web/fonts/OFL.txt), also in `app/fonts/`). The web file is
+the variable font's Latin subset, as packaged by [Fontsource](https://fontsource.org); `app/fonts/` holds two static
+instances of it (weights 800 and 500, made with fontTools' instancer).
 
 ## bzip2 (through libbz2-rs-sys)
 

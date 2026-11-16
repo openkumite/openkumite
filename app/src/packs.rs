@@ -15,12 +15,13 @@
 //! installed again. The fingerprint covers characters/, stages/ and gamedata/ only, so packs/ and extras/ are no
 //! part of the Tekken 3 pack's own.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 pub use kumite_packs::Part;
 use ok_converter_common::disc::Disc;
 use ok_converter_common::io::{Ctx, DiscFile, StdFs, Vfs};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const PACKS: &str = "packs";
 pub const EXTRAS: &str = "extras";
@@ -100,13 +101,68 @@ pub enum Job {
     Install,
 }
 
-/// Runs `job` on the game data in `root`, its progress in `log` (one line at a time).
-pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
+/// The message of a job stopped by its cancel flag.
+pub const CANCELLED: &str = "cancelled";
+
+/// A `Vfs` that stops working once `cancel` is set: the converter writing into it stops at its next read or write
+/// (cancelling a job, the Game data screen's CANCEL).
+pub struct Cancellable<'a> {
+    pub inner: &'a dyn Vfs,
+    pub cancel: &'a AtomicBool,
+}
+
+impl Cancellable<'_> {
+    fn go(&self) -> Result<()> {
+        if self.cancel.load(Ordering::Relaxed) {
+            bail!(CANCELLED);
+        }
+        Ok(())
+    }
+}
+
+impl Vfs for Cancellable<'_> {
+    fn read(&self, path: &str) -> Result<Vec<u8>> {
+        self.go()?;
+        self.inner.read(path)
+    }
+    fn write(&self, path: &str, data: &[u8]) -> Result<()> {
+        self.go()?;
+        self.inner.write(path, data)
+    }
+    fn exists(&self, path: &str) -> bool {
+        self.inner.exists(path)
+    }
+    fn list(&self, dir: &str) -> Result<Vec<ok_converter_common::io::Entry>> {
+        self.go()?;
+        self.inner.list(dir)
+    }
+    fn remove_all(&self, path: &str) -> Result<()> {
+        self.go()?;
+        self.inner.remove_all(path)
+    }
+    fn done(&self) -> Option<Vec<String>> {
+        self.inner.done()
+    }
+    fn checkpoint(&self, done: &[String]) -> Result<()> {
+        self.inner.checkpoint(done)
+    }
+}
+
+/// Whether an error is a job's cancelling.
+pub fn is_cancelled(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.to_string() == CANCELLED)
+}
+
+/// Runs `job` on the game data in `root`, its progress in `log` (one line at a time); `cancel` set stops it at its
+/// next read or write ([`CANCELLED`]): Tekken 3 goes on from its last finished step next time, a pack cut off is
+/// removed.
+pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync), cancel: &AtomicBool) -> Result<()> {
     std::fs::create_dir_all(root).with_context(|| format!("cannot make {}", root.display()))?;
     let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
     match job {
         Job::Convert(part, from) => {
-            let out = StdFs(dir(*part, root));
+            let fs = StdFs(dir(*part, root));
+            let out = Cancellable { inner: &fs, cancel };
             let ctx = Ctx { out: &out, log, jobs };
             match part {
                 Part::T3 => {
@@ -137,15 +193,16 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
         Job::Remove(part) => remove(&dir(*part, root))?,
         Job::Install => {}
     }
-    install(root, log)
+    install(root, log, cancel)
 }
 
 /// Installs the packs there are into the extras (made anew), with the whole's manifest; nothing when there is no
-/// Tekken 3 pack or no other.
-pub fn install(root: &Path, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
+/// Tekken 3 pack or no other. Cancelled, the extras are left as they are: installed again next time.
+pub fn install(root: &Path, log: &(dyn Fn(&str) + Sync), cancel: &AtomicBool) -> Result<()> {
     let packs: Vec<(Part, StdFs)> = Part::PACKS.into_iter().map(|p| (p, StdFs(dir(p, root)))).collect();
     let packs: Vec<(Part, &dyn Vfs)> = packs.iter().map(|(p, fs)| (*p, fs as &dyn Vfs)).collect();
-    kumite_packs::install(&StdFs(root.to_path_buf()), &packs, &StdFs(root.join(EXTRAS)), log)
+    let extras = StdFs(root.join(EXTRAS));
+    kumite_packs::install(&StdFs(root.to_path_buf()), &packs, &Cancellable { inner: &extras, cancel }, log)
 }
 
 fn remove(path: &Path) -> Result<()> {
@@ -172,7 +229,7 @@ mod tests {
         let s = State::of(&dir);
         assert!(s.get(Part::T3).is_none() && !s.has_packs() && s.installed && !s.playable());
         assert!(layers(&dir, &s).is_empty());
-        install(&dir, &|_| {}).unwrap();
+        install(&dir, &|_| {}, &AtomicBool::new(false)).unwrap();
         assert!(!dir.join(EXTRAS).exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -188,7 +245,7 @@ mod tests {
         let root = PathBuf::from(var("OK_PACKS_ROOT"));
         let log = |l: &str| println!("{l}");
         for (part, from) in [(Part::T3, "OK_T3_BIN"), (Part::T2, "OK_T2_BIN"), (Part::Cs, "OK_CS_DIR")] {
-            run(&root, &Job::Convert(part, var(from).into()), &log).unwrap();
+            run(&root, &Job::Convert(part, var(from).into()), &log, &AtomicBool::new(false)).unwrap();
         }
         let state = activate(&root);
         assert!(state.playable() && state.get(Part::T2).is_some() && state.get(Part::Cs).is_some());
@@ -200,8 +257,8 @@ mod tests {
         assert!(music.starts_with(super::dir(Part::T2, &root)), "{}", music.display());
         assert_eq!(kumite_fs::resolve(&root.join("characters/model_000.glb")), root.join("characters/model_000.glb"));
         // removed again: Tekken 3 alone, no layers
-        run(&root, &Job::Remove(Part::T2), &log).unwrap();
-        run(&root, &Job::Remove(Part::Cs), &log).unwrap();
+        run(&root, &Job::Remove(Part::T2), &log, &AtomicBool::new(false)).unwrap();
+        run(&root, &Job::Remove(Part::Cs), &log, &AtomicBool::new(false)).unwrap();
         let state = activate(&root);
         assert!(state.playable() && !state.has_packs() && !root.join(EXTRAS).exists());
         assert_eq!(kumite_assets::Assets::new(&root).unwrap().fingerprint(), "faec270495bc58ba434d29b74cabef14");
