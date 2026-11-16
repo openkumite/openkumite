@@ -1,0 +1,26 @@
+# Dependabot version updates: one grouped pull request a week per ecosystem; CI checks each one.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo:
+        patterns: ["*"]
+    ignore:
+      # pinned on purpose: kumite_net reads ggrs's messages' layout by hand (crates/kumite_net/Cargo.toml)
+      - dependency-name: ggrs
+      # patched in vendor/ (Cargo.toml's [patch.crates-io]): updated by hand with their patches
+      - dependency-name: matchbox_socket
+      - dependency-name: winit
+      # the version of wasm-bindgen-cli web/build.sh installs: updated together
+      - dependency-name: wasm-bindgen
+  - package-ecosystem: github-actions
+    directories: ["/", "/.github/actions/*"]
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

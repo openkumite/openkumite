@@ -18,7 +18,11 @@
         pname = "openkumite";
         version = (lib.importTOML ./Cargo.toml).workspace.package.version;
         src = ./.;
-        cargoLock.lockFile = ./Cargo.lock;
+        # (the converters are git dependencies, openkumite/ok_*: fetched at the commits Cargo.lock names)
+        cargoLock = {
+          lockFile = ./Cargo.lock;
+          allowBuiltinFetchGit = true;
+        };
         cargoBuildFlags = [ "-p" "openkumite" "-p" "serve" ];
         nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
         # what the binary links: ALSA (sound), libudev (gamepads)
