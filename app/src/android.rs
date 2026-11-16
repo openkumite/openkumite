@@ -1,11 +1,14 @@
 //! Android (packaging/android): the game in its activity (OpenKumiteActivity.java, a NativeActivity), and the Game
-//! data screen before it. The converted game data is the player's own, never in the app: they choose the folder
-//! kumite_converter wrote (or a .zip of it) with the system's picker, from Downloads, an SD card or a USB drive; the
-//! activity copies it into the app's files folder (`/sdcard/Android/data/io.github.openkumite/files/assets`, where
-//! `adb push` puts it too), it is checked as the desktop checks it, and the game starts. The save is in the app's
-//! internal folder; the log in logcat (tag `openkumite`).
+//! data screen before it. The game data is the player's own, never in the app: for each game they choose the folder
+//! that holds its disc image (or the Half-Life folder, or a .zip of either) with the system's picker, from Downloads,
+//! an SD card or a USB drive; the activity copies what is needed into the app's files folder (assets.part), the game
+//! converts it there (packs.rs: into `/sdcard/Android/data/io.github.openkumite/files/assets`, where `adb push` puts a
+//! converted folder too) and removes the copy. A folder kumite_converter wrote is still taken as it is. The save is in
+//! the app's internal folder; the log in logcat (tag `openkumite`).
 
+use crate::dataui::{Jobs, RowAction};
 use crate::debug::EguiLayer;
+use crate::packs::{Job, Part};
 use crate::App;
 use jni::objects::{JObject, JString, JValue};
 use kumite_render::Renderer;
@@ -36,8 +39,9 @@ fn android_main(android: AndroidApp) {
     let files = android.external_data_path().unwrap_or_default();
     // (a copy cut off when the process ended: nothing copies it now)
     let _ = std::fs::remove_dir_all(files.join("assets.part"));
+    let _ = std::fs::remove_dir_all(files.join("import.part"));
     let mut root = Root { now: Now::Data(Box::new(Data::new(&files, None, None))), android: android.clone(), files };
-    if kumite_assets::Assets::new(root.files.join("assets")).is_ok() {
+    if crate::packs::activate(&root.files.join("assets")).playable() {
         match game(&root.files) {
             Ok(app) => root.now = Now::Game(app),
             Err(e) => root.data_message(format!("{e:#}")),
@@ -57,6 +61,7 @@ fn android_main(android: AndroidApp) {
 
 /// The game on the assets kept in the app's files folder.
 fn game(files: &Path) -> anyhow::Result<Box<App>> {
+    crate::packs::activate(&files.join("assets"));
     let app = crate::new_app(files.join("assets"), vec!["openkumite".into()])?;
     app.map(Box::new).ok_or_else(|| anyhow::anyhow!("the game did not start"))
 }
@@ -154,7 +159,7 @@ enum Now {
 impl Root {
     fn data_message(&mut self, m: String) {
         if let Now::Data(d) = &mut self.now {
-            d.message = Some(m);
+            d.set_message(m);
         }
     }
 
@@ -178,7 +183,7 @@ impl Root {
                     }
                     Err(e) => {
                         log::error!("{e:#}");
-                        d.message = Some(format!("{e:#}"));
+                        d.set_message(format!("{e:#}"));
                     }
                 }
             }
@@ -236,20 +241,16 @@ impl ApplicationHandler for Root {
     }
 }
 
-/// The Game data screen: what is needed, the pickers, the copy's progress; with game data kept, its size, Remove and
-/// back to the game.
+/// The Game data screen: each game's state, the pickers, the copy's and the conversion's progress; back to the game.
 struct Data {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     egui: Option<EguiLayer>,
     suspended: bool,
-    /// What went wrong last (a folder without a conversion, no room, ...).
-    message: Option<String>,
-    /// The game data kept now, its bytes (None: none).
-    kept: Option<u64>,
-    /// Remove asked: waiting for its confirmation.
-    confirm: bool,
-    /// Start the game (the data copied and checked, or the player back to it).
+    jobs: Jobs,
+    /// The part whose files are being picked or copied.
+    picking: Option<Part>,
+    /// Start the game (the data converted, or the player back to it).
     play: bool,
 }
 
@@ -262,12 +263,19 @@ struct Import {
     error: Option<String>,
 }
 
+/// What the activity's picker picks (OpenKumiteActivity.java's).
+const PICK_ZIP: i32 = 1;
+const PICK_DISC: i32 = 2;
+const PICK_GAME: i32 = 3;
+
 impl Data {
     fn new(files: &Path, window: Option<Arc<Window>>, renderer: Option<Renderer>) -> Self {
-        let assets = files.join("assets");
-        let kept = kumite_assets::Assets::new(&assets).is_ok().then(|| size_of(&assets));
         let egui = renderer.as_ref().map(|r| EguiLayer::new(r.device(), r.overlay_format(), window.as_deref()));
-        Self { window, renderer, egui, suspended: false, message: None, kept, confirm: false, play: false }
+        Self { window, renderer, egui, suspended: false, jobs: Jobs::new(&files.join("assets")), picking: None, play: false }
+    }
+
+    fn set_message(&mut self, m: String) {
+        self.jobs.message = Some(m);
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -314,10 +322,10 @@ impl Data {
                 }
             }
             WindowEvent::CloseRequested => event_loop.exit(),
-            // back: to the game kept, else out (not while copying)
+            // back: to the game, else out (not while copying or converting)
             WindowEvent::KeyboardInput { event: KeyEvent { physical_key: BACK, state: ElementState::Pressed, repeat: false, .. }, .. } => {
-                if import(android).is_none_or(|i| i.state != 1) {
-                    if self.kept.is_some() {
+                if import(android).is_none_or(|i| i.state != 1) && !self.jobs.busy() {
+                    if self.jobs.state.playable() {
                         self.play = true;
                     } else {
                         event_loop.exit();
@@ -329,113 +337,123 @@ impl Data {
         }
     }
 
-    /// The copy followed (done: checked and kept, the game next), and the screen drawn.
+    /// A copy finished: a folder kumite_converter wrote kept as it is; else its files converted (the copy removed).
+    fn copied(&mut self, files: &Path) {
+        let part = self.picking.take();
+        let copy = files.join("assets.part");
+        if crate::assetdir::conversion_in(&copy).is_ok() {
+            match keep(files) {
+                Ok(()) => {
+                    log::info!("a converted game copied and checked");
+                    self.jobs = Jobs::new(&files.join("assets"));
+                    self.set_message("The converted game is kept.".into());
+                }
+                Err(e) => self.set_message(format!("{e:#}")),
+            }
+            return;
+        }
+        let Some(part) = part else {
+            let _ = std::fs::remove_dir_all(&copy);
+            return;
+        };
+        // (the copy renamed: a new pick does not write over it while it converts)
+        let scratch = files.join("import.part");
+        let _ = std::fs::remove_dir_all(&scratch);
+        if let Err(e) = std::fs::rename(&copy, &scratch) {
+            let _ = std::fs::remove_dir_all(&copy);
+            self.set_message(format!("{e}"));
+            return;
+        }
+        match crate::dataui::input_in(&scratch, part) {
+            Ok(input) => self.jobs.start(Job::Convert(part, input), Some(scratch)),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&scratch);
+                self.set_message(format!("{e:#}"));
+            }
+        }
+    }
+
+    /// The copy and the job followed, and the screen drawn.
     fn redraw(&mut self, android: &AndroidApp, files: &Path) {
+        self.jobs.follow();
         let now = import(android);
         match &now {
             Some(i) if i.state == 2 => {
                 java(android, |env, a| env.call_method(a, "importSeen", "()V", &[]).map(|_| ()));
-                match keep(files) {
-                    Ok(()) => {
-                        log::info!("game data copied and checked");
-                        self.play = true;
-                    }
-                    Err(e) => self.message = Some(format!("{e:#}")),
-                }
+                self.copied(files);
             }
             Some(i) if i.state == 3 => {
                 java(android, |env, a| env.call_method(a, "importSeen", "()V", &[]).map(|_| ()));
-                self.message = i.error.clone();
+                self.picking = None;
+                self.jobs.message = i.error.clone();
             }
             _ => {}
         }
         let (Some(egui), Some(r)) = (self.egui.as_mut(), self.renderer.as_mut()) else { return };
         let copying = now.filter(|i| i.state == 1);
-        let mut pick = None;
-        let mut remove = false;
-        let mut back = false;
+        let (mut action, mut zip, mut back) = (None, false, false);
+        let jobs = &mut self.jobs;
         let mut frame = egui.run(self.window.as_deref(), r.size(), |ctx| {
             let screen = ctx.content_rect();
             ctx.layer_painter(egui::LayerId::background()).rect_filled(screen, 0.0, egui::Color32::from_rgb(12, 13, 17));
-            egui::Area::new(egui::Id::new("game_data")).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-                ui.set_width((screen.width() - 48.0).min(620.0));
-                ui.vertical_centered(|ui| {
-                    ui.add_space(8.0);
-                    ui.heading(egui::RichText::new("OpenKumite").size(30.0).strong());
-                    ui.add_space(10.0);
-                    ui.label(
-                        "Play the game you own. Choose the folder kumite_converter made from your disc (the one with \
-                         manifest.json): the game copies it once and keeps it.",
-                    );
-                    ui.add_space(6.0);
-                    ui.label("1. Convert your disc with kumite_converter.\n2. Put the folder it wrote on this device: Downloads, an SD card or a USB drive (or a .zip of it).\n3. Choose it here, then play.");
-                    ui.add_space(14.0);
-                    let wide = |ui: &mut egui::Ui, text: &str| ui.add_sized([280.0, 44.0], egui::Button::new(text)).clicked();
+            // (its id the window's size: turned, the area starts over, nothing of the other way round kept)
+            let key = (screen.width() as i32, screen.height() as i32);
+            let area = egui::Area::new(egui::Id::new(("game_data", key))).anchor(egui::Align2::CENTER_TOP, [0.0, 8.0]);
+            area.show(ctx, |ui| {
+                egui::ScrollArea::vertical().max_height(screen.height() - 16.0).show(ui, |ui| {
+                    ui.set_width((screen.width() - 32.0).min(680.0));
+                    jobs.heading(ui);
                     if let Some(i) = &copying {
                         let gb = |b: i64| b as f64 / 1e9;
                         let part = if i.total > 0 { i.done as f32 / i.total as f32 } else { 0.0 };
-                        ui.add(egui::ProgressBar::new(part).desired_width(420.0).show_percentage());
+                        ui.add(egui::ProgressBar::new(part).show_percentage());
                         ui.label(format!("{:.1} GB of {:.1} GB copied", gb(i.done), gb(i.total)));
-                    } else if self.confirm {
-                        ui.label("Remove the game data kept in this app? You can choose the folder again later.");
-                        if wide(ui, "Remove game data") {
-                            remove = true;
-                        }
-                        if wide(ui, "Cancel") {
-                            self.confirm = false;
-                        }
-                    } else {
-                        let again = if self.kept.is_some() { "Replace with another " } else { "Choose " };
-                        if wide(ui, &format!("{again}folder")) {
-                            pick = Some(false);
-                        }
-                        if wide(ui, &format!("{again}.zip")) {
-                            pick = Some(true);
-                        }
-                        if let Some(b) = self.kept {
-                            ui.add_space(10.0);
-                            ui.label(format!("{:.1} GB of game data kept in this app.", b as f64 / 1e9));
-                            if wide(ui, "Back to the game") {
-                                back = true;
-                            }
-                            if wide(ui, "Remove") {
-                                self.confirm = true;
-                            }
-                        }
+                        return;
                     }
-                    if let Some(m) = &self.message {
-                        ui.add_space(12.0);
-                        ui.colored_label(egui::Color32::from_rgb(255, 140, 120), m);
-                    }
-                });
+                    action = jobs.rows(ui, true);
+                    zip = !jobs.busy() && ui.button("Choose a .zip…").on_hover_text("a .zip of a disc image's folder, of the Half-Life folder, or of a converted game").clicked();
+                    ui.add_space(6.0);
+                    jobs.progress(ui);
+                    ui.add_space(12.0);
+                    back = ui.add_enabled(!jobs.busy() && jobs.state.playable(), egui::Button::new(egui::RichText::new("Play").size(18.0)).min_size([160.0, 48.0].into())).clicked();
+                })
             });
         });
         let cam = kumite_render::Camera::new(glam::Vec3::Z, glam::Vec3::ZERO, 1.0);
         if let Err(e) = r.render_with(&cam, &[], &[], &[], None, &[], Some(&mut frame)) {
             log::error!("render: {e:#}");
         }
-        if let Some(zip) = pick {
-            self.message = None;
-            java(android, |env, a| env.call_method(a, "pick", "(Z)V", &[JValue::Bool(zip.into())]).map(|_| ()));
-        }
-        if remove {
-            self.confirm = false;
-            match std::fs::remove_dir_all(files.join("assets")) {
-                Ok(()) => self.kept = None,
-                Err(e) => self.message = Some(format!("The game data could not be removed: {e}")),
+        let pick = match action {
+            Some(RowAction::Choose(part)) => {
+                self.picking = Some(part);
+                Some(if part == Part::Cs { PICK_GAME } else { PICK_DISC })
             }
+            // (a .zip: for the first game not converted yet, or Tekken 3)
+            _ if zip => {
+                self.picking = Some(Part::ALL.into_iter().find(|p| self.jobs.state.get(*p).is_none()).unwrap_or(Part::T3));
+                Some(PICK_ZIP)
+            }
+            _ => None,
+        };
+        if let Some(what) = pick {
+            self.jobs.message = None;
+            java(android, |env, a| env.call_method(a, "pick", "(I)V", &[JValue::Int(what)]).map(|_| ()));
         }
         self.play |= back;
     }
 }
 
-/// The copy in assets.part checked (its manifest.json and format, as the desktop's) and made the assets kept, over
-/// the ones before; else removed, and why.
+/// The copy in assets.part, a converted game (its manifest.json and format checked, as the desktop's), made the Tekken
+/// 3 pack kept, over the one before (its packs kept: installed again over it); else removed, and why.
 fn keep(files: &Path) -> anyhow::Result<()> {
     let part = files.join("assets.part");
     let kept = (|| {
         let found = crate::assetdir::conversion_in(&part)?;
         let assets = files.join("assets");
+        let packs = assets.join(crate::packs::PACKS);
+        if packs.is_dir() {
+            std::fs::rename(&packs, found.join(crate::packs::PACKS))?;
+        }
         if assets.exists() {
             std::fs::remove_dir_all(&assets)?;
         }
@@ -444,11 +462,6 @@ fn keep(files: &Path) -> anyhow::Result<()> {
     })();
     let _ = std::fs::remove_dir_all(&part);
     kept
-}
-
-/// The bytes of the files under `dir`.
-fn size_of(dir: &Path) -> u64 {
-    std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| if e.path().is_dir() { size_of(&e.path()) } else { e.metadata().map_or(0, |m| m.len()) }).sum()
 }
 
 /// The copy as the activity tells it (None: it could not be asked).

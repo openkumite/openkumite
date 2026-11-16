@@ -114,6 +114,18 @@
          border-radius: 0 10px 10px 0; color: var(--paper); font-size: 15px; }
   .msg[hidden], #setup .btn[hidden] { display: none; }
   #setup-close { margin-top: 22px; }
+  /* the games converted here: a row each (the disc image's files, or the Half-Life folder), its state and buttons */
+  .parts { display: grid; gap: 10px; margin: 0 0 22px; max-width: 36em; }
+  .part { padding: 12px 16px; border: 1px solid var(--line); border-radius: 14px; background: rgba(13, 13, 18, .35); }
+  .part h3 { margin: 0; font: 700 22px/1.1 var(--display); }
+  .part p { margin: 2px 0 8px; color: var(--ash); font-size: 14px; }
+  .part .state.done { color: #9be3a7; }
+  .part .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .part .btn { padding: 9px 16px; font-size: 14px; }
+  .part .btn[hidden] { display: none; }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .work { margin: 0 0 18px; color: var(--ash); font: 13px/1.4 ui-monospace, monospace; white-space: pre-wrap; }
+  .work[hidden] { display: none; }
   @media (max-width: 760px) {
     #setup { place-items: start center; }
     .stage { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 44px; }
@@ -191,13 +203,27 @@
     </div>
     <div class="copy">
       <h1 id="setup-title">OpenKumite</h1>
-      <p class="lede">Play the game you own. Give this page the folder
-        <a href="https://github.com/openkumite/kumite_converter">kumite_converter</a> made from your disc: the browser
-        copies it once and keeps it for every visit after.</p>
+      <p class="lede">Play the games you own. Choose your disc image's files below: this page converts them once, here in
+        this browser (nothing is uploaded), and keeps the result for every visit after.</p>
+      <div class="parts" id="parts">
+        <div class="part" data-part="t3"><h3>Tekken 3</h3><p>PlayStation, USA (SLUS-00402): the game. Needed. Choose its
+          disc image's Track 1 and Track 2 (.bin).</p><p class="state"></p><div class="row">
+          <button class="btn primary" type="button" data-do="convert">Choose disc image…</button>
+          <button class="btn danger" type="button" data-do="remove" hidden>Remove</button></div></div>
+        <div class="part" data-part="t2"><h3>Tekken 2</h3><p>PlayStation, USA v1.1: its fighters join the roster.
+          Optional. Choose its disc image's tracks (.bin).</p><p class="state"></p><div class="row">
+          <button class="btn" type="button" data-do="convert">Choose disc image…</button>
+          <button class="btn danger" type="button" data-do="remove" hidden>Remove</button></div></div>
+        <div class="part" data-part="cs"><h3>Counter-Strike</h3><p>Half-Life: its levels as arenas, two more Tekken
+          Force stages. Optional. Choose the Half-Life folder (with cstrike/ and valve/).</p><p class="state"></p>
+          <div class="row"><button class="btn" type="button" data-do="convert">Choose folder…</button>
+          <button class="btn danger" type="button" data-do="remove" hidden>Remove</button></div></div>
+      </div>
+      <p class="work" id="work" hidden></p>
       <ol class="steps">
-        <li><b>Convert</b> your disc with kumite_converter.</li>
-        <li><b>Drop</b> the folder it wrote, the one with manifest.json.</li>
-        <li><b>Play</b>, offline too once the copy is done.</li>
+        <li><b>Choose</b> your Tekken 3 disc image, and Tekken 2's and Counter-Strike if you have them.</li>
+        <li><b>Wait</b> while this page converts them (a few minutes; keep the tab open).</li>
+        <li><b>Play</b>, offline too. A folder made by kumite_converter can be dropped on the sun instead.</li>
       </ol>
       <p class="msg" id="msg" role="alert" hidden></p>
       <button class="btn" id="setup-close" type="button" hidden>Back to the game</button>
@@ -214,6 +240,7 @@
     <p class="dd-size"><b id="dd-size"></b>kept in this browser</p>
     <p class="dd-keep" id="dd-keep"></p>
     <div class="dd-actions" id="dd-actions">
+      <button type="button" class="btn" id="dd-games">Convert games…</button>
       <button type="button" class="btn" id="dd-replace">Replace with another folder</button>
       <button type="button" class="btn danger" id="dd-remove">Remove</button>
     </div>
@@ -589,18 +616,36 @@
   const serverAssets = config.serverAssets !== false;
   const gb = (n) => (n / 1e9).toFixed(2);
   const root = () => navigator.storage.getDirectory();
-  // the conversion this browser keeps (OPFS): the files as slices of the pack, and its size; or null
-  const stored = async () => {
+  // a pack this browser keeps (OPFS: NAME.pack, the files' bytes, and NAME.idx): its files as slices, and its size; or
+  // null
+  const pack = async (name) => {
     try {
       const dir = await root();
-      const file = await (await dir.getFileHandle('assets.pack')).getFile();
-      const idx = JSON.parse(await (await (await dir.getFileHandle('assets.idx')).getFile()).text());
+      const file = await (await dir.getFileHandle(`${name}.pack`)).getFile();
+      const idx = JSON.parse(await (await (await dir.getFileHandle(`${name}.idx`)).getFile()).text());
       // (an entry past the pack's end is left out: its reads say not found)
       const ok = ([at, n]) => Number.isSafeInteger(at) && Number.isSafeInteger(n) && at >= 0 && n >= 0 && at + n <= file.size;
       const map = new Map(Object.entries(idx?.files ?? {}).filter(([, v]) => Array.isArray(v) && ok(v)));
-      if (idx?.version !== 1 || !map.has('manifest.json')) return null;
+      if (idx?.version !== 1) return null;
       return { files: new Map([...map].map(([p, [at, n]]) => [p, typed(p, file, at, n)])), size: file.size };
     } catch (e) { return null; /* none (or no OPFS: a private window) */ }
+  };
+  // the conversion this browser keeps: the Tekken 3 pack (assets), and over it, once installed (convert_worker.js),
+  // the Tekken 2 pack's assets/ and the extras (the packs installed: what they add to or change in it, and the whole's
+  // manifest.json); its files and size, or null
+  const stored = async () => {
+    const base = await pack('assets');
+    if (!base?.files.has('manifest.json')) return null;
+    const files = new Map(base.files);
+    let size = base.size;
+    const extras = await pack('extras');
+    if (extras?.files.has('manifest.json')) {
+      const t2 = await pack('t2');
+      for (const [p, b] of t2?.files ?? []) if (p.startsWith('assets/')) files.set(p.slice(7), b);
+      for (const [p, b] of extras.files) files.set(p, b);
+      size += extras.size + (t2?.size ?? 0) + ((await pack('cs'))?.size ?? 0);
+    }
+    return { files, size };
   };
 
   // ---- a converted folder dropped on the page, or chosen: copied into the pack (store_worker.js, the format
@@ -689,6 +734,11 @@
     }
     console.info(`kept ${files.length} files, ${gb(result.done)} GB`);
     show(need);
+    // (packs converted here before: installed again beside this Tekken 3)
+    if (convertible && ((await size('t2.idx')) || (await size('cs.idx')))) {
+      face('Installing', 'the packs');
+      await job({ job: 'install' }, (line) => console.info(line));
+    }
     face('Ready', 'Starting the game');
     // (the kept copy replaces a folder remembered before)
     await idb('delete', 'folder').catch(() => {});
@@ -734,6 +784,98 @@
   };
   $('pick').onclick = chosen;
   $('setup-close').onclick = () => { message(null); setup.hidden = true; };
+
+  // ---- the games converted in this browser (convert_worker.js: kumite_convert_web), each into its pack, the packs
+  // installed beside Tekken 3's after each job; then the page starts again on them
+  // (sync access handles are a worker's: one without them says so when it runs)
+  const convertible = storable;
+  let working = false;
+  // a job of the worker; its log lines to `say` as they come
+  const job = (data, say) => new Promise((ok) => {
+    const w = new Worker('convert_worker.js');
+    w.onmessage = ({ data: d }) => {
+      if (d.log !== undefined) return say(d.log);
+      if (d.panic !== undefined) return say(d.panic);
+      w.terminate();
+      ok(d);
+    };
+    w.onerror = (e) => { w.terminate(); ok({ error: e.message }); };
+    w.postMessage(data);
+  });
+  // the rows as the state has it (null: not known yet)
+  const rows = (state) => {
+    for (const row of document.querySelectorAll('.part')) {
+      const m = state?.[row.dataset.part];
+      const line = row.querySelector('.state');
+      line.textContent = !convertible ? 'This browser can’t convert here (no file storage for pages): use a folder made by kumite_converter.'
+        : m ? 'Converted.' : 'Not converted.';
+      line.classList.toggle('done', !!m);
+      row.querySelector('[data-do="convert"]').textContent = m ? 'Convert again…' : row.dataset.part === 'cs' ? 'Choose folder…' : 'Choose disc image…';
+      row.querySelector('[data-do="convert"]').disabled = !convertible || working;
+      row.querySelector('[data-do="remove"]').hidden = !m || working;
+    }
+  };
+  // the files the player picked for a part (its row's file input): a disc image's tracks (track 1 first, then 2 and
+  // 3), or the Half-Life folder's levels and textures as [path below the folder, File]
+  const picked = (part, input) => {
+    const all = [...input.files];
+    if (part === 'cs') {
+      return all.filter((f) => /\.(bsp|wad)$/i.test(f.name)).map((f) => [(f.webkitRelativePath || f.name).split('/').slice(1).join('/'), f]);
+    }
+    const bins = all.filter((f) => /\.bin$/i.test(f.name));
+    const track = (n) => bins.find((f) => f.name.includes(`Track ${n}`));
+    const first = track(1) ?? [...bins].sort((a, b) => b.size - a.size)[0];
+    return first ? [first, track(2), track(3)].filter(Boolean) : [];
+  };
+  const NAMES = { t3: 'Tekken 3', t2: 'Tekken 2', cs: 'Counter-Strike' };
+  const work = async (data) => {
+    if (working) return;
+    working = true;
+    message(null);
+    rows(null);
+    $('work').hidden = false;
+    $('work').textContent = '';
+    const started = Date.now();
+    const what = data.job === 'remove' ? `Removing ${NAMES[data.part]}` : data.job === 'install' ? 'Installing the packs' : `Converting ${NAMES[data.part]}`;
+    face(what, 'keep this tab open');
+    setup.dataset.state = 'copying';
+    $('pick').hidden = $('setup-close').hidden = true;
+    const lines = [];
+    const tick = setInterval(() => { $('sun-sub').textContent = `${Math.round((Date.now() - started) / 1000)} s · keep this tab open`; }, 1000);
+    const result = await job(data, (line) => { console.info(line); lines.push(line); $('work').textContent = lines.slice(-4).join('\n'); });
+    clearInterval(tick);
+    working = false;
+    // (the last job's outcome, kept across the reload: for scripts that drive the page, web/headless.mjs)
+    try { sessionStorage.setItem('okjob', JSON.stringify({ what, error: result.error ?? null, fingerprint: result.done?.fingerprint ?? null })); } catch {}
+    $('work').hidden = true;
+    setup.dataset.state = 'idle';
+    if (result.error) {
+      console.error(`${what}: ${result.error}`);
+      idle();
+      rows(await job({ job: 'state' }, () => {}).then((r) => r.done ?? null));
+      return message(result.quota ? 'Not enough space in this browser for that. Free some disk space, then try again.' : result.error);
+    }
+    console.info(`${what}: done, fingerprint ${result.done?.fingerprint}`);
+    // (a game to play: the page starts again on it)
+    if (result.done?.t3 && result.done?.installed) { face('Ready', 'Starting the game'); return location.reload(); }
+    idle();
+    rows(result.done);
+  };
+  for (const row of document.querySelectorAll('.part')) {
+    const part = row.dataset.part;
+    const input = Object.assign(document.createElement('input'), { type: 'file', multiple: true, hidden: true, id: `pick-${part}` });
+    if (part === 'cs') input.webkitdirectory = true; else input.accept = '.bin,.BIN';
+    row.append(input);
+    row.querySelector('[data-do="convert"]').onclick = () => { ask(); input.value = ''; input.click(); };
+    input.onchange = async () => {
+      const files = picked(part, input);
+      if (!files.length) return message(part === 'cs' ? 'That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.' : 'Choose the disc image’s tracks (.bin files).');
+      const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      await work({ job: 'convert', part, files, now });
+    };
+    row.querySelector('[data-do="remove"]').onclick = () => work({ job: 'remove', part });
+  }
+  $('dd-games').onclick = async () => { $('data-dialog').close(); idle(); rows(await job({ job: 'state' }, () => {}).then((r) => r.done ?? null)); };
   // the kept copy: a button over the game, and its dialog (size, whether the browser may clear it, replace, remove)
   const showKept = (size) => {
     const dialog = $('data-dialog');
@@ -757,7 +899,7 @@
     $('dd-no').onclick = () => confirming(false);
     $('dd-yes').onclick = async () => {
       const dir = await root();
-      for (const name of ['assets.idx', 'assets.pack']) await dir.removeEntry(name).catch(() => {});
+      for (const name of ['assets.idx', 'assets.pack', 'extras.idx', 'extras.pack']) await dir.removeEntry(name).catch(() => {});
       location.reload();
     };
     $('data-btn').onclick = async () => { confirming(false); await fill(); dialog.showModal(); };
@@ -782,6 +924,7 @@
   if (!local && !(serverAssets && (await fetch('assets/manifest.json', { method: 'HEAD' }).then((r) => r.ok, () => false)))) {
     document.getElementById('loading').hidden = true;
     idle();
+    rows(convertible ? await job({ job: 'state' }, () => {}).then((r) => r.done ?? null) : null);
     // (a copy kept reloads the page)
     await new Promise(() => {});
   }

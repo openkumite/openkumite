@@ -1,0 +1,237 @@
+//! The game data converted in the browser (web/convert_worker.js runs this in a Web Worker, one thread): the player's
+//! files, picked on the page, read by id through functions the worker gives (`okc_*` on its global scope); each part
+//! into its pack, two files kept in the site's storage (OPFS, through sync access handles): the Tekken 3 pack
+//! (assets.pack, assets.idx: the base, as the page has always kept it), the Tekken 2 and Counter-Strike packs
+//! (t2.*, cs.*), and the extras (extras.*: the packs installed, kumite_packs). The page reads the extras over the
+//! Tekken 2 pack's `assets/` over the base (index.html's `stored`).
+//!
+//! The stores, by number: 0, 1 the base's pack and index; 2, 3 Tekken 2's; 4, 5 Counter-Strike's; 6, 7 the extras'.
+
+use anyhow::{anyhow, bail, Context, Result};
+use kumite_packs::Part;
+use ok_converter_common::io::{list_paths, path_exists, Ctx, DiscFile, Entry, PackVfs, ReadSeek, Store, Vfs};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use std::io::{Read, Seek, SeekFrom};
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+extern "C" {
+    fn okc_input_name(id: u32) -> String;
+    fn okc_input_size(id: u32) -> f64;
+    /// fills `buf` from `at` of the file
+    #[wasm_bindgen(catch)]
+    fn okc_input_read(id: u32, at: f64, buf: &mut [u8]) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch)]
+    fn okc_store_read(store: u32, at: f64, buf: &mut [u8]) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch)]
+    fn okc_store_write(store: u32, at: f64, data: &[u8]) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch)]
+    fn okc_store_size(store: u32) -> Result<f64, JsValue>;
+    #[wasm_bindgen(catch)]
+    fn okc_store_truncate(store: u32, len: f64) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch)]
+    fn okc_store_flush(store: u32) -> Result<(), JsValue>;
+    fn okc_log(line: &str);
+    fn okc_panic(message: &str);
+}
+
+/// A JavaScript exception as an error (the worker throws "Name: message" strings).
+fn js(e: JsValue) -> anyhow::Error {
+    anyhow!(e.as_string().unwrap_or_else(|| format!("{e:?}")))
+}
+
+/// A picked file.
+struct Input(u32);
+
+impl DiscFile for Input {
+    fn name(&self) -> String {
+        okc_input_name(self.0)
+    }
+    fn open(&self) -> Result<Box<dyn ReadSeek>> {
+        let reader = Reader { id: self.0, pos: 0, size: okc_input_size(self.0) as u64 };
+        Ok(Box::new(std::io::BufReader::with_capacity(1 << 16, reader)))
+    }
+}
+
+struct Reader {
+    id: u32,
+    pos: u64,
+    size: u64,
+}
+
+impl Read for Reader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(self.size.saturating_sub(self.pos) as usize);
+        let Some(part) = buf.get_mut(..n).filter(|_| n > 0) else { return Ok(0) };
+        okc_input_read(self.id, self.pos as f64, part).map_err(|e| std::io::Error::other(js(e)))?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for Reader {
+    fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+        let pos = match to {
+            SeekFrom::Start(p) => Some(p),
+            SeekFrom::End(d) => self.size.checked_add_signed(d),
+            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
+        };
+        self.pos = pos.ok_or_else(|| std::io::Error::other("a seek before the start of the file"))?;
+        Ok(self.pos)
+    }
+}
+
+/// A picked folder (the Half-Life folder): its files by path (below the picked folder), read only.
+struct Folder(BTreeMap<String, u32>);
+
+impl Vfs for Folder {
+    fn read(&self, path: &str) -> Result<Vec<u8>> {
+        let &id = self.0.get(path).with_context(|| format!("no {path} in the folder"))?;
+        let mut buf = vec![0; okc_input_size(id) as usize];
+        okc_input_read(id, 0.0, &mut buf).map_err(js).with_context(|| format!("cannot read {path}"))?;
+        Ok(buf)
+    }
+    fn write(&self, path: &str, _: &[u8]) -> Result<()> {
+        bail!("cannot write {path}: the folder is read only")
+    }
+    fn exists(&self, path: &str) -> bool {
+        path_exists(&self.0, path)
+    }
+    fn list(&self, dir: &str) -> Result<Vec<Entry>> {
+        Ok(list_paths(&self.0, dir))
+    }
+    fn remove_all(&self, path: &str) -> Result<()> {
+        bail!("cannot remove {path}: the folder is read only")
+    }
+}
+
+/// A file of a pack (OPFS).
+struct Opfs(u32);
+
+impl Store for Opfs {
+    fn read_at(&self, off: u64, buf: &mut [u8]) -> Result<()> {
+        okc_store_read(self.0, off as f64, buf).map_err(js)
+    }
+    fn write_at(&self, off: u64, data: &[u8]) -> Result<()> {
+        okc_store_write(self.0, off as f64, data).map_err(js)
+    }
+    fn size(&self) -> Result<u64> {
+        Ok(okc_store_size(self.0).map_err(js)? as u64)
+    }
+    fn truncate(&self, len: u64) -> Result<()> {
+        okc_store_truncate(self.0, len as f64).map_err(js)
+    }
+    fn flush(&self) -> Result<()> {
+        okc_store_flush(self.0).map_err(js)
+    }
+}
+
+/// A part's pack (the extras: None), as its stores hold it.
+fn pack(part: Option<Part>) -> Result<PackVfs> {
+    let first = match part {
+        Some(Part::T3) => 0,
+        Some(Part::T2) => 2,
+        Some(Part::Cs) => 4,
+        None => 6,
+    };
+    PackVfs::open(Box::new(Opfs(first)), Box::new(Opfs(first + 1)))
+}
+
+fn part(name: &str) -> Result<Part> {
+    Part::ALL.into_iter().find(|p| p.kind() == name).with_context(|| format!("no part {name}"))
+}
+
+#[wasm_bindgen(start)]
+fn start() {
+    std::panic::set_hook(Box::new(|info| okc_panic(&info.to_string())));
+}
+
+/// Runs a job: `options` is JSON, `{"job": "convert", "part": "t3" | "t2" | "cs", "files": [track 1, track 2?, ...]
+/// (file ids; Counter-Strike: [[path, id], ...]), "now": "YYYY-MM-DD HH:MM:SS"}`, `{"job": "remove", "part": ...}` or
+/// `{"job": "install"}`; then the packs installed again. The state after it ([`state`]'s).
+#[wasm_bindgen]
+pub fn run(options: &str) -> Result<String, String> {
+    job(options).map_err(|e| format!("{e:#}"))
+}
+
+/// The game data's state, JSON: `{"t3": manifest | null, "t2": ..., "cs": ..., "installed": bool, "fingerprint":
+/// the game's (the extras' when installed, else the base's)}`.
+#[wasm_bindgen]
+pub fn state() -> Result<String, String> {
+    state_json().map(|v| v.to_string()).map_err(|e| format!("{e:#}"))
+}
+
+fn manifests() -> Result<kumite_packs::Manifests> {
+    let m = |p: Part| -> Result<Option<Value>> { Ok(p.manifest(&pack(Some(p))?)) };
+    Ok(kumite_packs::Manifests { t3: m(Part::T3)?, t2: m(Part::T2)?, cs: m(Part::Cs)? })
+}
+
+fn state_json() -> Result<Value> {
+    let m = manifests()?;
+    let extras = pack(None)?;
+    let installed = m.installed(&extras);
+    let manifest: Option<Value> = if m.has_packs() && installed { serde_json::from_slice(&extras.read("manifest.json")?).ok() } else { m.t3.clone() };
+    Ok(json!({"t3": m.t3, "t2": m.t2, "cs": m.cs, "installed": installed,
+              "fingerprint": manifest.as_ref().and_then(|v| v["fingerprint"].as_str())}))
+}
+
+fn job(options: &str) -> Result<String> {
+    let o: Value = serde_json::from_str(options)?;
+    let log = |line: &str| okc_log(line);
+    match o["job"].as_str().unwrap_or_default() {
+        "convert" => {
+            let part = part(o["part"].as_str().unwrap_or_default())?;
+            let ids: Vec<u32> = o["files"].as_array().into_iter().flatten().filter_map(|v| v.as_u64().map(|i| i as u32)).collect();
+            let out = pack(Some(part))?;
+            let ctx = Ctx { out: &out, log: &log, jobs: 1 };
+            let converted = (|| -> Result<()> {
+                match part {
+                    Part::T3 => {
+                        let track1 = Input(*ids.first().context("no Tekken 3 disc image")?);
+                        let track2 = ids.get(1).map(|&i| Input(i));
+                        let now = o["now"].as_str().unwrap_or_default();
+                        ok_tekken3_converter::convert_all::convert_resumable(&ctx, &track1, track2.as_ref().map(|t| t as &dyn DiscFile), now)?;
+                    }
+                    Part::T2 => {
+                        let track1 = Input(*ids.first().context("no Tekken 2 disc image")?);
+                        let cdda = [1, 2].map(|k| ids.get(k).map(|&i| Box::new(Input(i)) as Box<dyn DiscFile>));
+                        ok_tekken2_converter::pack::convert(&ctx, &track1, &cdda)?;
+                    }
+                    Part::Cs => {
+                        let file = |f: &Value| Some((f.get(0)?.as_str()?.to_string(), f.get(1)?.as_u64()? as u32));
+                        let files: BTreeMap<String, u32> = o["files"].as_array().into_iter().flatten().filter_map(file).collect();
+                        // (the folder picked is the Half-Life folder, or its cstrike/: then the levels are the game's)
+                        let folder = Folder(files);
+                        let game: Box<dyn Vfs> = if folder.exists("cstrike") || !folder.exists("maps") {
+                            Box::new(folder)
+                        } else {
+                            Box::new(Folder(folder.0.into_iter().map(|(p, i)| (format!("cstrike/{p}"), i)).collect()))
+                        };
+                        ok_hl_cs_converter::pack::convert(&ctx, game.as_ref())?;
+                    }
+                }
+                Ok(())
+            })();
+            // (a pack cut off is no pack: emptied; Tekken 3's goes on from its last step next time)
+            if converted.is_err() && part != Part::T3 {
+                let _ = out.remove_all("").and_then(|()| out.checkpoint(&[]));
+            }
+            converted?;
+        }
+        "remove" => {
+            let part = part(o["part"].as_str().unwrap_or_default())?;
+            let p = pack(Some(part))?;
+            p.remove_all("")?;
+            p.checkpoint(&[])?;
+        }
+        "install" => {}
+        other => bail!("no job {other:?}"),
+    }
+    let base = pack(Some(Part::T3))?;
+    let (t2, cs) = (pack(Some(Part::T2))?, pack(Some(Part::Cs))?);
+    let extras = pack(None)?;
+    kumite_packs::install(&base, &[(Part::T2, &t2), (Part::Cs, &cs)], &extras, &log)?;
+    extras.checkpoint(&[])?;
+    Ok(state_json()?.to_string())
+}

@@ -49,6 +49,10 @@ mod audio;
 mod ballview;
 mod blobshadow;
 mod controls;
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+mod datascreen;
+#[cfg(not(target_arch = "wasm32"))]
+mod dataui;
 mod debug;
 mod demo;
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,6 +79,8 @@ mod netlink;
 mod netplay;
 mod online;
 mod onlinemenu;
+#[cfg(not(target_arch = "wasm32"))]
+mod packs;
 mod practice;
 mod records;
 mod replay;
@@ -495,8 +501,8 @@ struct App {
     audio: Option<audio::Audio>,
     /// Android: the app in the background, its window's surface gone (nothing drawn or stepped).
     suspended: bool,
-    /// Android: the Game data screen asked for (its button on the title and the main menu).
-    #[cfg(target_os = "android")]
+    /// The Game data screen asked for (its button on the title and the main menu; not in a browser).
+    #[cfg(not(target_arch = "wasm32"))]
     game_data: bool,
     /// Free-camera drag: last cursor position while the left button is held.
     drag: Option<(f64, f64)>,
@@ -4412,8 +4418,11 @@ impl App {
         // controls buttons on the title and the main menu, Touch controls in a fight's pause
         #[cfg(target_os = "android")]
         let mut touch = self.gamepads.as_ref().map(|g| g.touch.clone()).filter(|t| t.shown || t.edit.is_some());
-        #[cfg(target_os = "android")]
+        #[cfg(not(target_arch = "wasm32"))]
         let at_title = matches!(self.screen, Some(Screen::Title { .. } | Screen::Menu(_)));
+        // desktops: the Game data button on the title and the main menu
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        let mut game_data = false;
         #[cfg(target_os = "android")]
         let in_pause = self.fight.as_ref().is_some_and(|f| f.pause.is_some()) || self.tag.as_ref().is_some_and(|t| t.pause.is_some());
         #[cfg(target_os = "android")]
@@ -4595,6 +4604,10 @@ impl App {
                         art.text_scaled(&painter, &view, 0, if t.starts_with("PING") { 6 } else { 1 }, crate::art::CENTRE - art.text_w(0, t) * scale / 2.0, 7.0, scale, t, egui::Color32::WHITE);
                     }
                     debug.toasts(ctx);
+                    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+                    if at_title && !debug.enabled {
+                        game_data = datascreen::game_data_button(ctx);
+                    }
                     #[cfg(target_os = "android")]
                     {
                         if let Some(t) = touch.as_mut() {
@@ -4612,6 +4625,10 @@ impl App {
                 {
                     let dp = self.window.as_ref().map_or(1.0, |w| w.scale_factor() as f32);
                     android::touch_ui(self.gamepads.as_mut(), &mut self.game_data, &mut self.debug, android::TouchFrame { touch, top, panel, chosen_size, size: [size[0] as f32, size[1] as f32], dp });
+                }
+                #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+                {
+                    self.game_data |= game_data;
                 }
                 self.debug.ui_ms = t.elapsed().as_secs_f32() * 1000.0;
                 r.render_with(&cam, &sky, &statics, &models, particles.as_ref(), &lines, Some(&mut frame))
@@ -6421,14 +6438,38 @@ pub fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // (--help needs no assets)
     let help = args.iter().skip(1).any(|a| a == "--help" || a == "-h");
-    let root = if help { Default::default() } else { assetdir::find(&args, &|k| std::env::var_os(k), std::env::current_exe().ok().as_deref(), std::env::consts::OS)? };
+    if help {
+        return run(Default::default(), args);
+    }
+    let env = |k: &str| std::env::var_os(k);
+    let found = assetdir::find(&args, &env, std::env::current_exe().ok().as_deref(), std::env::consts::OS);
+    // a command line that does its work and ends (a screenshot, a video, a scripted run) takes the game data as it is;
+    // otherwise the Game data screen converts it when there is none (in the per-user place, unless a folder was given),
+    // or the packs need installing
+    let batch = ["--shot", "--export-video", "--quit-after", "--record-reads", "--hash-log"].iter().any(|f| args.iter().any(|a| a == f));
+    let given = args.iter().any(|a| a == "--assets") || env("OPENKUMITE_ASSETS").is_some_and(|v| !v.is_empty());
+    let root = match found {
+        Ok(root) => root,
+        Err(e) if batch || given => return Err(e),
+        Err(e) => assetdir::user_place(&env, std::env::consts::OS).ok_or(e)?,
+    };
+    let state = packs::activate(&root);
+    if !state.installed {
+        log::warn!("the packs in {} are not installed: Tekken 3 alone", root.display());
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    if !batch && !state.playable() {
+        EventLoop::new()?.run_app(&mut datascreen::Root::data(root, args))?;
+        return Ok(());
+    }
     run(root, args)
 }
 
 /// `--help`: the command line.
 const HELP: &str = "\
 OpenKumite, a 3D fighting game engine that plays the data converted from your own game discs. Usage: openkumite [OPTIONS]
-The converted assets (kumite_converter's output) come from the first of: --assets DIR; OPENKUMITE_ASSETS; assets/ next to
+The game data (converted in the game from your own copies: its Game data screen) comes from the first of: --assets DIR;
+OPENKUMITE_ASSETS; assets/ next to
 the executable; macOS: the .app's Contents/Resources/assets, ~/Library/Application Support/OpenKumite/assets;
 Windows: %APPDATA%\\OpenKumite\\assets; Linux: $XDG_DATA_HOME/openkumite/assets (~/.local/share), then
 $XDG_DATA_DIRS' (/usr/local/share, /usr/share); the repository's assets/. Settings and records are kept in
@@ -6745,7 +6786,7 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         gamepads: None,
         audio: None,
         suspended: false,
-        #[cfg(target_os = "android")]
+        #[cfg(not(target_arch = "wasm32"))]
         game_data: false,
         assets,
         models,
@@ -6920,11 +6961,13 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
 
 fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
     #[allow(unused_mut)] // (a browser's event loop takes it)
-    let Some(mut app) = new_app(root, args)?
+    let Some(mut app) = new_app(root.clone(), args.clone())?
     else {
         return Ok(());
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    EventLoop::new()?.run_app(&mut datascreen::Root::game(root, args, app))?;
+    #[cfg(target_os = "android")]
     EventLoop::new()?.run_app(&mut app)?;
     #[cfg(target_arch = "wasm32")]
     {

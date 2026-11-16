@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kumite_fs", "crates/kumite_assets", "crates/kumite_game", "crates/kumite_sim", "crates/kumite_render", "crates/kumite_net", "crates/serve", "app"]
+members = ["crates/kumite_fs", "crates/kumite_assets", "crates/kumite_game", "crates/kumite_sim", "crates/kumite_render", "crates/kumite_net", "crates/kumite_packs", "crates/kumite_convert_web", "crates/serve", "app"]
 exclude = ["fuzz"]
 
 [workspace.package]
@@ -16,6 +16,7 @@ kumite_game = { path = "crates/kumite_game" }
 kumite_render = { path = "crates/kumite_render" }
 kumite_fs = { path = "crates/kumite_fs" }
 kumite_net = { path = "crates/kumite_net" }
+kumite_packs = { path = "crates/kumite_packs" }
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"

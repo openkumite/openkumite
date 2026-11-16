@@ -298,7 +298,7 @@ fn yuv420_band(rgba: &[u8], w: usize, y: &mut [u8], u: &mut [u8], v: &mut [u8]) 
 
 /// A sound file at 48 kHz stereo, interleaved.
 fn decode(path: &Path) -> Result<Vec<f32>> {
-    let d = rodio::Decoder::try_from(File::open(path)?)?;
+    let d = rodio::Decoder::try_from(File::open(kumite_fs::resolve(path))?)?;
     let (rate, ch) = (d.sample_rate().get() as usize, d.channels().get() as usize);
     let samples: Vec<f32> = d.collect();
     let frames = samples.len() / ch.max(1);

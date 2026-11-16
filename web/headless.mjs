@@ -1,5 +1,5 @@
 // The browser build in a headless Chrome, scripted (no window, no OS key events): console output, screenshots,
-// keys. usage: node web/headless.mjs URL OUTDIR "wait:ms,shot:name,key:Enter,click:x:y,metrics:W:H:SW:SH,media:feature:value,gestureb64:BASE64JS,mobile:W:H,touch:start|move|end:X:Y[:ID],eval:js,evalb64:BASE64JS,files:SELECTOR:PATH|PATH,drop:X:Y:PATH,initb64:BASE64JS"
+// keys. usage: node web/headless.mjs URL OUTDIR "untilb64:MS:BASE64JS,wait:ms,shot:name,key:Enter,click:x:y,metrics:W:H:SW:SH,media:feature:value,gestureb64:BASE64JS,mobile:W:H,touch:start|move|end:X:Y[:ID],eval:js,evalb64:BASE64JS,files:SELECTOR:PATH|PATH,drop:X:Y:PATH,initb64:BASE64JS"
 import { spawn } from 'node:child_process';
 import { writeFileSync, mkdirSync } from 'node:fs';
 const [url, out, script] = process.argv.slice(2);
@@ -56,6 +56,12 @@ for (const step of script.split(',')) {
     for (const type of ['dragEnter', 'dragOver', 'drop']) await s('Input.dispatchDragEvent', { type, x: +a, y: +b, data }); }
   // initb64:BASE64JS run before the page's own scripts from the next load on (then eval:location.reload())
   if (op === 'initb64') await s('Page.addScriptToEvaluateOnNewDocument', { source: Buffer.from(a, 'base64').toString() });
+  // untilb64:MS:BASE64JS: the expression evaluated every 2 s (a reload in between is waited out) until it is truthy,
+  // or MS went by; its last value logged
+  if (op === 'untilb64') { const expression = Buffer.from(b, 'base64').toString(); const end = Date.now() + +a; let v;
+    while (Date.now() < end) { const r = await s('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+      v = r.result?.value; if (v) break; await sleep(2000); }
+    log.push(`${((Date.now()-t0)/1000).toFixed(1)}s until: ${JSON.stringify(v)}`); }
   if (op === 'eval') { const r = await s('Runtime.evaluate', { expression: step.slice(5), awaitPromise: true, returnByValue: true }); log.push(`eval: ${JSON.stringify(r.result?.value)}`); }
 }
 writeFileSync(`${out}/console.txt`, log.join('\n'));

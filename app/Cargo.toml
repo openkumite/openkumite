@@ -48,6 +48,16 @@ rodio = { version = "0.22", default-features = false, features = ["playback", "f
 rav1e = { version = "0.8", default-features = false, features = ["threading"] }
 opus-rs = "0.1"
 muxide = { version = "0.5", default-features = false }
+# the game data converted in the game from the player's own copies (packs.rs, kumite_packs): Tekken 3, then the
+# Tekken 2 and Counter-Strike packs beside it. (The converters' serde_json takes preserve_order and float_roundtrip,
+# which the engine's shares: gamedata's numbers parse the same; 5120 of the glbs' 19 million differ in an f64's last
+# bit, none once made f32, as everything the engine takes from them is.)
+kumite_packs.workspace = true
+ok_converter_common = { git = "https://github.com/openkumite/ok_converter_common", branch = "main", default-features = false }
+ok_tekken3_converter = { git = "https://github.com/openkumite/ok_tekken3_converter", branch = "main" }
+ok_tekken2_converter = { git = "https://github.com/openkumite/ok_tekken2_converter", branch = "main" }
+ok_hl_cs_converter = { git = "https://github.com/openkumite/ok_hl_cs_converter", branch = "main" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # desktops: gamepads (Android's come as key events: gamepad_android.rs), the file dialogs
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]

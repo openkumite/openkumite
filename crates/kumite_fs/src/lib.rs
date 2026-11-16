@@ -5,12 +5,43 @@
 //! [`prefetch`] asks for files ahead of their use (a fight's characters and stage while the VS screen shows), and
 //! [`read`] takes them from there; a file not asked for ahead comes by a synchronous request (logged, as a file
 //! to add to a prefetch). A [`Stream`] reads a file as it arrives (a movie plays while it downloads).
+//!
+//! Layers ([`set_layers`]): the converted game is the Tekken 3 pack (the base folder) and, over it, the extras (the
+//! installed Tekken 2 and Counter-Strike packs) and the packs' own files; a path in the base folder is read from the
+//! first layer that has the file ([`resolve`]). Natively only: in a browser the page's cache does the same.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 #[cfg(target_arch = "wasm32")]
 pub use imp::src;
+
+/// The base folder and the layers over it (first wins).
+static LAYERS: std::sync::RwLock<Option<(PathBuf, Vec<PathBuf>)>> = std::sync::RwLock::new(None);
+
+/// From now on a path in `base` is read from the first of `layers` that has the file, else from `base` (natively;
+/// none: no layers).
+pub fn set_layers(base: &Path, layers: Vec<PathBuf>) {
+    if let Ok(mut l) = LAYERS.write() {
+        *l = (!layers.is_empty()).then(|| (base.to_path_buf(), layers));
+    }
+}
+
+/// Where the file of `path` is: in the first layer that has it (a path in the base folder), else `path`. For the
+/// readers that open files themselves (natively: sound, movies).
+pub fn resolve(path: &Path) -> PathBuf {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(l) = LAYERS.read() {
+        if let Some((base, layers)) = l.as_ref() {
+            if let Ok(rel) = path.strip_prefix(base) {
+                if let Some(p) = layers.iter().map(|d| d.join(rel)).find(|p| p.is_file()) {
+                    return p;
+                }
+            }
+        }
+    }
+    path.to_path_buf()
+}
 
 /// The whole file.
 pub fn read(path: &Path) -> io::Result<Vec<u8>> {
@@ -21,7 +52,7 @@ pub fn read(path: &Path) -> io::Result<Vec<u8>> {
             }
         }
     }
-    imp::read(path)
+    imp::read(&resolve(path))
 }
 
 /// The files read, in order, while recording (what a browser should fetch ahead: web/make_preload.sh).
@@ -46,7 +77,7 @@ pub fn read_to_string(path: &Path) -> io::Result<String> {
 
 /// The file is there.
 pub fn exists(path: &Path) -> bool {
-    imp::exists(path)
+    imp::exists(&resolve(path))
 }
 
 /// Start fetching these files in the background (a browser; natively nothing to do).
@@ -81,7 +112,7 @@ pub struct Stream {
 
 impl Stream {
     pub fn open(path: &Path) -> io::Result<Self> {
-        imp::stream_open(path)
+        imp::stream_open(&resolve(path))
     }
 
     /// Append what arrived since the last call to `out`. An error: the file is not there (or broke off).

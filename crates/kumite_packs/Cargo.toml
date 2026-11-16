@@ -1,0 +1,20 @@
+[package]
+name = "kumite_packs"
+description = "OpenKumite's game data packs: the Tekken 3 pack, the Tekken 2 and Counter-Strike packs installed beside it"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+kumite_assets.workspace = true
+# the converters (their repositories)
+ok_converter_common = { git = "https://github.com/openkumite/ok_converter_common", branch = "main", default-features = false }
+ok_tekken3_converter = { git = "https://github.com/openkumite/ok_tekken3_converter", branch = "main" }
+ok_tekken2_converter = { git = "https://github.com/openkumite/ok_tekken2_converter", branch = "main" }
+ok_hl_cs_converter = { git = "https://github.com/openkumite/ok_hl_cs_converter", branch = "main" }
+
+[lints]
+workspace = true
