@@ -1,4 +1,6 @@
-# The browser version on GitHub Pages (https://openkumite.github.io/openkumite/), from a release only: release.yml
+# The browser version on GitHub Pages (https://openkumite.github.io/openkumite/) and on Cloudflare (Workers static
+# assets: packaging/cloudflare/play.jsonc, https://play.openkumiteengine.dev; its secrets in the "cloudflare"
+# environment), from a release only: release.yml
 # calls this after it publishes a release (vX.Y.Z; not a pre-release), so the site is always a released version. Run
 # by hand (Actions, pages, Run workflow), it deploys only from a version tag ("Use workflow from": the tag), to put a
 # release on the site again; the github-pages environment takes deployments from v* tags alone. Built with
@@ -38,6 +40,10 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+      - uses: actions/upload-artifact@v7
+        with:
+          name: site
+          path: site
 
   deploy:
     needs: build
@@ -55,3 +61,28 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v5
+
+  # the same site on Cloudflare
+  cloudflare:
+    needs: build
+    concurrency:
+      group: cloudflare-play
+      cancel-in-progress: false
+    environment:
+      name: cloudflare
+      url: https://play.openkumiteengine.dev
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: site
+          path: site
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          npx --yes wrangler@4.163.0 deploy -c packaging/cloudflare/play.jsonc --message "$TAG"
+          echo "### $TAG on https://play.openkumiteengine.dev" >> "$GITHUB_STEP_SUMMARY"

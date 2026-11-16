@@ -10,7 +10,8 @@
 #   windows-amd64, windows-arm64  .exe with the C runtime linked in (.cargo/config.toml): only Windows' own DLLs
 #   macos-universal               OpenKumite.app (packaging/macos), arm64 + x86_64, macOS 11+
 #   web                           the browser build (web/build.sh): to serve from a site
-# A release (not a pre-release) then goes on GitHub Pages (pages.yml): the site is always the latest release.
+# Then the files go on the download CDN as well (cdn.yml: https://download.openkumiteengine.dev/TAG/), and a release (not a
+# pre-release) goes on GitHub Pages and Cloudflare (pages.yml): the sites are always the latest release.
 # Run by hand (Actions, release, Run workflow) on any branch, it builds all of it without publishing: the files are
 # the run's artifacts, named vX.Y.Z-dev.<commit>.
 name: release
@@ -330,7 +331,8 @@ jobs:
 
           OpenKumite converts your own copies of the games itself: start it and choose your Tekken 3 disc image on its
           Game data screen (\`.cue\` with its \`.bin\` files, \`.chd\`, \`.iso\`, \`.pbp\`, ...; Tekken 2 and the Half-Life
-          folder too, if you have them). The browser version is on https://openkumite.github.io/openkumite/.
+          folder too, if you have them). The browser version is on https://play.openkumiteengine.dev (and https://openkumite.github.io/openkumite/).
+          The same files are on Cloudflare's CDN: https://download.openkumiteengine.dev/$TAG/ (from https://openkumiteengine.dev).
 
           | Download | For |
           |---|---|
@@ -368,7 +370,16 @@ jobs:
             gh release create "$TAG" dist/* --verify-tag --title "OpenKumite $TAG" --notes-file notes.md $pre
           fi
 
-  # the browser version on GitHub Pages: a release only (a pre-release leaves the site as it is)
+  # the files on the download CDN (Cloudflare R2): pre-releases too
+  cdn:
+    if: github.ref_type == 'tag'
+    needs: [version, release]
+    uses: ./.github/workflows/cdn.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+    secrets: inherit
+
+  # the browser version on GitHub Pages and Cloudflare: a release only (a pre-release leaves the site as it is)
   pages:
     if: github.ref_type == 'tag' && !contains(needs.version.outputs.tag, '-')
     needs: [version, release]
@@ -377,3 +388,4 @@ jobs:
       pages: write
       id-token: write
     uses: ./.github/workflows/pages.yml
+    secrets: inherit

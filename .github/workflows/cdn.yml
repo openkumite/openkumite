@@ -1,0 +1,52 @@
+# A release's files on the download CDN (Cloudflare R2, https://download.openkumiteengine.dev/TAG/NAME):
+# packaging/cdn/upload.sh. Called by release.yml once the GitHub release has its files; by hand (Actions, cdn, Run
+# workflow) for any earlier release. latest.json follows GitHub's latest release (pre-releases never move it).
+# The Cloudflare secrets live in the "cloudflare" environment, open to version tags and main (a run by hand).
+name: cdn
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release's tag (vX.Y.Z)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    environment:
+      name: cloudflare
+      url: https://download.openkumiteengine.dev/${{ inputs.tag }}/release.json
+    concurrency:
+      group: cdn
+      cancel-in-progress: false
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: The release's files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release download "$TAG" --dir dist
+      - name: Upload
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          PUBLISHED=$(gh release view "$TAG" --json publishedAt --jq .publishedAt); export PUBLISHED
+          flag=""; [ "$latest" = "$TAG" ] && flag=--latest
+          bash packaging/cdn/upload.sh "$TAG" dist ${flag:+"$flag"} | tee upload.log
+          { echo "### $TAG on the CDN"; echo; tail -1 upload.log; [ -n "$flag" ] && echo "latest.json -> $TAG"; } >> "$GITHUB_STEP_SUMMARY"
