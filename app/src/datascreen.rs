@@ -71,6 +71,8 @@ impl Root {
                 match crate::new_app(self.root.clone(), self.args.clone()) {
                     Ok(Some(mut app)) => {
                         if let (Some(w), Some(r)) = (d.window.take(), d.renderer.take()) {
+                            // (the game's own name back: the screen's was "game data")
+                            w.set_title("OpenKumite");
                             app.start(event_loop, w, r);
                         }
                         self.now = Now::Game(Box::new(app));
