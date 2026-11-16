@@ -207,11 +207,11 @@
         this browser (nothing is uploaded), and keeps the result for every visit after.</p>
       <div class="parts" id="parts">
         <div class="part" data-part="t3"><h3>Tekken 3</h3><p>PlayStation, USA (SLUS-00402): the game. Needed. Choose its
-          disc image's Track 1 and Track 2 (.bin).</p><p class="state"></p><div class="row">
+          disc image's files: the .cue with its .bin files, or one .chd, .iso or .pbp file.</p><p class="state"></p><div class="row">
           <button class="btn primary" type="button" data-do="convert">Choose disc image…</button>
           <button class="btn danger" type="button" data-do="remove" hidden>Remove</button></div></div>
         <div class="part" data-part="t2"><h3>Tekken 2</h3><p>PlayStation, USA v1.1: its fighters join the roster.
-          Optional. Choose its disc image's tracks (.bin).</p><p class="state"></p><div class="row">
+          Optional. Choose its disc image's files (.cue with its .bin files, .chd, .iso, ...).</p><p class="state"></p><div class="row">
           <button class="btn" type="button" data-do="convert">Choose disc image…</button>
           <button class="btn danger" type="button" data-do="remove" hidden>Remove</button></div></div>
         <div class="part" data-part="cs"><h3>Counter-Strike</h3><p>Half-Life: its levels as arenas, two more Tekken
@@ -807,25 +807,28 @@
     for (const row of document.querySelectorAll('.part')) {
       const m = state?.[row.dataset.part];
       const line = row.querySelector('.state');
+      // (what the copy did not hold: an ISO holds no movies or XA music; kumite_packs::missing_note says it alike)
+      const missing = m?.source?.missing ?? [];
+      const without = missing.length ? ` Without ${missing.length > 1 ? `${missing.slice(0, -1).join(', ')} and ${missing.at(-1)}` : missing[0]}: the disc image did not hold them. Convert again from a full image (.cue with its .bin files, .chd, ...) to add them.` : '';
       line.textContent = !convertible ? 'This browser can’t convert here (no file storage for pages): use a folder made by kumite_converter.'
-        : m ? 'Converted.' : 'Not converted.';
+        : m ? `Converted.${without}` : 'Not converted.';
       line.classList.toggle('done', !!m);
       row.querySelector('[data-do="convert"]').textContent = m ? 'Convert again…' : row.dataset.part === 'cs' ? 'Choose folder…' : 'Choose disc image…';
       row.querySelector('[data-do="convert"]').disabled = !convertible || working;
       row.querySelector('[data-do="remove"]').hidden = !m || working;
     }
   };
-  // the files the player picked for a part (its row's file input): a disc image's tracks (track 1 first, then 2 and
-  // 3), or the Half-Life folder's levels and textures as [path below the folder, File]
+  // a disc image's files, in every format the converters read (ok_converter_common's disc module)
+  const DISC_FILES = ['.cue', '.bin', '.iso', '.chd', '.ccd', '.img', '.mds', '.mdf', '.ecm', '.pbp', '.wav'];
+  // the files the player picked for a part (its row's file input) as [name, File]: a disc image's (the converter
+  // finds the image among them: the .cue, else a .chd, .pbp, ...), or the Half-Life folder's levels and textures,
+  // by path below the folder
   const picked = (part, input) => {
     const all = [...input.files];
     if (part === 'cs') {
       return all.filter((f) => /\.(bsp|wad)$/i.test(f.name)).map((f) => [(f.webkitRelativePath || f.name).split('/').slice(1).join('/'), f]);
     }
-    const bins = all.filter((f) => /\.bin$/i.test(f.name));
-    const track = (n) => bins.find((f) => f.name.includes(`Track ${n}`));
-    const first = track(1) ?? [...bins].sort((a, b) => b.size - a.size)[0];
-    return first ? [first, track(2), track(3)].filter(Boolean) : [];
+    return all.filter((f) => DISC_FILES.some((e) => f.name.toLowerCase().endsWith(e))).map((f) => [f.name, f]);
   };
   const NAMES = { t3: 'Tekken 3', t2: 'Tekken 2', cs: 'Counter-Strike' };
   const work = async (data) => {
@@ -864,12 +867,12 @@
   for (const row of document.querySelectorAll('.part')) {
     const part = row.dataset.part;
     const input = Object.assign(document.createElement('input'), { type: 'file', multiple: true, hidden: true, id: `pick-${part}` });
-    if (part === 'cs') input.webkitdirectory = true; else input.accept = '.bin,.BIN';
+    if (part === 'cs') input.webkitdirectory = true; else input.accept = DISC_FILES.join(',');
     row.append(input);
     row.querySelector('[data-do="convert"]').onclick = () => { ask(); input.value = ''; input.click(); };
     input.onchange = async () => {
       const files = picked(part, input);
-      if (!files.length) return message(part === 'cs' ? 'That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.' : 'Choose the disc image’s tracks (.bin files).');
+      if (!files.length) return message(part === 'cs' ? 'That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.' : 'Choose the disc image’s files: the .cue with its .bin files, or one .chd, .iso or .pbp file.');
       const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
       await work({ job: 'convert', part, files, now });
     };

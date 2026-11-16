@@ -53,6 +53,16 @@ impl Part {
     }
 }
 
+/// What a part's copy did not hold (its manifest's `source.missing`: an ISO holds no movies or XA music, an image
+/// without its track 2 no CD audio), as the Game data screen says it; None when it held everything. The game plays
+/// without them.
+pub fn missing_note(manifest: &Value) -> Option<String> {
+    let missing: Vec<&str> = manifest["source"]["missing"].as_array()?.iter().filter_map(Value::as_str).collect();
+    let (last, rest) = missing.split_last()?;
+    let what = if rest.is_empty() { last.to_string() } else { format!("{} and {last}", rest.join(", ")) };
+    Some(format!("Without {what}: the disc image did not hold them. Convert again from a full image (.cue with its .bin files, .chd, ...) to add them."))
+}
+
 /// The folder of a pack's files the game reads as they are (a layer of its view, under the extras).
 pub const ASSETS: &str = ok_tekken2_converter::pack::ASSETS;
 
@@ -147,4 +157,18 @@ pub fn install(base: &dyn Vfs, packs: &[(Part, &dyn Vfs)], extras: &dyn Vfs, log
     manifest.insert("fingerprint".into(), json!(ok_tekken3_converter::convert_all::fingerprint(&view)?));
     extras.write("manifest.json", serde_json::to_string_pretty(&Value::Object(manifest))?.as_bytes())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_the_copy_did_not_hold() {
+        assert_eq!(missing_note(&serde_json::json!({"source": {"file": "t.bin"}})), None);
+        assert_eq!(missing_note(&serde_json::json!({"source": {"missing": []}})), None);
+        let note = missing_note(&serde_json::json!({"source": {"missing": ["movies", "XA music", "CD audio"]}})).unwrap();
+        assert!(note.starts_with("Without movies, XA music and CD audio: "), "{note}");
+        assert!(missing_note(&serde_json::json!({"source": {"missing": ["CD audio"]}})).unwrap().starts_with("Without CD audio: "));
+    }
 }
