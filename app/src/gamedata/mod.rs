@@ -817,7 +817,12 @@ impl Screen {
             y += 34.0 * u;
             say(&painter, &mut y, &format!("{} of {}", gb(done), gb(all)), small, GREY);
         } else if let Some(p) = &status.pending {
-            say(&painter, &mut y, &format!("Converting {} needs about {} free; this device has {}.", title_case(part_title(p.part)), gb(p.needed), gb(p.free)), small + 2.0, WHITE);
+            // (a browser gives a site an allowance, often less than the disk's free space; rounded so that the space
+            // short never reads as enough: the need up, the free space down)
+            let place = if cfg!(target_arch = "wasm32") { "this browser lets the game use" } else { "this device has" };
+            let need = p.needed.div_ceil(100_000_000) * 100_000_000;
+            let free = p.free / 100_000_000 * 100_000_000;
+            say(&painter, &mut y, &format!("Converting {} needs about {} free; {place} {}.", title_case(part_title(p.part)), gb(need), gb(free)), small + 2.0, WHITE);
             say(&painter, &mut y, &format!("Image: {}", p.image), small, GREY);
             say(&painter, &mut y, "Free some space and choose the image again, or try anyway: it stops cleanly if the space runs out.", small, GREY);
         } else if let Some(o) = &status.outcome {
@@ -1106,9 +1111,11 @@ mod tests {
     fn run(s: &mut Screen, st: &Status) -> Vec<Command> {
         let ctx = egui::Context::default();
         let mut out = Vec::new();
-        let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 720.0))), ..Default::default() }, |ui| {
+        let mut o = ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 720.0))), ..Default::default() }, |ui| {
             out = s.frame(ui.ctx(), st);
         });
+        // (no renderer takes the fonts' textures: dropped on purpose, which egui checks in debug builds)
+        o.textures_delta.clear();
         out
     }
 

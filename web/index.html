@@ -811,8 +811,13 @@
       const image = (files.find(([n]) => /\.(cue|chd|pbp|iso)$/i.test(n)) ?? files.find(([n]) => ARCHIVE.test(n)) ?? files[0])[0];
       const needed = NEEDED[part] + (files.some(([n]) => ARCHIVE.test(n)) ? 0.9e9 : 0);
       await ask();
+      // the site's allowance left (the browser's, often less than the disk's free space), with what this conversion
+      // writes over: the part's own packs (read now: the sizes kept may be from before a job or not read yet), and an
+      // archive's image or a copy left by a job stopped short
       const { quota = 0, usage = 0 } = await navigator.storage.estimate().catch(() => ({}));
-      const free = Math.max(0, quota - usage + this.sizes[part]);
+      const own = [...STORES[part], ...(part === 't3' ? ['extras.pack', 'extras.idx'] : []), 'unpacked.tmp', 'assets.pack.new', 'assets.idx.new'];
+      const reclaimed = (await Promise.all(own.map(fileSize))).reduce((a, b) => a + b, 0);
+      const free = Math.max(0, quota - usage + reclaimed);
       const pending = { part, files, image, needed: Math.round(needed), free: Math.round(free) };
       if (quota && free < needed) { this.pending = pending; return; }
       this.convert(pending);
