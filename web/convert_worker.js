@@ -1,11 +1,12 @@
 // The game data converted in this browser (index.html's Game data): kumite_convert_web in wasm (pkg/, web/build.sh),
 // one thread, with the functions it imports: the picked files (FileReaderSync on slices, 1 MB read ahead), the packs in
 // the site's storage (OPFS, through sync access handles: store 2k the pack, 2k + 1 its index, for the base, Tekken 2,
-// Counter-Strike and the extras) and the log. Messages: {job: 'state' | 'convert' | 'remove' | 'install', part?,
+// Counter-Strike and the extras; store 8 the scratch file an archive is unpacked into while a job converts) and the
+// log. Messages: {job: 'state' | 'convert' | 'remove' | 'install', part?,
 // files?: [[path, File]] (a disc image's files by name, the Half-Life folder's by path), now?}; replies {log} as it
 // goes, then {done: state} or {error, quota}.
 const ready = import('./pkg/kumite_convert_web.js').then(async (m) => { await m.default(); return m; });
-const STORES = ['assets.pack', 'assets.idx', 't2.pack', 't2.idx', 'cs.pack', 'cs.idx', 'extras.pack', 'extras.idx'];
+const STORES = ['assets.pack', 'assets.idx', 't2.pack', 't2.idx', 'cs.pack', 'cs.idx', 'extras.pack', 'extras.idx', 'unpacked.tmp'];
 
 let files = [];   // the picked files, by id
 let handles = []; // the stores, by number: a sync access handle, or a File (a store the job only reads)
@@ -55,7 +56,7 @@ onmessage = async ({ data }) => {
     const { run, state } = await ready;
     // the packs this job writes (locked while it runs); the others it reads from a snapshot, which leaves them to
     // the game (a Tekken 2 job beside the game playing on Tekken 3's)
-    const writes = data.job === 'state' ? [] : ['extras', ...(data.part ? [data.part === 't3' ? 'assets' : data.part] : [])];
+    const writes = data.job === 'state' ? [] : ['extras', 'unpacked', ...(data.part ? [data.part === 't3' ? 'assets' : data.part] : [])];
     for (const name of STORES) {
       const file = await root.getFileHandle(name, { create: true });
       if (!writes.includes(name.split('.')[0])) { handles.push(await file.getFile()); continue; }

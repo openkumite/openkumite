@@ -207,11 +207,11 @@
         this browser (nothing is uploaded), and keeps the result for every visit after.</p>
       <div class="parts" id="parts">
         <div class="part" data-part="t3"><h3>Tekken 3</h3><p>PlayStation, USA (SLUS-00402): the game. Needed. Choose its
-          disc image's files: the .cue with its .bin files, or one .chd, .iso or .pbp file.</p><p class="state"></p><div class="row">
+          disc image's files: the .cue with its .bin files, or one .chd, .iso, .pbp, .zip or .7z file.</p><p class="state"></p><div class="row">
           <button class="btn primary" type="button" data-do="convert">Choose disc image…</button>
           <button class="btn danger" type="button" data-do="remove" hidden>Remove</button></div></div>
         <div class="part" data-part="t2"><h3>Tekken 2</h3><p>PlayStation, USA v1.1: its fighters join the roster.
-          Optional. Choose its disc image's files (.cue with its .bin files, .chd, .iso, ...).</p><p class="state"></p><div class="row">
+          Optional. Choose its disc image's files (.cue with its .bin files, .chd, .iso, .zip, .7z, ...).</p><p class="state"></p><div class="row">
           <button class="btn" type="button" data-do="convert">Choose disc image…</button>
           <button class="btn danger" type="button" data-do="remove" hidden>Remove</button></div></div>
         <div class="part" data-part="cs"><h3>Counter-Strike</h3><p>Half-Life: its levels as arenas, two more Tekken
@@ -819,7 +819,8 @@
     }
   };
   // a disc image's files, in every format the converters read (ok_converter_common's disc module)
-  const DISC_FILES = ['.cue', '.bin', '.iso', '.chd', '.ccd', '.img', '.mds', '.mdf', '.ecm', '.pbp', '.wav'];
+  const DISC_FILES = ['.cue', '.bin', '.iso', '.chd', '.ccd', '.img', '.mds', '.mdf', '.ecm', '.pbp', '.wav',
+    '.zip', '.7z', '.tar', '.gz', '.tgz', '.xz', '.txz', '.zst', '.tzst'];
   // the files the player picked for a part (its row's file input) as [name, File]: a disc image's (the converter
   // finds the image among them: the .cue, else a .chd, .pbp, ...), or the Half-Life folder's levels and textures,
   // by path below the folder
@@ -872,7 +873,7 @@
     row.querySelector('[data-do="convert"]').onclick = () => { ask(); input.value = ''; input.click(); };
     input.onchange = async () => {
       const files = picked(part, input);
-      if (!files.length) return message(part === 'cs' ? 'That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.' : 'Choose the disc image’s files: the .cue with its .bin files, or one .chd, .iso or .pbp file.');
+      if (!files.length) return message(part === 'cs' ? 'That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.' : 'Choose the disc image’s files: the .cue with its .bin files, or one .chd, .iso, .pbp, .zip or .7z file.');
       const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
       await work({ job: 'convert', part, files, now });
     };

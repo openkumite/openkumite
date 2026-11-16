@@ -90,7 +90,8 @@ pub fn activate(root: &Path) -> State {
 #[derive(Clone, Debug)]
 pub enum Job {
     /// Convert a part from the player's copy: a disc image in any format ok_converter_common reads (Tekken 3, Tekken 2:
-    /// .cue, .bin, .iso, .chd, .ccd, .mds, .ecm, .pbp; the files it names beside it) or the Half-Life folder
+    /// .cue, .bin, .iso, .chd, .ccd, .mds, .ecm, .pbp; the files it names beside it; or an archive of them, .zip, .7z,
+    /// .tar, .gz, .xz, .zst: unpacked into a temporary file in ROOT while it converts) or the Half-Life folder
     /// (Counter-Strike); then the packs installed again.
     Convert(Part, PathBuf),
     /// Remove a pack (or the Tekken 3 pack's files); the rest installed again.
@@ -109,14 +110,14 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
             let ctx = Ctx { out: &out, log, jobs };
             match part {
                 Part::T3 => {
-                    let disc = Disc::open_path(from)?;
+                    let disc = Disc::open_path_in(from, root, log)?;
                     log(&disc.summary());
                     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                     ok_tekken3_converter::convert_all::convert_resumable(&ctx, disc.data()?, disc.audio(2).map(|t| t as &dyn DiscFile), &now)?;
                 }
                 // (a pack cut off is no pack: removed, the one before with it)
                 Part::T2 => {
-                    let disc = Disc::open_path(from)?;
+                    let disc = Disc::open_path_in(from, root, log)?;
                     log(&disc.summary());
                     let cdda = [2, 3].map(|n| disc.audio(n).map(|t| Box::new(t.clone()) as Box<dyn DiscFile>));
                     ok_tekken2_converter::pack::convert(&ctx, disc.data()?, &cdda).inspect_err(|_| drop(remove(&dir(Part::T2, root))))?;

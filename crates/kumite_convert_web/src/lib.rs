@@ -5,7 +5,8 @@
 //! (t2.*, cs.*), and the extras (extras.*: the packs installed, kumite_packs). The page reads the extras over the
 //! Tekken 2 pack's `assets/` over the base (index.html's `stored`).
 //!
-//! The stores, by number: 0, 1 the base's pack and index; 2, 3 Tekken 2's; 4, 5 Counter-Strike's; 6, 7 the extras'.
+//! The stores, by number: 0, 1 the base's pack and index; 2, 3 Tekken 2's; 4, 5 Counter-Strike's; 6, 7 the extras';
+//! 8 the scratch file an archive (.zip, .7z, ...) is unpacked into while a job converts (emptied after it).
 
 use anyhow::{anyhow, bail, Context, Result};
 use kumite_packs::Part;
@@ -141,6 +142,9 @@ impl Store for Opfs {
     }
 }
 
+/// The store an archive is unpacked into.
+const SCRATCH: u32 = 8;
+
 /// A part's pack (the extras: None), as its stores hold it.
 fn pack(part: Option<Part>) -> Result<PackVfs> {
     let first = match part {
@@ -202,8 +206,10 @@ fn job(options: &str) -> Result<String> {
             // a disc image among the files picked (Tekken 3, Tekken 2)
             let disc = || -> Result<Disc> {
                 let picked = Picked(files.clone());
-                let image = main_image(&picked).context("there is no disc image among the files chosen (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm or .pbp)")?;
-                let disc = Disc::open(&picked, &image)?;
+                let image =
+                    main_image(&picked).context("there is no disc image among the files chosen (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm, .pbp, or a .zip, .7z, .tar, .gz, .xz or .zst of it)")?;
+                let scratch = || -> Result<Arc<dyn Store>> { Ok(Arc::new(Opfs(SCRATCH))) };
+                let disc = Disc::open_unpacking(&picked, &image, &scratch, &log)?;
                 log(&disc.summary());
                 Ok(disc)
             };
@@ -234,6 +240,8 @@ fn job(options: &str) -> Result<String> {
                 }
                 Ok(())
             })();
+            // (the unpacked archive's space given back)
+            let _ = Opfs(SCRATCH).truncate(0);
             // (a pack cut off is no pack: emptied; Tekken 3's goes on from its last step next time)
             if converted.is_err() && part != Part::T3 {
                 let _ = out.remove_all("").and_then(|()| out.checkpoint(&[]));

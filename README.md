@@ -40,8 +40,10 @@ from the Game data button on the title screen. Choose:
 
 A disc image in any of these formats (ok_converter_common's `disc` module): a `.cue` with its `.bin` files (or a
 `.bin` alone: a `.cue` beside it is found, and a split image's `Track 2` and `Track 3`), `.chd`, CloneCD `.ccd` with its
-`.img`, Alcohol `.mds` with its `.mdf`, `.ecm`, a popstation `EBOOT.PBP`, or an `.iso`. In the browser, choose all of
-the image's files (the `.cue` and its `.bin` files) at once. An `.iso` keeps only each sector's data: the game plays
+`.img`, Alcohol `.mds` with its `.mdf`, `.ecm`, a popstation `EBOOT.PBP`, or an `.iso`; or any of them in an archive:
+`.zip`, `.7z`, `.tar`, `.gz`, `.xz`, `.zst` (unpacked once into a temporary file beside the game data, or in the
+browser's storage, and removed after the conversion). In the browser, choose all of the image's files (the `.cue` and
+its `.bin` files) at once, or the one archive. An `.iso` keeps only each sector's data: the game plays
 from it, without the movies and the streamed (XA) music, and the Game data screen says so; a full image converted again
 adds them. The fingerprint (online play) is the same either way: it covers no music or movies.
 

@@ -40,7 +40,8 @@ public class OpenKumiteActivity extends NativeActivity {
      *  files: DISC_FILES), the Half-Life folder (its levels and textures: .bsp, .wad). */
     public static final int CONVERTED = 0, ZIP = 1, DISC = 2, GAME = 3;
     /** A disc image's files, in every format the converters read (ok_converter_common's disc module). */
-    private static final String[] DISC_FILES = {".cue", ".bin", ".iso", ".chd", ".ccd", ".img", ".mds", ".mdf", ".ecm", ".pbp", ".wav"};
+    private static final String[] DISC_FILES = {".cue", ".bin", ".iso", ".chd", ".ccd", ".img", ".mds", ".mdf", ".ecm", ".pbp", ".wav",
+        ".zip", ".7z", ".tar", ".gz", ".tgz", ".xz", ".txz", ".zst", ".tzst"};
     private static final int PICK = 0x4F4B;
 
     @Override
@@ -149,7 +150,7 @@ public class OpenKumiteActivity extends NativeActivity {
             }
         }
         if (files.isEmpty()) {
-            throw new IOException(what == DISC ? "That folder has no disc image in it (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm or .pbp). Choose the folder that holds the disc image's files."
+            throw new IOException(what == DISC ? "That folder has no disc image in it (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm, .pbp, or a .zip or .7z of it). Choose the folder that holds the disc image's files."
                 : "That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.");
         }
         File dir = out.getParentFile();

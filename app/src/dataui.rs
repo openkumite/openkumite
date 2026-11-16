@@ -121,8 +121,13 @@ impl Jobs {
         let busy = self.busy();
         for (k, part) in Part::ALL.into_iter().enumerate() {
             let (what, needs) = match part {
-                Part::T3 => ("Tekken 3 (PlayStation, USA, SLUS-00402): the game. Needed.", "its disc image (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm or .pbp)"),
-                Part::T2 => ("Tekken 2 (PlayStation, USA v1.1): its fighters join the roster. Optional.", "its disc image (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm or .pbp)"),
+                Part::T3 => {
+                    ("Tekken 3 (PlayStation, USA, SLUS-00402): the game. Needed.", "its disc image (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm, .pbp, or a .zip, .7z, .tar, .gz, .xz or .zst of it)")
+                }
+                Part::T2 => (
+                    "Tekken 2 (PlayStation, USA v1.1): its fighters join the roster. Optional.",
+                    "its disc image (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm, .pbp, or a .zip, .7z, .tar, .gz, .xz or .zst of it)",
+                ),
                 Part::Cs => ("Counter-Strike (Half-Life): its levels as arenas, two more Tekken Force stages. Optional.", "the Half-Life folder (with cstrike/ and valve/)"),
             };
             let done = self.state.get(part).is_some();
@@ -227,7 +232,7 @@ pub fn input_in(dir: &Path, part: Part) -> anyhow::Result<PathBuf> {
         dirs.extend(subs);
         k += 1;
     }
-    anyhow::bail!("There is no disc image in that folder (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm or .pbp). Choose the folder that holds {}'s disc image.", part.name())
+    anyhow::bail!("There is no disc image in that folder (.cue, .bin, .chd, .iso, .ccd, .mds, .ecm, .pbp, or an archive of it). Choose the folder that holds {}'s disc image.", part.name())
 }
 
 #[cfg(test)]
