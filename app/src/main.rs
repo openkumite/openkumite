@@ -11,6 +11,7 @@ fn main() -> impl std::process::Termination {
 
 /// The terminal that started the game gets its output (`--help`, the log), unless that already goes somewhere.
 #[cfg(windows)]
+#[allow(unsafe_code)] // (the Win32 console FFI)
 fn attach_console() {
     use windows_sys::Win32::System::Console::{AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE};
     // SAFETY: plain Win32 calls with constant arguments
