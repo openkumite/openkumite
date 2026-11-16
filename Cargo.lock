@@ -678,6 +678,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "bzip2"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3a53fac24f34a81bc9954b5d6cfce0c21e18ec6959f44f56e8e90e4bb7c346c"
+dependencies = [
+ "libbz2-rs-sys",
+]
+
+[[package]]
 name = "calloop"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -825,7 +834,7 @@ dependencies = [
  "claxon",
  "crc",
  "flate2",
- "lzma-rust2",
+ "lzma-rust2 0.22.0",
  "num-derive",
  "num-traits",
  "text_io",
@@ -946,6 +955,15 @@ name = "const-oid"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
+
+[[package]]
+name = "constant_time_eq"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb6feb175df65d0a3ccd3e73484e940d0ac664e8034f0519fd49a93db3071d9"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "convert_case"
@@ -1206,6 +1224,12 @@ name = "data-encoding"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
+
+[[package]]
+name = "deflate64"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac6b926516df9c60bfa16e107b21086399f8285a44ca9711344b9e553c5146e2"
 
 [[package]]
 name = "defmt"
@@ -1660,7 +1684,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1726,6 +1750,16 @@ name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
+
+[[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
+]
 
 [[package]]
 name = "find-msvc-tools"
@@ -1979,9 +2013,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
  "rand_core 0.10.1",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2720,7 +2756,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kumite_assets"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "glam",
@@ -2732,7 +2768,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_convert_web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "kumite_packs",
@@ -2746,7 +2782,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_fs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -2755,7 +2791,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_game"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "glam",
@@ -2771,7 +2807,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_net"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bincode",
  "ggrs",
@@ -2782,7 +2818,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_packs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "kumite_assets",
@@ -2795,7 +2831,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_render"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2807,7 +2843,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_sim"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "glam",
@@ -2835,6 +2871,12 @@ name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
+
+[[package]]
+name = "libbz2-rs-sys"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32f454fd6831a29c0e827ed075bca2a15be201bd57f4168f0fd1041124eab17e"
 
 [[package]]
 name = "libc"
@@ -2940,6 +2982,15 @@ name = "lzma-rust2"
 version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7277c9742229dc25243236d578b6471a798c554512c6f6a04365ec2e87c2a3bb"
+
+[[package]]
+name = "lzma-rust2"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1d73c59a56771343712b22ea5615092c612c16ba291c0979e3105dfeec4890"
+dependencies = [
+ "sha2 0.11.1",
+]
 
 [[package]]
 name = "mach2"
@@ -3230,6 +3281,18 @@ name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
+name = "nix"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77730ed34f01f4990cb2ea67fec715ecebc6fab9a6396cf83c5529b13f581bdc"
 dependencies = [
  "bitflags 2.13.2",
  "cfg-if",
@@ -3804,8 +3867,8 @@ dependencies = [
 
 [[package]]
 name = "ok_converter_common"
-version = "0.2.0"
-source = "git+https://github.com/openkumite/ok_converter_common?branch=main#49f757a8dc2c69bd5727f38aea71f0a52c6ead3d"
+version = "0.3.0"
+source = "git+https://github.com/openkumite/ok_converter_common?branch=main#aad758cd9d5c725f522435e173b999fa9f75547b"
 dependencies = [
  "anyhow",
  "chd",
@@ -3813,7 +3876,12 @@ dependencies = [
  "flate2",
  "image",
  "libm",
+ "lzma-rust2 0.25.0",
+ "ruzstd",
  "serde_json",
+ "sevenz-rust2",
+ "tar",
+ "zip",
 ]
 
 [[package]]
@@ -3831,8 +3899,8 @@ dependencies = [
 
 [[package]]
 name = "ok_tekken2_converter"
-version = "0.2.0"
-source = "git+https://github.com/openkumite/ok_tekken2_converter?branch=main#9bd7d7bee12efa5aadd6346a5c6dda1a788e3047"
+version = "0.3.0"
+source = "git+https://github.com/openkumite/ok_tekken2_converter?branch=main#e5f4329854d1e903568109c464d1d201f78947ff"
 dependencies = [
  "anyhow",
  "image",
@@ -3845,8 +3913,8 @@ dependencies = [
 
 [[package]]
 name = "ok_tekken3_converter"
-version = "0.2.0"
-source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#b9ea46eed3325716e371473d849354bfb27a637b"
+version = "0.3.0"
+source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#ec931856af2309f535314e97393e3098d935b892"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3880,7 +3948,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openkumite"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "android_logger",
  "anyhow",
@@ -3972,7 +4040,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4250,6 +4318,12 @@ name = "powerfmt"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a6394b9e965e73d0a289ee54f589087e2c676aedf60885baf52c76b771e4958"
+
+[[package]]
+name = "ppmd-rust"
+version = "1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd4acc8d264ea385db64ccfdcdfd5909ee9eda0975666723d59f3bfec80b3611"
 
 [[package]]
 name = "ppv-lite86"
@@ -4806,7 +4880,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4848,6 +4922,12 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "ruzstd"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 
 [[package]]
 name = "same-file"
@@ -5003,6 +5083,21 @@ name = "serve"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+]
+
+[[package]]
+name = "sevenz-rust2"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5e465701779cbc6d0d10cf907f175035cfdd50b8d3cb628d7f1f435ef02972f"
+dependencies = [
+ "bzip2",
+ "crc32fast",
+ "flate2",
+ "js-sys",
+ "lzma-rust2 0.25.0",
+ "ppmd-rust",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -5441,6 +5536,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5796,6 +5901,12 @@ checksum = "cb30dbbd9036155e74adad6812e9898d03ec374946234fbcebd5dfc7b9187b90"
 dependencies = [
  "rustc-hash 2.1.3",
 ]
+
+[[package]]
+name = "typed-path"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
 
 [[package]]
 name = "typenum"
@@ -6635,7 +6746,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6912,7 +7023,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7187,6 +7298,29 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "zip"
+version = "9.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80cc68510ea7553c30a69c732de5278e94183f68765af6c642dbccefd6ec777e"
+dependencies = [
+ "bzip2",
+ "constant_time_eq",
+ "crc32fast",
+ "deflate64",
+ "flate2",
+ "getrandom 0.4.3",
+ "indexmap",
+ "libc",
+ "lzma-rust2 0.25.0",
+ "memchr",
+ "nix 0.32.0",
+ "ppmd-rust",
+ "typed-path",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
