@@ -1,7 +1,9 @@
 //! The game data's packs, over any `Vfs` (natively folders: app/src/packs.rs; in a browser the pack files the page
 //! keeps: kumite_convert_web): the Tekken 3 pack is the base; the Tekken 2 and Counter-Strike packs (each from its own
 //! copy alone) are installed beside it into the extras, the files they add to or change in the base, with the whole's
-//! manifest.json. The game reads the extras over the packs' `assets/` over the base.
+//! manifest.json. The game reads the extras over the packs' `assets/` over the base. The Tekken 3 arcade pack is
+//! not installed: its stages are files of its own (`assets/arcade/`), outside what the fingerprint covers, so the
+//! game data is the same for online play with it or without.
 
 use anyhow::{Context, Result};
 use ok_converter_common::io::{Ctx, Layered, Sub, Vfs};
@@ -16,10 +18,14 @@ pub enum Part {
     T2,
     /// Counter-Strike: its levels as arenas (optional), a pack.
     Cs,
+    /// Tekken 3, the arcade game: its stages in place of the PlayStation game's (optional), a pack read as it is.
+    Arcade,
 }
 
 impl Part {
-    pub const ALL: [Part; 3] = [Part::T3, Part::T2, Part::Cs];
+    pub const ALL: [Part; 4] = [Part::T3, Part::T2, Part::Cs, Part::Arcade];
+    /// The packs with an `assets/` folder the game reads as it is, the first first.
+    pub const LAYERED: [Part; 3] = [Part::T2, Part::Cs, Part::Arcade];
     /// The packs, in their install order (kumite_converter's: Counter-Strike's then Tekken 2's).
     pub const PACKS: [Part; 2] = [Part::Cs, Part::T2];
 
@@ -28,6 +34,7 @@ impl Part {
             Part::T3 => "Tekken 3",
             Part::T2 => "Tekken 2",
             Part::Cs => "Counter-Strike",
+            Part::Arcade => "Tekken 3 arcade",
         }
     }
 
@@ -37,6 +44,7 @@ impl Part {
             Part::T3 => "t3",
             Part::T2 => ok_tekken2_converter::pack::KIND,
             Part::Cs => ok_hl_cs_converter::pack::KIND,
+            Part::Arcade => ok_tekken3_arcade_converter::pack::KIND,
         }
     }
 
@@ -49,6 +57,7 @@ impl Part {
             }
             Part::T2 => ok_tekken2_converter::pack::manifest(pack).ok(),
             Part::Cs => ok_hl_cs_converter::pack::manifest(pack).ok(),
+            Part::Arcade => ok_tekken3_arcade_converter::pack::manifest(pack).ok(),
         }
     }
 }
@@ -62,6 +71,7 @@ pub struct Manifests {
     pub t3: Option<Value>,
     pub t2: Option<Value>,
     pub cs: Option<Value>,
+    pub arcade: Option<Value>,
 }
 
 impl Manifests {
@@ -70,9 +80,11 @@ impl Manifests {
             Part::T3 => self.t3.as_ref(),
             Part::T2 => self.t2.as_ref(),
             Part::Cs => self.cs.as_ref(),
+            Part::Arcade => self.arcade.as_ref(),
         }
     }
 
+    /// There are packs to install (the arcade pack is not one).
     pub fn has_packs(&self) -> bool {
         self.t2.is_some() || self.cs.is_some()
     }
@@ -108,7 +120,7 @@ pub fn install(base: &dyn Vfs, packs: &[(Part, &dyn Vfs)], extras: &dyn Vfs, log
         match part {
             Part::T2 => m.t2 = man,
             Part::Cs => m.cs = man,
-            Part::T3 => {}
+            Part::T3 | Part::Arcade => {}
         }
     }
     let Some(t3) = m.t3.clone() else { return Ok(()) };
@@ -134,7 +146,7 @@ pub fn install(base: &dyn Vfs, packs: &[(Part, &dyn Vfs)], extras: &dyn Vfs, log
                 ok_tekken2_converter::pack::install(&ctx, p).context("Tekken 2")?;
                 installed.insert("t2".into(), man["source"].clone());
             }
-            Part::T3 => {}
+            Part::T3 | Part::Arcade => {}
         }
     }
     // the base's manifest with the packs (as kumite_converter wrote it with extras) and what they were installed from;

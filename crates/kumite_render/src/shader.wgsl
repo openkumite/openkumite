@@ -120,6 +120,18 @@ fn vs_static(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(
     return o;
 }
 
+// A 2D picture behind everything (an arcade stage's sky): its vertices are the screen's own (clip space), no depth.
+@vertex
+fn vs_backdrop(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VsOut {
+    var o: VsOut;
+    o.clip = vec4(pos.xy, 0.0, 1.0);
+    o.uv = uv;
+    o.color = color;
+    o.world = vec3(0.0);
+    o.normal = vec3(0.0);
+    return o;
+}
+
 // The backdrop drum: rotation-only view, so it stays centred on the camera; drawn first, no depth.
 @vertex
 fn vs_sky(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VsOut {

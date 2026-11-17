@@ -25,7 +25,7 @@ pub struct Jobs {
     pub root: PathBuf,
     pub state: State,
     /// Each part's size on disk (`Part::ALL`'s order).
-    pub sizes: [u64; 3],
+    pub sizes: [u64; 4],
     pub running: Option<Running>,
     /// The last job's, until seen.
     pub outcome: Option<Outcome>,
@@ -50,9 +50,11 @@ pub fn needed(part: Part, input: &Path) -> u64 {
         Part::T3 => 1_500_000_000,
         Part::T2 => 1_800_000_000,
         Part::Cs => 200_000_000,
+        Part::Arcade => 30_000_000,
     };
     let name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let unpacked = if ok_converter_common::disc::is_archive(&name) { 900_000_000 } else { 0 };
+    // (the arcade ROM set's .zip is read as it is)
+    let unpacked = if part != Part::Arcade && ok_converter_common::disc::is_archive(&name) { 900_000_000 } else { 0 };
     base + unpacked
 }
 
@@ -71,7 +73,7 @@ impl Jobs {
     /// The game data in `root`; packs found uninstalled (their Tekken 3 pack changed, or a game before this one) are
     /// installed at once.
     pub fn new(root: &Path) -> Self {
-        let mut j = Self { root: root.to_path_buf(), state: State::default(), sizes: [0; 3], running: None, outcome: None, pending: None, message: None };
+        let mut j = Self { root: root.to_path_buf(), state: State::default(), sizes: [0; 4], running: None, outcome: None, pending: None, message: None };
         j.refresh();
         if j.state.get(Part::T3).is_some() && !j.state.installed {
             j.start(Job::Install, None);
@@ -177,6 +179,7 @@ impl Jobs {
                         Part::T3 => "Tekken 3 is converted: the game can start.",
                         Part::T2 => "Tekken 2 is converted: its fighters are in the roster.",
                         Part::Cs => "Counter-Strike is converted: its levels are arenas now.",
+                        Part::Arcade => "The arcade stages are converted: they replace the PlayStation ones (OPTION, GRAPHICS, STAGES chooses).",
                     };
                     (true, false, note(*p).map_or(done.to_string(), |n| format!("{done} {n}")))
                 }
@@ -253,6 +256,12 @@ impl Jobs {
 pub fn input_in(dir: &Path, part: Part) -> anyhow::Result<PathBuf> {
     if part == Part::Cs {
         return Ok(dir.to_path_buf());
+    }
+    // (the arcade ROM set: its .zip when the folder holds one, else the folder of its files)
+    if part == Part::Arcade {
+        let mut zips: Vec<PathBuf> = std::fs::read_dir(dir)?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("zip"))).collect();
+        zips.sort();
+        return Ok(zips.into_iter().next().unwrap_or_else(|| dir.to_path_buf()));
     }
     let mut dirs = vec![dir.to_path_buf()];
     let mut k = 0;

@@ -331,6 +331,8 @@ pub struct Renderer {
     sampler_filtered: wgpu::Sampler,
     /// Linear, the atlas's addressing: the smooth textures setting.
     sampler_smooth: wgpu::Sampler,
+    /// Sharp texels tiling both ways, and the same filtered.
+    sampler_tiled: [wgpu::Sampler; 2],
     /// The scene's upscale (nearest: a lower resolution shows its pixels) and downscale (linear) to the window.
     blit_nearest: wgpu::Sampler,
     blit_linear: wgpu::Sampler,
@@ -346,6 +348,11 @@ pub struct Renderer {
     blobs: Vec<StaticVertex>,
     static_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
+    backdrop_pipeline: wgpu::RenderPipeline,
+    /// 2D pictures behind everything in the next frames, drawn first in this order (an arcade stage's sky): triangles
+    /// in the original's 4:3 picture's own space (x and y -1..1 across it, y up; a wider window shows more of x),
+    /// each with its texture.
+    pub backdrop: Vec<(Arc<Texture>, Vec<StaticVertex>)>,
     line_pipeline: wgpu::RenderPipeline,
     particle_alpha: wgpu::RenderPipeline,
     particle_add: wgpu::RenderPipeline,
@@ -501,6 +508,17 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let tiled = |filter| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("tiled"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::Repeat,
+                mag_filter: filter,
+                min_filter: filter,
+                ..Default::default()
+            })
+        };
+        let sampler_tiled = [tiled(wgpu::FilterMode::Nearest), tiled(wgpu::FilterMode::Linear)];
         let blit_nearest = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("blit nearest"), ..Default::default() });
         let blit_linear =
             device.create_sampler(&wgpu::SamplerDescriptor { label: Some("blit linear"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
@@ -570,6 +588,7 @@ impl Renderer {
         let skinned_pipeline = make("skinned", &skinned_layout, "vs_skinned", "fs_lit", &skin_vb, true, true, tri, None);
         let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, true, tri, None);
         let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, false, tri, None);
+        let backdrop_pipeline = make("backdrop", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, false, tri, None);
         let line_pipeline = make("lines", &line_layout, "vs_line", "fs_line", &line_vb, false, false, wgpu::PrimitiveTopology::LineList, None);
         // particles: depth-tested against the scene, never written
         let particle_alpha = make("particles alpha", &static_layout, "vs_static", "fs_particle_alpha", &static_vb, false, true, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
@@ -599,6 +618,7 @@ impl Renderer {
             sampler,
             sampler_filtered,
             sampler_smooth,
+            sampler_tiled,
             blit_nearest,
             blit_linear,
             blit_pipeline,
@@ -610,6 +630,8 @@ impl Renderer {
             blobs: Vec::new(),
             static_pipeline,
             sky_pipeline,
+            backdrop_pipeline,
+            backdrop: Vec::new(),
             line_pipeline,
             particle_alpha,
             particle_add,
@@ -766,6 +788,15 @@ impl Renderer {
 
     /// Upload an RGBA8 texture (sRGB colours, alpha 0 = transparent texel).
     pub fn texture(&self, width: u32, height: u32, rgba: &[u8]) -> Arc<Texture> {
+        self.upload(width, height, rgba, [&self.sampler, &self.sampler_smooth])
+    }
+
+    /// Upload an RGBA8 texture that tiles both ways, its texels sharp (or smooth by the setting).
+    pub fn texture_tiled(&self, width: u32, height: u32, rgba: &[u8]) -> Arc<Texture> {
+        self.upload(width, height, rgba, [&self.sampler_tiled[0], &self.sampler_tiled[1]])
+    }
+
+    fn upload(&self, width: u32, height: u32, rgba: &[u8], [sharp, smooth]: [&wgpu::Sampler; 2]) -> Arc<Texture> {
         let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -784,8 +815,8 @@ impl Renderer {
             size,
         );
         let view = tex.create_view(&Default::default());
-        let bind_group = self.bind(&view, &self.sampler);
-        let bind_group_smooth = self.bind(&view, &self.sampler_smooth);
+        let bind_group = self.bind(&view, sharp);
+        let bind_group_smooth = self.bind(&view, smooth);
         Arc::new(Texture { bind_group, bind_group_smooth, texture: tex })
     }
 
@@ -1100,6 +1131,17 @@ impl Renderer {
         {
             let mut pass = begin(&mut enc, pass_desc("stage", true));
             pass.set_bind_group(0, &self.globals_group, &[]);
+            // the 2D pictures behind everything, their 4:3 picture's x brought to the window's
+            let squeeze = (4.0 / 3.0) / self.aspect();
+            for (texture, vertices) in &self.backdrop {
+                let vertices: Vec<StaticVertex> = vertices.iter().map(|v| StaticVertex { pos: [v.pos[0] * squeeze, v.pos[1], 0.0], ..*v }).collect();
+                let vbuf = self.buffer(bytemuck::cast_slice(&vertices), wgpu::BufferUsages::VERTEX);
+                pass.set_pipeline(&self.backdrop_pipeline);
+                pass.set_bind_group(1, texture.group(smooth), &[]);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.draw(0..vertices.len() as u32, 0..1);
+                stats.draw_calls += 1;
+            }
             // the drum goes after the floor without depth (the game's OT 1010 vs 1021), or first on the stage
             // stages.json names
             let order = if cam.sky_first { [(&self.sky_pipeline, sky), (&self.static_pipeline, statics)] } else { [(&self.static_pipeline, statics), (&self.sky_pipeline, sky)] };

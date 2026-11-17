@@ -209,9 +209,10 @@ impl Display {
         }
     }
 
-    /// A preset keeping `g`'s statistics overlay (a tool, not a picture setting).
+    /// A preset keeping `g`'s statistics overlay (a tool, not a picture setting) and its stages (which game's, not
+    /// how they are drawn).
     pub fn preset_over(&self, p: Preset, g: &Graphics) -> Graphics {
-        Graphics { stats: g.stats, ..self.preset(p) }
+        Graphics { stats: g.stats, arcade_stages: g.arcade_stages, ..self.preset(p) }
     }
 
     /// The defaults (a 960x720 window at 1X), as this display can show them.
@@ -305,13 +306,15 @@ pub struct Graphics {
     pub scale: f32,
     pub vsync: bool,
     pub smooth_textures: bool,
+    /// The arcade game's stages in place of the PlayStation game's, where the arcade pack has them.
+    pub arcade_stages: bool,
     /// The video statistics in the corner (FPS, frame times, resolutions, the GPU).
     pub stats: bool,
 }
 
 impl Default for Graphics {
     fn default() -> Self {
-        Self { display: DisplayMode::Window, resolution: [960, 720], scale: 1.0, vsync: true, smooth_textures: false, stats: false }
+        Self { display: DisplayMode::Window, resolution: [960, 720], scale: 1.0, vsync: true, smooth_textures: false, arcade_stages: true, stats: false }
     }
 }
 
@@ -359,6 +362,9 @@ impl Graphics {
         }
         if flag("--stats") {
             self.stats = true;
+        }
+        if let Some(s) = arg("--stages") {
+            self.arcade_stages = s == "arcade";
         }
         if let Some(t) = arg("--textures") {
             self.smooth_textures = matches!(t.as_str(), "smooth" | "linear" | "filtered");

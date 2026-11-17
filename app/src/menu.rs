@@ -1861,7 +1861,7 @@ pub struct GraphicsMenu {
     done: bool,
 }
 
-const GRAPHICS_ROWS: usize = 9;
+const GRAPHICS_ROWS: usize = 10;
 
 impl GraphicsMenu {
     pub fn new(settings: crate::graphics::Graphics, display: crate::graphics::Display, difficulty: usize) -> Self {
@@ -1890,6 +1890,8 @@ impl GraphicsMenu {
             ("3D SCALE", Some(format!("{}X", g.scale))),
             ("VSYNC", Some(vsync.to_string())),
             ("TEXTURES", Some(if g.smooth_textures { "SMOOTH" } else { "SHARP" }.to_string())),
+            // (the arcade game's stages, where the Game data has them)
+            ("STAGES", Some(if g.arcade_stages { "ARCADE" } else { "PLAYSTATION" }.to_string())),
             ("STATS", Some(if g.stats { "ON" } else { "OFF" }.to_string())),
             ("RECOMMENDED", None),
             ("DEFAULT", None),
@@ -1919,8 +1921,8 @@ impl GraphicsMenu {
                 self.done = true;
             }
             // RECOMMENDED / DEFAULT: the settings chosen for the screen and the GPU, or the defaults
-            Key::Start | Key::Button(_) if matches!(self.cursor, 6 | 7) => {
-                let p = if self.cursor == 6 { crate::graphics::Preset::Recommended } else { crate::graphics::Preset::Default };
+            Key::Start | Key::Button(_) if matches!(self.cursor, 7 | 8) => {
+                let p = if self.cursor == 7 { crate::graphics::Preset::Recommended } else { crate::graphics::Preset::Default };
                 self.settings = self.display.preset_over(p, &self.settings);
                 sfx::play(sfx::confirm());
                 return Some(Outcome::Graphics(self.settings.clone()));
@@ -1956,7 +1958,8 @@ impl GraphicsMenu {
                     3 if cfg!(target_arch = "wasm32") => return None,
                     3 => g.vsync = !g.vsync,
                     4 => g.smooth_textures = !g.smooth_textures,
-                    5 => g.stats = !g.stats,
+                    5 => g.arcade_stages = !g.arcade_stages,
+                    6 => g.stats = !g.stats,
                     _ => return None,
                 }
                 sfx::play(sfx::cursor());
@@ -1971,7 +1974,7 @@ impl GraphicsMenu {
         art.text(painter, v, 1, 6, crate::art::CENTRE - art.text_w(1, "GRAPHICS") / 2.0, 84.0, "GRAPHICS", Color32::WHITE);
         for (k, (label, value)) in self.rows().iter().enumerate() {
             // (the actions a little apart from the settings)
-            let y = 136.0 + 32.0 * k as f32 + if k >= 6 { 10.0 } else { 0.0 };
+            let y = 136.0 + 32.0 * k as f32 + if k >= 7 { 10.0 } else { 0.0 };
             let colour = if k == self.cursor { 5 } else { 6 };
             match value {
                 Some(val) => {

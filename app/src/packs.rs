@@ -5,6 +5,8 @@
 //! ```text
 //! ROOT/packs/t2/       the Tekken 2 pack (ok_tekken2_converter: its disc alone)
 //! ROOT/packs/cs/       the Counter-Strike pack (ok_hl_cs_converter: the game folder alone)
+//! ROOT/packs/t3arcade/ the Tekken 3 arcade pack (ok_tekken3_arcade_converter: the ROM set alone); not installed, its
+//!                      `assets/arcade/` stages are read as they are
 //! ROOT/extras/         the packs installed: the files they add to or change in the Tekken 3 pack, and manifest.json
 //! ```
 //!
@@ -46,7 +48,7 @@ pub struct State {
 impl State {
     pub fn of(root: &Path) -> Self {
         let m = |p: Part| p.manifest(&StdFs(dir(p, root)));
-        let manifests = kumite_packs::Manifests { t3: m(Part::T3), t2: m(Part::T2), cs: m(Part::Cs) };
+        let manifests = kumite_packs::Manifests { t3: m(Part::T3), t2: m(Part::T2), cs: m(Part::Cs), arcade: m(Part::Arcade) };
         let installed = manifests.installed(&StdFs(root.join(EXTRAS)));
         Self { manifests, installed }
     }
@@ -67,11 +69,11 @@ impl State {
 
 /// The layers the game reads over ROOT, the first first: the extras, then the packs' own files.
 fn layers(root: &Path, state: &State) -> Vec<PathBuf> {
-    if !state.has_packs() {
-        return Vec::new();
+    let mut out = Vec::new();
+    if state.has_packs() {
+        out.push(root.join(EXTRAS));
     }
-    let mut out = vec![root.join(EXTRAS)];
-    for part in Part::PACKS.into_iter().rev() {
+    for part in Part::LAYERED {
         let assets = dir(part, root).join(kumite_packs::ASSETS);
         if state.get(part).is_some() && assets.is_dir() {
             out.push(assets);
@@ -182,6 +184,14 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync), cancel: &AtomicB
                     let (game, _) = ok_hl_cs_converter::game::game_root(from)?;
                     ok_hl_cs_converter::pack::convert(&ctx, &StdFs(game)).inspect_err(|_| drop(remove(&dir(Part::Cs, root))))?;
                 }
+                // (the ROM set: MAME's .zip, or the folder of its files)
+                Part::Arcade => {
+                    use ok_tekken3_arcade_converter::roms::{FolderRoms, RomSet, ZipRoms};
+                    let folder = StdFs(from.clone());
+                    let roms: Box<dyn RomSet + '_> =
+                        if from.is_dir() { Box::new(FolderRoms(&folder)) } else { Box::new(ZipRoms::new(std::fs::File::open(from).with_context(|| format!("cannot open {}", from.display()))?)?) };
+                    ok_tekken3_arcade_converter::pack::convert(&ctx, roms.as_ref()).inspect_err(|_| drop(remove(&dir(Part::Arcade, root))))?;
+                }
             }
         }
         Job::Remove(Part::T3) => {
@@ -192,6 +202,10 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync), cancel: &AtomicB
         }
         Job::Remove(part) => remove(&dir(*part, root))?,
         Job::Install => {}
+    }
+    // (the arcade pack is not installed: nothing of the extras changes with it)
+    if matches!(job, Job::Convert(Part::Arcade, _) | Job::Remove(Part::Arcade)) {
+        return Ok(());
     }
     install(root, log, cancel)
 }
@@ -232,6 +246,30 @@ mod tests {
         install(&dir, &|_| {}, &AtomicBool::new(false)).unwrap();
         assert!(!dir.join(EXTRAS).exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The arcade pack is read as it is, no extras made: with `OK_ARCADE_ROMS` (MAME's tekken3.zip, or its folder).
+    #[test]
+    fn the_arcade_pack_is_a_layer_of_its_own() {
+        let Ok(roms) = std::env::var("OK_ARCADE_ROMS") else {
+            eprintln!("OK_ARCADE_ROMS is not set: skipped");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("ok_packs_arcade_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        run(&root, &Job::Convert(Part::Arcade, roms.into()), &|_| {}, &AtomicBool::new(false)).unwrap();
+        let state = State::of(&root);
+        assert!(state.get(Part::Arcade).is_some() && !state.has_packs() && state.installed && !root.join(EXTRAS).exists());
+        assert_eq!(layers(&root, &state), vec![dir(Part::Arcade, &root).join(kumite_packs::ASSETS)]);
+        for n in 0..13 {
+            let stage = kumite_assets::Stage::load(&dir(Part::Arcade, &root).join(format!("assets/arcade/stage_{n:02}.glb"))).unwrap();
+            assert!(stage.sky_model && stage.sky_cull && !stage.sky.is_empty() && !stage.meshes.is_empty() && stage.floor_period == Some([25.0, 25.0]), "stage {n}");
+            // (its sky's panorama: the seventh stage has none)
+            assert_eq!(stage.sky_picture.is_some(), n != 6, "stage {n}");
+        }
+        run(&root, &Job::Remove(Part::Arcade), &|_| {}, &AtomicBool::new(false)).unwrap();
+        assert!(State::of(&root).get(Part::Arcade).is_none());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// The Game data screen's jobs from the player's copies to the game's view:

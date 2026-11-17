@@ -363,6 +363,11 @@ fn dropped(part: Part, paths: &[PathBuf]) -> Result<PathBuf, String> {
     if part == Part::Cs {
         return Ok(if first.is_dir() { first.clone() } else { first.parent().map_or_else(|| first.clone(), Path::to_path_buf) });
     }
+    // (the arcade ROM set: its .zip, a folder of its files, or those files themselves: their folder)
+    if part == Part::Arcade && !first.is_dir() {
+        let zip = paths.len() == 1 && first.extension().is_some_and(|x| x.eq_ignore_ascii_case("zip"));
+        return Ok(if zip { first.clone() } else { first.parent().map_or_else(|| first.clone(), Path::to_path_buf) });
+    }
     if first.is_dir() {
         return crate::dataui::input_in(first, part).map_err(|e| format!("{e:#}"));
     }
@@ -392,10 +397,15 @@ const IMAGES: [&str; 38] = [
 /// The system's dialog for the part's input: a disc image, or the game folder.
 #[cfg(not(target_arch = "wasm32"))]
 fn choose(part: Part) -> Option<PathBuf> {
-    let title = format!("{}: {}", part.name(), if part == Part::Cs { "the Half-Life folder" } else { "the disc image (.cue, .bin, .chd, .iso, ...; or a .zip, .7z of it)" });
-    let d = rfd::FileDialog::new().set_title(title);
+    let what = match part {
+        Part::Cs => "the Half-Life folder",
+        Part::Arcade => "the ROM set (MAME's tekken3.zip)",
+        _ => "the disc image (.cue, .bin, .chd, .iso, ...; or a .zip, .7z of it)",
+    };
+    let d = rfd::FileDialog::new().set_title(format!("{}: {what}", part.name()));
     match part {
         Part::Cs => d.pick_folder(),
+        Part::Arcade => d.add_filter("ROM set (.zip)", &["zip", "ZIP"]).pick_file(),
         _ => d.add_filter("Disc image (.cue, .bin, .iso, .chd, .ccd, .img, .mds, .mdf, .ecm, .pbp; .zip, .7z, .tar, .gz, .xz, .zst)", &IMAGES).pick_file(),
     }
 }

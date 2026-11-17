@@ -151,6 +151,8 @@ fn pack(part: Option<Part>) -> Result<PackVfs> {
         Some(Part::T3) => 0,
         Some(Part::T2) => 2,
         Some(Part::Cs) => 4,
+        // shortcut: the arcade pack is not converted in a browser yet (its stores and the page's side are to do)
+        Some(Part::Arcade) => bail!("the arcade stages are not converted in a browser yet"),
         None => 6,
     };
     PackVfs::open(Box::new(Opfs(first)), Box::new(Opfs(first + 1)))
@@ -183,7 +185,7 @@ pub fn state() -> Result<String, String> {
 
 fn manifests() -> Result<kumite_packs::Manifests> {
     let m = |p: Part| -> Result<Option<Value>> { Ok(p.manifest(&pack(Some(p))?)) };
-    Ok(kumite_packs::Manifests { t3: m(Part::T3)?, t2: m(Part::T2)?, cs: m(Part::Cs)? })
+    Ok(kumite_packs::Manifests { t3: m(Part::T3)?, t2: m(Part::T2)?, cs: m(Part::Cs)?, arcade: None })
 }
 
 fn state_json() -> Result<Value> {
@@ -237,6 +239,7 @@ fn job(options: &str) -> Result<String> {
                         };
                         ok_hl_cs_converter::pack::convert(&ctx, game.as_ref())?;
                     }
+                    Part::Arcade => bail!("the arcade stages are not converted in a browser yet"),
                 }
                 Ok(())
             })();

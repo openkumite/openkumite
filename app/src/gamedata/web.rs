@@ -14,10 +14,11 @@ pub enum Part {
     T3,
     T2,
     Cs,
+    Arcade,
 }
 
 impl Part {
-    pub const ALL: [Part; 3] = [Part::T3, Part::T2, Part::Cs];
+    pub const ALL: [Part; 4] = [Part::T3, Part::T2, Part::Cs, Part::Arcade];
 
     /// Its short name (the page's, the packs').
     pub fn kind(self) -> &'static str {
@@ -25,6 +26,7 @@ impl Part {
             Part::T3 => "t3",
             Part::T2 => "t2",
             Part::Cs => "cs",
+            Part::Arcade => "t3arcade",
         }
     }
 }
