@@ -5365,9 +5365,10 @@ fn sky_backdrop(cam: &Camera, scene: &Scene) -> Vec<(Arc<kumite_render::Texture>
     let f = (cam.target - cam.eye).normalize_or_zero();
     let turn = 4096.0 / std::f32::consts::TAU;
     let (yaw, pitch) = (f.x.atan2(-f.z) * turn, -f.y.clamp(-1.0, 1.0).asin() * turn);
-    // shortcut: a sky that is not a whole number of tiles a turn (two of them) jumps where the heading wraps, here
-    // behind the fighters' first view; where the arcade game's yaw wraps is not read from its program
-    let scroll = yaw * 512.0 * 360.0 / (p.fov * 4096.0);
+    // a full turn in columns: 512 a `fov`; a picture of a whole number of tiles just short of that (two of the
+    // arcade game's, where its sky jumps as the yaw wraps) is turned once a turn instead: no jump, 2 % slower at most
+    let turn = 512.0 * 360.0 / p.fov;
+    let scroll = yaw / 4096.0 * if (turn - w).abs() < 64.0 { *w } else { turn };
     let mut y = -pitch * p.pitchmul / 256.0 + p.ybase;
     y = p.max_y.map_or(y, |m| y.min(m));
     y = p.min_y.map_or(y, |m| y.max(m));

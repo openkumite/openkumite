@@ -151,8 +151,8 @@ fn pack(part: Option<Part>) -> Result<PackVfs> {
         Some(Part::T3) => 0,
         Some(Part::T2) => 2,
         Some(Part::Cs) => 4,
-        // shortcut: the arcade pack is not converted in a browser yet (its stores and the page's side are to do)
-        Some(Part::Arcade) => bail!("the arcade stages are not converted in a browser yet"),
+        // (store 8 is the scratch file)
+        Some(Part::Arcade) => 9,
         None => 6,
     };
     PackVfs::open(Box::new(Opfs(first)), Box::new(Opfs(first + 1)))
@@ -176,7 +176,7 @@ pub fn run(options: &str) -> Result<String, String> {
     job(options).map_err(|e| format!("{e:#}"))
 }
 
-/// The game data's state, JSON: `{"t3": manifest | null, "t2": ..., "cs": ..., "installed": bool, "fingerprint":
+/// The game data's state, JSON: `{"t3": manifest | null, "t2": ..., "cs": ..., "t3arcade": ..., "installed": bool, "fingerprint":
 /// the game's (the extras' when installed, else the base's)}`.
 #[wasm_bindgen]
 pub fn state() -> Result<String, String> {
@@ -185,7 +185,7 @@ pub fn state() -> Result<String, String> {
 
 fn manifests() -> Result<kumite_packs::Manifests> {
     let m = |p: Part| -> Result<Option<Value>> { Ok(p.manifest(&pack(Some(p))?)) };
-    Ok(kumite_packs::Manifests { t3: m(Part::T3)?, t2: m(Part::T2)?, cs: m(Part::Cs)?, arcade: None })
+    Ok(kumite_packs::Manifests { t3: m(Part::T3)?, t2: m(Part::T2)?, cs: m(Part::Cs)?, arcade: m(Part::Arcade)? })
 }
 
 fn state_json() -> Result<Value> {
@@ -193,7 +193,7 @@ fn state_json() -> Result<Value> {
     let extras = pack(None)?;
     let installed = m.installed(&extras);
     let manifest: Option<Value> = if m.has_packs() && installed { serde_json::from_slice(&extras.read("manifest.json")?).ok() } else { m.t3.clone() };
-    Ok(json!({"t3": m.t3, "t2": m.t2, "cs": m.cs, "installed": installed,
+    Ok(json!({"t3": m.t3, "t2": m.t2, "cs": m.cs, "t3arcade": m.arcade, "installed": installed,
               "fingerprint": manifest.as_ref().and_then(|v| v["fingerprint"].as_str())}))
 }
 
@@ -239,7 +239,17 @@ fn job(options: &str) -> Result<String> {
                         };
                         ok_hl_cs_converter::pack::convert(&ctx, game.as_ref())?;
                     }
-                    Part::Arcade => bail!("the arcade stages are not converted in a browser yet"),
+                    // (the arcade ROM set: MAME's .zip alone, else the picked files by name)
+                    Part::Arcade => {
+                        use ok_tekken3_arcade_converter::roms::{FolderRoms, RomSet, ZipRoms};
+                        let folder = GameFolder(files.clone());
+                        let zip = files.iter().find(|(name, _)| name.to_ascii_lowercase().ends_with(".zip")).filter(|_| files.len() == 1);
+                        let roms: Box<dyn RomSet + '_> = match zip {
+                            Some((_, &id)) => Box::new(ZipRoms::new(std::io::BufReader::with_capacity(1 << 16, Reader { id, pos: 0, size: okc_input_size(id) as u64 }))?),
+                            None => Box::new(FolderRoms(&folder)),
+                        };
+                        ok_tekken3_arcade_converter::pack::convert(&ctx, roms.as_ref())?;
+                    }
                 }
                 Ok(())
             })();
@@ -259,6 +269,10 @@ fn job(options: &str) -> Result<String> {
         }
         "install" => {}
         other => bail!("no job {other:?}"),
+    }
+    // (the arcade pack is not installed: nothing of the extras changes with it)
+    if o["part"] == Part::Arcade.kind() {
+        return Ok(state_json()?.to_string());
     }
     let base = pack(Some(Part::T3))?;
     let (t2, cs) = (pack(Some(Part::T2))?, pack(Some(Part::Cs))?);

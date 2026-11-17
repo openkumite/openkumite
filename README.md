@@ -41,7 +41,7 @@ copied; the space it needs is checked before it starts. Choose:
 | Tekken 3 (PlayStation, USA, SLUS-00402) | its disc image | the game (required) |
 | Tekken 2 (PlayStation, USA v1.1) | its disc image | its fighters in the roster (optional) |
 | Counter-Strike (Half-Life) | the Half-Life folder, with `cstrike/` and `valve/` | its levels as arenas, two more Tekken Force stages (optional) |
-| Tekken 3 arcade (Namco System 12) | its ROM set: MAME's `tekken3.zip`, or the folder of its files | its 13 stages, 3D models, in place of the PlayStation game's panoramas (optional; desktops and Android, not yet in a browser) |
+| Tekken 3 arcade (Namco System 12) | its ROM set: MAME's `tekken3.zip`, or the folder of its files | its 13 stages, 3D models, in place of the PlayStation game's panoramas (optional) |
 
 With the arcade stages converted, OPTION, GRAPHICS, STAGES chooses ARCADE or PLAYSTATION (`--stages arcade|ps`). They
 only change what is drawn: the fingerprint, online play and replays are the same with them or without. Each has the
