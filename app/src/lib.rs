@@ -4365,6 +4365,8 @@ impl App {
                 cam.sky = glam::Mat4::from_translation(glam::Vec3::new(0.0, -scene.sky_base_y, 0.0));
                 cam.sky_y_scale = scene.sky_y_scale;
                 cam.sky_first = scene.sky_first;
+                // (an arcade stage's model: both sides of its faces)
+                cam.sky_cull = !scene.sky_model;
                 cam.background = Some(scene.background);
                 scene_lighting(&mut cam, scene);
                 (cam, Vec::new())
@@ -4379,6 +4381,8 @@ impl App {
                 cam.sky = glam::Mat4::from_translation(glam::Vec3::new(0.0, -scene.sky_base_y, 0.0));
                 cam.sky_y_scale = scene.sky_y_scale;
                 cam.sky_first = scene.sky_first;
+                // (an arcade stage's model: both sides of its faces)
+                cam.sky_cull = !scene.sky_model;
                 cam.background = Some(scene.background);
                 (cam, Vec::new())
             }

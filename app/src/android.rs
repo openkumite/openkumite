@@ -419,7 +419,7 @@ impl Data {
                 }
                 // (a .zip: for the first game not converted yet, or Tekken 3)
                 Some(Command::Import) => {
-                    self.picking = Some(Part::ALL.into_iter().find(|p| self.jobs.state.get(*p).is_none()).unwrap_or(Part::T3));
+                    self.picking = Some([Part::T3, Part::T2, Part::Cs].into_iter().find(|p| self.jobs.state.get(*p).is_none()).unwrap_or(Part::T3));
                     Some(PICK_ZIP)
                 }
                 Some(Command::Play) if self.jobs.state.playable() && !self.jobs.busy() => {

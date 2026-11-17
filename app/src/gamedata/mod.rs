@@ -201,7 +201,7 @@ fn part_about(p: Part) -> &'static str {
 fn part_input(p: Part, folders: bool) -> &'static str {
     match (p, folders) {
         (Part::Cs, _) => "Choose the Half-Life folder (with cstrike/ and valve/).",
-        (Part::Arcade, true) => "Choose the folder that holds its ROM set: MAME's tekken3.zip, or its files.",
+        (Part::Arcade, true) => "Choose the folder that holds its ROM set: MAME's tekken3.zip.",
         (Part::Arcade, false) => "Choose its ROM set: MAME's tekken3.zip.",
         (_, true) => "Choose the folder that holds its disc image: .cue with its .bin files, .chd, .iso, .pbp, or a .zip or .7z of them.",
         _ => "Choose its disc image: the .cue (its .bin files beside it), .chd, .iso, .pbp, .ccd, .mds, .ecm, or a .zip, .7z, .tar, .gz, .xz or .zst of it.",
@@ -512,7 +512,8 @@ impl Screen {
                 Page::Game(p) | Page::Remove(p) => Some(p),
                 Page::Home => rows.get(self.focus).and_then(|r| if let Act::Part(p) = r.act { Some(p) } else { None }),
             };
-            let first = Part::ALL.into_iter().find(|p| !status.parts[part_index(*p)].converted).unwrap_or(Part::T3);
+            // (a disc image's: not the arcade ROM set's part)
+            let first = [Part::T3, Part::T2, Part::Cs].into_iter().find(|p| !status.parts[part_index(*p)].converted).unwrap_or(Part::T3);
             let part = at.or(page).unwrap_or(first);
             if status.job.is_none() {
                 self.commands.push(Command::Drop(part, std::mem::take(&mut self.drops)));

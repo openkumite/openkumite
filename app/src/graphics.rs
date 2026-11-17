@@ -209,9 +209,10 @@ impl Display {
         }
     }
 
-    /// A preset keeping `g`'s statistics overlay (a tool, not a picture setting).
+    /// A preset keeping `g`'s statistics overlay (a tool, not a picture setting) and its stages (which game's, not
+    /// how they are drawn).
     pub fn preset_over(&self, p: Preset, g: &Graphics) -> Graphics {
-        Graphics { stats: g.stats, ..self.preset(p) }
+        Graphics { stats: g.stats, arcade_stages: g.arcade_stages, ..self.preset(p) }
     }
 
     /// The defaults (a 960x720 window at 1X), as this display can show them.
