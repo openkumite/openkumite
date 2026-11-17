@@ -319,6 +319,43 @@ impl Character {
         world
     }
 
+    /// This body with `donor`'s clips in place of its own (the copying character): each track goes to the node of
+    /// the same name, as [`Character::pose_from`] plays one; only the root takes a translation track, and the
+    /// accessory bones (`bone_*`: a stick, hair, wings) keep their rest pose. The root's track is the donor's at
+    /// this body's size (a model's size, 90 % to 106 %, is in its bones and its root motion: by the legs' lengths).
+    pub fn with_clips_of(&self, donor: &Character) -> Character {
+        let from: Vec<Option<usize>> = self.nodes.iter().map(|n| donor.nodes.iter().position(|o| o.name == n.name).filter(|_| !n.name.starts_with("bone_"))).collect();
+        let leg = |c: &Character| c.nodes.iter().filter(|n| n.name == "shin_A" || n.name == "foot_A").map(|n| n.translation.length()).sum::<f32>();
+        let size = if leg(donor) > 0.0 && leg(self) > 0.0 { leg(self) / leg(donor) } else { 1.0 };
+        let clips = donor
+            .clips
+            .iter()
+            .map(|c| Clip {
+                name: c.name.clone(),
+                frames: c.frames,
+                rotations: from.iter().map(|j| j.and_then(|j| c.rotations.get(j)?.clone())).collect(),
+                translations: self
+                    .nodes
+                    .iter()
+                    .zip(&from)
+                    .map(|(n, j)| Some(j.filter(|_| n.parent.is_none()).and_then(|j| c.translations.get(j)?.as_ref())?.iter().map(|t| *t * size).collect()))
+                    .collect(),
+            })
+            .collect();
+        Character {
+            name: self.name.clone(),
+            nodes: self.nodes.clone(),
+            order: self.order.clone(),
+            joints: self.joints.clone(),
+            inverse_bind: self.inverse_bind.clone(),
+            vertices: self.vertices.clone(),
+            indices: self.indices.clone(),
+            texture: self.texture.clone(),
+            clips,
+            clip_index: donor.clip_index.clone(),
+        }
+    }
+
     /// Skinning matrices (joint world × inverse bind) for a node pose, with a placement transform applied.
     pub fn skin_matrices(&self, node_world: &[Mat4], placement: Mat4) -> Vec<Mat4> {
         self.joints.iter().zip(&self.inverse_bind).map(|(&j, ibm)| placement * node_world[j] * *ibm).collect()
