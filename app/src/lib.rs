@@ -133,6 +133,10 @@ const STEP: Duration = Duration::from_nanos(16_666_667);
 /// GPU resources for a loaded fight.
 struct Scene {
     sky: Vec<StaticMesh>,
+    /// The `sky` meshes that move (an arcade stage's carousel, helicopter rotors and flames), and the 60 Hz steps
+    /// since the stage was loaded.
+    moving: Vec<Moving>,
+    frame: u64,
     /// The floor map's repeat period (m), when the floor follows the fighters.
     floor_period: Option<[f32; 2]>,
     /// The drum's base below the floor (m), its view-space Y scale, drawn before the floor (stages.json `drum_first`).
@@ -564,6 +568,44 @@ struct App {
 
 /// Fight states kept for rewinding (20 s).
 const REWIND_FRAMES: usize = 1200;
+
+/// A mesh of a stage that moves: its place in the scene's `sky`.
+struct Moving {
+    mesh: usize,
+    kind: MovingKind,
+}
+
+enum MovingKind {
+    /// Turned about `pivot` along `axis`, `rate` radians a frame, from the vertices as they were made.
+    Spin { vertices: Vec<StaticVertex>, pivot: glam::Vec3, axis: glam::Vec3, rate: f32 },
+    /// Its pictures, each shown for `step` frames.
+    Frames { textures: Vec<Arc<kumite_render::Texture>>, step: u32 },
+}
+
+impl Scene {
+    /// The stage's moving meshes as they are now.
+    /// shortcut: by the game's steps since the stage was loaded, not the fight's frames: they move on through a
+    /// pause and do not follow a replay's seeking; upgrade: the fight's frame counter.
+    fn animate(&mut self, r: &Renderer) {
+        let frame = self.frame;
+        for m in &self.moving {
+            let Some(mesh) = self.sky.get_mut(m.mesh) else { continue };
+            match &m.kind {
+                MovingKind::Spin { vertices, pivot, axis, rate } => {
+                    // (the angle kept small: a turn's remainder)
+                    let turn = glam::Quat::from_axis_angle(*axis, (f64::from(*rate) * frame as f64).rem_euclid(std::f64::consts::TAU) as f32);
+                    let moved: Vec<StaticVertex> = vertices.iter().map(|v| StaticVertex { pos: (*pivot + turn * (glam::Vec3::from(v.pos) - *pivot)).to_array(), ..*v }).collect();
+                    r.move_mesh(mesh, &moved);
+                }
+                MovingKind::Frames { textures, step } => {
+                    if let Some(t) = textures.get((frame / u64::from(*step)) as usize % textures.len().max(1)) {
+                        mesh.set_texture(t.clone());
+                    }
+                }
+            }
+        }
+    }
+}
 
 impl App {
     fn game(&self) -> Option<&Game> {
@@ -1045,6 +1087,8 @@ impl App {
     fn stage_scene_with(&self, r: &Renderer, stage: usize, hidden: bool, place: &dyn Fn(glam::Vec3) -> glam::Vec3) -> Scene {
         let mut scene = Scene {
             sky: vec![],
+            moving: vec![],
+            frame: 0,
             sky_base_y: 0.0,
             sky_y_scale: 1.0,
             sky_first: false,
@@ -1101,6 +1145,16 @@ impl App {
                 let conv =
                     |m: &kumite_assets::Mesh| -> Vec<StaticVertex> { m.vertices.iter().map(|v| StaticVertex { pos: place(glam::Vec3::from(v.pos)).to_array(), uv: v.uv, color: v.color }).collect() };
                 scene.sky = st.sky.iter().map(|m| r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone())).collect();
+                let moving = |(mesh, m): (usize, &kumite_assets::Mesh)| {
+                    let kind = match m.motion? {
+                        kumite_assets::Motion::Spin { pivot, axis, rate } => {
+                            MovingKind::Spin { vertices: conv(m), pivot: place(pivot), axis: (place(pivot + axis) - place(pivot)).normalize_or_zero(), rate }
+                        }
+                        kumite_assets::Motion::Frames { frames, step } => MovingKind::Frames { textures: tex.get(m.texture..m.texture + frames)?.to_vec(), step },
+                    };
+                    Some(Moving { mesh, kind })
+                };
+                scene.moving = st.sky.iter().enumerate().filter_map(moving).collect();
                 (scene.sky_base_y, scene.sky_y_scale, scene.sky_first, scene.floor_period) = (st.sky_base_y, st.sky_y_scale, st.sky_first, st.floor_period);
                 // (a mesh carries the glb's whole vertex list: its own are the ones its indices name)
                 scene.wall_z = st.sky.first().and_then(|m| m.vertices.get(*m.indices.first()? as usize)).filter(|_| st.backdrop_wall).map(|v| place(glam::Vec3::from(v.pos)).z);
@@ -1113,6 +1167,7 @@ impl App {
                 (scene.camera_drum, scene.floor_patch, scene.floor_light) = (st.camera_drum, st.floor_patch, st.floor_light);
                 if let Some((m, at)) = st.strip.as_ref().filter(|(m, _)| !m.indices.is_empty()) {
                     scene.sky = vec![r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone())];
+                    scene.moving.clear();
                     scene.strip = Some(*at);
                 }
                 scene.statics = st.meshes.iter().map(|m| r.static_mesh(&conv(m), &m.indices, tex[m.texture].clone())).collect();
@@ -1230,6 +1285,9 @@ impl App {
 
     /// One fixed 60 Hz logic step.
     fn step(&mut self) {
+        if let Some(s) = self.scene.as_mut() {
+            s.frame += 1;
+        }
         // a save that failed (a full disk, the browser's storage full): the player is told, once each time
         if let Some(why) = save::take_failure() {
             self.debug.say(why);
@@ -4270,6 +4328,9 @@ impl App {
         // Force's blob shadows, shown when the camera allows
         let mut blobs = Vec::new();
         // ---- the 3D fight (or nothing behind the menus)
+        if let Some(s) = self.scene.as_mut() {
+            s.animate(r);
+        }
         let (cam, lines) = match (self.fight.as_ref(), self.scene.as_ref()) {
             (Some(fight), Some(scene)) => {
                 let cutscene = fight.cutscene.as_ref();

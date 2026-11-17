@@ -291,6 +291,13 @@ pub struct StaticMesh {
     sorted: Option<(Vec<Vec3>, Vec<[u32; 3]>)>,
 }
 
+impl StaticMesh {
+    /// Another texture on the mesh (a stage's flame: its next picture).
+    pub fn set_texture(&mut self, texture: Arc<Texture>) {
+        self.texture = texture;
+    }
+}
+
 pub const MAX_BONES: usize = 64;
 
 /// The final pass: the scene's target stretched over the window (a full-screen triangle).
@@ -939,12 +946,19 @@ impl Renderer {
         let positions = vertices.iter().map(|v| Vec3::from_array(v.pos)).collect();
         let tris = indices.as_chunks::<3>().0.to_vec();
         StaticMesh {
-            vbuf: self.buffer(bytemuck::cast_slice(vertices), wgpu::BufferUsages::VERTEX),
+            vbuf: self.buffer(bytemuck::cast_slice(vertices), wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST),
             ibuf: self.buffer(bytemuck::cast_slice(indices), wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST),
             count: indices.len() as u32,
             texture,
             sorted: Some((positions, tris)),
         }
+    }
+
+    /// A sorted mesh's vertices moved (as many as it was made with: a stage's turning part).
+    pub fn move_mesh(&self, m: &mut StaticMesh, vertices: &[StaticVertex]) {
+        let Some((positions, _)) = m.sorted.as_mut().filter(|s| s.0.len() == vertices.len()) else { return };
+        *positions = vertices.iter().map(|v| Vec3::from_array(v.pos)).collect();
+        self.queue.write_buffer(&m.vbuf, 0, bytemuck::cast_slice(vertices));
     }
 
     /// A sorted mesh's triangles far to near under `view_proj` (stable: ties keep their order).

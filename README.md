@@ -46,7 +46,9 @@ copied; the space it needs is checked before it starts. Choose:
 With the arcade stages converted, OPTION, GRAPHICS, STAGES chooses ARCADE or PLAYSTATION (`--stages arcade|ps`). They
 only change what is drawn: the fingerprint, online play and replays are the same with them or without. Each has the
 arcade game's sky behind its model, a panorama that turns with the camera (on a GPU whose textures are at most 4096
-wide, the widest skies are left out). The ROM set also keeps an arena no stage of the arcade game uses, a circular
+wide, the widest skies are left out). What moves on the arcade stages moves here: the torches' flames, the
+amusement park's carousel, and the helicopter by the ring on steel towers (it hovers, its rotors turning: its flights
+are not worked out). The ROM set also keeps an arena no stage of the arcade game uses, a circular
 stone arena: with the arcade stages on, it is Mokujin's home (a one-on-one fight with him on the second side, his fight
 of the arcade ladder; an arcade pack converted before 0.5.1 is converted again for it) in place of the forest he shares with Yoshimitsu.
 
