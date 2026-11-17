@@ -649,7 +649,8 @@ impl App {
             (rounds, game.round_frames, game.max_health, game.start_health) = (p.rounds, p.round_frames, p.max_health, p.start_health);
             kumite_game::bout::set_counters(p.counters);
         }
-        let (counters, round_frames, max_health, start_health) = (kumite_game::bout::counters(), game.round_frames, game.max_health, game.start_health);
+        game.copy_seed = replaying.map_or(self.seed, |p| p.copy_seed);
+        let (counters, round_frames, max_health, start_health, copy_seed) = (kumite_game::bout::counters(), game.round_frames, game.max_health, game.start_health, game.copy_seed);
         let mut bout = Bout::new(game, self.ai.clone(), rounds, setup.is_some());
         match setup.as_ref().map(|s| s.mode) {
             None => bout = bout.free_fight(),
@@ -727,7 +728,8 @@ impl App {
         self.replay_rec = None;
         if let (None, true, Some(s)) = (replaying, recordable, setup.as_ref()) {
             bout.tape = Some(Default::default());
-            let params = replay::MatchParams { rounds, round_frames, max_health, start_health, cpu: [bout.cpu[0].is_some(), bout.cpu[1].is_some()], interlude_check: bout.interlude_check, counters };
+            let params =
+                replay::MatchParams { rounds, round_frames, max_health, start_health, cpu: [bout.cpu[0].is_some(), bout.cpu[1].is_some()], interlude_check: bout.interlude_check, counters, copy_seed };
             let game = replay::Match::Fight { setup: s.clone(), params, ladder: ladder.clone() };
             self.replay_rec = Some(ReplayRec { game, online: self.net.is_some() || self.room.is_some() });
         }

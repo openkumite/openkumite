@@ -34,6 +34,9 @@ pub struct MatchParams {
     pub interlude_check: bool,
     /// The camera counters as the match began (`kumite_game::bout::counters`).
     pub counters: [usize; 3],
+    /// The copying character's draws' seed (`Game::copy_seed`; a replay made before it had one: 0).
+    #[serde(default)]
+    pub copy_seed: u32,
 }
 
 /// A seat the AI plays (`--ai`, OpenKumite's own): its style, difficulty 0..2 and level 0..9.
@@ -515,7 +518,7 @@ mod tests {
 
     fn file(recorded: u64) -> ReplayFile {
         let setup = FightSetup { mode: crate::menu::Mode::Versus, players: [(0, 0), (1, 0)], stage: 0, difficulty: 1, level: 0, handicap: [100; 2], ball: None, partners: None };
-        let params = MatchParams { rounds: 2, round_frames: 3600, max_health: [None; 2], start_health: [None; 2], cpu: [false; 2], interlude_check: false, counters: [0; 3] };
+        let params = MatchParams { rounds: 2, round_frames: 3600, max_health: [None; 2], start_health: [None; 2], cpu: [false; 2], interlude_check: false, counters: [0; 3], copy_seed: 0 };
         ReplayFile {
             version: VERSION,
             engine: "test".into(),

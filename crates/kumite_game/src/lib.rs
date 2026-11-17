@@ -44,6 +44,8 @@ pub struct Body {
     pub torso: usize,
     /// The "pelvis" joint (bone slot 11): its place on the screen is the fighter's side (+0x1278).
     pub pelvis: usize,
+    /// Nodes not drawn (the copying character's stick, but as the sword fighter).
+    pub hidden: Vec<usize>,
 }
 
 impl Body {
@@ -205,6 +207,11 @@ pub struct Game {
     pub ko_collapse: bool,
     pub face_data: Arc<face::FaceData>,
     face_rand: u32,
+    /// The copying character's forms, for each fighter that is one.
+    pub copiers: [Option<Copier>; 2],
+    /// Added to the copying character's draws: the match's own (a bout's random stream starts the same every
+    /// match; a replay keeps it, online every computer has the room's).
+    pub copy_seed: u32,
 }
 
 /// A character's body and move set by model record.
@@ -216,6 +223,10 @@ pub fn model_files(assets: &Assets, record: usize) -> Vec<std::path::PathBuf> {
     if let Ok(index) = kumite_sim::data::load::<MovesetIndex>(&gd.join("movesets/index.json")) {
         if let Some(e) = index.models.iter().find(|m| m.model_record == record) {
             files.push(gd.join("movesets").join(&e.moveset_file));
+            // (the copying character's first fighter; a browser reads the later rounds' as they come)
+            if let Some(d) = index.models.iter().find(|m| m.moveset_id == COPY_DEFAULT).filter(|_| e.moveset_id == COPIER) {
+                files.extend([assets.root.join("characters").join(&d.glb), gd.join("movesets").join(&d.moveset_file)]);
+            }
         }
     }
     files
@@ -239,7 +250,18 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let chest = character.nodes.iter().position(|n| n.name == "head").context("no head joint")?;
     let torso = character.nodes.iter().position(|n| n.name == "chest").context("no chest joint")?;
     let pelvis = character.nodes.iter().position(|n| n.name == "pelvis").unwrap_or(root);
-    Ok((Body { character, model_record: record, root, hurt, push, chest, torso, pelvis }, moveset))
+    let body = Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden: Vec::new() };
+    // the copying character: its own moveset is never played; outside a bout's rounds it stays the setup's fighter
+    // shortcut: Force's bosses and the tag brawl's draw their fighter too (0x800B2770), here they keep this one,
+    // and Force's player draws without a seed of the match (the same fighters every run)
+    if id == COPIER as u64 {
+        if let Some(e) = index.models.iter().find(|m| m.moveset_id == COPY_DEFAULT) {
+            let donor = kumite_sim::data::load::<Moveset>(&gd.join("movesets").join(&e.moveset_file))?;
+            donor.check(common).with_context(|| e.moveset_file.clone())?;
+            return Ok((copy_body(&body, &assets.character(e.model_record)?, COPY_DEFAULT), Arc::new(donor)));
+        }
+    }
+    Ok((body, moveset))
 }
 
 /// A body ready to be swapped into a fight (Force's soldiers and bosses).
@@ -260,6 +282,80 @@ impl Actor {
         let roster: serde_json::Value = kumite_sim::data::load(&gd.join("roster.json")).unwrap_or_default();
         let character = roster["selections"]["entries"].as_array().into_iter().flatten().find(|e| e["model_record"].as_u64() == Some(record as u64)).and_then(|e| e["character"].as_i64());
         Ok(Self { body: Arc::new(body), moveset, character })
+    }
+}
+
+/// The copying character (character id [`COPIER`]): each round it fights with another fighter's moves and
+/// animations on its own body (0x8004F2DC writes only its moveset id, actor +0x16), its stick in hand only as the
+/// sword fighter (0x8003615C: drawn while +0x16 is that moveset).
+#[derive(Clone)]
+pub struct Copier {
+    assets: Assets,
+    own: Arc<Body>,
+    /// The fighters it can become: (moveset id, a model record with that moveset).
+    pub pool: Vec<(i64, usize)>,
+    /// The forms made so far, by model record: shared by the game's copies, so a rollback over a round's start
+    /// takes its form from here instead of reading the files again.
+    made: Arc<std::sync::Mutex<Vec<(usize, Actor)>>>,
+}
+
+/// The movesets it takes (0x8004F2DC: characters 0..13 and 16 of the roster, mask 0x13FFF; their moveset ids are
+/// their character ids).
+// shortcut: the original takes only the fighters unlocked so far; here always all (two computers online, and a
+// replay played elsewhere, must draw from the same list), upgrade if the unlocks ever travel with the match
+const COPY_POOL: [i64; 15] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16];
+/// The moveset the fight's setup gives it before the first round's draw (0x8002A40C: its descriptor's).
+const COPY_DEFAULT: i64 = 9;
+/// The copying character's id (actor +0x18).
+pub const COPIER: i64 = 15;
+/// The moveset whose fighter holds a sword: the copying character's stick shows with it.
+const SWORD_MOVESET: i64 = 4;
+
+impl Copier {
+    fn new(assets: &Assets, own: Arc<Body>, index: &MovesetIndex) -> Self {
+        let mut pool: Vec<(i64, usize)> = Vec::new();
+        for m in &index.models {
+            if COPY_POOL.contains(&m.moveset_id) && !pool.iter().any(|p| p.0 == m.moveset_id) {
+                pool.push((m.moveset_id, m.model_record));
+            }
+        }
+        pool.sort_unstable();
+        // (a browser fetches every fighter it can become while the first round is on; a round that comes before one
+        // has arrived reads it at once, the page waiting)
+        let files = index.models.iter().filter(|m| pool.iter().any(|p| p.1 == m.model_record));
+        kumite_fs::prefetch(&files.flat_map(|m| [assets.root.join("characters").join(&m.glb), assets.root.join("gamedata/movesets").join(&m.moveset_file)]).collect::<Vec<_>>());
+        Self { assets: assets.clone(), own, pool, made: Default::default() }
+    }
+
+    /// The copying character as the pool's fighter `k`: its own body playing that fighter's clips, with that
+    /// fighter's moveset. None when that fighter's files cannot be read (the form stays as it is).
+    fn form(&self, k: usize) -> Option<Actor> {
+        let (id, record) = *self.pool.get(k)?;
+        let mut made = self.made.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(m) = made.iter().find(|m| m.0 == record) {
+            return Some(m.1.clone());
+        }
+        let donor = Actor::load(&self.assets, record).map_err(|e| log::warn!("the copying character as model {record}: {e:#}")).ok()?;
+        let actor = Actor { body: Arc::new(copy_body(&self.own, &donor.body.character, id)), moveset: donor.moveset, character: Some(COPIER) };
+        made.push((record, actor.clone()));
+        Some(actor)
+    }
+}
+
+/// The copying character's body `own` playing `donor`'s clips, as the fighter of moveset `id`: its accessory nodes
+/// (`bone_*`: the stick) hidden but with the sword fighter's.
+fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
+    let hidden = if id == SWORD_MOVESET { Vec::new() } else { own.character.nodes.iter().enumerate().filter(|(_, n)| n.name.starts_with("bone_")).map(|(i, _)| i).collect() };
+    Body {
+        character: own.character.with_clips_of(donor),
+        model_record: own.model_record,
+        root: own.root,
+        hurt: own.hurt.clone(),
+        push: own.push.clone(),
+        chest: own.chest,
+        torso: own.torso,
+        pelvis: own.pelvis,
+        hidden,
     }
 }
 
@@ -325,9 +421,16 @@ impl Game {
             ko_collapse: true,
             face_data: Arc::new(face::FaceData::load(&assets.root.join("gamedata"))),
             face_rand: 1,
+            copiers: [None, None],
+            copy_seed: 0,
         };
         for (f, c) in game.fight.fighters.iter_mut().zip(characters) {
             f.character = c;
+        }
+        for i in 0..2 {
+            if characters[i] == Some(COPIER) {
+                game.copiers[i] = Some(Copier::new(assets, game.bodies[i].clone(), &index));
+            }
         }
         game.step_camera();
         Ok(game)
@@ -358,6 +461,14 @@ impl Game {
                 f.frame = if len >= 151 { len - 149 } else { 1 };
             }
         }
+    }
+
+    /// The copying character `i` becomes its pool's fighter `k` (for the round about to start).
+    pub fn copy_as(&mut self, i: usize, k: usize) {
+        let Some(form) = self.copiers[i].as_ref().and_then(|c| c.form(k)) else { return };
+        log::debug!("the copying character {i}: moveset {:?}", form.moveset.moveset_id);
+        self.fight.fighters[i].moveset = form.moveset;
+        self.bodies[i] = form.body;
     }
 
     /// Start a new round with the given fly-in (variant, first round), or none.
@@ -912,11 +1023,18 @@ impl Game {
 /// A snapshot's pose (node world matrices in metres, as animated) and placement; `other` lends a borrowed clip.
 pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Mat4) {
     let place = placement(shown.root, shown.yaw);
-    match shown.clip {
-        Some((clip, frame)) if shown.partner => (body.character.pose_from(&other.character, clip, frame, true), place),
-        Some((clip, frame)) => (body.character.pose(clip, frame, true), place),
-        None => (body.character.pose(0, 0, true), place),
+    let mut pose = match shown.clip {
+        Some((clip, frame)) if shown.partner => body.character.pose_from(&other.character, clip, frame, true),
+        Some((clip, frame)) => body.character.pose(clip, frame, true),
+        None => body.character.pose(0, 0, true),
+    };
+    // (a hidden node's mesh shrinks into its joint)
+    for &n in &body.hidden {
+        if let Some(m) = pose.get_mut(n) {
+            *m *= Mat4::from_scale(Vec3::ZERO);
+        }
     }
+    (pose, place)
 }
 
 /// Turn the head (and everything hanging from it: the second head section, hair) to `local`, its rotation in

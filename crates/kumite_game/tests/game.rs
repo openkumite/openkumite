@@ -2117,6 +2117,44 @@ fn a_wooden_fighter_knocks_as_wood() {
     assert!(heard, "a wood knock");
 }
 
+/// Character 15 copies (0x8004F2DC): every round it has one of fifteen fighters' movesets, never its own, each move's
+/// clip on its own skeleton; its stick (`bone_21`) is drawn only as the sword fighter (0x8003615C: moveset 4).
+#[test]
+fn the_copying_character_takes_a_fighter_each_round() {
+    let Some(a) = assets() else { return };
+    const MODEL_191: usize = 191;
+    let mut game = Game::load(&a, [MODEL_191, MODEL_71]).unwrap();
+    let own_nodes = game.bodies[0].character.nodes.len();
+    let stick = game.bodies[0].character.nodes.iter().position(|n| n.name == "bone_21").expect("the stick");
+    assert_eq!(game.fight.fighters[0].moveset.moveset_id, Some(9), "the setup's fighter before the first round");
+    assert!(game.copiers[0].is_some() && game.copiers[1].is_none());
+    let pool = game.copiers[0].as_ref().unwrap().pool.clone();
+    assert_eq!(pool.iter().map(|p| p.0).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16]);
+    for (k, &(id, _)) in pool.iter().enumerate() {
+        game.copy_as(0, k);
+        game.reset_round();
+        let (f, body) = (&game.fight.fighters[0], &game.bodies[0]);
+        assert_eq!((f.moveset.moveset_id, f.character, body.model_record), (Some(id), Some(15), MODEL_191));
+        assert_eq!(body.character.nodes.len(), own_nodes);
+        for m in &f.moveset.moves {
+            assert!(m.anim.is_empty() || !m.anim.starts_with("motion_") || body.character.clip(&m.anim).is_some(), "moveset {id}: no clip {}", m.anim);
+        }
+        let (pose, _) = game.pose(0);
+        assert!(pose.iter().all(|m| m.is_finite()));
+        let shown = pose[stick].x_axis.length() > 0.5;
+        assert_eq!(shown, id == 4, "moveset {id}: the stick");
+    }
+    // a bout draws for every round, the same from the same start
+    let picks = || {
+        let mut b = Bout::new(Game::load(&a, [MODEL_191, MODEL_191]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+        b.step([Pad::default(); 2]);
+        [0, 1].map(|i| b.game.fight.fighters[i].moveset.moveset_id)
+    };
+    let first = picks();
+    assert!(first.iter().all(|id| id.is_some_and(|id| pool.iter().any(|p| p.0 == id))), "{first:?}");
+    assert_eq!(first, picks());
+}
+
 /// A huge count is an error, not terabytes asked for (found by fuzzing).
 #[test]
 fn a_script_too_long_is_an_error() {

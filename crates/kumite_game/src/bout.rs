@@ -332,6 +332,14 @@ impl Bout {
         }
         let variant = (self.count(INTRO) + 1) % 10;
         let intro = self.intros.then_some((variant, self.round == 1));
+        // the copying character takes another fighter's moves for the round (0x8004F2DC, every round, player 1
+        // first: rand() & 0xFFF modulo the fighters it can take)
+        for i in 0..2 {
+            if let Some(n) = self.game.copiers[i].as_ref().map(|c| c.pool.len()).filter(|&n| n > 0) {
+                let k = (self.random(0x1000) as u32).wrapping_add(self.game.copy_seed) as usize % n;
+                self.game.copy_as(i, k);
+            }
+        }
         self.game.start_round(intro);
         self.phase = if self.free && self.game.camera.in_intro() {
             Phase::Intro
