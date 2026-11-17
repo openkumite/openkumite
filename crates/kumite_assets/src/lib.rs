@@ -368,6 +368,23 @@ impl Character {
     }
 }
 
+/// An arcade stage's sky (0x801A7688 of the arcade program): a panorama of one full turn, scrolled by the camera's
+/// yaw (512 columns of the 512 x 480 screen show `fov` degrees) and moved by its pitch: its top row at screen row
+/// `-pitch * pitchmul / 256 + ybase` (pitch 4096 a turn, down positive), kept within `min_y..=max_y`; above it the
+/// `top` colour, below it (to row 360) the `bottom` colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyPicture {
+    /// Index into [`Stage::textures`].
+    pub image: usize,
+    pub fov: f32,
+    pub ybase: f32,
+    pub pitchmul: f32,
+    pub top: Option<[u8; 3]>,
+    pub bottom: Option<[u8; 3]>,
+    pub max_y: Option<f32>,
+    pub min_y: Option<f32>,
+}
+
 /// A textured mesh in world space (texture = index into [`Stage::textures`]).
 #[derive(Clone, Debug, Default)]
 pub struct Mesh {
@@ -425,8 +442,11 @@ pub struct Stage {
     /// Per texture (image): the glb asks for sharp texels tiling both ways (the arcade stages' tiles).
     pub tiled: Vec<bool>,
     /// The sky is the stage's own model (scene extras `drum: "model"`: the arcade stages), not a drum of panels:
-    /// both sides of its faces are drawn.
+    /// both sides of its faces are drawn, but with `sky_cull` (`drum_cull`: wound anticlockwise from the front).
     pub sky_model: bool,
+    pub sky_cull: bool,
+    /// The 2D panorama behind the model (scene extras `sky`), and how it follows the camera.
+    pub sky_picture: Option<SkyPicture>,
     /// An extra level (scene extras `level`): its name.
     pub extra_level: Option<String>,
     /// Its walk grid (scene extras `walls`): origin (m, x / z), cell (m), size (cells), rows (bit set = blocked).
@@ -501,6 +521,8 @@ impl Stage {
             filtered: vec![false; images.len()],
             tiled: vec![false; images.len()],
             sky_model: false,
+            sky_cull: false,
+            sky_picture: None,
             extra_level: None,
             walls: None,
             camera_walls: None,
@@ -525,6 +547,22 @@ impl Stage {
             st.sky_y_scale = v["drum_y_scale"].as_f64().unwrap_or(1.0) as f32;
             st.sky_first = v["drum_before_floor"].as_bool().unwrap_or(false);
             st.sky_model = v["drum"] == "model";
+            st.sky_cull = v["drum_cull"] == true;
+            let sky = &v["sky"];
+            if let Some(image) = sky["image"].as_u64().map(|i| i as usize).filter(|&i| i < images.len()) {
+                let num = |k: &str| sky[k].as_f64().map(|x| x as f32);
+                let rgb = |k: &str| sky[k].as_array().filter(|a| a.len() == 3).map(|a| std::array::from_fn(|i| a[i].as_u64().unwrap_or(0).min(255) as u8));
+                st.sky_picture = Some(SkyPicture {
+                    image,
+                    fov: num("fov").filter(|f| *f >= 1.0).unwrap_or(40.0),
+                    ybase: num("ybase").unwrap_or(0.0),
+                    pitchmul: num("pitchmul").unwrap_or(288.0),
+                    top: rgb("top"),
+                    bottom: rgb("bottom"),
+                    max_y: num("max_y"),
+                    min_y: num("min_y"),
+                });
+            }
             if let Some(rgb) = v["background_rgb"].as_array() {
                 st.background = std::array::from_fn(|k| rgb.get(k).and_then(|c| c.as_u64()).unwrap_or(0) as u8);
             }
@@ -741,9 +779,9 @@ fn import_glb(bytes: &[u8]) -> Result<(gltf::Document, Vec<gltf::buffer::Data>, 
     Ok(gltf::import_slice(bytes)?)
 }
 
-/// A glb's largest texture side (pixels), its images' pixels together (the largest converted ~2.1M), its largest
-/// accessor (elements) and animations times nodes.
-const MAX_TEXTURE: u32 = 4096;
+/// A glb's largest texture side (pixels: an arcade stage's sky is one full turn, up to 5120 wide), its images' pixels
+/// together (the largest converted ~4M), its largest accessor (elements) and animations times nodes.
+const MAX_TEXTURE: u32 = 8192;
 const MAX_PIXELS: u64 = 1 << 24;
 const MAX_ELEMENTS: usize = 1 << 22;
 /// The elements a glb's meshes and clips read at most, all told (the converter's largest: about 2.4 million).

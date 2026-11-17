@@ -141,8 +141,11 @@ struct Scene {
     sky_first: bool,
     /// Force: the sky is the backdrop wall, standing at this z (m).
     wall_z: Option<f32>,
-    /// An arcade stage: the sky is its model.
+    /// An arcade stage: the sky is its model (`sky_cull`: its back faces not drawn), before the 2D panorama
+    /// `sky_picture` (how it follows the camera, its texture and size, a white texture for its plain colours).
     sky_model: bool,
+    sky_cull: bool,
+    sky_picture: Option<(kumite_assets::SkyPicture, Arc<kumite_render::Texture>, [f32; 2], Arc<kumite_render::Texture>)>,
     /// The full-screen fill behind the stage (sRGB; one stage's sky blue, black elsewhere).
     background: [u8; 3],
     /// Ball's sky strip (it is the `sky` mesh then): its bottom distance ahead and height (game units, y
@@ -1037,6 +1040,8 @@ impl App {
             sky_first: false,
             wall_z: None,
             sky_model: false,
+            sky_cull: false,
+            sky_picture: None,
             background: [0; 3],
             strip: None,
             camera_drum: false,
@@ -1065,6 +1070,12 @@ impl App {
                     .iter()
                     .enumerate()
                     .map(|(i, t)| {
+                        // shortcut: a picture wider than this GPU's textures (an arcade sky on a GPU of 4096) is left
+                        // out, a white texel in its place; upgrade: the converter's sky in slices
+                        if t.width.max(t.height) > r.max_texture() {
+                            log::warn!("stage {stage}: a {} x {} texture is more than this GPU takes ({}): left out", t.width, t.height, r.max_texture());
+                            return r.texture(1, 1, &[255; 4]);
+                        }
                         if st.filtered.get(i).copied().unwrap_or(false) {
                             r.texture_filtered(t.width, t.height, &t.rgba)
                         } else if st.tiled.get(i).copied().unwrap_or(false) {
@@ -1082,7 +1093,11 @@ impl App {
                 (scene.sky_base_y, scene.sky_y_scale, scene.sky_first, scene.floor_period) = (st.sky_base_y, st.sky_y_scale, st.sky_first, st.floor_period);
                 // (a mesh carries the glb's whole vertex list: its own are the ones its indices name)
                 scene.wall_z = st.sky.first().and_then(|m| m.vertices.get(*m.indices.first()? as usize)).filter(|_| st.backdrop_wall).map(|v| place(glam::Vec3::from(v.pos)).z);
-                scene.sky_model = st.sky_model;
+                (scene.sky_model, scene.sky_cull) = (st.sky_model, st.sky_cull);
+                scene.sky_picture = st
+                    .sky_picture
+                    .filter(|p| st.textures.get(p.image).is_some_and(|t| t.width <= r.max_texture()))
+                    .and_then(|p| Some((p, tex.get(p.image)?.clone(), st.textures.get(p.image).map(|t| [t.width as f32, t.height as f32])?, r.texture(1, 1, &[255; 4]))));
                 scene.background = st.background;
                 (scene.camera_drum, scene.floor_patch, scene.floor_light) = (st.camera_drum, st.floor_patch, st.floor_light);
                 if let Some((m, at)) = st.strip.as_ref().filter(|(m, _)| !m.indices.is_empty()) {
@@ -4366,7 +4381,7 @@ impl App {
                 cam.sky_y_scale = scene.sky_y_scale;
                 cam.sky_first = scene.sky_first;
                 // (an arcade stage's model: both sides of its faces)
-                cam.sky_cull = !scene.sky_model;
+                cam.sky_cull = !scene.sky_model || scene.sky_cull;
                 cam.background = Some(scene.background);
                 scene_lighting(&mut cam, scene);
                 (cam, Vec::new())
@@ -4382,7 +4397,7 @@ impl App {
                 cam.sky_y_scale = scene.sky_y_scale;
                 cam.sky_first = scene.sky_first;
                 // (an arcade stage's model: both sides of its faces)
-                cam.sky_cull = !scene.sky_model;
+                cam.sky_cull = !scene.sky_model || scene.sky_cull;
                 cam.background = Some(scene.background);
                 (cam, Vec::new())
             }
@@ -4409,6 +4424,8 @@ impl App {
             },
             _ => (vec![], vec![], vec![]),
         };
+        // an arcade stage's sky, behind everything
+        r.backdrop = self.scene.as_ref().filter(|_| !sky.is_empty()).map_or_else(Vec::new, |s| sky_backdrop(&cam, s));
         // effect sprites, as quads facing the camera
         let (mut p_alpha, mut p_add) = (Vec::new(), Vec::new());
         if let (Some(v), true) = (self.vfx.as_ref(), self.fight.is_some() || self.embu.is_some() || self.tag.is_some()) {
@@ -5178,13 +5195,11 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
         cam.floor_clip = Some([x0, x0 + 10.0 * tile, z0, z0 + 10.0 * tile]);
         (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, true, false);
     }
-    // an arcade stage: its model around the fighters' midpoint (x, z; its ground the floor's), drawn after the floor
-    // without depth, far faces first, both sides of a face
-    // shortcut: that it follows the midpoint, as the PlayStation game's drum does, is not read from the arcade game's
-    // code (nor its sky behind the model, black here); upgrade when the arcade program is disassembled
+    // an arcade stage: its model around the fighters' midpoint (x, z; 0x801D9118 of the arcade program), drawn after
+    // the floor without depth, far faces first
     if scene.sky_model {
         cam.sky = glam::Mat4::from_translation(glam::Vec3::new(mid.x, 0.0, mid.z));
-        (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, false, false);
+        (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, false, scene.sky_cull);
     }
     // Force's backdrop wall, the original's 2D strip (0x800B4914): drawn first, the floor over it up to the wall; not
     // turned by the camera's roll but stepped up along the screen (its posts stay upright)
@@ -5340,6 +5355,38 @@ fn effect_atlas(r: &Renderer, pictures: &Path) -> Option<Arc<kumite_render::Text
     let mut buf = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
     (info.color_type == png::ColorType::Rgba).then(|| r.texture(info.width, info.height, &buf[..(info.width * info.height * 4) as usize]))
+}
+
+/// An arcade stage's sky for the camera (`SkyPicture`): the panorama scrolled by the yaw and moved by the pitch, the
+/// plain colours above and below it, as the renderer's backdrop (the 4:3 picture's space; rows of its 480, columns
+/// of its 512).
+fn sky_backdrop(cam: &Camera, scene: &Scene) -> Vec<(Arc<kumite_render::Texture>, Vec<StaticVertex>)> {
+    let Some((p, picture, [w, h], white)) = scene.sky_picture.as_ref() else { return Vec::new() };
+    let f = (cam.target - cam.eye).normalize_or_zero();
+    let turn = 4096.0 / std::f32::consts::TAU;
+    let (yaw, pitch) = (f.x.atan2(-f.z) * turn, -f.y.clamp(-1.0, 1.0).asin() * turn);
+    let scroll = yaw * 512.0 * 360.0 / (p.fov * 4096.0);
+    let mut y = -pitch * p.pitchmul / 256.0 + p.ybase;
+    y = p.max_y.map_or(y, |m| y.min(m));
+    y = p.min_y.map_or(y, |m| y.max(m));
+    // (x to either side of the picture: a window up to four times as wide)
+    const SIDE: f32 = 4.0;
+    let quad = |rows: [f32; 2], u: [f32; 2], v: [f32; 2], colour: [f32; 3]| -> Vec<StaticVertex> {
+        let at = |x: f32, k: usize| StaticVertex { pos: [x, 1.0 - rows[k] / 240.0, 0.0], uv: [if x < 0.0 { u[0] } else { u[1] }, v[k]], color: [colour[0], colour[1], colour[2], 1.0] };
+        vec![at(-SIDE, 0), at(-SIDE, 1), at(SIDE, 0), at(SIDE, 0), at(-SIDE, 1), at(SIDE, 1)]
+    };
+    // (a colour of the game's, as the textures' are: to the linear light the picture is drawn in)
+    let plain = |c: [u8; 3]| c.map(|x| (x as f32 / 255.0).powf(2.2));
+    let mut out = Vec::new();
+    if let (Some(c), true) = (p.top, y > 0.0) {
+        out.push((white.clone(), quad([0.0, y], [0.5; 2], [0.5; 2], plain(c))));
+    }
+    let column = |x: f32| (scroll + (x + 1.0) * 256.0) / w;
+    out.push((picture.clone(), quad([y, y + h], [column(-SIDE), column(SIDE)], [0.0, 1.0], [1.0; 3])));
+    if let (Some(c), true) = (p.bottom, y + h < 360.0) {
+        out.push((white.clone(), quad([(y + h).max(0.0), 360.0], [0.5; 2], [0.5; 2], plain(c))));
+    }
+    out
 }
 
 /// Effect sprites as triangles: camera-facing quads, or quads flat on the floor (turned by their angle).

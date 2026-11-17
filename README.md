@@ -44,8 +44,9 @@ copied; the space it needs is checked before it starts. Choose:
 | Tekken 3 arcade (Namco System 12) | its ROM set: MAME's `tekken3.zip`, or the folder of its files | its 13 stages, 3D models, in place of the PlayStation game's panoramas (optional; desktops and Android, not yet in a browser) |
 
 With the arcade stages converted, OPTION, GRAPHICS, STAGES chooses ARCADE or PLAYSTATION (`--stages arcade|ps`). They
-only change what is drawn: the fingerprint, online play and replays are the same with them or without. Their sky is
-not converted (black behind the models), and the three stages the arcade game lights as it draws are shown unlit.
+only change what is drawn: the fingerprint, online play and replays are the same with them or without. Each has the
+arcade game's sky behind its model, a panorama that turns with the camera (on a GPU whose textures are at most 4096
+wide, the widest skies are left out).
 
 A disc image in any of these formats (ok_converter_common's `disc` module): a `.cue` with its `.bin` files (or a
 `.bin` alone: a `.cue` beside it is found, and a split image's `Track 2` and `Track 3`), `.chd`, CloneCD `.ccd` with its

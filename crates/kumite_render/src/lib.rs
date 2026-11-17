@@ -117,6 +117,7 @@ pub struct Camera {
     pub fov_y: f32,
     /// The picture turned anticlockwise about the line of sight (radians).
     pub roll: f32,
+
     /// The backdrop drum's placement (world, metres) and its view-space Y scale.
     pub sky: Mat4,
     pub sky_y_scale: f32,
@@ -348,6 +349,11 @@ pub struct Renderer {
     blobs: Vec<StaticVertex>,
     static_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
+    backdrop_pipeline: wgpu::RenderPipeline,
+    /// 2D pictures behind everything in the next frames, drawn first in this order (an arcade stage's sky): triangles
+    /// in the original's 4:3 picture's own space (x and y -1..1 across it, y up; a wider window shows more of x),
+    /// each with its texture.
+    pub backdrop: Vec<(Arc<Texture>, Vec<StaticVertex>)>,
     line_pipeline: wgpu::RenderPipeline,
     particle_alpha: wgpu::RenderPipeline,
     particle_add: wgpu::RenderPipeline,
@@ -583,6 +589,7 @@ impl Renderer {
         let skinned_pipeline = make("skinned", &skinned_layout, "vs_skinned", "fs_lit", &skin_vb, true, true, tri, None);
         let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, true, tri, None);
         let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, false, tri, None);
+        let backdrop_pipeline = make("backdrop", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, false, tri, None);
         let line_pipeline = make("lines", &line_layout, "vs_line", "fs_line", &line_vb, false, false, wgpu::PrimitiveTopology::LineList, None);
         // particles: depth-tested against the scene, never written
         let particle_alpha = make("particles alpha", &static_layout, "vs_static", "fs_particle_alpha", &static_vb, false, true, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
@@ -624,6 +631,8 @@ impl Renderer {
             blobs: Vec::new(),
             static_pipeline,
             sky_pipeline,
+            backdrop_pipeline,
+            backdrop: Vec::new(),
             line_pipeline,
             particle_alpha,
             particle_add,
@@ -1123,6 +1132,17 @@ impl Renderer {
         {
             let mut pass = begin(&mut enc, pass_desc("stage", true));
             pass.set_bind_group(0, &self.globals_group, &[]);
+            // the 2D pictures behind everything, their 4:3 picture's x brought to the window's
+            let squeeze = (4.0 / 3.0) / self.aspect();
+            for (texture, vertices) in &self.backdrop {
+                let vertices: Vec<StaticVertex> = vertices.iter().map(|v| StaticVertex { pos: [v.pos[0] * squeeze, v.pos[1], 0.0], ..*v }).collect();
+                let vbuf = self.buffer(bytemuck::cast_slice(&vertices), wgpu::BufferUsages::VERTEX);
+                pass.set_pipeline(&self.backdrop_pipeline);
+                pass.set_bind_group(1, texture.group(smooth), &[]);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.draw(0..vertices.len() as u32, 0..1);
+                stats.draw_calls += 1;
+            }
             // the drum goes after the floor without depth (the game's OT 1010 vs 1021), or first on the stage
             // stages.json names
             let order = if cam.sky_first { [(&self.sky_pipeline, sky), (&self.static_pipeline, statics)] } else { [(&self.static_pipeline, statics), (&self.sky_pipeline, sky)] };

@@ -263,7 +263,9 @@ mod tests {
         assert_eq!(layers(&root, &state), vec![dir(Part::Arcade, &root).join(kumite_packs::ASSETS)]);
         for n in 0..13 {
             let stage = kumite_assets::Stage::load(&dir(Part::Arcade, &root).join(format!("assets/arcade/stage_{n:02}.glb"))).unwrap();
-            assert!(stage.sky_model && !stage.sky.is_empty() && !stage.meshes.is_empty() && stage.floor_period == Some([25.0, 25.0]), "stage {n}");
+            assert!(stage.sky_model && stage.sky_cull && !stage.sky.is_empty() && !stage.meshes.is_empty() && stage.floor_period == Some([25.0, 25.0]), "stage {n}");
+            // (its sky's panorama: the seventh stage has none)
+            assert_eq!(stage.sky_picture.is_some(), n != 6, "stage {n}");
         }
         run(&root, &Job::Remove(Part::Arcade), &|_| {}, &AtomicBool::new(false)).unwrap();
         assert!(State::of(&root).get(Part::Arcade).is_none());
