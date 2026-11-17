@@ -2835,6 +2835,7 @@ dependencies = [
  "ok_converter_common",
  "ok_hl_cs_converter",
  "ok_tekken2_converter",
+ "ok_tekken3_arcade_converter",
  "ok_tekken3_converter",
  "serde_json",
 ]
@@ -3922,6 +3923,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ok_tekken3_arcade_converter"
+version = "0.1.0"
+source = "git+https://github.com/openkumite/ok_tekken3_arcade_converter?branch=main#505dce02d0ace3a7b3d110b6723e1f2f9fc8aef6"
+dependencies = [
+ "anyhow",
+ "ok_converter_common",
+ "png",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
 name = "ok_tekken3_converter"
 version = "0.3.0"
 source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#764fb5663b6c1fb1e268d69419395ffa819e7bd8"
@@ -4001,6 +4014,7 @@ dependencies = [
  "ok_converter_common",
  "ok_hl_cs_converter",
  "ok_tekken2_converter",
+ "ok_tekken3_arcade_converter",
  "ok_tekken3_converter",
  "opus-rs",
  "png",

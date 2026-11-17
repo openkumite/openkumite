@@ -137,6 +137,15 @@ impl Progress {
                     self.mark(at, at + 0.02, t);
                 }
             }
+            Kind::Convert(Part::Arcade) => {
+                // (13 stages)
+                if let Some(stage) = l.strip_prefix("[t3arcade] ") {
+                    self.count += 1;
+                    let at = (self.count as f32 / 13.0).min(1.0) * 0.97;
+                    self.mark(at, (at + 0.07).min(0.99), t);
+                    self.doing = format!("Stage {}", stage.split(':').next().unwrap_or("").trim_start_matches("stage_"));
+                }
+            }
             Kind::Install | Kind::Remove => {}
         }
     }

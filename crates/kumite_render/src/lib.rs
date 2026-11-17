@@ -331,6 +331,8 @@ pub struct Renderer {
     sampler_filtered: wgpu::Sampler,
     /// Linear, the atlas's addressing: the smooth textures setting.
     sampler_smooth: wgpu::Sampler,
+    /// Sharp texels tiling both ways, and the same filtered.
+    sampler_tiled: [wgpu::Sampler; 2],
     /// The scene's upscale (nearest: a lower resolution shows its pixels) and downscale (linear) to the window.
     blit_nearest: wgpu::Sampler,
     blit_linear: wgpu::Sampler,
@@ -501,6 +503,17 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let tiled = |filter| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("tiled"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::Repeat,
+                mag_filter: filter,
+                min_filter: filter,
+                ..Default::default()
+            })
+        };
+        let sampler_tiled = [tiled(wgpu::FilterMode::Nearest), tiled(wgpu::FilterMode::Linear)];
         let blit_nearest = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("blit nearest"), ..Default::default() });
         let blit_linear =
             device.create_sampler(&wgpu::SamplerDescriptor { label: Some("blit linear"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
@@ -599,6 +612,7 @@ impl Renderer {
             sampler,
             sampler_filtered,
             sampler_smooth,
+            sampler_tiled,
             blit_nearest,
             blit_linear,
             blit_pipeline,
@@ -766,6 +780,15 @@ impl Renderer {
 
     /// Upload an RGBA8 texture (sRGB colours, alpha 0 = transparent texel).
     pub fn texture(&self, width: u32, height: u32, rgba: &[u8]) -> Arc<Texture> {
+        self.upload(width, height, rgba, [&self.sampler, &self.sampler_smooth])
+    }
+
+    /// Upload an RGBA8 texture that tiles both ways, its texels sharp (or smooth by the setting).
+    pub fn texture_tiled(&self, width: u32, height: u32, rgba: &[u8]) -> Arc<Texture> {
+        self.upload(width, height, rgba, [&self.sampler_tiled[0], &self.sampler_tiled[1]])
+    }
+
+    fn upload(&self, width: u32, height: u32, rgba: &[u8], [sharp, smooth]: [&wgpu::Sampler; 2]) -> Arc<Texture> {
         let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -784,8 +807,8 @@ impl Renderer {
             size,
         );
         let view = tex.create_view(&Default::default());
-        let bind_group = self.bind(&view, &self.sampler);
-        let bind_group_smooth = self.bind(&view, &self.sampler_smooth);
+        let bind_group = self.bind(&view, sharp);
+        let bind_group_smooth = self.bind(&view, smooth);
         Arc::new(Texture { bind_group, bind_group_smooth, texture: tex })
     }
 

@@ -5,8 +5,8 @@ A 3D fighting game engine in Rust that plays converted game data 1:1, as the ori
 
 The repository contains **no game data**. Everything game-specific is converted once, in the game, from your own copy
 of the game, into standard formats: glTF 2.0, PNG, JSON, WAV/FLAC and AVI. The converters are separate crates the game
-links: ok_tekken3_converter (the game, required), ok_tekken2_converter and ok_hl_cs_converter (optional packs beside
-it), on ok_converter_common.
+links: ok_tekken3_converter (the game, required), ok_tekken2_converter, ok_hl_cs_converter and
+ok_tekken3_arcade_converter (optional packs beside it), on ok_converter_common.
 
 ## Repository layout
 
@@ -41,6 +41,11 @@ copied; the space it needs is checked before it starts. Choose:
 | Tekken 3 (PlayStation, USA, SLUS-00402) | its disc image | the game (required) |
 | Tekken 2 (PlayStation, USA v1.1) | its disc image | its fighters in the roster (optional) |
 | Counter-Strike (Half-Life) | the Half-Life folder, with `cstrike/` and `valve/` | its levels as arenas, two more Tekken Force stages (optional) |
+| Tekken 3 arcade (Namco System 12) | its ROM set: MAME's `tekken3.zip`, or the folder of its files | its 13 stages, 3D models, in place of the PlayStation game's panoramas (optional; desktops and Android, not yet in a browser) |
+
+With the arcade stages converted, OPTION, GRAPHICS, STAGES chooses ARCADE or PLAYSTATION (`--stages arcade|ps`). They
+only change what is drawn: the fingerprint, online play and replays are the same with them or without. Their sky is
+not converted (black behind the models), and the three stages the arcade game lights as it draws are shown unlit.
 
 A disc image in any of these formats (ok_converter_common's `disc` module): a `.cue` with its `.bin` files (or a
 `.bin` alone: a `.cue` beside it is found, and a split image's `Track 2` and `Track 3`), `.chd`, CloneCD `.ccd` with its
@@ -57,6 +62,7 @@ be added, converted again or removed later. In the game data's folder:
 ```text
 manifest.json, characters/, stages/, ...   the Tekken 3 pack (as kumite_converter wrote it)
 packs/t2/, packs/cs/                       the Tekken 2 and Counter-Strike packs (each from its own copy alone)
+packs/t3arcade/                            the arcade stages (read as they are: `assets/arcade/`, not installed)
 extras/                                    the packs installed: what they add to or change in Tekken 3's
 ```
 

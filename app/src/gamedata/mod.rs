@@ -87,8 +87,8 @@ pub struct Abilities {
 /// The game data as the host knows it.
 #[derive(Clone, Debug, Default)]
 pub struct Status {
-    /// Tekken 3, Tekken 2, Counter-Strike (`Part::ALL`'s order).
-    pub parts: [PartView; 3],
+    /// Tekken 3, Tekken 2, Counter-Strike, the arcade stages (`Part::ALL`'s order).
+    pub parts: [PartView; 4],
     pub playable: bool,
     /// Not known yet (the browser asks its worker).
     pub loading: bool,
@@ -185,6 +185,7 @@ pub fn part_title(p: Part) -> &'static str {
         Part::T3 => "TEKKEN 3",
         Part::T2 => "TEKKEN 2",
         Part::Cs => "COUNTER-STRIKE",
+        Part::Arcade => "TEKKEN 3 ARCADE",
     }
 }
 
@@ -193,12 +194,15 @@ fn part_about(p: Part) -> &'static str {
         Part::T3 => "PlayStation, USA (SLUS-00402). The game itself: needed.",
         Part::T2 => "PlayStation, USA v1.1. Its fighters join the roster, with their stages, music and endings. Optional.",
         Part::Cs => "Half-Life with Counter-Strike. Its levels become arenas, and two more Tekken Force stages. Optional.",
+        Part::Arcade => "The arcade game (Namco System 12). Its 3D stages replace the PlayStation game's. Optional.",
     }
 }
 
 fn part_input(p: Part, folders: bool) -> &'static str {
     match (p, folders) {
         (Part::Cs, _) => "Choose the Half-Life folder (with cstrike/ and valve/).",
+        (Part::Arcade, true) => "Choose the folder that holds its ROM set: MAME's tekken3.zip, or its files.",
+        (Part::Arcade, false) => "Choose its ROM set: MAME's tekken3.zip.",
         (_, true) => "Choose the folder that holds its disc image: .cue with its .bin files, .chd, .iso, .pbp, or a .zip or .7z of them.",
         _ => "Choose its disc image: the .cue (its .bin files beside it), .chd, .iso, .pbp, .ccd, .mds, .ecm, or a .zip, .7z, .tar, .gz, .xz or .zst of it.",
     }
@@ -687,6 +691,8 @@ impl Screen {
             Page::Home => {
                 let mut v: Vec<Row> = Part::ALL
                     .into_iter()
+                    // shortcut: a browser does not convert the arcade ROM set yet (kumite_convert_web), its row is left out
+                    .filter(|p| !(cfg!(target_arch = "wasm32") && *p == Part::Arcade))
                     .map(|p| {
                         let pv = &status.parts[part_index(p)];
                         let right = if pv.converted {

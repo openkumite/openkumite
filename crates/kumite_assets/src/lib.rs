@@ -55,6 +55,12 @@ impl Assets {
     pub fn stage(&self, id: usize) -> Result<Stage> {
         Stage::load(&self.root.join(format!("stages/stage_{id:02}.glb")))
     }
+    /// The arcade game's stage that stands in for stage `id` (the arcade pack's `arcade/stage_NN.glb`), when there
+    /// is one.
+    pub fn arcade_stage(&self, id: usize) -> Option<Result<Stage>> {
+        let path = self.root.join(format!("arcade/stage_{id:02}.glb"));
+        kumite_fs::exists(&path).then(|| Stage::load(&path))
+    }
     /// A JSON file under `gamedata/`, deserialised into `T`.
     pub fn gamedata<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<T> {
         let p = self.root.join("gamedata").join(name);
@@ -416,6 +422,11 @@ pub struct Stage {
     /// Per texture (image): the glb asks for linear filtering (with mipmaps) and tiling both ways, as the
     /// extra levels do; the game's own stages ask for nearest and clamp.
     pub filtered: Vec<bool>,
+    /// Per texture (image): the glb asks for sharp texels tiling both ways (the arcade stages' tiles).
+    pub tiled: Vec<bool>,
+    /// The sky is the stage's own model (scene extras `drum: "model"`: the arcade stages), not a drum of panels:
+    /// both sides of its faces are drawn.
+    pub sky_model: bool,
     /// An extra level (scene extras `level`): its name.
     pub extra_level: Option<String>,
     /// Its walk grid (scene extras `walls`): origin (m, x / z), cell (m), size (cells), rows (bit set = blocked).
@@ -488,6 +499,8 @@ impl Stage {
             floor_light: None,
             placements: vec![],
             filtered: vec![false; images.len()],
+            tiled: vec![false; images.len()],
+            sky_model: false,
             extra_level: None,
             walls: None,
             camera_walls: None,
@@ -496,6 +509,10 @@ impl Stage {
             let s = t.sampler();
             if s.mag_filter() == Some(gltf::texture::MagFilter::Linear) {
                 if let Some(f) = st.filtered.get_mut(t.source().index()) {
+                    *f = true;
+                }
+            } else if s.wrap_t() == gltf::texture::WrappingMode::Repeat {
+                if let Some(f) = st.tiled.get_mut(t.source().index()) {
                     *f = true;
                 }
             }
@@ -507,6 +524,7 @@ impl Stage {
             st.sky_base_y = v["drum_base_y"].as_f64().unwrap_or(0.0) as f32 / 1000.0;
             st.sky_y_scale = v["drum_y_scale"].as_f64().unwrap_or(1.0) as f32;
             st.sky_first = v["drum_before_floor"].as_bool().unwrap_or(false);
+            st.sky_model = v["drum"] == "model";
             if let Some(rgb) = v["background_rgb"].as_array() {
                 st.background = std::array::from_fn(|k| rgb.get(k).and_then(|c| c.as_u64()).unwrap_or(0) as u8);
             }

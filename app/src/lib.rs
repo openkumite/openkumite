@@ -141,6 +141,8 @@ struct Scene {
     sky_first: bool,
     /// Force: the sky is the backdrop wall, standing at this z (m).
     wall_z: Option<f32>,
+    /// An arcade stage: the sky is its model.
+    sky_model: bool,
     /// The full-screen fill behind the stage (sRGB; one stage's sky blue, black elsewhere).
     background: [u8; 3],
     /// Ball's sky strip (it is the `sky` mesh then): its bottom distance ahead and height (game units, y
@@ -1034,6 +1036,7 @@ impl App {
             sky_y_scale: 1.0,
             sky_first: false,
             wall_z: None,
+            sky_model: false,
             background: [0; 3],
             strip: None,
             camera_drum: false,
@@ -1053,13 +1056,23 @@ impl App {
             shadow: self.stage_lights.get(&stage).and_then(|l| l.1),
             blob: None,
         };
-        match self.assets.stage(stage) {
+        // the arcade game's stage in its place, when the arcade pack has one and the setting asks for it
+        let arcade = self.graphics.arcade_stages.then(|| self.assets.arcade_stage(stage)).flatten();
+        match arcade.unwrap_or_else(|| self.assets.stage(stage)) {
             Ok(st) => {
                 let tex: Vec<_> = st
                     .textures
                     .iter()
                     .enumerate()
-                    .map(|(i, t)| if st.filtered.get(i).copied().unwrap_or(false) { r.texture_filtered(t.width, t.height, &t.rgba) } else { r.texture(t.width, t.height, &t.rgba) })
+                    .map(|(i, t)| {
+                        if st.filtered.get(i).copied().unwrap_or(false) {
+                            r.texture_filtered(t.width, t.height, &t.rgba)
+                        } else if st.tiled.get(i).copied().unwrap_or(false) {
+                            r.texture_tiled(t.width, t.height, &t.rgba)
+                        } else {
+                            r.texture(t.width, t.height, &t.rgba)
+                        }
+                    })
                     .collect();
                 let walls = |w: &kumite_assets::StageWalls| Arc::new(kumite_sim::Walls { origin: w.origin, cell: w.cell, size: w.size, rows: w.rows.clone() });
                 (scene.walls, scene.camera_walls) = (st.walls.as_ref().map(walls), st.camera_walls.as_ref().map(walls));
@@ -1069,6 +1082,7 @@ impl App {
                 (scene.sky_base_y, scene.sky_y_scale, scene.sky_first, scene.floor_period) = (st.sky_base_y, st.sky_y_scale, st.sky_first, st.floor_period);
                 // (a mesh carries the glb's whole vertex list: its own are the ones its indices name)
                 scene.wall_z = st.sky.first().and_then(|m| m.vertices.get(*m.indices.first()? as usize)).filter(|_| st.backdrop_wall).map(|v| place(glam::Vec3::from(v.pos)).z);
+                scene.sky_model = st.sky_model;
                 scene.background = st.background;
                 (scene.camera_drum, scene.floor_patch, scene.floor_light) = (st.camera_drum, st.floor_patch, st.floor_light);
                 if let Some((m, at)) = st.strip.as_ref().filter(|(m, _)| !m.indices.is_empty()) {
@@ -5160,6 +5174,14 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
         cam.floor_clip = Some([x0, x0 + 10.0 * tile, z0, z0 + 10.0 * tile]);
         (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, true, false);
     }
+    // an arcade stage: its model around the fighters' midpoint (x, z; its ground the floor's), drawn after the floor
+    // without depth, far faces first, both sides of a face
+    // shortcut: that it follows the midpoint, as the PlayStation game's drum does, is not read from the arcade game's
+    // code (nor its sky behind the model, black here); upgrade when the arcade program is disassembled
+    if scene.sky_model {
+        cam.sky = glam::Mat4::from_translation(glam::Vec3::new(mid.x, 0.0, mid.z));
+        (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, false, false);
+    }
     // Force's backdrop wall, the original's 2D strip (0x800B4914): drawn first, the floor over it up to the wall; not
     // turned by the camera's roll but stepped up along the screen (its posts stay upright)
     if let Some(z) = scene.wall_z {
@@ -6512,6 +6534,7 @@ Graphics (also OPTION > GRAPHICS):
   --render-scale S             the 3D scene's resolution over the window's: 0.25..2 (or 150%)
   --vsync on|off
   --textures sharp|smooth      the original's nearest texels, or filtered
+  --stages arcade|ps           the arcade game's stages (where the Game data has them), or the PlayStation game's
   --graphics recommended|default
                                start from the settings chosen for the screen and the GPU, or the defaults
   --stats                      video statistics (FPS, frame times, resolutions, GPU); F10 in the game

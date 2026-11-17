@@ -15,6 +15,7 @@ ok_converter_common = { git = "https://github.com/openkumite/ok_converter_common
 ok_tekken3_converter = { git = "https://github.com/openkumite/ok_tekken3_converter", branch = "main" }
 ok_tekken2_converter = { git = "https://github.com/openkumite/ok_tekken2_converter", branch = "main" }
 ok_hl_cs_converter = { git = "https://github.com/openkumite/ok_hl_cs_converter", branch = "main" }
+ok_tekken3_arcade_converter = { git = "https://github.com/openkumite/ok_tekken3_arcade_converter", branch = "main" }
 
 [lints]
 workspace = true
