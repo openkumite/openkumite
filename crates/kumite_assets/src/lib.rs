@@ -358,8 +358,10 @@ pub struct Stage {
     /// Repeat period of the floor map (m, x and z) when the floor is laid around the fighters (every arena but
     /// Force): the floor meshes may be shifted by whole periods.
     pub floor_period: Option<[f32; 2]>,
-    /// Everything else, flattened to world space (floor copies, Force backdrop wall).
+    /// Everything else, flattened to world space (floor copies).
     pub meshes: Vec<Mesh>,
+    /// Force: `sky` is the backdrop wall (world space), the original's 2D strip.
+    pub backdrop_wall: bool,
     /// Pickup sprite meshes (node-local; place at each item placement).
     pub item_mesh: Option<Mesh>,
     /// Ball's sky: a unit drum carrying the 2D strip, and where the strip goes (game units: its bottom at
@@ -438,6 +440,7 @@ impl Stage {
             sky_base_y: 0.0,
             sky_y_scale: 1.0,
             sky_first: false,
+            backdrop_wall: false,
             background: [0; 3],
             floor_period: None,
             meshes: vec![],
@@ -511,6 +514,9 @@ impl Stage {
             } else if let Some(m) = n.mesh() {
                 if name == "sky" {
                     st.sky.extend(mesh_data(m, Mat4::IDENTITY)?);
+                } else if name == "backdrop_wall" {
+                    st.sky.extend(mesh_data(m, xf)?);
+                    st.backdrop_wall = true;
                 } else if name == "panorama_strip" {
                     if let (Some(mesh), Some(strip)) = (mesh_data(m, Mat4::IDENTITY)?.into_iter().next(), st.strip.as_mut()) {
                         strip.0 = mesh;

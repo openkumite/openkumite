@@ -106,6 +106,7 @@ fn every_stage_loads() {
             15..=18 => {
                 assert!(s.placements.iter().any(|p| p.extras["type"] == "enemy"), "force stage {id}: no enemies");
                 assert!(s.item_mesh.is_some(), "force stage {id}: no pickup sprite");
+                assert!(s.backdrop_wall && !s.sky.is_empty(), "force stage {id}: no backdrop wall");
             }
             _ => {}
         }
@@ -1207,11 +1208,11 @@ fn end_cameras_aim_at_the_fighter() {
 #[test]
 fn render_camera_pitch_wraps() {
     use kumite_sim::camera::View;
-    let up = kumite_game::view_camera(&View { eye: [0, -737, -11517], pitch: 4075, yaw: 0, h: 500 }).1;
+    let up = kumite_game::view_camera(&View { eye: [0, -737, -11517], pitch: 4075, yaw: 0, h: 500, roll: 0 }).1;
     assert!(up.y > 0.0 && up.y < 0.1 && up.z < -0.99, "looks ahead and a little up: {up:?}");
-    let down = kumite_game::view_camera(&View { eye: [0, -7853, 0], pitch: 0x400, yaw: 0, h: 500 }).1;
+    let down = kumite_game::view_camera(&View { eye: [0, -7853, 0], pitch: 0x400, yaw: 0, h: 500, roll: 0 }).1;
     assert!(down.y < -0.99 && down.is_finite(), "straight down: {down:?}");
-    let level = kumite_game::view_camera(&View { eye: [0, -1000, -5000], pitch: 0, yaw: 0, h: 500 }).1;
+    let level = kumite_game::view_camera(&View { eye: [0, -1000, -5000], pitch: 0, yaw: 0, h: 500, roll: 0 }).1;
     assert!(level.y.abs() < 1e-6);
 }
 
