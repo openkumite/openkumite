@@ -718,6 +718,7 @@ impl Screen {
                 let choose = match (p, status.can.folders, pv.converted) {
                     (_, _, true) => "CONVERT AGAIN",
                     (Part::Cs, _, _) | (_, true, _) => "CHOOSE FOLDER",
+                    (Part::Arcade, _, _) => "CHOOSE ROM SET",
                     _ => "CHOOSE DISC IMAGE",
                 };
                 let mut v = vec![row(choose, !busy && !picking, Act::Pick(p))];

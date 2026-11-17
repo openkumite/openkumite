@@ -759,8 +759,12 @@
   const fileSize = async (name) => { try { return (await (await (await root()).getFileHandle(name)).getFile()).size; } catch { return 0; } };
   // the files picked or dropped for a part as [name, File]: a disc image's (the converter finds the image among
   // them), or the Half-Life folder's levels and textures by path below the folder
-  // (the arcade ROM set: its .zip alone when there is one, else every file by name)
-  const roms = (all) => { const zip = all.find(([p]) => /\.zip$/i.test(p)); return (zip ? [zip] : all).map(([p, f]) => [p.split('/').pop(), f]); };
+  // (the arcade ROM set: its files by name when its data ROMs are among them, else its .zip alone)
+  const roms = (all) => {
+    const loose = all.some(([p]) => /(^|\/)tet1rom\d[lu]\.\d+$/i.test(p));
+    const zip = all.find(([p]) => /\.zip$/i.test(p));
+    return (loose || !zip ? all : [zip]).map(([p, f]) => [p.split('/').pop(), f]);
+  };
   const forPart = (part, all) => part === 't3arcade' ? roms(all) : part === 'cs'
     ? all.filter(([p]) => /\.(bsp|wad)$/i.test(p)).map(([p, f]) => [p.split('/').slice(1).join('/') || p, f])
     : all.filter(([p]) => DISC_FILES.some((e) => p.toLowerCase().endsWith(e))).map(([p, f]) => [p.split('/').pop(), f]);
@@ -803,7 +807,8 @@
       this.picking = null;
       const files = forPart(part, all);
       if (!files.length) {
-        this.message = part === 'cs' ? 'That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.' : 'Those files hold no disc image: choose the .cue with its .bin files, or one .chd, .iso, .pbp, .zip or .7z file.';
+        this.message = part === 'cs' ? 'That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.'
+          : part === 't3arcade' ? 'Nothing was chosen: choose the ROM set, MAME\'s tekken3.zip.' : 'Those files hold no disc image: choose the .cue with its .bin files, or one .chd, .iso, .pbp, .zip or .7z file.';
         return;
       }
       this.begin(part, files);

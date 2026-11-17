@@ -2,11 +2,13 @@
 //! files, picked on the page, read by id through functions the worker gives (`okc_*` on its global scope); each part
 //! into its pack, two files kept in the site's storage (OPFS, through sync access handles): the Tekken 3 pack
 //! (assets.pack, assets.idx: the base, as the page has always kept it), the Tekken 2 and Counter-Strike packs
-//! (t2.*, cs.*), and the extras (extras.*: the packs installed, kumite_packs). The page reads the extras over the
-//! Tekken 2 pack's `assets/` over the base (index.html's `stored`).
+//! (t2.*, cs.*), the extras (extras.*: the packs installed, kumite_packs) and the arcade stages' pack (arcade.*: not
+//! installed). The page reads the arcade pack's `assets/`, and the extras over the Tekken 2 pack's `assets/`, over
+//! the base (index.html's `stored`).
 //!
 //! The stores, by number: 0, 1 the base's pack and index; 2, 3 Tekken 2's; 4, 5 Counter-Strike's; 6, 7 the extras';
-//! 8 the scratch file an archive (.zip, .7z, ...) is unpacked into while a job converts (emptied after it).
+//! 8 the scratch file an archive (.zip, .7z, ...) is unpacked into while a job converts (emptied after it); 9, 10
+//! the arcade stages' pack and index.
 
 use anyhow::{anyhow, bail, Context, Result};
 use kumite_packs::Part;
@@ -167,9 +169,9 @@ fn start() {
     std::panic::set_hook(Box::new(|info| okc_panic(&info.to_string())));
 }
 
-/// Runs a job: `options` is JSON, `{"job": "convert", "part": "t3" | "t2" | "cs", "files": [[path, id], ...] (the
-/// picked files: a disc image's, by name, the image found among them; Counter-Strike: the folder's, by path below
-/// it), "now": "YYYY-MM-DD HH:MM:SS"}`, `{"job": "remove", "part": ...}` or `{"job": "install"}`; then the packs
+/// Runs a job: `options` is JSON, `{"job": "convert", "part": "t3" | "t2" | "cs" | "t3arcade", "files": [[path, id], ...]
+/// (the picked files: a disc image's, by name, the image found among them; Counter-Strike: the folder's, by path below
+/// it; the arcade ROM set: its .zip alone, or its files by name), "now": "YYYY-MM-DD HH:MM:SS"}`, `{"job": "remove", "part": ...}` or `{"job": "install"}`; then the packs
 /// installed again. The state after it ([`state`]'s).
 #[wasm_bindgen]
 pub fn run(options: &str) -> Result<String, String> {
