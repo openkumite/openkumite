@@ -593,7 +593,15 @@ impl App {
                 game = game.with_intro(v, true);
             }
         }
-        let mut scene = self.stage_scene(r, stage);
+        // Mokujin at home (the second side's fighter is the host): the arcade ROM set's hidden arena, which the
+        // arcade game gives no one. Only what is drawn: the fight's stage stays his.
+        // shortcut: the second side's fighter is taken as the host, so Team Battle and the demo (the first side's
+        // home) may show the arena for Yoshimitsu's forest, and the tag brawl never does; upgrade: setups name their host
+        let hidden = setup.as_ref().is_some_and(|s| {
+            let id = self.roster.characters[s.players[1].0].id;
+            id as i64 == kumite_game::COPIER && s.stage == self.roster.home_stage(id, s.players[1].1)
+        });
+        let mut scene = self.stage_scene_with(r, stage, hidden, &|p| p);
         game.fight.walls = scene.walls.clone();
         scene.models = skinned_models(r, &game);
         // Ball 2 ON 2: the four drawn as Force's actors (a GPU model per actor's body)
@@ -1027,12 +1035,14 @@ impl App {
 
     /// A stage's meshes and the effect atlas (no fighters yet).
     fn stage_scene(&self, r: &Renderer, stage: usize) -> Scene {
-        self.stage_scene_with(r, stage, &|p| p)
+        self.stage_scene_with(r, stage, false, &|p| p)
     }
 
     /// The stage's scene, its points placed by `place` (metres; Force's extra stages lay a level along their
     /// route).
-    fn stage_scene_with(&self, r: &Renderer, stage: usize, place: &dyn Fn(glam::Vec3) -> glam::Vec3) -> Scene {
+    /// `hidden`: the arcade pack's hidden arena drawn in the stage's place (where the pack has it and the arcade
+    /// stages are asked for).
+    fn stage_scene_with(&self, r: &Renderer, stage: usize, hidden: bool, place: &dyn Fn(glam::Vec3) -> glam::Vec3) -> Scene {
         let mut scene = Scene {
             sky: vec![],
             sky_base_y: 0.0,
@@ -1062,7 +1072,8 @@ impl App {
             blob: None,
         };
         // the arcade game's stage in its place, when the arcade pack has one and the setting asks for it
-        let arcade = self.graphics.arcade_stages.then(|| self.assets.arcade_stage(stage)).flatten();
+        let hidden = hidden.then(|| self.assets.arcade_hidden()).flatten();
+        let arcade = self.graphics.arcade_stages.then(|| hidden.or_else(|| self.assets.arcade_stage(stage))).flatten();
         match arcade.unwrap_or_else(|| self.assets.stage(stage)) {
             Ok(st) => {
                 let tex: Vec<_> = st
@@ -3401,7 +3412,7 @@ impl App {
         // off); walls between the camera and the fighters cut away
         let mut scene = match &route {
             Some(route) => {
-                let mut scene = self.stage_scene_with(r, setup.stage, &|p| route.local(p));
+                let mut scene = self.stage_scene_with(r, setup.stage, false, &|p| route.local(p));
                 (scene.walls, scene.camera_walls, scene.cutaway) = (None, None, true);
                 // the walls on the camera's side of the route: gone, so they never stand before the fight
                 scene.near_cut = Some(route.half_width + 0.5);

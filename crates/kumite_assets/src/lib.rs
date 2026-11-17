@@ -61,6 +61,12 @@ impl Assets {
         let path = self.root.join(format!("arcade/stage_{id:02}.glb"));
         kumite_fs::exists(&path).then(|| Stage::load(&path))
     }
+    /// The arcade ROM set's arena that no stage of its game uses (the arcade pack's `arcade/hidden.glb`), when the
+    /// pack has it.
+    pub fn arcade_hidden(&self) -> Option<Result<Stage>> {
+        let path = self.root.join("arcade/hidden.glb");
+        kumite_fs::exists(&path).then(|| Stage::load(&path))
+    }
     /// A JSON file under `gamedata/`, deserialised into `T`.
     pub fn gamedata<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<T> {
         let p = self.root.join("gamedata").join(name);
