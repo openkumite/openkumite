@@ -1096,7 +1096,7 @@ impl App {
                 (scene.sky_model, scene.sky_cull) = (st.sky_model, st.sky_cull);
                 scene.sky_picture = st
                     .sky_picture
-                    .filter(|p| st.textures.get(p.image).is_some_and(|t| t.width <= r.max_texture()))
+                    .filter(|p| st.textures.get(p.image).is_some_and(|t| t.width.max(t.height) <= r.max_texture()))
                     .and_then(|p| Some((p, tex.get(p.image)?.clone(), st.textures.get(p.image).map(|t| [t.width as f32, t.height as f32])?, r.texture(1, 1, &[255; 4]))));
                 scene.background = st.background;
                 (scene.camera_drum, scene.floor_patch, scene.floor_light) = (st.camera_drum, st.floor_patch, st.floor_light);
@@ -5365,6 +5365,8 @@ fn sky_backdrop(cam: &Camera, scene: &Scene) -> Vec<(Arc<kumite_render::Texture>
     let f = (cam.target - cam.eye).normalize_or_zero();
     let turn = 4096.0 / std::f32::consts::TAU;
     let (yaw, pitch) = (f.x.atan2(-f.z) * turn, -f.y.clamp(-1.0, 1.0).asin() * turn);
+    // shortcut: a sky that is not a whole number of tiles a turn (two of them) jumps where the heading wraps, here
+    // behind the fighters' first view; where the arcade game's yaw wraps is not read from its program
     let scroll = yaw * 512.0 * 360.0 / (p.fov * 4096.0);
     let mut y = -pitch * p.pitchmul / 256.0 + p.ybase;
     y = p.max_y.map_or(y, |m| y.min(m));
@@ -5376,7 +5378,8 @@ fn sky_backdrop(cam: &Camera, scene: &Scene) -> Vec<(Arc<kumite_render::Texture>
         vec![at(-SIDE, 0), at(-SIDE, 1), at(SIDE, 0), at(SIDE, 0), at(-SIDE, 1), at(SIDE, 1)]
     };
     // (a colour of the game's, as the textures' are: to the linear light the picture is drawn in)
-    let plain = |c: [u8; 3]| c.map(|x| (x as f32 / 255.0).powf(2.2));
+    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let plain = |c: [u8; 3]| c.map(|x| lin(x as f32 / 255.0));
     let mut out = Vec::new();
     if let (Some(c), true) = (p.top, y > 0.0) {
         out.push((white.clone(), quad([0.0, y], [0.5; 2], [0.5; 2], plain(c))));

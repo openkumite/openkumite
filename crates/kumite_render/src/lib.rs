@@ -117,7 +117,6 @@ pub struct Camera {
     pub fov_y: f32,
     /// The picture turned anticlockwise about the line of sight (radians).
     pub roll: f32,
-
     /// The backdrop drum's placement (world, metres) and its view-space Y scale.
     pub sky: Mat4,
     pub sky_y_scale: f32,
