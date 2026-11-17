@@ -58,6 +58,7 @@ pub struct Constants {
     pub last: Final,
     ai_level: AiLevel,
     bounds: Bounds,
+    camera: CameraConsts,
     chicken: ChickenSounds,
     countdown: Countdown,
     tally: TallySounds,
@@ -82,6 +83,11 @@ struct Countdown {
 struct TallySounds {
     sfx: u16,
     key_sfx: u16,
+}
+/// The overlay camera's (0x800B4F78): the fourth stage's roll (4096 a turn), its floor rising to the right.
+#[derive(Clone, Debug, Deserialize)]
+struct CameraConsts {
+    roll_stage3: i64,
 }
 /// The players' movement limits (0x80043240): z between `front_z` and `back_z` (on the slanted stage's arena:
 /// `front_slanted` [slope, offset] off the camera's x); x within the frustum's edges, a line in z each
@@ -986,7 +992,8 @@ impl ForceStage {
     }
 
     fn apply_camera(&self, game: &mut Game) {
-        game.camera.view = View { eye: [self.cam_x as i64, -3500, -7000], pitch: (self.pitch >> 6) as i64, yaw: 0, h: 500 };
+        let roll = if self.extra.is_none() && self.index == 3 { self.data.constants.camera.roll_stage3 } else { 0 };
+        game.camera.view = View { eye: [self.cam_x as i64, -3500, -7000], pitch: (self.pitch >> 6) as i64, yaw: 0, h: 500, roll };
     }
 
     /// The boss is loaded (match state 0x15, 0x800B2658): in slot 0 (the target), 4096 ahead of the camera,

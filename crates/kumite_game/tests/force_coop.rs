@@ -224,3 +224,17 @@ fn co_op_has_a_soldier_a_player_in_play() {
     assert!(spawned, "soldiers came on");
     assert!(most <= 2, "a pair has at most two soldiers at once: {most}");
 }
+
+/// Only the fourth stage's camera is rolled (0x800B4F78): its floor rises to the right.
+#[test]
+fn only_the_fourth_stage_rolls_the_camera() {
+    let Some(a) = assets() else { return };
+    let data: Arc<ForceData> = Arc::new(kumite_sim::data::load(&a.root.join("gamedata/force.json")).unwrap());
+    let costumes = data.soldier_costumes[0];
+    for index in 0..4 {
+        let soldiers = [0, 1].map(|k| Actor::load(&a, 259 + 4 * costumes[k].min(3)).unwrap());
+        let mut game = Game::load(&a, [MODEL_131, 259 + 4 * costumes[0].min(3)]).unwrap();
+        ForceStage::new(data.clone(), index, soldiers, 7 * 4, 7, 0, 0, 0, 0).setup(&mut game);
+        assert_eq!(game.camera.view.roll, if index == 3 { 0x82 } else { 0 }, "stage {index}");
+    }
+}

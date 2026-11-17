@@ -139,6 +139,8 @@ struct Scene {
     sky_base_y: f32,
     sky_y_scale: f32,
     sky_first: bool,
+    /// Force: the sky is the backdrop wall, standing at this z (m).
+    wall_z: Option<f32>,
     /// The full-screen fill behind the stage (sRGB; one stage's sky blue, black elsewhere).
     background: [u8; 3],
     /// Ball's sky strip (it is the `sky` mesh then): its bottom distance ahead and height (game units, y
@@ -1029,6 +1031,7 @@ impl App {
             sky_base_y: 0.0,
             sky_y_scale: 1.0,
             sky_first: false,
+            wall_z: None,
             background: [0; 3],
             strip: None,
             camera_drum: false,
@@ -1062,6 +1065,8 @@ impl App {
                     |m: &kumite_assets::Mesh| -> Vec<StaticVertex> { m.vertices.iter().map(|v| StaticVertex { pos: place(glam::Vec3::from(v.pos)).to_array(), uv: v.uv, color: v.color }).collect() };
                 scene.sky = st.sky.iter().map(|m| r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone())).collect();
                 (scene.sky_base_y, scene.sky_y_scale, scene.sky_first, scene.floor_period) = (st.sky_base_y, st.sky_y_scale, st.sky_first, st.floor_period);
+                // (a mesh carries the glb's whole vertex list: its own are the ones its indices name)
+                scene.wall_z = st.sky.first().and_then(|m| m.vertices.get(*m.indices.first()? as usize)).filter(|_| st.backdrop_wall).map(|v| place(glam::Vec3::from(v.pos)).z);
                 scene.background = st.background;
                 (scene.camera_drum, scene.floor_patch, scene.floor_light) = (st.camera_drum, st.floor_patch, st.floor_light);
                 if let Some((m, at)) = st.strip.as_ref().filter(|(m, _)| !m.indices.is_empty()) {
@@ -4288,7 +4293,7 @@ impl App {
                             let (e, t) = cs.scene.camera();
                             Camera::new(e, t, fov_y)
                         }
-                        None => Camera::new(eye, eye + forward, fov_y),
+                        None => Camera { roll: view.roll as f32 * std::f32::consts::TAU / 4096.0, ..Camera::new(eye, eye + forward, fov_y) },
                     },
                 };
                 // the stage around what the camera frames: the fighters as shown (the replay's)
@@ -4392,7 +4397,7 @@ impl App {
         // the projection the renderer uses, for texts at 3D positions
         {
             let proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, r.aspect(), 0.05, 400.0);
-            let view = glam::camera::rh::view::look_at_mat4(cam.eye, cam.target, glam::Vec3::Y);
+            let view = cam.view();
             self.hud.view_proj = Some(proj * view);
         }
         if !blobs.is_empty() && shadows_shown(&cam) {
@@ -4928,7 +4933,7 @@ impl RenderStatsExt for kumite_render::RenderStats {
 fn project_point(cam: &Camera, size: [u32; 2], window: egui::Rect, view: &art::Screen, p: glam::Vec3) -> Option<(f32, f32)> {
     let aspect = size[0] as f32 / size[1].max(1) as f32;
     let proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, aspect, 0.05, 400.0);
-    let look = glam::camera::rh::view::look_at_mat4(cam.eye, cam.target, glam::Vec3::Y);
+    let look = cam.view();
     let c = proj * look * p.extend(1.0);
     if c.w <= 0.0 {
         return None;
@@ -5153,6 +5158,17 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
         cam.floor_clip = Some([x0, x0 + 10.0 * tile, z0, z0 + 10.0 * tile]);
         (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, true, false);
     }
+    // Force's backdrop wall, the original's 2D strip (0x800B4914): drawn first, the floor over it up to the wall; not
+    // turned by the camera's roll but stepped up along the screen (its posts stay upright)
+    if let Some(z) = scene.wall_z {
+        let level = glam::camera::rh::view::look_at_mat4(cam.eye, cam.target, glam::Vec3::Y);
+        // (x and y scaled so its foot stays on the turned floor's far edge)
+        let (sin, cos) = cam.roll.sin_cos();
+        let shear = glam::Mat4::from_cols(glam::Vec4::new(cos, sin, 0.0, 0.0), glam::Vec4::new(0.0, 1.0 / cos, 0.0, 0.0), glam::Vec4::Z, glam::Vec4::W);
+        cam.sky = cam.view().inverse() * shear * level;
+        (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, true, false);
+        cam.floor_clip = Some([-1e6, 1e6, z, 1e6]);
+    }
     // an extra stage (0x80084560): the panorama drum around the camera, drawn first; the floor only on
     // the 10 x 10 tile patch around the midpoint snapped to whole tiles (0x80082E60 / 0x8008364C)
     if scene.camera_drum {
@@ -5304,6 +5320,9 @@ fn effect_quads(sprites: &[kumite_game::vfx::Sprite], (cols, rows): (u32, u32), 
     let forward = (cam.target - cam.eye).normalize_or_zero();
     let right = forward.cross(glam::Vec3::Y).normalize_or_zero();
     let up = right.cross(forward).normalize_or_zero();
+    // (2D sprites: upright on the screen whatever the camera's roll)
+    let (sin, cos) = cam.roll.sin_cos();
+    let (right, up) = (right * cos - up * sin, right * sin + up * cos);
     for s in sprites {
         // drawn `nearer` the camera along the line of sight, scaled to keep its place and size on screen
         let depth = (s.pos - cam.eye).dot(forward);

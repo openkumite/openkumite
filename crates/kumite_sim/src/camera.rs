@@ -327,13 +327,15 @@ pub struct Sample {
     pub side: i64,
 }
 
-/// Render view (RVIEW): eye in game space, pitch/yaw in 4096 units, projection distance H.
+/// Render view (RVIEW): eye in game space, pitch/yaw/roll in 4096 units, projection distance H.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct View {
     pub eye: [i64; 3],
     pub pitch: i64,
     pub yaw: i64,
     pub h: i64,
+    /// The picture turned anticlockwise (only Force's slanted stage has one).
+    pub roll: i64,
 }
 
 #[derive(Clone)]
@@ -797,7 +799,7 @@ impl FightCamera {
     fn apply(&mut self, k: Key) {
         self.keys[3] = k;
         self.h = k.h.clamp(self.hmin, self.hmax);
-        self.view = View { eye: [k.x, k.y, k.z], pitch: sra_tz(k.p, 6), yaw: sra_tz(k.w, 6), h: self.h };
+        self.view = View { eye: [k.x, k.y, k.z], pitch: sra_tz(k.p, 6), yaw: sra_tz(k.w, 6), h: self.h, roll: 0 };
     }
 
     /// 0x80068394 / 0x800684B4: intro fly-in key (slot 2); returns its weight.
@@ -903,7 +905,7 @@ impl CameraData {
     }
 
     fn view6(&self, b: &Block) -> View {
-        View { eye: b.eye, pitch: sra_tz(b.p, 6), yaw: sra_tz(b.y, 6), h: self.h }
+        View { eye: b.eye, pitch: sra_tz(b.p, 6), yaw: sra_tz(b.y, 6), h: self.h, roll: 0 }
     }
 }
 
@@ -988,7 +990,7 @@ impl EndCam {
             }
             EndCam::Overhead { yaw } => {
                 let o = &d.end.overhead;
-                View { eye: [rx, o.height, rz], pitch: o.pitch, yaw: *yaw & 0xFFF, h: d.h }
+                View { eye: [rx, o.height, rz], pitch: o.pitch, yaw: *yaw & 0xFFF, h: d.h, roll: 0 }
             }
             EndCam::Orbit { eye, target } => {
                 let o = &d.end.orbit;
@@ -1003,7 +1005,7 @@ impl EndCam {
                 target[1] += sra_tz((p.chest - target[1]) * m, sh as u32);
                 target[2] += sra_tz((rz - target[2]) * m, sh as u32);
                 let (pt, y) = d.lookat6(*eye, *target);
-                View { eye: *eye, pitch: sra_tz(pt, 6), yaw: sra_tz(y, 6), h: d.h }
+                View { eye: *eye, pitch: sra_tz(pt, 6), yaw: sra_tz(y, 6), h: d.h, roll: 0 }
             }
         }
     }

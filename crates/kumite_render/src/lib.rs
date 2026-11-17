@@ -115,6 +115,8 @@ pub struct Camera {
     pub eye: Vec3,
     pub target: Vec3,
     pub fov_y: f32,
+    /// The picture turned anticlockwise about the line of sight (radians).
+    pub roll: f32,
     /// The backdrop drum's placement (world, metres) and its view-space Y scale.
     pub sky: Mat4,
     pub sky_y_scale: f32,
@@ -168,6 +170,7 @@ impl Camera {
             eye,
             target,
             fov_y,
+            roll: 0.0,
             sky: Mat4::IDENTITY,
             sky_y_scale: 1.0,
             sky_first: false,
@@ -183,6 +186,11 @@ impl Camera {
             light: None,
             shadow: None,
         }
+    }
+
+    /// The view matrix: a right-handed look-at, y up, then the roll.
+    pub fn view(&self) -> Mat4 {
+        Mat4::from_rotation_z(self.roll) * glam::camera::rh::view::look_at_mat4(self.eye, self.target, Vec3::Y)
     }
 }
 
@@ -949,7 +957,7 @@ impl Renderer {
     ) -> Result<RenderStats> {
         let mut stats = RenderStats::default();
         let proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, self.aspect(), 0.05, 400.0);
-        let view = glam::camera::rh::view::look_at_mat4(cam.eye, cam.target, Vec3::Y);
+        let view = cam.view();
         let sky_view_proj = proj * Mat4::from_scale(Vec3::new(1.0, cam.sky_y_scale, 1.0)) * view * cam.sky;
         // the drum's panels in the order the game's ordering table draws them: far first
         for m in sky {
@@ -1290,4 +1298,17 @@ fn make_depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgp
             view_formats: &[],
         })
         .create_view(&Default::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A roll turns the picture anticlockwise: what is to the right of the target goes up.
+    #[test]
+    fn roll_raises_the_right() {
+        let cam = Camera { roll: 0.2, ..Camera::new(Vec3::new(0.0, 1.0, 5.0), Vec3::new(0.0, 1.0, 0.0), 0.8) };
+        let p = cam.view().transform_point3(Vec3::new(1.0, 1.0, 0.0));
+        assert!(p.x > 0.9 && p.y > 0.15 && (p.z + 5.0).abs() < 1e-5, "{p:?}");
+    }
 }
