@@ -2766,7 +2766,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kumite_assets"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "glam",
@@ -2778,7 +2778,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_convert_web"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "kumite_packs",
@@ -2793,7 +2793,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_fs"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -2802,7 +2802,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_game"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "glam",
@@ -2818,7 +2818,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_net"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "bincode",
  "ggrs",
@@ -2829,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_packs"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "kumite_assets",
@@ -2843,7 +2843,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_render"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2855,7 +2855,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_sim"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "glam",
@@ -3972,7 +3972,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openkumite"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "android_logger",
  "anyhow",
