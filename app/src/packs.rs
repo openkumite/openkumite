@@ -261,6 +261,8 @@ mod tests {
         let state = State::of(&root);
         assert!(state.get(Part::Arcade).is_some() && !state.has_packs() && state.installed && !root.join(EXTRAS).exists());
         assert_eq!(layers(&root, &state), vec![dir(Part::Arcade, &root).join(kumite_packs::ASSETS)]);
+        let hidden = kumite_assets::Stage::load(&dir(Part::Arcade, &root).join("assets/arcade/hidden.glb")).unwrap();
+        assert!(hidden.sky_model && !hidden.meshes.is_empty() && hidden.sky_picture.is_none(), "the hidden arena");
         for n in 0..13 {
             let stage = kumite_assets::Stage::load(&dir(Part::Arcade, &root).join(format!("assets/arcade/stage_{n:02}.glb"))).unwrap();
             assert!(stage.sky_model && stage.sky_cull && !stage.sky.is_empty() && !stage.meshes.is_empty() && stage.floor_period == Some([25.0, 25.0]), "stage {n}");

@@ -3925,8 +3925,8 @@ dependencies = [
 
 [[package]]
 name = "ok_tekken3_arcade_converter"
-version = "0.2.0"
-source = "git+https://github.com/openkumite/ok_tekken3_arcade_converter?branch=main#672a27ac0e1f6ef417f1114b70577ce54dad7889"
+version = "0.3.0"
+source = "git+https://github.com/openkumite/ok_tekken3_arcade_converter?branch=main#c69d38f71a0df6730cf209889588ac8e4ff07179"
 dependencies = [
  "anyhow",
  "ok_converter_common",
