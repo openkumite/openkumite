@@ -580,6 +580,10 @@
       for (const [p, b] of extras.files) files.set(p, b);
       size += extras.size + (t2?.size ?? 0) + ((await pack('cs'))?.size ?? 0);
     }
+    // (the arcade stages: their pack's assets/ as they are, whatever is installed)
+    const arcade = await pack('arcade');
+    for (const [p, b] of arcade?.files ?? []) if (p.startsWith('assets/') && arcade.files.has('manifest.json')) files.set(p.slice(7), b);
+    size += arcade?.size ?? 0;
     return { files, size };
   };
 
@@ -743,28 +747,35 @@
   });
   // ---- the Game data screen's host in this page (app/src/gamedata/web.rs reads `okData.snapshot()` each frame and
   // calls the rest): the engine draws the screen; the page picks the files (hidden inputs #pick-t3, #pick-t2,
-  // #pick-cs; files dropped), checks the space, runs the converter (convert_worker.js) and keeps the job's log
+  // #pick-cs, #pick-t3arcade; files dropped), checks the space, runs the converter (convert_worker.js) and keeps the job's log
   const DISC_FILES = ['.cue', '.bin', '.iso', '.chd', '.ccd', '.img', '.mds', '.mdf', '.ecm', '.pbp', '.wav',
     '.zip', '.7z', '.tar', '.gz', '.tgz', '.xz', '.txz', '.zst', '.tzst'];
   const ARCHIVE = /\.(zip|7z|tar|gz|tgz|xz|txz|zst|tzst)$/i;
-  const NAMES = { t3: 'Tekken 3', t2: 'Tekken 2', cs: 'Counter-Strike' };
+  const NAMES = { t3: 'Tekken 3', t2: 'Tekken 2', cs: 'Counter-Strike', t3arcade: 'Tekken 3 arcade' };
+  const PARTS = ['t3', 't2', 'cs', 't3arcade'];
   // what a conversion writes (its pack and the extras it installs), and an archive's image unpacked
-  const NEEDED = { t3: 1.5e9, t2: 1.8e9, cs: 0.2e9 };
-  const STORES = { t3: ['assets.pack', 'assets.idx'], t2: ['t2.pack', 't2.idx'], cs: ['cs.pack', 'cs.idx'] };
+  const NEEDED = { t3: 1.5e9, t2: 1.8e9, cs: 0.2e9, t3arcade: 0.03e9 };
+  const STORES = { t3: ['assets.pack', 'assets.idx'], t2: ['t2.pack', 't2.idx'], cs: ['cs.pack', 'cs.idx'], t3arcade: ['arcade.pack', 'arcade.idx'] };
   const fileSize = async (name) => { try { return (await (await (await root()).getFileHandle(name)).getFile()).size; } catch { return 0; } };
   // the files picked or dropped for a part as [name, File]: a disc image's (the converter finds the image among
   // them), or the Half-Life folder's levels and textures by path below the folder
-  const forPart = (part, all) => part === 'cs'
+  // (the arcade ROM set: its files by name when its data ROMs are among them, else its .zip alone)
+  const roms = (all) => {
+    const loose = all.some(([p]) => /(^|\/)tet1rom\d[lu]\.\d+$/i.test(p));
+    const zip = all.find(([p]) => /\.zip$/i.test(p));
+    return (loose || !zip ? all : [zip]).map(([p, f]) => [p.split('/').pop(), f]);
+  };
+  const forPart = (part, all) => part === 't3arcade' ? roms(all) : part === 'cs'
     ? all.filter(([p]) => /\.(bsp|wad)$/i.test(p)).map(([p, f]) => [p.split('/').slice(1).join('/') || p, f])
     : all.filter(([p]) => DISC_FILES.some((e) => p.toLowerCase().endsWith(e))).map(([p, f]) => [p.split('/').pop(), f]);
   const okData = window.okData = {
-    loading: true, state: null, sizes: { t3: 0, t2: 0, cs: 0 },
+    loading: true, state: null, sizes: { t3: 0, t2: 0, cs: 0, t3arcade: 0 },
     job: null, outcome: null, pending: null, picking: null, message: null,
     dropped: null, hovering: false, changed: false, open: false, worker: null,
     snapshot() {
       const s = this.state;
       const parts = {};
-      for (const p of ['t3', 't2', 'cs']) parts[p] = { converted: !!s?.[p], size: this.sizes[p], manifest: s?.[p] ?? null };
+      for (const p of PARTS) parts[p] = { converted: !!s?.[p], size: this.sizes[p], manifest: s?.[p] ?? null };
       const job = this.job && { kind: this.job.kind, part: this.job.part, seconds: (Date.now() - this.job.started) / 1000, log: this.job.log, cancelling: !!this.job.cancelling };
       return JSON.stringify({
         loading: this.loading, parts, playable: !!(s?.t3 && s?.installed), job, outcome: this.outcome,
@@ -779,7 +790,7 @@
       if (!storable) { this.loading = false; this.message = 'This browser can’t keep game data here (a private window?). Open the page in a normal window.'; return; }
       const r = await job({ job: 'state' }, () => {});
       this.state = r.done ?? null;
-      for (const p of ['t3', 't2', 'cs']) this.sizes[p] = (await Promise.all(STORES[p].map(fileSize))).reduce((a, b) => a + b, 0) + (p === 't3' ? (await fileSize('extras.pack')) + (await fileSize('extras.idx')) : 0);
+      for (const p of PARTS) this.sizes[p] = (await Promise.all(STORES[p].map(fileSize))).reduce((a, b) => a + b, 0) + (p === 't3' ? (await fileSize('extras.pack')) + (await fileSize('extras.idx')) : 0);
       this.loading = false;
       // (packs whose Tekken 3 changed, or cut off: installed again)
       if (this.state?.t3 && !this.state.installed && !this.job && (this.state.t2 || this.state.cs)) this.run({ job: 'install' }, 'install');
@@ -796,7 +807,8 @@
       this.picking = null;
       const files = forPart(part, all);
       if (!files.length) {
-        this.message = part === 'cs' ? 'That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.' : 'Those files hold no disc image: choose the .cue with its .bin files, or one .chd, .iso, .pbp, .zip or .7z file.';
+        this.message = part === 'cs' ? 'That folder has no levels (.bsp). Choose the Half-Life folder, with cstrike/ and valve/.'
+          : part === 't3arcade' ? 'Nothing was chosen: choose the ROM set, MAME\'s tekken3.zip.' : 'Those files hold no disc image: choose the .cue with its .bin files, or one .chd, .iso, .pbp, .zip or .7z file.';
         return;
       }
       this.begin(part, files);
@@ -809,7 +821,8 @@
     // the space checked first: a conversion that would not fit waits for the player
     async begin(part, files) {
       const image = (files.find(([n]) => /\.(cue|chd|pbp|iso)$/i.test(n)) ?? files.find(([n]) => ARCHIVE.test(n)) ?? files[0])[0];
-      const needed = NEEDED[part] + (files.some(([n]) => ARCHIVE.test(n)) ? 0.9e9 : 0);
+      // (an archive of a disc image is unpacked first; the arcade ROM set's .zip is read as it is)
+      const needed = NEEDED[part] + (part !== 't3arcade' && files.some(([n]) => ARCHIVE.test(n)) ? 0.9e9 : 0);
       await ask();
       // the site's allowance left (the browser's, often less than the disk's free space), with what this conversion
       // writes over: the part's own packs (read now: the sizes kept may be from before a job or not read yet), and an
@@ -868,7 +881,8 @@
       else console.error(`${what}: ${d.error}`);
       const ok = !d.error;
       if (!(ok && j.kind !== 'convert')) {
-        const done = { t3: 'Tekken 3 is converted: the game can start.', t2: 'Tekken 2 is converted: its fighters are in the roster.', cs: 'Counter-Strike is converted: its levels are arenas now.' };
+        const done = { t3: 'Tekken 3 is converted: the game can start.', t2: 'Tekken 2 is converted: its fighters are in the roster.', cs: 'Counter-Strike is converted: its levels are arenas now.',
+          t3arcade: 'The arcade stages are converted: they replace the PlayStation ones (OPTION, GRAPHICS, STAGES chooses).' };
         const message = ok ? done[j.part] : d.cancelled ? (j.kind === 'convert' ? `${NAMES[j.part]} was not converted. Convert it again whenever you like.` : 'Stopped.')
           : d.quota ? 'Not enough space in this browser for that. Free some disk space, then try again.' : d.error;
         this.outcome = { kind: j.kind, part: j.part, ok, cancelled: !!d.cancelled, message, log: j.log };
@@ -876,9 +890,9 @@
       await this.refresh();
     },
   };
-  for (const part of ['t3', 't2', 'cs']) {
+  for (const part of PARTS) {
     const input = Object.assign(document.createElement('input'), { type: 'file', multiple: true, hidden: true, id: `pick-${part}` });
-    if (part === 'cs') input.webkitdirectory = true; else input.accept = DISC_FILES.join(',');
+    if (part === 'cs') input.webkitdirectory = true; else if (part !== 't3arcade') input.accept = DISC_FILES.join(',');
     input.onchange = () => okData.picked(part, [...input.files].map((f) => [f.webkitRelativePath || f.name, f]));
     input.oncancel = () => { okData.picking = null; };
     document.body.append(input);

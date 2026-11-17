@@ -692,8 +692,6 @@ impl Screen {
             Page::Home => {
                 let mut v: Vec<Row> = Part::ALL
                     .into_iter()
-                    // shortcut: a browser does not convert the arcade ROM set yet (kumite_convert_web), its row is left out
-                    .filter(|p| !(cfg!(target_arch = "wasm32") && *p == Part::Arcade))
                     .map(|p| {
                         let pv = &status.parts[part_index(p)];
                         let right = if pv.converted {
@@ -720,6 +718,7 @@ impl Screen {
                 let choose = match (p, status.can.folders, pv.converted) {
                     (_, _, true) => "CONVERT AGAIN",
                     (Part::Cs, _, _) | (_, true, _) => "CHOOSE FOLDER",
+                    (Part::Arcade, _, _) => "CHOOSE ROM SET",
                     _ => "CHOOSE DISC IMAGE",
                 };
                 let mut v = vec![row(choose, !busy && !picking, Act::Pick(p))];

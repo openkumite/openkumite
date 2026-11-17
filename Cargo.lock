@@ -2785,6 +2785,7 @@ dependencies = [
  "ok_converter_common",
  "ok_hl_cs_converter",
  "ok_tekken2_converter",
+ "ok_tekken3_arcade_converter",
  "ok_tekken3_converter",
  "serde_json",
  "wasm-bindgen",
