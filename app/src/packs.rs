@@ -268,6 +268,15 @@ mod tests {
             assert!(stage.sky_model && stage.sky_cull && !stage.sky.is_empty() && !stage.meshes.is_empty() && stage.floor_period == Some([25.0, 25.0]), "stage {n}");
             // (its sky's panorama: the seventh stage has none)
             assert_eq!(stage.sky_picture.is_some(), n != 6, "stage {n}");
+            // what moves: the carousel, the helicopter's rotors, the torches' flame (16 pictures)
+            let moving = |spin: bool| stage.sky.iter().filter(|m| m.motion.is_some_and(|k| matches!(k, kumite_assets::Motion::Spin { .. }) == spin)).count();
+            let expected = match n {
+                3 => (1, 0),
+                11 => (2, 0),
+                6 | 12 => (0, 1),
+                _ => (0, 0),
+            };
+            assert_eq!((moving(true), moving(false)), expected, "stage {n}");
         }
         run(&root, &Job::Remove(Part::Arcade), &|_| {}, &AtomicBool::new(false)).unwrap();
         assert!(State::of(&root).get(Part::Arcade).is_none());

@@ -397,6 +397,18 @@ pub struct Mesh {
     pub texture: usize,
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
+    /// How it moves (the primitive's extras: the arcade stages' carousel, helicopter rotors and flames).
+    pub motion: Option<Motion>,
+}
+
+/// A stage mesh's motion, by frames of 1/60 s.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Motion {
+    /// It turns about the line through `pivot` (m) along `axis`, `rate` radians a frame (extras `spin`).
+    Spin { pivot: Vec3, axis: Vec3, rate: f32 },
+    /// Its texture and the `frames - 1` after it follow one another, each shown for `step` frames (extras `frames`,
+    /// `step`).
+    Frames { frames: usize, step: u32 },
 }
 
 /// A Force placement (glTF node extras written by export_stages).
@@ -503,7 +515,23 @@ impl Stage {
                 if indices.iter().any(|&i| i as usize >= pos.len()) {
                     bail!("an index past the vertices");
                 }
-                out.push(Mesh { texture, vertices, indices });
+                let motion = match prim.extras() {
+                    Some(e) => {
+                        let v: serde_json::Value = serde_json::from_str(e.get())?;
+                        let vec = |a: &serde_json::Value| Some(Vec3::new(a[0].as_f64()? as f32, a[1].as_f64()? as f32, a[2].as_f64()? as f32));
+                        let spin = &v["spin"];
+                        match (vec(&spin["pivot"]), vec(&spin["axis"]).and_then(Vec3::try_normalize), spin["rate"].as_f64(), v["frames"].as_u64(), v["step"].as_u64()) {
+                            (Some(pivot), Some(axis), Some(rate), ..) => Some(Motion::Spin { pivot: xf.transform_point3(pivot), axis: xf.transform_vector3(axis), rate: rate as f32 }),
+                            // (the frames are images of the glb)
+                            (.., Some(frames), Some(step)) if (1..=64).contains(&frames) && texture + frames as usize <= images.len() => {
+                                Some(Motion::Frames { frames: frames as usize, step: (step as u32).max(1) })
+                            }
+                            _ => None,
+                        }
+                    }
+                    None => None,
+                };
+                out.push(Mesh { texture, vertices, indices, motion });
             }
             Ok(out)
         };
