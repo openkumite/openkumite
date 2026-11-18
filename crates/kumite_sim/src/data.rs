@@ -278,6 +278,9 @@ pub struct Cancel {
     pub input: String,
     pub req: u32,
     pub cond: u32,
+    /// Tekken Tag's partner bit (cond 0x80): also test the opponent's tagging ([`crate::Fighter::tag_test`]).
+    #[serde(default)]
+    pub cond_tag: bool,
     pub param: u32,
     pub dest: usize,
     pub win_start: u32,

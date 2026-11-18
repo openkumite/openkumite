@@ -77,7 +77,7 @@ fn normalize_transition(transition: u32, to: Option<&data::Move>, exec: u32) -> 
         0x19 if ahead => 0x16,
         t => t,
     };
-    (transition & 0xC0) | t
+    (transition & !0x3F) | t
 }
 
 /// The transition of a move's END entry (its list's last entry), used when the animation runs out.
@@ -133,6 +133,88 @@ pub struct GameData {
     pub chip_add: i32,
     /// Tekken Tag's choice of the air reaction (0x374048), not Tekken 3's (dialect.rs).
     pub tag_juggles: bool,
+    /// Tekken Tag's tag battle rules.
+    pub tag: TagRules,
+}
+
+/// Tekken Tag's tag rules (rules.json `tag` and `health.recoverable`; ok_tekken_tag_converter FIGHT_DATA.md section
+/// 10). A pack without them gets these values and no anger relations.
+#[derive(Clone, Debug)]
+pub struct TagRules {
+    /// The benched partner regains max / this a frame up to its recoverable cap (0x3C1900).
+    pub regen_divisor: i32,
+    /// A hit lowers the victim's recoverable cap by its damage times these tenths: a hit, the first air hit (that
+    /// one not below the health: juggle damage is not recoverable; 0x3720C8).
+    pub cap_tenths: [i32; 2],
+    /// Anger (0x3C1B38, 0x3CF278): at round start, the angry level, added to the partner by a hit on the active
+    /// member (with damage, without), the angry member's damage in tenths, the relation table's "any" body and its
+    /// entries [partner body, variant mask, active body, variant mask, effect].
+    pub anger_start: i32,
+    pub angry: i32,
+    pub anger_hit: [i32; 2],
+    pub angry_tenths: i32,
+    pub any_body: i64,
+    pub relations: Vec<[i64; 5]>,
+}
+
+impl Default for TagRules {
+    fn default() -> Self {
+        Self { regen_divisor: 6000, cap_tenths: [6, 14], anger_start: 100, angry: 120, anger_hit: [4, 6], angry_tenths: 13, any_body: 0x22, relations: Vec::new() }
+    }
+}
+
+impl TagRules {
+    /// The anger a hit on `active` adds to `partner` (bodies): the hit's, one less (effect -1) or more (1), or none
+    /// (-9) by the first relation that names both. shortcut: every fighter counts as variant 0 (Kuma, not Panda),
+    /// give the team members their variant if a pair of variants matters
+    pub fn anger(&self, partner: Option<i64>, active: Option<i64>, damage: i32) -> i32 {
+        let is = |b: i64, x: Option<i64>| b == self.any_body || Some(b) == x;
+        let base = self.anger_hit[usize::from(damage == 0)];
+        match self.relations.iter().find(|e| is(e[0], partner) && e[1] & 1 != 0 && is(e[2], active) && e[3] & 1 != 0).map(|e| e[4]) {
+            Some(-9) => 0,
+            Some(e) => base + e.signum() as i32,
+            None => base,
+        }
+    }
+}
+
+/// A member of a tag team (the team table 0x440940, 0x30 a member). The benched partner exists only as this (it is
+/// not simulated); the active one's health is its fighter's.
+#[derive(Clone)]
+pub struct TagMember {
+    pub moveset: Arc<Moveset>,
+    pub character: Option<i64>,
+    /// Full health (whole points), health and the recoverable cap (16.16; +0xC, +0x10), anger (+0x28).
+    pub max_health: i32,
+    pub health: i32,
+    pub cap: i32,
+    pub anger: i32,
+}
+
+impl TagMember {
+    pub fn new(moveset: Arc<Moveset>, character: Option<i64>, max_health: i32, rules: &TagRules) -> Self {
+        Self { moveset, character, max_health, health: max_health * ONE, cap: max_health * ONE, anger: rules.anger_start }
+    }
+}
+
+/// A side's two members and which one fights.
+#[derive(Clone)]
+pub struct TagTeam {
+    pub members: [TagMember; 2],
+    pub active: usize,
+}
+
+impl TagTeam {
+    pub fn partner(&self) -> &TagMember {
+        &self.members[1 - self.active]
+    }
+
+    /// The round's score (0x36F408): the members' health over full health (x 4096), averaged; `health`: the active
+    /// one's now.
+    pub fn score(&self, health: i32) -> i64 {
+        let h = |k: usize| if k == self.active { health } else { self.members[k].health };
+        (0..2).map(|k| i64::from(h(k).max(0)) * 4096 / (i64::from(self.members[k].max_health.max(1)) * i64::from(ONE))).sum::<i64>() / 2
+    }
 }
 
 /// The rules the code keeps for some moves (rules.json `moves`).
@@ -261,6 +343,7 @@ impl GameData {
             counter_bonus: vec![3, 3],
             chip_add: 2,
             tag_juggles: false,
+            tag: TagRules::default(),
         })
     }
 
@@ -350,6 +433,8 @@ pub struct Opponent {
     /// Its moveset and character (cancel `req` gates).
     pub moveset_id: Option<i64>,
     pub character: Option<i64>,
+    /// Tekken Tag's +0x129: its screen side + 1 while it plays a tag-state move (posture bit 24), else 0.
+    pub tagging: u32,
 }
 
 /// A juggled fighter's flight (0x8002F074): height y(t) = y0 + vy·t − 3t² (game units, up), landing at
@@ -516,6 +601,13 @@ pub struct Fighter {
     pub inactive: bool,
     /// The bone slots of the pose before (Tekken Tag's strikes from where a limb was).
     last_bones: Vec<Vec3>,
+    /// Tekken Tag: the move just started swaps it with its tag partner ([`dialect::TRANSITION_SWAP`]); the partner's
+    /// moveset and body (`req` gates); off the screen (condition 0x5C, set by the game layer as `side`); the air hits
+    /// a tag-in left out of the juggle count (the count goes to -1 then, 0x3D3288).
+    pub tag_swap: bool,
+    pub tag_partner: Option<(Option<i64>, Option<i64>)>,
+    pub off_screen: bool,
+    pub juggle_bias: u32,
 }
 
 /// Facing angles in game units (u16 turn = 0x10000), as the actor keeps them (0x80043A94): `off` (+0x2E) the
@@ -606,6 +698,10 @@ impl Fighter {
             early_end: None,
             inactive: false,
             last_bones: Vec::new(),
+            tag_swap: false,
+            tag_partner: None,
+            off_screen: false,
+            juggle_bias: 0,
         };
         f.current = f.resolve(neutral).unwrap_or(f.current);
         f
@@ -929,7 +1025,7 @@ impl Fighter {
         } else {
             // a move change not caused by a hit ends the flight and the juggle count (0x8002F7B8)
             self.air = None;
-            self.juggle = 0;
+            (self.juggle, self.juggle_bias) = (0, 0);
         }
         self.commit_root = self.root();
         self.lateral = 0.0;
@@ -941,6 +1037,7 @@ impl Fighter {
             }
         }
         self.started_with = Some(transition);
+        self.tag_swap = transition & dialect::TRANSITION_SWAP != 0;
         self.alias = alias;
     }
 
@@ -1154,7 +1251,7 @@ impl Fighter {
     fn air_pop(&mut self, gd: &GameData, pop: Pop) {
         let f = self;
         let Pop { damage, strike_down, target, prev: (old_motion, old_frames, old_frame), y0, falling, spike, extra_drift, kind } = pop;
-        let n = f.juggle as i32;
+        let n = f.juggle as i32 - f.juggle_bias as i32;
         let mv = f.current_move(gd);
         let (hold, lying, same_clip) = (mv.bytes_18.hold_frame as i32, mv.posture.raw & 4 != 0, mv.anim == old_motion);
         let hold = if hold > 0 { hold } else { old_frames as i32 };
@@ -1322,7 +1419,13 @@ impl Fighter {
                     dialect::REQ_OPPONENT_MOVESET => self.opponent.moveset_id == v,
                     dialect::REQ_BODY => self.character == v,
                     dialect::REQ_NOT_BODY => self.character != v,
-                    dialect::REQ_ALWAYS => true,
+                    dialect::REQ_PARTNER_MOVESET => self.tag_partner.is_some_and(|p| p.0 == v),
+                    dialect::REQ_PARTNER_BODY => self.tag_partner.is_some_and(|p| p.1 == v),
+                    // (bodies 19 Kazuya, 29 Devil)
+                    dialect::REQ_DEVIL_PAIR => {
+                        let pair = self.tag_partner.is_some_and(|p| matches!((self.character, p.1), (Some(19), Some(29)) | (Some(29), Some(19))));
+                        v == Some(i64::from(!pair))
+                    }
                     _ => false,
                 }
             }
@@ -1363,7 +1466,7 @@ impl Fighter {
         if !self.passes_gate(c) {
             return None;
         }
-        if !self.condition(gd, c.cond, c.param) {
+        if !self.condition(gd, c.cond, c.param) || (c.cond_tag && !self.tag_test(c.param)) {
             return None;
         }
         let ok = match c.kind {
@@ -1374,6 +1477,18 @@ impl Fighter {
             _ => false,
         };
         ok.then_some((c.dest, c.exec))
+    }
+
+    /// Tekken Tag's partner bit (0x3693E0's head): against the opponent's tagging (+0x129), so that two tagging at
+    /// once from the same side run off different ways. A parameter: passes when it is not tagging or tags from my
+    /// side + 1; none: fails when it does.
+    pub(crate) fn tag_test(&self, param: u32) -> bool {
+        let (t, me) = (self.opponent.tagging, u32::from(self.on_right) + 1);
+        if param != 0 {
+            t == 0 || me == t
+        } else {
+            t == 0 || me != t
+        }
     }
 
     /// Current posture word (actor +0x60): the move's posture, with the guard bits cleared when the stance
@@ -1551,6 +1666,7 @@ impl Fighter {
             // back-turned states (0x8002E41C..0x8002E6A8, facing_re §4)
             0x24 => back,
             dialect::COND_NOT_BACK => !back,
+            dialect::COND_OFF_SCREEN => self.off_screen,
             0x25 => (0x4E38 as f32..0x8000 as f32).contains(&off),
             0x26 => (-0x8000 as f32..=(0xB1C6 - 0x10000) as f32).contains(&off),
             0x27 => quadrant == 0,
@@ -1790,7 +1906,7 @@ impl Fighter {
         self.root_fall = self.last_height - height;
         self.last_height = height;
         if self.air.is_none() && self.current_move(gd).posture.raw & posture::AIRBORNE == 0 {
-            self.juggle = 0; // landed: the juggle counter starts again
+            (self.juggle, self.juggle_bias) = (0, 0); // landed: the juggle counter starts again
         }
         self.hit_flash = self.hit_flash.saturating_sub(1);
     }
@@ -1971,6 +2087,8 @@ pub struct Fight {
     /// Where the player turns while no one is there to fight (fighter 1 and the extra out of play): Force's
     /// way on through the stage.
     pub idle_target: Option<Vec3>,
+    /// Tekken Tag's tag battle: each side's two members ([`Fight::start_tag`]); the fighters are the active ones.
+    pub teams: Option<Box<[TagTeam; 2]>>,
 }
 
 /// An arena's walk grid (metres, x along a row, rows along z): cells a fighter's root cannot enter.
@@ -2025,6 +2143,8 @@ fn sight_of(o: &Fighter, gd: &GameData) -> Opponent {
         airborne,
         moveset_id: o.moveset.moveset_id,
         character: o.character,
+        // shortcut: the side now, not the one when the tag move started (+0x129 is set at its start, 0x36AA70)
+        tagging: if m.posture.raw & 1 << 24 != 0 { 1 + u32::from(o.on_right) } else { 0 },
     }
 }
 
@@ -2056,7 +2176,90 @@ impl Fight {
             coop: None,
             walls: None,
             idle_target: None,
+            teams: None,
         }
+    }
+
+    /// Tekken Tag's tag battle: each fighter gets its partner, benched (team member 1; the fighter is member 0).
+    pub fn start_tag(&mut self, partners: [TagMember; 2]) {
+        let r = &self.data.tag;
+        let [p0, p1] = partners;
+        let teams = [(0, p0), (1, p1)].map(|(i, p)| {
+            let f = &self.fighters[i];
+            let mut lead = TagMember::new(f.moveset.clone(), f.character, f.max_health, r);
+            lead.health = f.health;
+            TagTeam { members: [lead, p], active: 0 }
+        });
+        for (f, t) in self.fighters.iter_mut().zip(&teams) {
+            f.tag_partner = Some((t.partner().moveset.moveset_id, t.partner().character));
+        }
+        self.teams = Some(Box::new(teams));
+    }
+
+    /// The tag swap (0x36A70C -> 0x3D3288): fighter `i` (which has just started its own entrance with the swap bit)
+    /// and its partner exchange; the partner comes in with its health, starting its own entrance (the same alias)
+    /// at the leaving fighter's root, facing the opponent. An opponent in the air: the next hit counts as a first
+    /// air hit (the juggle count goes to -1).
+    fn tag_swap(&mut self, i: usize) {
+        let Some(t) = self.teams.as_deref_mut().map(|t| &mut t[i]) else { return };
+        let out = &self.fighters[i];
+        t.members[t.active].health = out.health;
+        t.active = 1 - t.active;
+        let m = &t.members[t.active];
+        let root = out.root();
+        let mut f = Fighter::new(m.moveset.clone(), m.max_health, Vec3::new(root.x, 0.0, root.z), out.yaw, out.side);
+        f.health = m.health;
+        f.character = m.character;
+        f.tag_partner = Some((t.partner().moveset.moveset_id, t.partner().character));
+        (f.guard_input, f.on_right, f.opponent) = (out.guard_input, out.on_right, out.opponent);
+        f.input = out.input.clone();
+        let entrance = out.alias;
+        if !f.play_alias(entrance) {
+            log::warn!("P{}: the incoming partner has no entrance (alias {entrance})", i + 1);
+        }
+        let d = f.opponent.root - f.root();
+        (f.yaw, f.root_yaw) = (d.x.datan2(d.z), d.x.datan2(d.z));
+        self.fighters[i] = f;
+        let o = &mut self.fighters[1 - i];
+        if o.air.is_some() || o.juggle != 0 {
+            o.juggle_bias = o.juggle + 1;
+        }
+        log::info!("P{} tags: member {} comes in", i + 1, 1 + self.teams.as_ref().map_or(0, |t| t[i].active));
+    }
+
+    /// The tag battle's frame (0x3C1900, 0x3C1B38): swaps, then each side's active health into its entry, the
+    /// benched partner's recovery (max / 6000 a frame up to its cap, while the round runs) and the anger.
+    fn tag_frame(&mut self) {
+        for i in 0..2 {
+            if std::mem::take(&mut self.fighters[i].tag_swap) {
+                self.tag_swap(i);
+            }
+        }
+        let fighting = self.state == RoundState::Fighting;
+        let r = &self.data.tag;
+        let Some(teams) = self.teams.as_deref_mut() else { return };
+        for (t, f) in teams.iter_mut().zip(&self.fighters) {
+            let (a, b) = (t.active, 1 - t.active);
+            t.members[a].health = f.health;
+            let p = &mut t.members[b];
+            if fighting && p.health < p.cap {
+                p.health = (p.health + p.max_health * ONE / r.regen_divisor).min(p.cap);
+            }
+            // angry while at the level, losing 1 a frame; the partner's anger at the level resets this one's
+            let partner_angry = p.anger >= r.angry;
+            let m = &mut t.members[a];
+            if m.anger >= r.angry {
+                m.anger -= 1;
+            }
+            if partner_angry {
+                m.anger = r.anger_start;
+            }
+        }
+    }
+
+    /// Fighter `i`'s team's active member is angry (x1.3 damage, 0x3720C8).
+    fn angry(&self, i: usize) -> bool {
+        self.teams.as_ref().is_some_and(|t| t[i].members[t[i].active].anger >= self.data.tag.angry)
     }
 
     /// Whether fighter `i` has the opponent to its right on the pad (forward = right).
@@ -2330,7 +2533,11 @@ impl Fight {
                 RoundState::Ko { winner } => winner == i,
                 RoundState::TimeUp { winner } => winner == Some(i),
             };
-            let pad = if controls { pads[i] } else { Pad::default() };
+            let mut pad = if controls { pads[i] } else { Pad::default() };
+            // (the tag button only with a partner to tag)
+            if self.teams.is_none() {
+                pad.buttons &= !input::TAG;
+            }
             self.fighters[i].step(&gd, pad, facing_right, anims[i]);
         }
         let screen_right = self.screen_right;
@@ -2435,9 +2642,14 @@ impl Fight {
             if let Some(loser) = ko_candidates.into_iter().find(|&i| self.fighters[i].health <= 0) {
                 self.state = RoundState::Ko { winner: 1 - loser };
             } else if self.clock == 0 {
-                let (a, b) = (self.fighters[0].health, self.fighters[1].health);
+                // (a tag battle: the teams' scores, 0x36F56C)
+                let score = |i: usize| self.teams.as_ref().map_or(i64::from(self.fighters[i].health), |t| t[i].score(self.fighters[i].health));
+                let (a, b) = (score(0), score(1));
                 self.state = RoundState::TimeUp { winner: if a == b { None } else { Some(if a > b { 0 } else { 1 }) } };
             }
+        }
+        if self.teams.is_some() {
+            self.tag_frame();
         }
     }
 
@@ -2792,12 +3004,30 @@ impl Fight {
             self.fighters[a].landed_counter = counter;
             if airborne && !blocked {
                 // juggle damage: the first air hit 80 %, later ones 50 %
-                damage = damage * if self.fighters[v].juggle == 0 { gd.juggle_percent[0] } else { gd.juggle_percent[1] } / 100;
+                let fv = &self.fighters[v];
+                damage = damage * if fv.juggle <= fv.juggle_bias { gd.juggle_percent[0] } else { gd.juggle_percent[1] } / 100;
+            }
+            // a tag partner's anger: x1.3 without a ki charge (0x3720C8)
+            if !blocked && !ki[a] && self.angry(a) {
+                damage = damage * gd.tag.angry_tenths / 10;
             }
             // Ball: the hit plays but takes no health (0x800446C0 gives it back); health stays within 0..max
             if !self.ball_court() {
                 let fv = &mut self.fighters[v];
                 fv.health = (fv.health - damage * ONE).clamp(0, fv.max_health * ONE);
+            }
+            if let Some(t) = self.teams.as_deref_mut().map(|t| &mut t[v]) {
+                // the recoverable cap loses 6 / 10 of the damage, a first air hit's 14 / 10 down to the health; a clean
+                // hit angers the partner (0x3720C8, 0x3C1B38)
+                let (fv, r) = (&self.fighters[v], &gd.tag);
+                let first_air = airborne && fv.juggle <= fv.juggle_bias;
+                let (active, partner) = (t.active, 1 - t.active);
+                let m = &mut t.members[active];
+                m.cap = if first_air { (m.cap - damage * ONE * r.cap_tenths[1] / 10).max(fv.health) } else { m.cap - damage * ONE * r.cap_tenths[0] / 10 };
+                if !blocked {
+                    let add = r.anger(t.members[partner].character, t.members[active].character, damage);
+                    t.members[partner].anger += add;
+                }
             }
             let ko = self.fighters[v].health <= 0;
             let skip_reaction = died && !blocked;

@@ -163,6 +163,9 @@ struct Scene {
     models: Vec<SkinnedModel>,
     /// Force: the actors' GPU models by (actor, model record), made as bodies come in.
     force_models: Option<std::collections::HashMap<(usize, usize), SkinnedModel>>,
+    /// Tekken Tag's tag battle: the benched partners' GPU models, and which member each side's `models` shows.
+    bench: Vec<SkinnedModel>,
+    bench_active: [usize; 2],
     /// The effect atlas (hit-spark sheets + generated cells), if the converted sheets are there.
     effects: Option<Arc<kumite_render::Texture>>,
     /// What each fighter's texture shows of its face animation (eyes shut, the moving pupils' offsets), per GPU model.
@@ -373,6 +376,8 @@ impl Heard {
 struct App {
     assets: Assets,
     models: [usize; 2],
+    /// The sandbox's tag partners (`--models A,B,C,D`: a tag battle, Tekken Tag's).
+    tag_models: Option<[usize; 2]>,
     stage: usize,
     /// Round-start camera fly-in variant for the sandbox, or None to skip it.
     intro: Option<usize>,
@@ -635,6 +640,9 @@ impl App {
             if let Some(v) = self.intro {
                 game = game.with_intro(v, true);
             }
+            if let Some(p) = self.tag_models {
+                game.start_tag([kumite_game::Actor::load(&self.assets, p[0])?, kumite_game::Actor::load(&self.assets, p[1])?]);
+            }
         }
         // Mokujin at home (the second side's fighter is the host): the arcade ROM set's hidden arena, which the
         // arcade game gives no one. Only what is drawn: the fight's stage stays his.
@@ -647,6 +655,7 @@ impl App {
         let mut scene = self.stage_scene_with(r, stage, hidden, &|p| p);
         game.fight.walls = scene.walls.clone();
         scene.models = skinned_models(r, &game);
+        scene.bench = game.tag_bench.iter().flatten().map(|a| skinned_body(r, &a.body)).collect();
         // Ball 2 ON 2: the four drawn as Force's actors (a GPU model per actor's body)
         if setup.as_ref().is_some_and(|s| s.partners.is_some()) {
             scene.models.clear();
@@ -831,6 +840,7 @@ impl App {
             demo: mode == Some(Mode::Watch),
             hidden: mode == Some(Mode::Practice),
             stage: (mode == Some(Mode::Arcade)).then(|| setup.as_ref().map_or(1, |s| s.level as u32 + 1)),
+            partners: self.tag_models.filter(|_| setup.is_none()).map(|p| p.map(|m| self.roster.characters.iter().find(|c| c.costumes.contains(&m)).map_or("?".into(), |c| c.name.clone()))),
             ..Default::default()
         };
         let mut info = info;
@@ -1112,6 +1122,8 @@ impl App {
             statics: vec![],
             models: vec![],
             force_models: None,
+            bench: vec![],
+            bench_active: [0; 2],
             effects: effect_atlas(r, &self.assets.root.join("pictures")),
             faces_shown: Default::default(),
             walls: None,
@@ -4293,6 +4305,17 @@ impl App {
         self.debug.frame_tick();
         let page_full = self.page_full_screen();
         let Some(r) = self.renderer.as_mut() else { return };
+        // a tag battle's swap: the side shows its other member's GPU model
+        if let (Some(fight), Some(scene)) = (self.fight.as_ref(), self.scene.as_mut()) {
+            if let Some(t) = fight.bout.game.fight.teams.as_ref() {
+                for i in 0..2 {
+                    if t[i].active != scene.bench_active[i] && i < scene.bench.len() && i < scene.models.len() {
+                        std::mem::swap(&mut scene.models[i], &mut scene.bench[i]);
+                        scene.bench_active[i] = t[i].active;
+                    }
+                }
+            }
+        }
         // the face animation: the blink and the moving pupils copied into each fighter's texture when they change
         if let (Some(fight), Some(scene)) = (self.fight.as_ref(), self.scene.as_mut()) {
             let g = &fight.bout.game;
@@ -6893,6 +6916,11 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         }
         None => [first(0), first(1)],
     };
+    // four models: a tag battle, P1 and P2 with the third and the fourth as partners
+    let tag_models = arg("--models").and_then(|m| {
+        let v: Vec<usize> = m.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        Some([*v.get(2)?, *v.get(3)?])
+    });
     let stage = arg("--stage").and_then(|s| s.parse().ok()).unwrap_or(0);
     let mut debug = Debug::new(flag("--debug"), models, stage);
     debug.paused = flag("--paused");
@@ -6986,6 +7014,7 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         game_data: false,
         assets,
         models,
+        tag_models,
         stage,
         intro: if flag("--no-intro") { None } else { Some(arg("--intro").and_then(|v| v.parse().ok()).unwrap_or(0)) },
         sandbox,

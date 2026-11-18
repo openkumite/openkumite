@@ -236,6 +236,9 @@ pub struct Game {
     /// Added to the copying character's draws: the match's own (a bout's random stream starts the same every
     /// match; a replay keeps it, online every computer has the room's).
     pub copy_seed: u32,
+    /// Tekken Tag's tag battle: each side's benched partner (its body and character trade places with the fighter's
+    /// when the team swaps, [`Game::start_tag`]).
+    pub tag_bench: Option<[Actor; 2]>,
 }
 
 /// A character's body and move set by model record.
@@ -316,7 +319,8 @@ impl Actor {
         let gd = assets.root.join("gamedata");
         let rules: serde_json::Value = kumite_sim::data::load(&gd.join("rules.json"))?;
         let index: MovesetIndex = kumite_sim::data::load(&gd.join("movesets/index.json"))?;
-        let common = kumite_sim::data::move_count(&gd.join("movesets/common.json"))?;
+        // (Tekken Tag: the whole move table is the common set)
+        let common = kumite_sim::data::move_count(&gd.join(if rules["dialect"] == "ttt" { "moves.json" } else { "movesets/common.json" }))?;
         let (body, moveset) = load_body(assets, record, &rules, &index, common)?;
         let roster: serde_json::Value = kumite_sim::data::load(&gd.join("roster.json")).unwrap_or_default();
         let character = roster["selections"]["entries"].as_array().into_iter().flatten().find(|e| e["model_record"].as_u64() == Some(record as u64)).and_then(|e| e["character"].as_i64());
@@ -464,6 +468,7 @@ impl Game {
             face_rand: 1,
             copiers: [None, None],
             copy_seed: 0,
+            tag_bench: None,
         };
         for (f, c) in game.fight.fighters.iter_mut().zip(characters) {
             f.character = c;
@@ -475,6 +480,27 @@ impl Game {
         }
         game.step_camera();
         Ok(game)
+    }
+
+    /// Tekken Tag's tag battle (2 on 2): each fighter gets a partner, benched; every round starts with the fighters
+    /// given at load.
+    pub fn start_tag(&mut self, partners: [Actor; 2]) {
+        let gd = self.fight.data.clone();
+        let members = std::array::from_fn(|i| {
+            let p = &partners[i];
+            let max = self.max_health[i].unwrap_or(gd.max_health_of(p.character) * self.handicap[i] / 100);
+            kumite_sim::TagMember::new(p.moveset.clone(), p.character, max, &gd.tag)
+        });
+        self.fight.start_tag(members);
+        self.tag_bench = Some(partners);
+    }
+
+    /// The fighter and the benched partner of side `i` trade bodies (they swapped in the fight).
+    fn tag_trade(&mut self, i: usize) {
+        if let Some(b) = self.tag_bench.as_mut() {
+            std::mem::swap(&mut self.bodies[i], &mut b[i].body);
+            std::mem::swap(&mut self.characters[i], &mut b[i].character);
+        }
     }
 
     /// Start with the round-start camera fly-in (variant = round counter % 10). While it plays the
@@ -523,6 +549,13 @@ impl Game {
         if let (Some(ball), kumite_sim::RoundState::Ko { winner }) = (self.ball.as_mut(), self.fight.state) {
             ball.server = 1 - winner;
         }
+        // a tag battle: the round starts with the first members again
+        if let Some(t) = self.fight.teams.take() {
+            for i in (0..2).filter(|&i| t[i].active != 0) {
+                self.tag_trade(i);
+                self.fight.fighters[i].moveset = t[i].members[0].moveset.clone();
+            }
+        }
         let [a, b] = &self.fight.fighters;
         let (ma, mb) = (a.moveset.clone(), b.moveset.clone());
         let guard_input = [a.guard_input, b.guard_input];
@@ -540,6 +573,9 @@ impl Game {
             };
         }
         self.fight.clock = self.round_frames;
+        if let Some(b) = self.tag_bench.clone() {
+            self.start_tag(b);
+        }
         if let Some(setup) = self.ball.as_mut() {
             // the fighters start on the back lines (0x800B07C8), the ball waits over the server's side
             for (i, f) in self.fight.fighters.iter_mut().enumerate() {
@@ -628,7 +664,7 @@ impl Game {
 
     /// The fighters' sides under view `v`: their pelvis's horizontal place on the screen (scaled to whole units).
     fn project_sides(&mut self, v: &View) {
-        let (eye, forward, _) = view_camera(v);
+        let (eye, forward, fov) = view_camera(v);
         let right = forward.cross(Vec3::Y).normalize_or_zero();
         for i in 0..2 {
             let (pose, place) = self.pose(i);
@@ -637,6 +673,10 @@ impl Game {
             let depth = d.dot(forward);
             if depth > 1e-3 {
                 self.fight.fighters[i].side = (d.dot(right) / depth * 10000.0).round() as i32;
+                // off the screen (Tekken Tag's condition 0x5C: x >= 0x215 or < -0x14 on its 512 pixels, about 1.08 of the
+                // half width; the 4:3 view's). shortcut: the pelvis, not the three bones +0x628..+0x62C
+                let half = (fov / 2.0).tan() * 4.0 / 3.0;
+                self.fight.fighters[i].off_screen = (d.dot(right) / depth / half).abs() >= 1.08;
             }
         }
     }
@@ -685,7 +725,14 @@ impl Game {
                 (Some(sp), Some(an)) => Some((self.extra_pad, sp, an as &dyn Animations)),
                 _ => None,
             };
+            let active = self.fight.teams.as_ref().map(|t| [t[0].active, t[1].active]);
             self.fight.step_with(pads, &spheres, [&a0 as &dyn Animations, &a1 as &dyn Animations], extra);
+            // a tag swap: the bodies follow; the replay ring holds the other body's clips, so it starts again
+            let now = self.fight.teams.as_ref().map(|t| [t[0].active, t[1].active]);
+            for i in (0..2).filter(|&i| active.zip(now).is_some_and(|(a, b)| a[i] != b[i])) {
+                self.tag_trade(i);
+                self.recorded.clear();
+            }
         }
         if intro {
             self.fight.clock = clock;
@@ -934,6 +981,14 @@ impl Game {
             kumite_sim::RoundState::TimeUp { winner } => 4 + winner.map_or(0, |w| 1 + w as u64),
         });
         let fighters = f.fighters.iter().chain(f.extra.as_deref()).chain(f.partner.as_deref()).chain(&f.more);
+        // a tag battle's teams (the benched partners are only their entries)
+        for t in f.teams.iter().flat_map(|t| t.iter()) {
+            eat(t.active as u64);
+            for m in &t.members {
+                eat(u64::from(m.health as u32) | u64::from(m.cap as u32) << 32);
+                eat(m.anger as u64);
+            }
+        }
         for x in fighters {
             for v in [x.position.x, x.position.y, x.position.z, x.yaw, x.root_yaw, x.offset.x, x.offset.y, x.offset.z, x.anim_root_y] {
                 eat(v.to_bits() as u64);
@@ -1158,7 +1213,8 @@ fn sphere_layout(section: &serde_json::Value, c: &Character, id: u64) -> Result<
         .collect()
 }
 
-/// One pad as a script token: "n", "f", "d/b", "1+2", "d/f+1" (the inverse of [`parse_script`]).
+/// One pad as a script token: "n", "f", "d/b", "1+2", "d/f+1", "5" Tekken Tag's tag button (the inverse of
+/// [`parse_script`]).
 pub fn format_pad(p: &Pad) -> String {
     let mut dir: Vec<&str> = Vec::new();
     // same priorities as the input decoder: up over down, right over left
@@ -1172,7 +1228,7 @@ pub fn format_pad(p: &Pad) -> String {
     } else if p.left {
         dir.push("b");
     }
-    let buttons: Vec<String> = (0..4).filter(|b| p.buttons & (1 << b) != 0).map(|b| (b + 1).to_string()).collect();
+    let buttons: Vec<String> = (0..5).filter(|b| p.buttons & (1 << b) != 0).map(|b| (b + 1).to_string()).collect();
     match (dir.is_empty(), buttons.is_empty()) {
         (true, true) => "n".into(),
         (false, true) => dir.join("/"),
@@ -1218,7 +1274,7 @@ pub fn parse_script(s: &str) -> Result<Vec<Pad>> {
         }
         for b in buttons.split('+').filter(|b| !b.is_empty()) {
             let k: u8 = b.parse().with_context(|| format!("bad button in {tok:?}"))?;
-            anyhow::ensure!((1..=4).contains(&k), "button {k} out of range in {tok:?}");
+            anyhow::ensure!((1..=5).contains(&k), "button {k} out of range in {tok:?}");
             p.buttons |= 1 << (k - 1);
         }
         anyhow::ensure!(n <= MAX_SCRIPT_FRAMES - out.len(), "the script is longer than {MAX_SCRIPT_FRAMES} frames");

@@ -28,6 +28,20 @@ Tekken 3's data never goes through it. The whole move and cancel tables are the 
 - Throws: a link move's reaction names the victim's alias in its first slot.
 - Reactions and pushback curves (by index); health = the default life option (3: 140) x the body's percent
   (`GameData::max_health_of`).
+- The tag battle (sections 6, 10, 15; `Fight::start_tag`, `TagTeam`, `TagMember`): two members a side, the benched
+  one only its team entry. The tag button (command bit 14, kept as `input::TAG_COMMAND`; the pad's bit 4,
+  `input::TAG`, read only with a partner) starts the tag-out run (5398 / 5394); its END or condition 0x5C (off
+  screen) goes to 5397 with the swap bit (0x2000 without a parameter: `TRANSITION_SWAP`); the swap brings the partner in
+  with its health on its own 5397 at the leaving fighter's root, facing the opponent, and an airborne opponent's
+  next hit counts as a first air hit (the count at -1: `Fighter::juggle_bias`). No invulnerability. Recoverable
+  health: a hit lowers the victim's cap by 6 / 10 of the damage (14 / 10 down to the health on a first air hit); the
+  benched partner regains max / 6000 a frame up to it. Anger: 4 a hit on the active member to the partner (6 without
+  damage), one more / less / none by the 76 relations (rules.json `tag`, the converter's tag export); at 120 the
+  member deals x1.3 while in, draining 1 a frame. Round end: the active member's K.O.; at time up the higher average
+  life ratio. Partner gates: `req` 0x64-0x84 (partner's moveset), 0xA7-0xC8 (its body), 0xEC / 0xED (the
+  Kazuya-Devil pair, bodies 19 / 29, or not); the partner bit (cond 0x80) against the opponent's tagging (+0x129).
+  Test: `kumite_game --test tekken_tag` (`tag_out_*`, `recoverable_health_and_anger`, `a_team_loses_*`,
+  `a_partner_move_*`).
 - Juggles (section 9): the 44-entry air table (`reactions.json` `air_reactions`) and each move's own entry
   (`Move::air_reaction`, record +0x2F); Tekken Tag's choice (`GameData::tag_juggles`, 0x374048): face-down and
   early-getup victims 7 / 5 / 6, the move's own entry, spike 1, the launch fall 0, side hits 2 / 3, else 0;
@@ -45,15 +59,20 @@ Tekken 3's data never goes through it. The whole move and cancel tables are the 
   the engine's spike speed, the same value.
 - A counter hit from the side or back takes the counter slot (Tekken Tag: the side / back slot).
 - Pushback curves keep 8 of their 10 impulses (the last two are zero on the USA disc).
-- Gate 0xED (not the Kazuya-Devil pair) passes, 0xEB / 0xEC never.
+- Gate 0xEB never passes.
+- Tag: the off-screen test uses the pelvis's projection on a 4:3 view, not three bones'; the opponent's tagging
+  (+0x129) is its screen side now, not at its tag move's start; the relations take every fighter as variant 0
+  (Kuma, not Panda); a throw's damage does not lower the recoverable cap; tag + a button takes the button held.
+  The fight camera is Tekken 3's: it frames the runner (the run often ends on its END, not off screen), and pulled
+  far out it can go into an arena's scenery.
 
 ## Missing
 
-- Tag: the tag button (command bit 14), partner gates, `special_8003`, the swap, recoverable health, anger
-  (section 10): never match / not run.
-- Conditions 0x26 / 0x27 (unused) and 0x48-0x5F (camera-relative, screen sides, off screen, round decided: used by
-  the tag-out runs and one entry): never true. The prefilter is not used (the full test decides).
-- The counter hit caused by victim +0x12E; the 1.3x partner-anger damage; recoverable-cap loss.
+- `special_8003` (Unknown's moveset change), the solo Unknown's recovery; tag throws and tag combos beyond the partner
+  gates (none found in code); the round's poses as a pair (the partner joining the winner's pose).
+- Conditions 0x26 / 0x27 (unused) and 0x48-0x5B, 0x5D-0x5F (camera-relative, screen sides, round decided: the tag-out
+  runs' variants and one entry): never true. The prefilter is not used (the full test decides).
+- The counter hit caused by victim +0x12E.
 - Other property ops (hand poses, sounds' numbers, camera scripts); air recovery and the missing-move fallback
   alias are unknown.
 - Ogre's bone 0x13 and projectile bones 0x18 / 0x19 give no strike segment.
@@ -65,7 +84,9 @@ Tekken 3's data never goes through it. The whole move and cancel tables are the 
 (`movesets/motions_NN.json`), movesets through the dialect, hurt and push spheres from rules.json's tables on the posed
 skeleton, the 18 bone slots (`BONE_SLOTS`) for the strikes, the motions' root translation. `openkumite --assets
 <pack>/assets --fight --models 345,372 --stage 0` (or Tekken Tag the main game) plays a match of rounds for two
-pads, with a plain HUD (`hud::plain`: no screens.json). Test: `OK_TTT_ASSETS=<pack>/assets cargo test --release -p
+pads, with a plain HUD (`hud::plain`: no screens.json); `--models 345,372,357,465` a tag battle (Paul and Law against
+Lei and Jin: the third and fourth are the partners), the HUD with each side's partner bar and its recoverable part
+(red). The tag button: keyboard H / L (P2 backslash / numpad 6), gamepad R1, button 5 in pad scripts. Test: `OK_TTT_ASSETS=<pack>/assets cargo test --release -p
 kumite_game --test tekken_tag`.
 
 Provisional: the camera (`CameraData::provisional`, Tekken 3's constants; no camera.json), two rounds to win, the heads

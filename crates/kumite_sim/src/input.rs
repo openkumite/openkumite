@@ -13,7 +13,7 @@ pub struct Pad {
     pub down: bool,
     pub left: bool,
     pub right: bool,
-    /// Buttons 1..4 as bits 0..3.
+    /// Buttons 1..4 as bits 0..3; Tekken Tag's tag button as bit 4 ([`TAG`]).
     pub buttons: u8,
     /// START, pressed this frame (online only, where it goes through the rollback's pads: it skips a replay or a
     /// win pose on every computer at once; the fight itself never reads it).
@@ -22,6 +22,12 @@ pub struct Pad {
 
 pub const HISTORY: usize = 60;
 
+/// The tag button's bit in [`Pad::buttons`]; read only in a tag battle (Tekken Tag), where its commands carry
+/// [`TAG_COMMAND`].
+pub const TAG: u8 = 0x10;
+/// A plain command's tag-button bit (Tekken Tag's command bit 14; Tekken 3's commands never have it).
+pub const TAG_COMMAND: u32 = 0x4000;
+
 #[derive(Clone, Debug)]
 pub struct InputState {
     /// Current numpad direction (1..9).
@@ -29,6 +35,9 @@ pub struct InputState {
     /// Buttons held / newly pressed this frame (bits 0..3 = 1..4).
     pub held: u32,
     pub pressed: u32,
+    /// The tag button held / newly pressed this frame (kept apart: the four buttons' tests never see it).
+    pub tag_held: bool,
+    pub tag: bool,
     /// Ring of `pressed << 4 | dir`, newest at `head`.
     history: [u8; HISTORY],
     head: usize,
@@ -36,7 +45,7 @@ pub struct InputState {
 
 impl Default for InputState {
     fn default() -> Self {
-        Self { dir: 5, held: 0, pressed: 0, history: [5; HISTORY], head: 0 }
+        Self { dir: 5, held: 0, pressed: 0, tag_held: false, tag: false, history: [5; HISTORY], head: 0 }
     }
 }
 
@@ -62,6 +71,8 @@ impl InputState {
         let held = pad.buttons as u32 & 0xF;
         self.pressed = held & !self.held;
         self.held = held;
+        let tag = pad.buttons & TAG != 0;
+        (self.tag, self.tag_held) = (tag && !self.tag_held, tag);
         self.head = (self.head + 1) % HISTORY;
         self.history[self.head] = (self.pressed << 4 | self.dir) as u8;
     }
@@ -73,13 +84,18 @@ impl InputState {
     }
 
     /// Single-frame command (EXE 0x8002CC28). `cmd` ≤ 0xBFFF:
-    /// bits 5..13 = accepted directions (bit 4+n for numpad n), bits 0..3 = buttons, bit 4 = "any of".
+    /// bits 5..13 = accepted directions (bit 4+n for numpad n), bits 0..3 = buttons, bit 4 = "any of", bit 14 = the
+    /// tag button, newly pressed (Tekken Tag).
     pub fn matches_command(&self, cmd: u32) -> bool {
         let dirs = cmd & 0x3FE0;
         if dirs != 0 && cmd & (1 << (self.dir + 4)) == 0 {
             return false;
         }
         let buttons = cmd & 0xF;
+        if cmd & TAG_COMMAND != 0 {
+            // shortcut: tag + a button takes the button held, as the four buttons' "all held" test would
+            return self.tag && self.held & buttons == buttons;
+        }
         if cmd & 0x1F == 0x10 {
             return true; // direction held, no button (walk, crouch, jump)
         }
@@ -169,6 +185,11 @@ mod tests {
         assert!(!s.matches_command(0x0083)); // d/f+1+2 needs 2 held too
         feed(&mut s, &[Pad { down: true, right: true, buttons: 0b0001, ..Default::default() }]);
         assert!(!s.matches_command(0x0081)); // 1 is held, not new
+                                             // the tag button: only its own commands see it, newly pressed
+        feed(&mut s, &[Pad { buttons: TAG, ..Default::default() }]);
+        assert!(s.matches_command(TAG_COMMAND) && s.matches_command(0x0010) && !s.matches_command(0x0001));
+        feed(&mut s, &[Pad { buttons: TAG | 2, ..Default::default() }]);
+        assert!(!s.matches_command(TAG_COMMAND) && s.pressed == 2);
     }
 
     #[test]

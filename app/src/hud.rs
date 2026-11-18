@@ -37,6 +37,8 @@ pub struct HudInfo {
     pub team: Option<[(usize, usize, bool); 2]>,
     /// Force: no result text after the K.O. (STAGE CLEAR!! and the tally instead).
     pub no_result: bool,
+    /// A tag battle: the partners' names (members 1; `names` are members 0).
+    pub partners: Option<[String; 2]>,
 }
 
 /// An under-bar text kind (0x8004EB54).
@@ -706,15 +708,38 @@ fn plain(painter: &egui::Painter, v: &View, bout: &Bout, info: &HudInfo) {
         painter.text(v.pos(x, y), align, s, egui::FontId::proportional(font.size * size), Color32::WHITE);
     };
     let (w, y) = (150.0, 30.0);
+    // a bar from the side's edge: health (yellow) and, in a tag battle, the recoverable part above it (red)
+    let bar = |i: usize, left: f32, y: f32, w: f32, h: f32, health: i32, cap: Option<i32>, max: i32| {
+        let part = |x: i32| (x.max(0) as f32 / (max * kumite_sim::ONE).max(1) as f32).clamp(0.0, 1.0);
+        Art::shade(painter, v, [left - 1.0, y - 1.0, w + 2.0, h + 2.0], [Color32::from_rgb(20, 20, 30); 4]);
+        for (x, c) in [(cap.unwrap_or(0), Color32::from_rgb(200, 40, 30)), (health, Color32::from_rgb(250, 210, 60))] {
+            // (P1's drains towards the centre from the left, P2's from the right)
+            let full = part(x);
+            let x0 = if i == 0 { left + w * (1.0 - full) } else { left };
+            Art::shade(painter, v, [x0, y, w * full, h], [c; 4]);
+        }
+    };
+    let teams = bout.game.fight.teams.as_deref();
     for (i, f) in bout.game.fight.fighters.iter().enumerate() {
         let left = if i == 0 { 14.0 } else { crate::art::SCREEN_W - 14.0 - w };
-        let full = (f.health.max(0) as f32 / (f.max_health * kumite_sim::ONE).max(1) as f32).clamp(0.0, 1.0);
-        Art::shade(painter, v, [left - 1.0, y - 1.0, w + 2.0, 14.0], [Color32::from_rgb(20, 20, 30); 4]);
-        // (P1's drains towards the centre from the left, P2's from the right)
-        let x0 = if i == 0 { left + w * (1.0 - full) } else { left };
-        Art::shade(painter, v, [x0, y, w * full, 12.0], [Color32::from_rgb(250, 210, 60); 4]);
         let (edge, align) = if i == 0 { (left, Align2::LEFT_TOP) } else { (left + w, Align2::RIGHT_TOP) };
-        text(edge, y + 16.0, align, &info.names[i].to_uppercase(), 1.0);
+        match teams {
+            // the tag battle (as the PS2 game): the fighter's bar, the benched partner's small one under it
+            Some(t) => {
+                let (team, p) = (&t[i], t[i].partner());
+                let name = |k: usize| if k == 0 { info.names[i].clone() } else { info.partners.as_ref().map_or_else(String::new, |n| n[i].clone()) }.to_uppercase();
+                bar(i, left, y, w, 12.0, f.health, Some(team.members[team.active].cap), f.max_health);
+                text(edge, y + 16.0, align, &name(team.active), 1.0);
+                let (pw, px) = (w * 0.6, if i == 0 { left } else { left + w * 0.4 });
+                bar(i, px, y + 42.0, pw, 5.0, p.health, Some(p.cap), p.max_health);
+                let pedge = if i == 0 { px } else { px + pw };
+                text(pedge, y + 49.0, align, &name(1 - team.active), 0.7);
+            }
+            None => {
+                bar(i, left, y, w, 12.0, f.health, None, f.max_health);
+                text(edge, y + 16.0, align, &info.names[i].to_uppercase(), 1.0);
+            }
+        }
         for k in 0..bout.rounds_to_win {
             let gx = if i == 0 { left + w - 8.0 - 10.0 * k as f32 } else { left + 2.0 + 10.0 * k as f32 };
             let c = if k < bout.wins[i] { Color32::from_rgb(250, 210, 60) } else { Color32::from_rgb(60, 60, 70) };

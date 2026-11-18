@@ -8,7 +8,7 @@
 pub mod peers;
 pub mod reliable;
 
-use kumite_sim::input::Pad;
+use kumite_sim::input::{Pad, TAG};
 use serde::{Deserialize, Serialize};
 
 /// The room's protocol: computers of another refuse each other. Bump it whenever a message's form changes (the
@@ -452,19 +452,20 @@ impl Reader<'_> {
     }
 }
 
-/// One frame's pad on the wire: buttons 1..4 in bits 0..3, directions in bits 4..7, START in bit 8.
+/// One frame's pad on the wire: buttons 1..4 in bits 0..3, directions in bits 4..7, START in bit 8, Tekken Tag's tag
+/// button in bit 9 (a spare bit until then: an older peer sends 0 there).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetInput(pub u16);
 
 impl NetInput {
     pub fn of(p: Pad) -> Self {
         let d = |b: bool, k: u16| if b { 1 << k } else { 0 };
-        NetInput(u16::from(p.buttons & 0xF) | d(p.up, 4) | d(p.down, 5) | d(p.left, 6) | d(p.right, 7) | d(p.start, 8))
+        NetInput(u16::from(p.buttons & 0xF) | d(p.up, 4) | d(p.down, 5) | d(p.left, 6) | d(p.right, 7) | d(p.start, 8) | d(p.buttons & TAG != 0, 9))
     }
 
     pub fn pad(self) -> Pad {
         let b = |k: u16| self.0 & (1 << k) != 0;
-        Pad { up: b(4), down: b(5), left: b(6), right: b(7), buttons: (self.0 & 0xF) as u8, start: b(8) }
+        Pad { up: b(4), down: b(5), left: b(6), right: b(7), buttons: (self.0 & 0xF) as u8 | if b(9) { TAG } else { 0 }, start: b(8) }
     }
 }
 
@@ -541,7 +542,7 @@ mod tests {
 
     #[test]
     fn a_pad_survives_the_wire() {
-        for v in 0..512u16 {
+        for v in 0..1024u16 {
             assert_eq!(NetInput::of(NetInput(v).pad()), NetInput(v));
         }
     }
