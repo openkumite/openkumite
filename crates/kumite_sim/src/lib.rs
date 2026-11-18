@@ -272,6 +272,17 @@ pub struct BallPush {
 }
 
 impl BallRules {
+    /// From gamedata/ball.json `constants` (Tekken 3's; Tekken Tag's from the Tekken 3 slice, in its numbers).
+    pub fn load(gamedata: &Path) -> Result<Self> {
+        let ball: serde_json::Value = data::load(&gamedata.join("ball.json"))?;
+        let (bm, charge) = (&ball["constants"]["moves"], &ball["constants"]["moves"]["self_charge"]);
+        Ok(Self {
+            pushes: serde_json::from_value(bm["push_back"].clone()).context("ball.json: constants.moves.push_back")?,
+            self_charge: charge["moveset"].as_i64().zip(charge["except_alias"].as_u64()).map(|(m, a)| (m, a as usize)),
+            sounds: serde_json::from_value(ball["constants"]["sounds"].clone()).context("ball.json: constants.sounds")?,
+        })
+    }
+
     /// The frame a move entered by `alias` ends at.
     pub fn end(&self, alias: usize) -> Option<u32> {
         self.pushes.iter().find(|p| p.cancel != 0 && p.aliases.contains(&alias)).map(|p| p.cancel)
@@ -319,17 +330,11 @@ impl GameData {
         let m = &rules["moves"];
         anyhow::ensure!(m.is_object(), "rules.json: no moves (convert again)");
         let hitstop = &m["long_hitstop"];
-        let ball: serde_json::Value = data::load(&gamedata.join("ball.json"))?;
         let moves = MoveRules {
             long_hitstop: hitstop["alias"].as_u64().zip(hitstop["frames"].as_u64()).map(|(a, f)| (a as usize, f as u32)),
             air_spikes: serde_json::from_value(m["air_spikes"]["moves"].clone()).context("rules.json: moves.air_spikes")?,
         };
-        let (bm, charge) = (&ball["constants"]["moves"], &ball["constants"]["moves"]["self_charge"]);
-        let ball = BallRules {
-            pushes: serde_json::from_value(bm["push_back"].clone()).context("ball.json: constants.moves.push_back")?,
-            self_charge: charge["moveset"].as_i64().zip(charge["except_alias"].as_u64()).map(|(m, a)| (m, a as usize)),
-            sounds: serde_json::from_value(ball["constants"]["sounds"].clone()).context("ball.json: constants.sounds")?,
-        };
+        let ball = BallRules::load(gamedata)?;
         Ok(Self {
             common: data::load(&gamedata.join("movesets/common.json"))?,
             shared: data::load(&gamedata.join("shared.json"))?,

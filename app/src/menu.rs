@@ -661,6 +661,8 @@ impl Roster {
         let extra_levels = listed().filter_map(|s| Some((s["id"].as_u64()? as usize, s["name"].as_str()?.to_string()))).collect();
         let extra_levels_title = listed().find_map(|s| s["menu"].as_str()).unwrap_or_default().to_string();
         let ball = read("ball.json");
+        // (Tekken Tag: Tekken Ball with the Tekken 3 slice's ball.json)
+        let ball_court = ball["types"].as_array().is_some_and(|t| !t.is_empty()).then(|| ball["constants"]["stage"].as_u64()).flatten().map(|s| s as usize);
         let costume_of = selections.iter().filter_map(|s| Some((s["model_record"].as_u64()? as usize, s["costume"].as_u64()? as usize))).collect();
         let by_selection = selections.iter().filter_map(|s| Some((s["selection"].as_u64()? as usize, (s["character"].as_u64()? as usize, s["model_record"].as_u64()? as usize)))).collect();
         let bgm_of = selections.iter().filter_map(|s| Some((s["model_record"].as_u64()? as usize, s["bgm_id"].as_u64()? as usize))).collect();
@@ -731,6 +733,7 @@ impl Roster {
                     Some(root) if roster["front_end"].is_object() => crate::ttt::arcade_arenas(root),
                     _ => Vec::new(),
                 },
+                ball_court,
             ),
         }
     }

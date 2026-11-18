@@ -493,7 +493,7 @@ impl Fight {
             }
             if b.cooldown > 0 {
                 b.cooldown -= 1;
-            } else if !self.ball_attacked(gd, b) && !self.ball_actors().into_iter().any(|i| self.actor(i).is_some_and(|f| f.locked)) {
+            } else if !self.ball_attacked(gd, bodies, b) && !self.ball_actors().into_iter().any(|i| self.actor(i).is_some_and(|f| f.locked)) {
                 self.ball_body(gd, bodies, b);
             }
         }
@@ -514,12 +514,20 @@ impl Fight {
     }
 
     /// The fighters' attack segments against the ball (0x80047D98): returns whether one hit it.
-    fn ball_attacked(&mut self, gd: &GameData, b: &mut Ball) -> bool {
+    fn ball_attacked(&mut self, gd: &GameData, bodies: &[&crate::BodyVolumes], b: &mut Ball) -> bool {
         let centre = to_sim(b.pos);
         let sphere = Sphere { centre, radius: RADIUS, zone: 0 };
+        // the strike's segments: Tekken 3's paths, or Tekken Tag's bone pairs of the pose (the Tekken 3 slice's Ball)
+        // shortcut: the hit pass has made this pose the last, so a pair from the end bone's last place is its point
+        // now; keep the last pose for the ball too if Tekken Tag's fast strikes pass through it
+        let segments = |i: usize, f: &crate::Fighter| {
+            let mut s = f.attack_segments(gd);
+            s.extend(bodies.get(i).map_or_else(Vec::new, |v| f.pair_segments(gd, &v.bones)));
+            s
+        };
         // who hit it this frame, the players' side first (with two: P1 before P2)
         let hitters: Vec<(usize, Vec3)> =
-            self.ball_actors().into_iter().filter_map(|i| self.actor(i)?.attack_segments(gd).into_iter().find(|(p, q)| segment_hits(*p, *q, &sphere)).map(|(p, q)| (i, q - p))).collect();
+            self.ball_actors().into_iter().filter_map(|i| segments(i, self.actor(i)?).into_iter().find(|(p, q)| segment_hits(*p, *q, &sphere)).map(|(p, q)| (i, q - p))).collect();
         let Some(&(h, d)) = hitters.first() else { return false };
         let both = hitters.iter().any(|&(i, _)| side_of(i) != side_of(h));
         let o = self.ball_target(h);
