@@ -448,17 +448,18 @@ impl Bout {
                 if self.phase_frame == 1 {
                     let aliases: [usize; 2] = std::array::from_fn(|i| {
                         let b = if self.cpu[i].is_some() { 0 } else { pads[i].buttons };
-                        if self.round > 1 {
-                            1
+                        let k = if self.round > 1 {
+                            2
                         } else if b & 0b0011 != 0 {
                             0
                         } else if b & 0b0100 != 0 {
-                            2
+                            1
                         } else if self.random(2) == 1 {
                             0
                         } else {
-                            2
-                        }
+                            1
+                        };
+                        self.game.fight.fighters[i].moveset.fixed.round_start[k]
                     });
                     self.game.set_start_moves(aliases);
                 }

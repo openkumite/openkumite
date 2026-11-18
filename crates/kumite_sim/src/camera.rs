@@ -150,7 +150,40 @@ pub struct CameraData {
 
 impl CameraData {
     pub fn load(path: &Path) -> Result<Self> {
-        let j: Json = crate::data::load(path)?;
+        Self::from_json(crate::data::load(path)?)
+    }
+
+    /// A game without a decoded camera (Tekken Tag: its pack has no camera.json): Tekken 3's constants, its sine,
+    /// atan and square root tables computed (the atan's within 1 of the PS1's), Tekken Tag's win poses (4770..4773).
+    // shortcut: Tekken 3's camera on Tekken Tag; upgrade when the converter writes Tekken Tag's camera.json
+    pub fn provisional() -> Result<Self> {
+        use crate::detmath::DetMath;
+        let (pi, tau) = (std::f64::consts::PI, std::f64::consts::TAU);
+        let sin: Vec<i64> = (0..5120).map(|i| (4096.0 * (i as f64 * tau / 4096.0).dsin()).round() as i64).collect();
+        let atan: Vec<i64> = (0..=1024).map(|q| ((q as f64 / 1024.0).datan2(1.0) * 2048.0 / pi).round() as i64 - (q >> 1)).collect();
+        let gsqrt: Vec<i64> = (0..192).map(|k| (libm::sqrt((k + 64) as f64 / 64.0) * 4096.0) as i64).collect();
+        let j = serde_json::json!({
+            "projection_h": 500,
+            "tables": { "sin": { "values": sin }, "atan": { "values": atan } },
+            "fight": { "distance": 5517, "initial_eye": [0, -1450, -8000] },
+            "intro": { "frames_first_round": 120, "frames_other": 53, "offsets": [[0, 0, -7500], [0, 375, -6000], [6000, 375, 0], [-6000, 375, 0], [11250, 0, 0], [-11250, 0, 0], [9000, 0, 7500], [-9000, 0, 7500], [7500, -6000, -3750], [-7500, -6000, -3750]] },
+            "gsqrt": { "values": gsqrt },
+            "end": {
+                "ko_frames": 90, "draw_frames": 75, "loser_frames": 60, "pose_cap": 300,
+                "replay": { "pre_roll": 30, "min_frames": 150, "ring": 300, "blink": 16, "variant_a": { "yaw_from": -29127, "yaw_range": 123790, "offset_degrees": [25, 30] }, "variant_b": { "yaw_from": 21846, "yaw_range": 87381 }, "offset_easing_shift": 7 },
+                "aim": { "min_distance": 5800, "chest_clamp": 4004, "floor_clamp": -6917, "chest_offset": -290 },
+                "cam_a": { "arc_from": 683, "arc_range": 683, "radius": 3953, "eye_y": -850, "stop_distance": 2513, "approach": 8, "pitch_shift": 5, "yaw_shift": 5 },
+                "cam_b": { "radius": [4500, 5000, 5500], "side": [1800, 2000, 2200], "height": [-950, -1100, -1650], "drift_shift": 9, "push_distance": 2308, "push_shift": 4, "pitch_shift": 5, "yaw_shift": 4, "height_reach": -7500, "height_shift": 4 },
+                "overhead": { "height": -7853, "pitch": 1024, "yaw_from": 2048, "jitter": [-64, 63] },
+                "orbit": { "arc_from": 512, "arc_range": 1025, "radius": [3978, 6596], "large_moveset_key": 11, "eye_y": -1500, "target_y": -1425, "stop_distance": [3664, 6282], "approach": 2, "target_easing": [6, 7] },
+                // (the losers' motions are not known: none)
+                "motions": { "win": [4770, 4771, 4772, 4773], "lose_ko": usize::MAX, "lose_time_up": usize::MAX }
+            }
+        });
+        Self::from_json(serde_json::from_value(j)?)
+    }
+
+    fn from_json(j: Json) -> Result<Self> {
         anyhow::ensure!(j.tables.sin.values.len() == 5120, "camera.json: sin table needs 5120 entries");
         anyhow::ensure!(j.tables.atan.values.len() == 1025, "camera.json: atan table needs 1025 entries");
         anyhow::ensure!(!j.intro.offsets.is_empty(), "camera.json: no intro offsets");

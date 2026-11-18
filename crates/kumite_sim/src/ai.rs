@@ -96,7 +96,7 @@ struct Json {
     wakeup_categories: Vec<u32>,
     rules: Rules,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct Entries<T> {
     entries: Vec<T>,
 }
@@ -209,7 +209,7 @@ impl Routine {
 }
 
 /// Moves the routine names: these aliases, of these move sets (any without).
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct Moves {
     #[serde(default)]
     movesets: Option<Vec<i64>>,
@@ -222,53 +222,54 @@ impl Moves {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct MovesetAlias {
     moveset: i64,
     alias: usize,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct MovesetDescriptor {
     moveset: i64,
     descriptor: u32,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct Movesets {
     movesets: Vec<i64>,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct Aliases {
     aliases: Vec<usize>,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct LateParry {
     moveset: i64,
     until: [i32; 2],
     alias: usize,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct OneAlias {
     alias: usize,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct OneMoveset {
     moveset: i64,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct Closer {
     moveset: i64,
     distance: i32,
 }
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Allow {
+    #[default]
     Never,
     Coin,
     NoCoin,
 }
 /// A chain throw's next part to these aliases: against these move sets (everyone without) never, only on the coin,
 /// or only without it.
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct ChainRule {
     aliases: Vec<usize>,
     #[serde(default)]
@@ -277,7 +278,7 @@ struct ChainRule {
 }
 
 /// The routine's tests of particular move sets and aliases (ai.json `rules`).
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct Rules {
     /// His fire move (+0x200: no stance escape, the walks go on) and his low fire (+0x201: his attack word gains
     /// 0x10000; the wake-up backs off).
@@ -304,7 +305,8 @@ struct Rules {
     evade_closer: Closer,
 }
 
-/// Everything the AI reads from ai.json.
+/// Everything the AI reads from ai.json (default: a game without it, Tekken Tag: no tables, a CPU does little).
+#[derive(Default)]
 pub struct AiData {
     /// [difficulty 0..3][level 0..10]
     profiles: Vec<Vec<Profile>>,
@@ -406,7 +408,8 @@ impl AiData {
     }
 
     pub fn profile(&self, difficulty: usize, level: usize) -> &Profile {
-        &self.profiles[difficulty.min(2)][level.min(9)]
+        static NONE: std::sync::OnceLock<Profile> = std::sync::OnceLock::new();
+        self.profiles.get(difficulty.min(2)).and_then(|p| p.get(level.min(9))).unwrap_or_else(|| NONE.get_or_init(Profile::default))
     }
 
     /// The handlers for a moveset (0x80062868: the first table entry with it): against it, and its own.

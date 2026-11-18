@@ -64,6 +64,8 @@ pub struct State {
     pub installed: bool,
     /// The main game.
     pub game: Game,
+    /// Tekken Tag Tournament's pack has its game root (assets/; a pack of the converter's research layout has none).
+    pub ttt_assets: bool,
 }
 
 impl State {
@@ -71,7 +73,7 @@ impl State {
         let m = |p: Part| p.manifest(&StdFs(dir(p, root)));
         let manifests = kumite_packs::Manifests { t3: m(Part::T3), t2: m(Part::T2), cs: m(Part::Cs), arcade: m(Part::Arcade), ttt: m(Part::Ttt) };
         let installed = manifests.installed(&StdFs(root.join(EXTRAS)));
-        Self { manifests, installed, game }
+        Self { manifests, installed, game, ttt_assets: game_root(root, Game::Ttt).is_dir() }
     }
 
     pub fn get(&self, part: Part) -> Option<&Value> {
@@ -82,10 +84,13 @@ impl State {
         self.manifests.has_packs()
     }
 
-    /// The game can start: Tekken 3 the main game, converted, the packs installed.
-    /// shortcut: Tekken Tag Tournament never plays yet (`gamedata::NOT_YET`); its pack converted, once the engine reads it
+    /// The game can start: the main game converted (Tekken 3: the packs installed; Tekken Tag Tournament: with its
+    /// game root).
     pub fn playable(&self) -> bool {
-        self.game == Game::T3 && self.manifests.t3.is_some() && self.installed
+        match self.game {
+            Game::T3 => self.manifests.t3.is_some() && self.installed,
+            Game::Ttt => self.manifests.ttt.is_some() && self.ttt_assets,
+        }
     }
 }
 
@@ -277,7 +282,7 @@ mod tests {
     }
 
     /// Tekken 3 alone: playable, no layers, as before Tekken Tag Tournament; its pack beside changes neither, and as
-    /// the main game nothing plays.
+    /// the main game it plays once it has its assets/.
     #[test]
     fn tekken_3_alone_and_tekken_tag_beside_it() {
         let root = std::env::temp_dir().join(format!("ok_packs_t3_{}", std::process::id()));
@@ -291,6 +296,8 @@ mod tests {
         let both = State::of(&root, Game::T3);
         assert!(both.playable() && both.installed && layers(&root, &both).is_empty() && both.get(Part::Ttt).is_some());
         assert!(!State::of(&root, Game::Ttt).playable());
+        std::fs::create_dir_all(game_root(&root, Game::Ttt)).unwrap();
+        assert!(State::of(&root, Game::Ttt).playable());
         assert_eq!(game_root(&root, Game::T3), root);
         assert_eq!(game_root(&root, Game::Ttt), root.join("packs/ttt/assets"));
         std::fs::remove_dir_all(&root).unwrap();
@@ -320,7 +327,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         run(&root, &Job::Convert(Part::Ttt, disc.into()), &|_| {}, &AtomicBool::new(false)).unwrap();
         let state = State::of(&root, Game::Ttt);
-        assert!(state.get(Part::Ttt).is_some() && state.get(Part::T3).is_none() && !state.playable() && !root.join(EXTRAS).exists());
+        assert!(state.get(Part::Ttt).is_some() && state.get(Part::T3).is_none() && state.playable() == state.ttt_assets && !root.join(EXTRAS).exists());
         assert!(dir(Part::Ttt, &root).join("manifest.json").is_file());
         run(&root, &Job::Remove(Part::Ttt), &|_| {}, &AtomicBool::new(false)).unwrap();
         assert!(State::of(&root, Game::Ttt).get(Part::Ttt).is_none());

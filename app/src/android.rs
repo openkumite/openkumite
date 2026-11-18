@@ -64,7 +64,7 @@ fn android_main(android: AndroidApp) {
 /// The game on the assets kept in the app's files folder.
 fn game(files: &Path) -> anyhow::Result<Box<App>> {
     crate::packs::activate(&files.join("assets"));
-    let app = crate::new_app(files.join("assets"), vec!["openkumite".into()])?;
+    let app = crate::new_app(crate::packs::game_root(&files.join("assets"), crate::packs::game()), vec!["openkumite".into()])?;
     app.map(Box::new).ok_or_else(|| anyhow::anyhow!("the game did not start"))
 }
 

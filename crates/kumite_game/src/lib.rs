@@ -46,7 +46,31 @@ pub struct Body {
     pub pelvis: usize,
     /// Nodes not drawn (the copying character's stick, but as the sword fighter).
     pub hidden: Vec<usize>,
+    /// Tekken Tag: the nodes of the 18 bone slots its strikes run between ([`BONE_SLOTS`]); empty for Tekken 3.
+    pub bones: Vec<usize>,
 }
+
+/// The joints of the bone slots, slot by slot (the arcade engine's matrix slots; Tekken Tag's converter names them so).
+pub const BONE_SLOTS: [&str; 18] = [
+    "root",
+    "chest",
+    "head",
+    "clavicle_A",
+    "upperarm_A",
+    "forearm_A",
+    "hand_A",
+    "clavicle_B",
+    "upperarm_B",
+    "forearm_B",
+    "hand_B",
+    "pelvis",
+    "thigh_A",
+    "shin_A",
+    "foot_A",
+    "thigh_B",
+    "shin_B",
+    "foot_B",
+];
 
 impl Body {
     /// Root translation of `anim` at `frame` (game units).
@@ -237,10 +261,24 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let gd = assets.root.join("gamedata");
     let entry = index.models.iter().find(|m| m.model_record == record).with_context(|| format!("model {record} not in the moveset index"))?;
     let path = gd.join("movesets").join(&entry.moveset_file);
-    let moveset = kumite_sim::data::load::<Moveset>(&path)?;
-    moveset.check(common).with_context(|| format!("{}", path.display()))?;
+    // Tekken Tag (rules.json's dialect): a moveset is aliases into the common set, the motions are files of their own
+    let tag = rules["dialect"] == "ttt";
+    let moveset = if tag {
+        kumite_sim::dialect::moveset(common, &path)?
+    } else {
+        let moveset = kumite_sim::data::load::<Moveset>(&path)?;
+        moveset.check(common).with_context(|| format!("{}", path.display()))?;
+        moveset
+    };
     let moveset = Arc::new(moveset);
-    let character = assets.character(record)?;
+    let mut character = assets.character(record)?;
+    if tag {
+        let list: serde_json::Value = kumite_sim::data::load(&gd.join(format!("movesets/motions_{:02}.json", entry.moveset_id)))?;
+        for f in list["motions"].as_array().into_iter().flatten().filter_map(|f| f.as_str()) {
+            let file = assets.root.join("motions").join(f);
+            character.add_motions(&kumite_fs::read(&file).with_context(|| format!("reading {}", file.display()))?).with_context(|| format!("{}", file.display()))?;
+        }
+    }
     let root = character.nodes.iter().position(|n| n.parent.is_none()).context("no root node")?;
     // the radii are per character id (0x8003F048: 0x80096FF0[+0x18]); the roster gives the model's character
     let roster: serde_json::Value = kumite_sim::data::load(&gd.join("roster.json")).unwrap_or_default();
@@ -250,7 +288,8 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let chest = character.nodes.iter().position(|n| n.name == "head").context("no head joint")?;
     let torso = character.nodes.iter().position(|n| n.name == "chest").context("no chest joint")?;
     let pelvis = character.nodes.iter().position(|n| n.name == "pelvis").unwrap_or(root);
-    let body = Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden: Vec::new() };
+    let bones = if tag { BONE_SLOTS.iter().map(|&j| character.nodes.iter().position(|n| n.name == j).with_context(|| format!("no joint {j}"))).collect::<Result<_>>()? } else { Vec::new() };
+    let body = Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden: Vec::new(), bones };
     // the copying character: its own moveset is never played; outside a bout's rounds it stays the setup's fighter
     // shortcut: Force's bosses and the tag brawl's draw their fighter too (0x800B2770), here they keep this one,
     // and Force's player draws without a seed of the match (the same fighters every run)
@@ -356,6 +395,7 @@ fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
         torso: own.torso,
         pelvis: own.pelvis,
         hidden,
+        bones: own.bones.clone(),
     }
 }
 
@@ -383,7 +423,8 @@ impl Game {
             bodies.push(body);
         }
         let [b0, b1]: [Body; 2] = bodies.try_into().map_err(|_| anyhow::anyhow!("two fighters"))?;
-        let camera_data = Arc::new(CameraData::load(&gd.join("camera.json"))?);
+        let camera = gd.join("camera.json");
+        let camera_data = Arc::new(if kumite_fs::exists(&camera) { CameraData::load(&camera)? } else { CameraData::provisional()? });
         let roster: serde_json::Value = kumite_sim::data::load(&gd.join("roster.json")).unwrap_or_default();
         let character = |m: usize| roster["selections"]["entries"].as_array().into_iter().flatten().find(|e| e["model_record"].as_u64() == Some(m as u64)).and_then(|e| e["character"].as_i64());
         let characters = [character(models[0]), character(models[1])];
@@ -491,7 +532,7 @@ impl Game {
         self.fight.walls = walls;
         for (i, (f, g)) in self.fight.fighters.iter_mut().zip(guard_input).enumerate() {
             f.guard_input = g; // who is CPU-controlled stays the same
-            f.max_health = self.max_health[i].unwrap_or(self.fight.data.max_health * self.handicap[i] / 100);
+            f.max_health = self.max_health[i].unwrap_or(self.fight.data.max_health_of(self.characters[i]) * self.handicap[i] / 100);
             f.character = self.characters[i];
             f.health = match self.start_health[i].take() {
                 Some(h) if h > 0 && h <= f.max_health * kumite_sim::ONE => h,
@@ -962,7 +1003,9 @@ impl Game {
             let gd = &self.fight.data;
             let f = &self.fight.fighters[i];
             let m = f.current_move(gd);
-            let mut on = self.head_live && !self.head_off[i] && m.flags24.raw & 0x4000_0000 != 0;
+            // shortcut: Tekken Tag's heads (bodies with bone slots) do not turn: its head joint's rest frame is not
+            // Tekken 3's, which the turn assumes; upgrade by turning from the joint's own rest frame
+            let mut on = self.head_live && !self.head_off[i] && self.bodies[i].bones.is_empty() && m.flags24.raw & 0x4000_0000 != 0;
             if on && m.active[0] != 0 {
                 let from = (m.active[1] as i32).max(m.bytes_18.frame_count_ram as i32 - 0x11);
                 on = f.frame as i32 >= from;
@@ -1063,7 +1106,8 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
     let make = |layout: &[(usize, Vec3, f32, usize)]| -> Vec<Sphere> {
         layout.iter().map(|&(node, offset, radius, zone)| Sphere { centre: (place.transform_point3(pose[node].w_axis.truncate()) + offset) * UNITS, radius, zone }).collect()
     };
-    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones: Vec::new() }
+    let bones = body.bones.iter().map(|&n| place.transform_point3(pose[n].w_axis.truncate()) * UNITS).collect();
+    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones }
 }
 
 /// Render camera for a game view: eye and look direction in glTF metres (y up), vertical field of view from
@@ -1080,9 +1124,13 @@ pub fn view_camera(v: &View) -> (Vec3, Vec3, f32) {
     (eye, forward, 2.0 * (240.0 / (v.h as f32 * 7122.0 / 4096.0)).atan())
 }
 
-/// The CPU AI tables (gamedata/ai.json).
+/// The CPU AI tables (gamedata/ai.json; a game without them, Tekken Tag, gets none).
 pub fn ai_data(assets: &Assets) -> Result<Arc<kumite_sim::ai::AiData>> {
-    Ok(Arc::new(kumite_sim::ai::AiData::load(&assets.root.join("gamedata/ai.json"))?))
+    let path = assets.root.join("gamedata/ai.json");
+    if !kumite_fs::exists(&path) {
+        return Ok(Default::default());
+    }
+    Ok(Arc::new(kumite_sim::ai::AiData::load(&path)?))
 }
 
 /// Fighter placement (simulation position in game units, facing yaw) as a world transform in metres.

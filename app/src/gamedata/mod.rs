@@ -225,7 +225,8 @@ pub fn missing_note(manifest: &serde_json::Value) -> Option<String> {
     Some(format!("Without {what}: the disc image did not hold them. Convert again from a full image (.cue with its .bin files, .chd, ...) to add them."))
 }
 
-/// Tekken Tag Tournament the main game, converted: what the game says, as it does not play it yet.
+/// Tekken Tag Tournament the main game, converted, where it does not play (the browser; natively a pack without its
+/// assets/): what the game says.
 pub const NOT_YET: &str = "Tekken Tag Tournament is converted; it is not playable in this version yet";
 
 pub fn gb(bytes: u64) -> String {
@@ -870,7 +871,7 @@ impl Screen {
                     say(&painter, &mut y, "OpenKumite plays the games you own. It converts them once, here on this device, and keeps the result. Nothing is uploaded.", small, GREY);
                     if status.loading {
                         say(&painter, &mut y, "Looking at the game data…", small, WHITE);
-                    } else if status.main == Part::Ttt && status.parts[part_index(Part::Ttt)].converted {
+                    } else if status.main == Part::Ttt && status.parts[part_index(Part::Ttt)].converted && !status.playable {
                         say(&painter, &mut y, &format!("{NOT_YET}."), small, ORANGE);
                     }
                 }

@@ -66,9 +66,12 @@ impl Root {
                 }
                 #[cfg(target_arch = "wasm32")]
                 d.host.leave();
+                // (the main game's own root: Tekken Tag Tournament's is its pack's assets/)
                 #[cfg(not(target_arch = "wasm32"))]
-                packs::activate(&self.root);
-                match crate::new_app(self.root.clone(), self.args.clone()) {
+                let root = packs::game_root(&self.root, packs::activate(&self.root).game);
+                #[cfg(target_arch = "wasm32")]
+                let root = self.root.clone();
+                match crate::new_app(root, self.args.clone()) {
                     Ok(Some(mut app)) => {
                         if let (Some(w), Some(r)) = (d.window.take(), d.renderer.take()) {
                             // (the game's own name back: the screen's was "game data")
