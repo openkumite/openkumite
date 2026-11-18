@@ -87,9 +87,11 @@ pub struct Abilities {
 /// The game data as the host knows it.
 #[derive(Clone, Debug, Default)]
 pub struct Status {
-    /// Tekken 3, Tekken 2, Counter-Strike, the arcade stages (`Part::ALL`'s order).
-    pub parts: [PartView; 4],
+    /// Tekken 3, Tekken 2, Counter-Strike, the arcade stages, Tekken Tag Tournament (`Part::ALL`'s order).
+    pub parts: [PartView; 5],
     pub playable: bool,
+    /// The main game (Tekken 3 or Tekken Tag Tournament).
+    pub main: Part,
     /// Not known yet (the browser asks its worker).
     pub loading: bool,
     pub job: Option<JobView>,
@@ -128,6 +130,8 @@ pub enum Command {
     Import,
     /// Copy this text (the log) where the platform can.
     Copy(String),
+    /// Make this game the main one (then start it, when it can).
+    MainGame(Part),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -154,6 +158,7 @@ enum Act {
     ConvertAnyway,
     DropPending,
     Seen,
+    MainGame,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -186,6 +191,7 @@ pub fn part_title(p: Part) -> &'static str {
         Part::T2 => "TEKKEN 2",
         Part::Cs => "COUNTER-STRIKE",
         Part::Arcade => "TEKKEN 3 ARCADE",
+        Part::Ttt => "TEKKEN TAG TOURNAMENT",
     }
 }
 
@@ -195,6 +201,7 @@ fn part_about(p: Part) -> &'static str {
         Part::T2 => "PlayStation, USA v1.1. Its fighters join the roster, with their stages, music and endings. Optional.",
         Part::Cs => "Half-Life with Counter-Strike. Its levels become arenas, and two more Tekken Force stages. Optional.",
         Part::Arcade => "The arcade game (Namco System 12). Its 3D stages replace the PlayStation game's. Optional.",
+        Part::Ttt => "PlayStation 2, USA v2.00 (SLUS-20001). A game of its own: needed only as the main game.",
     }
 }
 
@@ -203,6 +210,7 @@ fn part_input(p: Part, folders: bool) -> &'static str {
         (Part::Cs, _) => "Choose the Half-Life folder (with cstrike/ and valve/).",
         (Part::Arcade, true) => "Choose the folder that holds its ROM set: MAME's tekken3.zip.",
         (Part::Arcade, false) => "Choose its ROM set: MAME's tekken3.zip.",
+        (Part::Ttt, false) => "Choose its disc image: the .cue (its .bin file beside it), .iso, .chd, or a .zip of it.",
         (_, true) => "Choose the folder that holds its disc image: .cue with its .bin files, .chd, .iso, .pbp, or a .zip or .7z of them.",
         _ => "Choose its disc image: the .cue (its .bin files beside it), .chd, .iso, .pbp, .ccd, .mds, .ecm, or a .zip, .7z, .tar, .gz, .xz or .zst of it.",
     }
@@ -216,6 +224,9 @@ pub fn missing_note(manifest: &serde_json::Value) -> Option<String> {
     let what = if rest.is_empty() { last.to_string() } else { format!("{} and {last}", rest.join(", ")) };
     Some(format!("Without {what}: the disc image did not hold them. Convert again from a full image (.cue with its .bin files, .chd, ...) to add them."))
 }
+
+/// Tekken Tag Tournament the main game, converted: what the game says, as it does not play it yet.
+pub const NOT_YET: &str = "Tekken Tag Tournament is converted; it is not playable in this version yet";
 
 pub fn gb(bytes: u64) -> String {
     format!("{:.1} GB", bytes as f64 / 1e9)
@@ -645,6 +656,7 @@ impl Screen {
             }
             Act::ConvertAnyway => self.commands.push(Command::ConvertAnyway),
             Act::DropPending => self.commands.push(Command::DropPending),
+            Act::MainGame => self.commands.push(Command::MainGame(if status.main == Part::T3 { Part::Ttt } else { Part::T3 })),
             Act::Seen => {
                 self.log = false;
                 self.commands.push(Command::Seen);
@@ -696,7 +708,7 @@ impl Screen {
                         let pv = &status.parts[part_index(p)];
                         let right = if pv.converted {
                             (if pv.note.is_some() { format!("{} · PARTLY", gb(pv.size)) } else { gb(pv.size) }, if pv.note.is_some() { ORANGE } else { GREEN })
-                        } else if p == Part::T3 {
+                        } else if p == status.main {
                             ("NEEDED".into(), ORANGE)
                         } else {
                             ("OPTIONAL".into(), GREY)
@@ -704,6 +716,10 @@ impl Screen {
                         Row { text: part_title(p).into(), on: !status.loading, act: Act::Part(p), right: Some(right) }
                     })
                     .collect();
+                // (a choice once Tekken Tag is converted: its owner may have no Tekken 3)
+                if status.parts[part_index(Part::Ttt)].converted {
+                    v.push(row(&format!("MAIN GAME: {}", part_title(status.main)), !busy && !status.loading, Act::MainGame));
+                }
                 if let Some(label) = status.can.import {
                     v.push(row(label, !busy && !picking && !status.loading, Act::Import));
                 }
@@ -854,6 +870,8 @@ impl Screen {
                     say(&painter, &mut y, "OpenKumite plays the games you own. It converts them once, here on this device, and keeps the result. Nothing is uploaded.", small, GREY);
                     if status.loading {
                         say(&painter, &mut y, "Looking at the game data…", small, WHITE);
+                    } else if status.main == Part::Ttt && status.parts[part_index(Part::Ttt)].converted {
+                        say(&painter, &mut y, &format!("{NOT_YET}."), small, ORANGE);
                     }
                 }
                 Page::Game(p) => {
@@ -893,6 +911,8 @@ impl Screen {
         if matches!(self.page, Page::Home) && status.job.is_none() && status.outcome.is_none() && status.pending.is_none() && !self.log {
             top = y + 8.0 * u;
         }
+        // (rows that would run under the hints: closer together)
+        let row_h = ((screen.bottom() - 34.0 * u - top) / n.max(1.0)).clamp(row_h * 0.5, row_h);
         self.hits.clear();
         let pulse = 0.75 + 0.25 * (t * 3.0).sin();
         for (k, r) in rows.iter().enumerate() {
@@ -1155,6 +1175,24 @@ mod tests {
         assert_eq!(s.page, Page::Game(Part::Cs));
     }
 
+    /// MAIN GAME once Tekken Tag is converted, with or without Tekken 3; it asks for the other one.
+    #[test]
+    fn the_main_game_row_switches_to_the_other_game() {
+        let mut s = Screen::new();
+        let mut st = status();
+        st.parts[0].converted = true;
+        assert!(!s.rows(&st).iter().any(|r| r.act == Act::MainGame), "Tekken 3 alone: no row");
+        st.parts[4].converted = true;
+        let k = s.rows(&st).iter().position(|r| r.act == Act::MainGame).unwrap();
+        assert_eq!(s.rows(&st)[k].text, "MAIN GAME: TEKKEN 3");
+        run(&mut s, &st);
+        s.focus = k;
+        s.key(&PhysicalKey::Code(KeyCode::Enter));
+        assert_eq!(run(&mut s, &st), vec![Command::MainGame(Part::Ttt)]);
+        st.parts[0].converted = false;
+        assert!(s.rows(&st).iter().any(|r| r.act == Act::MainGame), "Tekken Tag alone: the row");
+    }
+
     #[test]
     fn play_is_offered_only_when_the_game_can_start_and_quit_ends() {
         let mut s = Screen::new();
@@ -1285,6 +1323,11 @@ mod tests {
         shots.push(("7-failed", failed, vec![], false));
         shots.push(("8-home-converted", st.clone(), vec![], true));
         shots.push(("9-remove", st.clone(), vec![Nav::Down, Nav::Go, Nav::Down, Nav::Go], false));
+        let mut ttt = st.clone();
+        ttt.parts[4] = PartView { converted: true, size: 1_700_000_000, note: None };
+        ttt.main = Part::Ttt;
+        ttt.playable = false;
+        shots.push(("10-main-game", ttt, vec![], false));
         for (w, h, tag) in [(1280u32, 720u32, ""), (800, 360, "-phone")] {
             let mut r = kumite_render::Renderer::headless(w, h).unwrap();
             for (name, st, navs, hover) in &shots {

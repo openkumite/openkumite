@@ -565,10 +565,17 @@
       return { files: new Map([...map].map(([p, [at, n]]) => [p, typed(p, file, at, n)])), size: file.size };
     } catch (e) { return null; /* none (or no OPFS: a private window) */ }
   };
+  // the main game (the Game data screen's MAIN GAME, app/src/save.rs): 'ttt' Tekken Tag Tournament, else Tekken 3
+  const mainGame = () => { try { return localStorage.getItem('openkumite_game'); } catch { return null; } };
   // the conversion this browser keeps: the Tekken 3 pack (assets), and over it, once installed (convert_worker.js),
   // the Tekken 2 pack's assets/ and the extras (the packs installed: what they add to or change in it, and the whole's
-  // manifest.json); its files and size, or null
+  // manifest.json); with Tekken Tag Tournament the main game, its pack's assets/ alone; its files and size, or null
   const stored = async () => {
+    if (mainGame() === 'ttt') {
+      const ttt = await pack('ttt');
+      const files = new Map([...(ttt?.files ?? [])].filter(([p]) => p.startsWith('assets/')).map(([p, b]) => [p.slice(7), b]));
+      return files.has('manifest.json') ? { files, size: ttt.size } : null;
+    }
     const base = await pack('assets');
     if (!base?.files.has('manifest.json')) return null;
     const files = new Map(base.files);
@@ -747,15 +754,15 @@
   });
   // ---- the Game data screen's host in this page (app/src/gamedata/web.rs reads `okData.snapshot()` each frame and
   // calls the rest): the engine draws the screen; the page picks the files (hidden inputs #pick-t3, #pick-t2,
-  // #pick-cs, #pick-t3arcade; files dropped), checks the space, runs the converter (convert_worker.js) and keeps the job's log
+  // #pick-cs, #pick-t3arcade, #pick-ttt; files dropped), checks the space, runs the converter (convert_worker.js) and keeps the job's log
   const DISC_FILES = ['.cue', '.bin', '.iso', '.chd', '.ccd', '.img', '.mds', '.mdf', '.ecm', '.pbp', '.wav',
     '.zip', '.7z', '.tar', '.gz', '.tgz', '.xz', '.txz', '.zst', '.tzst'];
   const ARCHIVE = /\.(zip|7z|tar|gz|tgz|xz|txz|zst|tzst)$/i;
-  const NAMES = { t3: 'Tekken 3', t2: 'Tekken 2', cs: 'Counter-Strike', t3arcade: 'Tekken 3 arcade' };
-  const PARTS = ['t3', 't2', 'cs', 't3arcade'];
+  const NAMES = { t3: 'Tekken 3', t2: 'Tekken 2', cs: 'Counter-Strike', t3arcade: 'Tekken 3 arcade', ttt: 'Tekken Tag Tournament' };
+  const PARTS = ['t3', 't2', 'cs', 't3arcade', 'ttt'];
   // what a conversion writes (its pack and the extras it installs), and an archive's image unpacked
-  const NEEDED = { t3: 1.5e9, t2: 1.8e9, cs: 0.2e9, t3arcade: 0.03e9 };
-  const STORES = { t3: ['assets.pack', 'assets.idx'], t2: ['t2.pack', 't2.idx'], cs: ['cs.pack', 'cs.idx'], t3arcade: ['arcade.pack', 'arcade.idx'] };
+  const NEEDED = { t3: 1.5e9, t2: 1.8e9, cs: 0.2e9, t3arcade: 0.03e9, ttt: 1.7e9 };
+  const STORES = { t3: ['assets.pack', 'assets.idx'], t2: ['t2.pack', 't2.idx'], cs: ['cs.pack', 'cs.idx'], t3arcade: ['arcade.pack', 'arcade.idx'], ttt: ['ttt.pack', 'ttt.idx'] };
   const fileSize = async (name) => { try { return (await (await (await root()).getFileHandle(name)).getFile()).size; } catch { return 0; } };
   // the files picked or dropped for a part as [name, File]: a disc image's (the converter finds the image among
   // them), or the Half-Life folder's levels and textures by path below the folder
@@ -769,7 +776,7 @@
     ? all.filter(([p]) => /\.(bsp|wad)$/i.test(p)).map(([p, f]) => [p.split('/').slice(1).join('/') || p, f])
     : all.filter(([p]) => DISC_FILES.some((e) => p.toLowerCase().endsWith(e))).map(([p, f]) => [p.split('/').pop(), f]);
   const okData = window.okData = {
-    loading: true, state: null, sizes: { t3: 0, t2: 0, cs: 0, t3arcade: 0 },
+    loading: true, state: null, sizes: { t3: 0, t2: 0, cs: 0, t3arcade: 0, ttt: 0 },
     job: null, outcome: null, pending: null, picking: null, message: null,
     dropped: null, hovering: false, changed: false, open: false, worker: null,
     snapshot() {
@@ -778,7 +785,8 @@
       for (const p of PARTS) parts[p] = { converted: !!s?.[p], size: this.sizes[p], manifest: s?.[p] ?? null };
       const job = this.job && { kind: this.job.kind, part: this.job.part, seconds: (Date.now() - this.job.started) / 1000, log: this.job.log, cancelling: !!this.job.cancelling };
       return JSON.stringify({
-        loading: this.loading, parts, playable: !!(s?.t3 && s?.installed), job, outcome: this.outcome,
+        // (Tekken Tag Tournament does not play yet)
+        loading: this.loading, parts, playable: !!(s?.t3 && s?.installed) && mainGame() !== 'ttt', main: mainGame() === 'ttt' ? 'ttt' : 't3', job, outcome: this.outcome,
         pending: this.pending && { part: this.pending.part, image: this.pending.image, needed: this.pending.needed, free: this.pending.free },
         picking: this.picking, dropped: !!this.dropped, hovering: this.hovering, message: this.message, changed: this.changed,
       });
@@ -882,7 +890,7 @@
       const ok = !d.error;
       if (!(ok && j.kind !== 'convert')) {
         const done = { t3: 'Tekken 3 is converted: the game can start.', t2: 'Tekken 2 is converted: its fighters are in the roster.', cs: 'Counter-Strike is converted: its levels are arenas now.',
-          t3arcade: 'The arcade stages are converted: they replace the PlayStation ones (OPTION, GRAPHICS, STAGES chooses).' };
+          t3arcade: 'The arcade stages are converted: they replace the PlayStation ones (OPTION, GRAPHICS, STAGES chooses).', ttt: 'Tekken Tag Tournament is converted.' };
         const message = ok ? done[j.part] : d.cancelled ? (j.kind === 'convert' ? `${NAMES[j.part]} was not converted. Convert it again whenever you like.` : 'Stopped.')
           : d.quota ? 'Not enough space in this browser for that. Free some disk space, then try again.' : d.error;
         this.outcome = { kind: j.kind, part: j.part, ok, cancelled: !!d.cancelled, message, log: j.log };
@@ -915,7 +923,8 @@
     if (folder) local = await folderFiles(folder);
   } catch (e) { fail(`Cannot read the folder "${folder.name}" (${e.message}).`); }
   // no game data here yet: the game starts on its Game data screen (the engine's; this page its host: okData)
-  const noData = !local && !(serverAssets && (await fetch('assets/manifest.json', { method: 'HEAD' }).then((r) => r.ok, () => false)));
+  // (Tekken Tag Tournament the main game: it does not play yet)
+  const noData = mainGame() === 'ttt' || !local && !(serverAssets && (await fetch('assets/manifest.json', { method: 'HEAD' }).then((r) => r.ok, () => false)));
   window.okNoData = noData;
   okData.refresh();
   let preload = [];

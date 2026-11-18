@@ -3,16 +3,18 @@
 //! copy alone) are installed beside it into the extras, the files they add to or change in the base, with the whole's
 //! manifest.json. The game reads the extras over the packs' `assets/` over the base. The Tekken 3 arcade pack is
 //! not installed: its stages are files of its own (`assets/arcade/`), outside what the fingerprint covers, so the
-//! game data is the same for online play with it or without.
+//! game data is the same for online play with it or without. The Tekken Tag Tournament pack is a game of its own
+//! (its `assets/` its game root, [`Game::Ttt`]), never installed over Tekken 3.
 
 use anyhow::{Context, Result};
 use ok_converter_common::io::{Ctx, Layered, Sub, Vfs};
 use serde_json::{json, Value};
 
 /// The game data's parts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Part {
     /// Tekken 3: the game (required), the base.
+    #[default]
     T3,
     /// Tekken 2: its fighters (optional), a pack.
     T2,
@@ -20,10 +22,13 @@ pub enum Part {
     Cs,
     /// Tekken 3, the arcade game: its stages in place of the PlayStation game's (optional), a pack read as it is.
     Arcade,
+    /// Tekken Tag Tournament (PlayStation 2): a game of its own (needed when it is the main game), a pack.
+    Ttt,
 }
 
 impl Part {
-    pub const ALL: [Part; 4] = [Part::T3, Part::T2, Part::Cs, Part::Arcade];
+    /// (Tekken Tag Tournament last: the parts' indices before it hold)
+    pub const ALL: [Part; 5] = [Part::T3, Part::T2, Part::Cs, Part::Arcade, Part::Ttt];
     /// The packs with an `assets/` folder the game reads as it is, the first first.
     pub const LAYERED: [Part; 3] = [Part::T2, Part::Cs, Part::Arcade];
     /// The packs, in their install order (kumite_converter's: Counter-Strike's then Tekken 2's).
@@ -35,6 +40,7 @@ impl Part {
             Part::T2 => "Tekken 2",
             Part::Cs => "Counter-Strike",
             Part::Arcade => "Tekken 3 arcade",
+            Part::Ttt => "Tekken Tag Tournament",
         }
     }
 
@@ -45,6 +51,7 @@ impl Part {
             Part::T2 => ok_tekken2_converter::pack::KIND,
             Part::Cs => ok_hl_cs_converter::pack::KIND,
             Part::Arcade => ok_tekken3_arcade_converter::pack::KIND,
+            Part::Ttt => ok_tekken_tag_converter::pack::KIND,
         }
     }
 
@@ -58,6 +65,25 @@ impl Part {
             Part::T2 => ok_tekken2_converter::pack::manifest(pack).ok(),
             Part::Cs => ok_hl_cs_converter::pack::manifest(pack).ok(),
             Part::Arcade => ok_tekken3_arcade_converter::pack::manifest(pack).ok(),
+            Part::Ttt => ok_tekken_tag_converter::pack::manifest(pack).ok(),
+        }
+    }
+}
+
+/// The main game: the one the game plays (the Game data screen's MAIN GAME).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Game {
+    #[default]
+    T3,
+    Ttt,
+}
+
+impl Game {
+    /// Its part (its pack).
+    pub fn part(self) -> Part {
+        match self {
+            Game::T3 => Part::T3,
+            Game::Ttt => Part::Ttt,
         }
     }
 }
@@ -72,6 +98,7 @@ pub struct Manifests {
     pub t2: Option<Value>,
     pub cs: Option<Value>,
     pub arcade: Option<Value>,
+    pub ttt: Option<Value>,
 }
 
 impl Manifests {
@@ -81,6 +108,7 @@ impl Manifests {
             Part::T2 => self.t2.as_ref(),
             Part::Cs => self.cs.as_ref(),
             Part::Arcade => self.arcade.as_ref(),
+            Part::Ttt => self.ttt.as_ref(),
         }
     }
 
@@ -120,7 +148,7 @@ pub fn install(base: &dyn Vfs, packs: &[(Part, &dyn Vfs)], extras: &dyn Vfs, log
         match part {
             Part::T2 => m.t2 = man,
             Part::Cs => m.cs = man,
-            Part::T3 | Part::Arcade => {}
+            Part::T3 | Part::Arcade | Part::Ttt => {}
         }
     }
     let Some(t3) = m.t3.clone() else { return Ok(()) };
@@ -146,7 +174,7 @@ pub fn install(base: &dyn Vfs, packs: &[(Part, &dyn Vfs)], extras: &dyn Vfs, log
                 ok_tekken2_converter::pack::install(&ctx, p).context("Tekken 2")?;
                 installed.insert("t2".into(), man["source"].clone());
             }
-            Part::T3 | Part::Arcade => {}
+            Part::T3 | Part::Arcade | Part::Ttt => {}
         }
     }
     // the base's manifest with the packs (as kumite_converter wrote it with extras) and what they were installed from;

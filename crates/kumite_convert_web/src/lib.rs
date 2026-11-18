@@ -2,13 +2,14 @@
 //! files, picked on the page, read by id through functions the worker gives (`okc_*` on its global scope); each part
 //! into its pack, two files kept in the site's storage (OPFS, through sync access handles): the Tekken 3 pack
 //! (assets.pack, assets.idx: the base, as the page has always kept it), the Tekken 2 and Counter-Strike packs
-//! (t2.*, cs.*), the extras (extras.*: the packs installed, kumite_packs) and the arcade stages' pack (arcade.*: not
-//! installed). The page reads the arcade pack's `assets/`, and the extras over the Tekken 2 pack's `assets/`, over
-//! the base (index.html's `stored`).
+//! (t2.*, cs.*), the extras (extras.*: the packs installed, kumite_packs), the arcade stages' pack (arcade.*: not
+//! installed) and the Tekken Tag Tournament pack (ttt.*: a game of its own). The page reads the arcade pack's
+//! `assets/`, and the extras over the Tekken 2 pack's `assets/`, over the base (index.html's `stored`); with Tekken Tag
+//! Tournament the main game, its pack's `assets/` alone.
 //!
 //! The stores, by number: 0, 1 the base's pack and index; 2, 3 Tekken 2's; 4, 5 Counter-Strike's; 6, 7 the extras';
 //! 8 the scratch file an archive (.zip, .7z, ...) is unpacked into while a job converts (emptied after it); 9, 10
-//! the arcade stages' pack and index.
+//! the arcade stages' pack and index; 11, 12 Tekken Tag Tournament's.
 
 use anyhow::{anyhow, bail, Context, Result};
 use kumite_packs::Part;
@@ -155,6 +156,7 @@ fn pack(part: Option<Part>) -> Result<PackVfs> {
         Some(Part::Cs) => 4,
         // (store 8 is the scratch file)
         Some(Part::Arcade) => 9,
+        Some(Part::Ttt) => 11,
         None => 6,
     };
     PackVfs::open(Box::new(Opfs(first)), Box::new(Opfs(first + 1)))
@@ -169,7 +171,7 @@ fn start() {
     std::panic::set_hook(Box::new(|info| okc_panic(&info.to_string())));
 }
 
-/// Runs a job: `options` is JSON, `{"job": "convert", "part": "t3" | "t2" | "cs" | "t3arcade", "files": [[path, id], ...]
+/// Runs a job: `options` is JSON, `{"job": "convert", "part": "t3" | "t2" | "cs" | "t3arcade" | "ttt", "files": [[path, id], ...]
 /// (the picked files: a disc image's, by name, the image found among them; Counter-Strike: the folder's, by path below
 /// it; the arcade ROM set: its .zip alone, or its files by name), "now": "YYYY-MM-DD HH:MM:SS"}`, `{"job": "remove", "part": ...}` or `{"job": "install"}`; then the packs
 /// installed again. The state after it ([`state`]'s).
@@ -178,7 +180,7 @@ pub fn run(options: &str) -> Result<String, String> {
     job(options).map_err(|e| format!("{e:#}"))
 }
 
-/// The game data's state, JSON: `{"t3": manifest | null, "t2": ..., "cs": ..., "t3arcade": ..., "installed": bool, "fingerprint":
+/// The game data's state, JSON: `{"t3": manifest | null, "t2": ..., "cs": ..., "t3arcade": ..., "ttt": ..., "installed": bool, "fingerprint":
 /// the game's (the extras' when installed, else the base's)}`.
 #[wasm_bindgen]
 pub fn state() -> Result<String, String> {
@@ -187,7 +189,7 @@ pub fn state() -> Result<String, String> {
 
 fn manifests() -> Result<kumite_packs::Manifests> {
     let m = |p: Part| -> Result<Option<Value>> { Ok(p.manifest(&pack(Some(p))?)) };
-    Ok(kumite_packs::Manifests { t3: m(Part::T3)?, t2: m(Part::T2)?, cs: m(Part::Cs)?, arcade: m(Part::Arcade)? })
+    Ok(kumite_packs::Manifests { t3: m(Part::T3)?, t2: m(Part::T2)?, cs: m(Part::Cs)?, arcade: m(Part::Arcade)?, ttt: m(Part::Ttt)? })
 }
 
 fn state_json() -> Result<Value> {
@@ -195,7 +197,7 @@ fn state_json() -> Result<Value> {
     let extras = pack(None)?;
     let installed = m.installed(&extras);
     let manifest: Option<Value> = if m.has_packs() && installed { serde_json::from_slice(&extras.read("manifest.json")?).ok() } else { m.t3.clone() };
-    Ok(json!({"t3": m.t3, "t2": m.t2, "cs": m.cs, "t3arcade": m.arcade, "installed": installed,
+    Ok(json!({"t3": m.t3, "t2": m.t2, "cs": m.cs, "t3arcade": m.arcade, "ttt": m.ttt, "installed": installed,
               "fingerprint": manifest.as_ref().and_then(|v| v["fingerprint"].as_str())}))
 }
 
@@ -207,7 +209,7 @@ fn job(options: &str) -> Result<String> {
             let part = part(o["part"].as_str().unwrap_or_default())?;
             let file = |f: &Value| Some((f.get(0)?.as_str()?.to_string(), f.get(1)?.as_u64()? as u32));
             let files: BTreeMap<String, u32> = o["files"].as_array().into_iter().flatten().filter_map(file).collect();
-            // a disc image among the files picked (Tekken 3, Tekken 2)
+            // a disc image among the files picked (Tekken 3, Tekken 2, Tekken Tag Tournament)
             let disc = || -> Result<Disc> {
                 let picked = Picked(files.clone());
                 let image =
@@ -252,6 +254,10 @@ fn job(options: &str) -> Result<String> {
                         };
                         ok_tekken3_arcade_converter::pack::convert(&ctx, roms.as_ref())?;
                     }
+                    Part::Ttt => {
+                        let disc = disc()?;
+                        ok_tekken_tag_converter::pack::convert(&ctx, disc.data()?)?;
+                    }
                 }
                 Ok(())
             })();
@@ -272,8 +278,8 @@ fn job(options: &str) -> Result<String> {
         "install" => {}
         other => bail!("no job {other:?}"),
     }
-    // (the arcade pack is not installed: nothing of the extras changes with it)
-    if o["part"] == Part::Arcade.kind() {
+    // (the arcade and Tekken Tag Tournament packs are not installed: nothing of the extras changes with them)
+    if o["part"] == Part::Arcade.kind() || o["part"] == Part::Ttt.kind() {
         return Ok(state_json()?.to_string());
     }
     let base = pack(Some(Part::T3))?;

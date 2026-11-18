@@ -15,7 +15,8 @@ pub fn find(args: &[String], env: &dyn Fn(&str) -> Option<OsString>, exe: Option
         return given("OPENKUMITE_ASSETS", &dir, env);
     }
     let places = places(env, exe, os);
-    if let Some(dir) = places.iter().find(|d| d.join("manifest.json").is_file()) {
+    // (a place with Tekken Tag Tournament's pack alone holds game data too)
+    if let Some(dir) = places.iter().find(|d| d.join("manifest.json").is_file() || crate::packs::dir(crate::packs::Part::Ttt, d).join("manifest.json").is_file()) {
         return Ok(dir.clone());
     }
     let list: String = places.iter().map(|d| format!("\n  {}", d.display())).collect();

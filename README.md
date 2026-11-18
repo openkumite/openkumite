@@ -42,6 +42,11 @@ copied; the space it needs is checked before it starts. Choose:
 | Tekken 2 (PlayStation, USA v1.1) | its disc image | its fighters in the roster (optional) |
 | Counter-Strike (Half-Life) | the Half-Life folder, with `cstrike/` and `valve/` | its levels as arenas, two more Tekken Force stages (optional) |
 | Tekken 3 arcade (Namco System 12) | its ROM set: MAME's `tekken3.zip`, or the folder of its files | its 13 stages, 3D models, in place of the PlayStation game's panoramas (optional) |
+| Tekken Tag Tournament (PlayStation 2, USA v2.00, SLUS-20001) | its disc image | a game of its own (needed only as the main game; not playable yet) |
+
+With both Tekken 3 and Tekken Tag Tournament converted, the screen's MAIN GAME row chooses which one the game plays
+(kept as `openkumite_game` beside the save; none is Tekken 3). Each keeps its own records: Tekken Tag Tournament's in
+`openkumite_save_ttt.json`. This version converts Tekken Tag Tournament but does not play it yet.
 
 With the arcade stages converted, OPTION, GRAPHICS, STAGES chooses ARCADE or PLAYSTATION (`--stages arcade|ps`). They
 only change what is drawn: the fingerprint, online play and replays are the same with them or without. Each has the
@@ -68,6 +73,7 @@ be added, converted again or removed later. In the game data's folder:
 manifest.json, characters/, stages/, ...   the Tekken 3 pack (as kumite_converter wrote it)
 packs/t2/, packs/cs/                       the Tekken 2 and Counter-Strike packs (each from its own copy alone)
 packs/t3arcade/                            the arcade stages (read as they are: `assets/arcade/`, not installed)
+packs/ttt/                                 Tekken Tag Tournament (a game of its own: its `assets/` its game data)
 extras/                                    the packs installed: what they add to or change in Tekken 3's
 ```
 
