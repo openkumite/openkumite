@@ -3017,7 +3017,9 @@ impl App {
         let Some(data) = self.force_data.clone() else { return };
         let c = &self.roster.characters[player.0];
         let model = c.costumes[player.1.min(c.costumes.len() - 1)];
-        let selection = c.id * 4 + self.roster.costume_of.get(&model).copied().unwrap_or(0);
+        // (Tekken Tag's selections: body x 8 + costume, as the slice's boss routes are)
+        let stride = if self.roster.ttt.is_some() { 8 } else { 4 };
+        let selection = c.id * stride + self.roster.costume_of.get(&model).copied().unwrap_or(0);
         let drb = false;
         self.force = Some(forcerun::ForceRun::new(data, player, selection, c.id, difficulty, self.records.force_keys, self.records.force_hiscore, drb));
     }
@@ -3790,7 +3792,7 @@ impl App {
         let name = c.name.clone();
         // the player's music; the final stage its own
         if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
-            let own = self.roster.music_of(c.id, 0).and_then(|b| sound.music(b));
+            let own = self.roster.music_of(c.id, 0).and_then(|b| sound.music(b)).or_else(|| ttt::theme(self.roster.ttt.as_deref(), sound, &name));
             audio.music(if i == data.final_index() { sound.music(data.constants.last.bgm) } else { own.or_else(|| sound.music_for(&name)) });
         }
         let models = [player_model, bout.game.bodies[1].model_record];
@@ -3800,7 +3802,8 @@ impl App {
         let num = |k: &str| t[k].as_f64().unwrap_or(0.0);
         let text = art::printf(t["text"].as_str().unwrap_or_default(), &[number.map_or(0, |n| n as u32 + 1)]);
         let intro = (text, num("font") as usize, num("colour") as u32, num("x") as f32, num("y") as f32);
-        let info = HudInfo { models, names: names.clone(), humans: [true, false], hidden: true, intro: Some(intro), no_result: true, ..Default::default() };
+        // (Tekken Tag: the run's HUD in its pictures, forcerun's)
+        let info = HudInfo { models, names: names.clone(), humans: [true, false], hidden: true, intro: Some(intro), no_result: true, ttt: self.roster.ttt.clone(), ..Default::default() };
         self.hud.reset(&info);
         self.scene = Some(scene);
         self.vfx = Some(kumite_game::vfx::Vfx::new(&self.assets));
@@ -3969,7 +3972,7 @@ impl App {
                 }
                 kumite_game::force::ForceEvent::Boss(ch, _) => {
                     if let (Some(audio), Some(sound), Some(c)) = (self.audio.as_mut(), self.sound.as_ref(), self.roster.by_id(ch)) {
-                        audio.music(self.roster.music_of(ch, 0).and_then(|b| sound.music(b)).or_else(|| sound.music_for(&c.name)));
+                        audio.music(self.roster.music_of(ch, 0).and_then(|b| sound.music(b)).or_else(|| ttt::theme(self.roster.ttt.as_deref(), sound, &c.name)).or_else(|| sound.music_for(&c.name)));
                     }
                 }
                 _ => {}
@@ -4015,7 +4018,11 @@ impl App {
                     leaving: false,
                 };
                 self.force = None;
-                self.screen = Some(Screen::ForceResults(Box::new(r)));
+                // (Tekken Tag: its message page, the run's score)
+                self.screen = Some(match self.roster.ttt {
+                    Some(_) => ttt_message(vec!["TEKKEN FORCE".into(), format!("SCORE {}", r.score)]),
+                    None => Screen::ForceResults(Box::new(r)),
+                });
             }
             return;
         }
@@ -4027,7 +4034,10 @@ impl App {
         self.force = None;
         self.fight = None;
         self.scene = None;
-        self.screen = Some(Screen::GameOver { frames: 0 });
+        self.screen = Some(match self.roster.ttt {
+            Some(_) => ttt_message(vec!["GAME OVER".into(), format!("SCORE {score}")]),
+            None => Screen::GameOver { frames: 0 },
+        });
     }
 
     /// The HUD of a run's fight: the under-bar kinds per side, the intro text, the team icons.
@@ -5062,7 +5072,7 @@ impl App {
                             let window = ctx.content_rect();
                             let project = |m: glam::Vec3| project_point(&cam, size, window, &view, m);
                             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("force_hud"))).with_clip_rect(view.rect);
-                            run.draw(&painter, &view, art, hud, roster, &f.bout.game, frames, &project);
+                            run.draw(&painter, &view, art, hud, roster, &f.bout, frames, &project);
                         }
                         if let Some(p) = &f.practice {
                             let view = art::Screen::fit(ctx.content_rect());
@@ -5650,6 +5660,11 @@ fn stage_lights(gd: &Path) -> std::collections::HashMap<usize, (Option<kumite_re
             Some((id, (Some(light), Some(shadow), Some(blob))))
         })
         .collect()
+}
+
+/// Tekken Tag's message page (back to its main menu).
+fn ttt_message(lines: Vec<String>) -> Screen {
+    Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, title: false }, frame: 0 }))
 }
 
 /// The stage's light and the fighters' shadows on a camera.

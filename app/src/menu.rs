@@ -734,6 +734,7 @@ impl Roster {
                     _ => Vec::new(),
                 },
                 ball_court,
+                kumite_fs::exists(&gamedata.join("force.json")),
             ),
         }
     }
@@ -1714,7 +1715,7 @@ impl Screen {
                 let t = crate::modes::Text::from(&art.screens["hud"]["continue"]["game_over"]);
                 art.text(&painter, &v, t.font, t.colour, t.x, t.y, &roster.ui.game_over, Color32::WHITE)
             }
-            Screen::Versus { setup, frame, extra, .. } if roster.ttt.is_some() => crate::ttt::draw_vs(&painter, &v, art, roster, setup, extra.bench, *frame),
+            Screen::Versus { setup, frame, extra, .. } if roster.ttt.is_some() => crate::ttt::draw_vs(&painter, &v, art, roster, setup, extra, *frame),
             Screen::Versus { setup, frame, number, extra, .. } => draw_versus(&painter, &v, art, roster, setup, *frame, *number, extra),
             Screen::Results(r) => r.draw(&painter, &v, art, roster),
             Screen::ForceResults(r) => r.draw(&painter, &v, art, roster),

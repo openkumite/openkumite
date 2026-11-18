@@ -193,3 +193,21 @@ and the side's charge grows by damage x the ball's percent. Tekken Tag's moves c
 masks), so its fighters' power is their own moves' damage; Gon's and Doctor B.'s are Tekken 3's moves. Test:
 `kumite_game --test crossover ball_under_tekken_tag`. Not done: the ball type (BEACH only; Tekken 3 picks it on its
 select), Tekken 3's gauge sprites and its CPU opponent draw (Tekken Tag's front end draws the CPU), 2 ON 2.
+
+## Tekken Force (Tekken 3's, with the Tekken 3 slice)
+
+The slice installs Crow (Tekken 3's character 21, Force's soldiers) as a crossover fighter in no select (body 36,
+move set 34: Gon's renumbering, so Tekken Tag's fighters hit it and it hits them with each other's reactions), and
+Tekken 3's `gamedata/force.json` in Tekken Tag's numbers: the stages 15-18 as arenas 24-27 (their lights in a
+`stages.json` of their own: the blob shadows' colour), the soldiers' selection Crow's (36 x 8), the bosses and the
+final character (Doctor B., 35) as Tekken Tag's bodies of the same name, the boss routes by Tekken Tag's selection
+(body x 8 + costume), the final stage's music a new BGM, the chicken's, countdown and tally sounds a group of new ids
+(`SoundData::system` plays them), the chickens' pictures. TEKKEN FORCE (OpenKumite's entry, before OPTIONS) shows
+only with it; its select's one pick runs the game's Force (`kumite_game::force`, the app's `forcerun`) as Tekken 3
+does, one player, no tag (OpenKumite's co-op, 2P's START, carries over). Its VS screen is the stage card, its HUD
+`ttt::force_hud` (Tekken Tag's strips and chrome font: the bars, the score, the clock, the popups, STAGE CLEAR!!
+and the tally), its end Tekken Tag's message page (the score, or GAME OVER). The stage music is the arena named
+after the player (Tekken 3 plays the player's theme; Tekken Tag's fighters have none). Test:
+`kumite_game --test crossover force_under_tekken_tag`. Not done: Tekken 3's HUD sprites (keys, name plates, the
+progress map), the results screen, a Tekken Tag fighter without a Tekken 3 namesake has the route of Tekken 3's
+character body % 14.
