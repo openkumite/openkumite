@@ -204,14 +204,20 @@ pub fn ttt_installed(game: &dyn Vfs, base: &dyn Vfs, extras: &dyn Vfs) -> bool {
 }
 
 /// Installs Tekken Tag Tournament's extras (read over its game root `game`) into `extras`, emptied first: what the
-/// Tekken 3 pack (`base`) brings to it, and the whole's manifest.json (the game root's, with what it was installed
-/// from). Nothing without Tekken Tag's game root.
-// shortcut: no Tekken 3 slice yet (Gon, Doctor B., Force, Ball): the extras are the manifest alone, so the
-// fingerprint stays Tekken Tag's own; take the view's (as `install` does) once they hold files
+/// Tekken 3 pack (`base`) brings to it (Gon and Doctor B.: ok_tekken3_converter's `ttt`), and the whole's
+/// manifest.json (the game root's, with what it was installed from, and the fingerprint of the view: the extras over
+/// the game root). Nothing without Tekken Tag's game root; the manifest alone (the game root's fingerprint) without
+/// the Tekken 3 pack's fighters.
 pub fn install_ttt(game: &dyn Vfs, base: &dyn Vfs, extras: &dyn Vfs, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
     extras.remove_all("")?;
     let Some(Value::Object(mut manifest)) = game.read("manifest.json").ok().and_then(|b| serde_json::from_slice(&b).ok()) else { return Ok(()) };
     log(&format!("[install] {}", Part::Ttt.name()));
+    if Part::T3.manifest(base).is_some() && base.exists("gamedata/roster.json") {
+        let view = Layered { top: extras, below: vec![game] };
+        ok_tekken3_converter::ttt::install(&Ctx { out: &view, log, jobs: 1 }, base).context("Tekken 3's fighters in Tekken Tag Tournament")?;
+        log("[install] the fingerprint");
+        manifest.insert("fingerprint".into(), json!(ok_tekken_tag_converter::assets::fingerprint(&view)?));
+    }
     manifest.insert("installed".into(), ttt_stamp(game, base));
     extras.write("manifest.json", serde_json::to_string_pretty(&Value::Object(manifest))?.as_bytes())?;
     Ok(())

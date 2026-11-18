@@ -19,6 +19,9 @@ kumite_sim.workspace = true
 
 [dev-dependencies]
 png.workspace = true
+# the crossover's test installs Tekken Tag's extras
+kumite_packs.workspace = true
+ok_converter_common = { git = "https://github.com/openkumite/ok_converter_common", branch = "main", default-features = false }
 
 [lints]
 workspace = true
