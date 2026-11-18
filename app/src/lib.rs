@@ -5621,7 +5621,9 @@ fn stage_lights(gd: &Path) -> std::collections::HashMap<usize, (Option<kumite_re
                 let sh = s.get("shadow")?;
                 let t = &sh["toward"];
                 let toward = glam::Vec3::new(f(&t[0]), f(&t[1]), f(&t[2])).normalize_or_zero();
-                return Some((id, (None, Some(kumite_render::Shadow { toward, floor: 0.0, colour: rgb(&sh["colour"]) }), None)));
+                // (Tekken Tag's: the floor darkened by its `alpha`)
+                let alpha = sh["alpha"].as_f64().map(|a| a.clamp(0.0, 1.0) as f32);
+                return Some((id, (None, Some(kumite_render::Shadow { toward, floor: 0.0, colour: rgb(&sh["colour"]), alpha }), None)));
             };
             let amb = (l["ambient"].as_u64()? >> 4) as f32 / 256.0;
             let key = &l["key_color_rgb"];
@@ -5638,7 +5640,7 @@ fn stage_lights(gd: &Path) -> std::collections::HashMap<usize, (Option<kumite_re
             let turn = |v: f32| v * std::f32::consts::TAU / 4096.0;
             let (b, a) = (turn(f(&sa[0])), turn(f(&sa[1])));
             // (the game's axes to the metres': y up, z flipped)
-            let shadow = kumite_render::Shadow { toward: glam::Vec3::new(a.cos() * b.cos(), b.sin(), -(a.sin() * b.cos())), floor: 0.0, colour: rgb(&l["unknown_10"]) };
+            let shadow = kumite_render::Shadow { toward: glam::Vec3::new(a.cos() * b.cos(), b.sin(), -(a.sin() * b.cos())), floor: 0.0, colour: rgb(&l["unknown_10"]), alpha: None };
             let blob = [0, 1, 2].map(|k| l["unknown_18"][k].as_u64().unwrap_or(0) as u8);
             Some((id, (Some(light), Some(shadow), Some(blob))))
         })

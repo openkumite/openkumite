@@ -78,7 +78,7 @@ pub struct SkinVertex {
 }
 
 /// The fighters' shadows (0x8003AFCC): each fighter's shadow mesh moved along the light onto the floor, drawn in
-/// one opaque colour after the stage, before the fighters.
+/// one opaque colour after the stage, before the fighters; or (Tekken Tag's, 0x340E28) the floor under it darkened.
 #[derive(Clone, Copy, Debug)]
 pub struct Shadow {
     /// Towards the light (metres' axes, y up): the shadow falls the other way.
@@ -87,6 +87,9 @@ pub struct Shadow {
     pub floor: f32,
     /// sRGB.
     pub colour: Vec3,
+    /// Tekken Tag's: the floor darkened by this much (0-1, of its displayed colour) once under each fighter's
+    /// shadow, however its triangles overlap (the game draws the silhouette into a picture first); None: opaque.
+    pub alpha: Option<f32>,
 }
 
 /// A stage's light for the fighters (the original's per-stage table 0x80096C78, NCCS): the ambient, the key light's
@@ -357,6 +360,9 @@ pub struct Renderer {
     skinned_blend_pipeline: wgpu::RenderPipeline,
     /// The fighters' shadows.
     shadow_pipeline: wgpu::RenderPipeline,
+    /// Tekken Tag's shadows: the frame's alpha set to the factor under one fighter's shadow, then the colour times it.
+    shadow_mask_pipeline: wgpu::RenderPipeline,
+    shadow_darken_pipeline: wgpu::RenderPipeline,
     /// Force's blob shadows: the floor darkened (the original hardware's subtraction).
     blob_pipeline: wgpu::RenderPipeline,
     /// This frame's blob shadows ([`Renderer::set_blob_shadows`]).
@@ -621,6 +627,13 @@ impl Renderer {
         // shadows: opaque, depth-tested against the stage (the original sorts them behind what stands nearer), never
         // written
         let shadow_pipeline = make("shadows", &skinned_layout, "vs_shadow", "fs_shadow", &skin_vb, false, true, tri, None);
+        // (the alpha replaced, the colour kept; then the colour times that alpha, the alpha back to 1: overlapping
+        // triangles darken once)
+        let replace = wgpu::BlendComponent::REPLACE;
+        let shadow_mask_pipeline = make("shadow mask", &skinned_layout, "vs_shadow_near", "fs_shadow", &skin_vb, false, true, tri, Some(wgpu::BlendState { color: keep, alpha: replace }));
+        let by_mask = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::DstAlpha, operation: wgpu::BlendOperation::Add };
+        let shadow_darken_pipeline =
+            make("shadow darken", &skinned_layout, "vs_shadow_near", "fs_shadow_darken", &skin_vb, false, true, tri, Some(wgpu::BlendState { color: by_mask, alpha: replace }));
         // blobs: the frame times the fragment's factor
         let times = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::Src, operation: wgpu::BlendOperation::Add };
         let blob_pipeline = make("blob shadows", &static_layout, "vs_world", "fs_blob", &static_vb, false, true, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
@@ -650,6 +663,8 @@ impl Renderer {
             skinned_pipeline,
             skinned_blend_pipeline,
             shadow_pipeline,
+            shadow_mask_pipeline,
+            shadow_darken_pipeline,
             blob_pipeline,
             blobs: Vec::new(),
             static_pipeline,
@@ -1067,7 +1082,8 @@ impl Renderer {
             shadow_colour: cam.shadow.map_or([0.0; 4], |s| {
                 // sRGB to the frame's linear colour
                 let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
-                [lin(s.colour.x), lin(s.colour.y), lin(s.colour.z), 1.0]
+                // (Tekken Tag's: the factor left of the displayed colour, as the linear frame's)
+                [lin(s.colour.x), lin(s.colour.y), lin(s.colour.z), s.alpha.map_or(1.0, |a| lin(1.0 - a))]
             }),
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
@@ -1225,16 +1241,20 @@ impl Renderer {
             let mut pass = begin(&mut enc, pass_desc("characters", false));
             pass.set_bind_group(0, &self.globals_group, &[]);
             // the shadows first, on the floor under the fighters
-            if cam.shadow.is_some_and(|s| s.toward.y > 0.05) {
-                pass.set_pipeline(&self.shadow_pipeline);
+            if let Some(s) = cam.shadow.filter(|s| s.toward.y > 0.05) {
+                let (darken, opaque) = ([&self.shadow_mask_pipeline, &self.shadow_darken_pipeline], [&self.shadow_pipeline]);
+                let pipelines: &[&wgpu::RenderPipeline] = if s.alpha.is_some() { &darken } else { &opaque };
                 for m in models {
                     let Some((vbuf, ibuf, count)) = &m.shadow else { continue };
                     pass.set_bind_group(1, m.texture.group(smooth), &[]);
                     pass.set_bind_group(2, &m.bones_group, &[]);
                     pass.set_vertex_buffer(0, vbuf.slice(..));
                     pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..*count, 0, 0..1);
-                    stats.draw_calls += 1;
+                    for &p in pipelines {
+                        pass.set_pipeline(p);
+                        pass.draw_indexed(0..*count, 0, 0..1);
+                        stats.draw_calls += 1;
+                    }
                 }
             }
             if let (Some((buf, n)), Some(white)) = (&blob_buf, self.white.as_ref()) {

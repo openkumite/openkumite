@@ -63,6 +63,11 @@ fn vs_skinned(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
 @vertex
 fn vs_shadow(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
              @location(2) joints: vec4<u32>, @location(3) weights: vec4<f32>, @location(4) normal: vec3<f32>) -> VsOut {
+    return shadow_vertex(pos, uv, joints, weights);
+}
+
+// A shadow mesh's vertex skinned and moved along the light onto the floor's plane.
+fn shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, joints: vec4<u32>, weights: vec4<f32>) -> VsOut {
     let skin = weights.x * bones[joints.x] + weights.y * bones[joints.y]
              + weights.z * bones[joints.z] + weights.w * bones[joints.w];
     var p = (skin * vec4(pos, 1.0)).xyz;
@@ -77,9 +82,30 @@ fn vs_shadow(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
     return o;
 }
 
+// Tekken Tag's shadow: on the plane as `vs_shadow`, drawn 0.3 m nearer the camera along the line of sight (the same
+// place on screen): its floors rise and fall that much about the plane, and the game lays the shadow on the floor's
+// own triangles (0x342128).
+// shortcut: the plane goes on past the floor's edge (a raised ring's shadow can hang over the drop); lay the shadow
+// on the stage's floor triangles to end it there
+@vertex
+fn vs_shadow_near(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
+                  @location(2) joints: vec4<u32>, @location(3) weights: vec4<f32>, @location(4) normal: vec3<f32>) -> VsOut {
+    var o = shadow_vertex(pos, uv, joints, weights);
+    let v = o.world - g.eye.xyz;
+    let p = g.eye.xyz + v * max(1.0 - 0.3 / max(length(v), 0.001), 0.0);
+    o.clip = g.view_proj * vec4(p, 1.0);
+    return o;
+}
+
 @fragment
 fn fs_shadow(i: VsOut) -> @location(0) vec4<f32> {
     return g.shadow_colour;
+}
+
+// Tekken Tag's shadow, second pass: the frame times the alpha the first pass left; the alpha back to 1.
+@fragment
+fn fs_shadow_darken(i: VsOut) -> @location(0) vec4<f32> {
+    return vec4(1.0);
 }
 
 // World-space triangles (metres), not moved with the floor.
