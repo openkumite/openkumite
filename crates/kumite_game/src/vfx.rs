@@ -13,6 +13,10 @@
 //!   attacker's own character spark and its **hit light** (the fighters lit in the attacker's colour, fading over
 //!   48 frames).
 //!
+//! Tekken Tag's effects (effects.json `bursts`, its 0x3A2758) are bursts instead: a particle on each of its set's
+//! paths (a frame each: the position from where the effect starts, the quad's size, its fade), the guard's on paths
+//! drawn at random.
+//!
 //! Moves fire effects with timed properties: shakes (ops 1-3), a ground impact (op 4), the own / other character
 //! spark (ops 6 / 7) and the red / pink / dust sprites (ops 8 / 9 / 0xA) at a bone.
 
@@ -45,6 +49,27 @@ pub struct CharSpark {
     pub light: [f32; 3],
 }
 
+/// A burst's set (effects.json `bursts`): its atlas cell, its particles' size (metres at size 1) and brightness,
+/// whether each particle takes a path at random, the paths (frames of x, y, z in metres, the size, the fade).
+#[derive(Clone, Debug, Default)]
+pub struct BurstSet {
+    pub cell: u32,
+    pub size: f32,
+    pub level: f32,
+    pub random: bool,
+    pub paths: Arc<Vec<Vec<[f32; 5]>>>,
+}
+
+/// A burst playing: where it started, the set, the path each particle follows, its age in frames.
+#[derive(Clone, Debug)]
+pub struct Burst {
+    pub origin: Vec3,
+    pub set: BurstSet,
+    pub blend: Blend,
+    pub paths: Vec<usize>,
+    pub age: usize,
+}
+
 /// effects.json.
 #[derive(Clone, Debug, Default)]
 pub struct EffectsData {
@@ -59,6 +84,8 @@ pub struct EffectsData {
     pub characters: HashMap<usize, CharSpark>,
     /// Ground impact puff offsets (metres, world).
     pub ground: Vec<Vec3>,
+    /// Tekken Tag's bursts by strip name (spark, zero, block, dust), drawn in those strips' place.
+    pub bursts: HashMap<String, BurstSet>,
 }
 
 impl EffectsData {
@@ -83,6 +110,18 @@ impl EffectsData {
                 Vec3::new(k(0), -k(1), -k(2)) // game space (y down, z away) -> world
             })
             .collect();
+        let bursts = v["bursts"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(name, b)| {
+                let f = |x: &serde_json::Value| x.as_f64().unwrap_or(0.0) as f32;
+                let frame = |x: &serde_json::Value| [0, 1, 2, 3, 4].map(|k| f(&x[k]));
+                let paths = b["paths"].as_array().into_iter().flatten().map(|p| p.as_array().into_iter().flatten().map(frame).collect()).collect();
+                let set = BurstSet { cell: b["cell"].as_u64().unwrap_or(0) as u32, size: f(&b["size"]), level: f(&b["level"]), random: b["random"].as_bool().unwrap_or(false), paths: Arc::new(paths) };
+                (name.clone(), set)
+            })
+            .collect();
         Some(Self {
             cols: v["atlas"]["cols"].as_u64()? as u32,
             rows: v["atlas"]["rows"].as_u64()? as u32,
@@ -93,6 +132,7 @@ impl EffectsData {
             heavy: [cells(&v["strips"]["heavy_a"]["cells"]), cells(&v["strips"]["heavy_b"]["cells"])],
             characters,
             ground,
+            bursts,
         })
     }
 }
@@ -169,6 +209,7 @@ pub struct Vfx {
     pub grounds: [Option<Ground>; 3],
     next_ground: usize,
     pub particles: Vec<Particle>,
+    pub bursts: Vec<Burst>,
     /// The hit light: colour and frames left (0x80039F0C), and where it is.
     pub light: Option<([f32; 3], u32, Vec3)>,
     /// Camera shake scripts (camera.json `shake`: pitch offsets per frame).
@@ -191,7 +232,20 @@ impl Vfx {
         if data.is_none() {
             log::warn!("no pictures/effects/effects.json: no hit sparks (convert with export_effects)");
         }
-        Self { data, slots: [None, None, None], next: 0, grounds: [None, None, None], next_ground: 0, particles: Vec::new(), light: None, scripts, shake: None, seed: 1, slots_joints }
+        Self {
+            data,
+            slots: [None, None, None],
+            next: 0,
+            grounds: [None, None, None],
+            next_ground: 0,
+            particles: Vec::new(),
+            bursts: Vec::new(),
+            light: None,
+            scripts,
+            shake: None,
+            seed: 1,
+            slots_joints,
+        }
     }
 
     /// PsyQ `rand()`.
@@ -220,6 +274,7 @@ impl Vfx {
         self.slots = [None, None, None];
         self.grounds = [None, None, None];
         self.particles.clear();
+        self.bursts.clear();
         self.light = None;
         self.shake = None;
     }
@@ -238,8 +293,22 @@ impl Vfx {
         self.next = (self.next + 1) % self.slots.len();
     }
 
-    /// A ground impact at a root (x, z): 6 dust puffs 250 mm up.
+    /// Effect `name` (a strip's): Tekken Tag's burst where the data has one (its particles from `pos`), else the
+    /// strip's sprite.
+    fn effect(&mut self, name: &str, strip: &Strip, pos: Vec3, dir: Option<Vec3>, blend: Blend, eye: Vec3) {
+        let Some(set) = self.data.as_ref().and_then(|d| d.bursts.get(name)).cloned() else {
+            return self.sprite(strip, pos, dir, blend, eye);
+        };
+        let n = set.paths.len();
+        let paths = (0..n).map(|k| if set.random { self.rand() as usize % n } else { k }).collect();
+        self.bursts.push(Burst { origin: pos, set, blend, paths, age: 0 });
+    }
+
+    /// A ground impact at a root (x, z): 6 dust puffs 250 mm up (Tekken Tag's: the dust burst at the feet).
     fn ground(&mut self, root: Vec3) {
+        if let Some(dust) = self.data.as_ref().filter(|d| d.bursts.contains_key("dust")).map(|d| d.dust.clone()) {
+            return self.effect("dust", &dust, Vec3::new(root.x, 0.0, root.z), None, Blend::Half, Vec3::ZERO);
+        }
         let pos = Vec3::new(root.x, MIN_HEIGHT, root.z);
         let Some(d) = &self.data else { return };
         let first = SpriteFx { pos: pos + d.ground.first().copied().unwrap_or_default(), vel: Vec3::ZERO, age: 1, strip: d.dust.clone(), blend: Blend::Half, fade: false, mirror: false };
@@ -261,9 +330,9 @@ impl Vfx {
         match op {
             6 => self.char_spark(own, pos, eye),
             7 => self.char_spark(other, pos, eye),
-            8 => self.sprite(&data.spark, pos, None, Blend::Add, eye),
-            9 => self.sprite(&data.zero, pos, None, Blend::Add, eye),
-            _ => self.sprite(&data.dust, pos, None, Blend::Half, eye),
+            8 => self.effect("spark", &data.spark, pos, None, Blend::Add, eye),
+            9 => self.effect("zero", &data.zero, pos, None, Blend::Add, eye),
+            _ => self.effect("dust", &data.dust, pos, None, Blend::Half, eye),
         }
     }
 
@@ -357,12 +426,12 @@ impl Vfx {
             let pos = h.point / UNITS;
             let strike = Vec3::new(h.strike.x, h.strike.y, h.strike.z);
             if h.blocked {
-                self.sprite(&data.block, pos, None, Blend::Add, eye);
+                self.effect("block", &data.block, pos, None, Blend::Add, eye);
             } else if h.base_damage == 0 {
-                self.sprite(&data.zero, pos, None, Blend::Add, eye);
+                self.effect("zero", &data.zero, pos, None, Blend::Add, eye);
             } else {
                 // every hit: the red spark thrown along the strike (0x80076C28)
-                self.sprite(&data.spark, pos, Some(strike), Blend::Add, eye);
+                self.effect("spark", &data.spark, pos, Some(strike), Blend::Add, eye);
                 if h.damage.max(h.base_damage) >= HEAVY {
                     self.char_spark(models.get(h.attacker).copied().unwrap_or(0), pos, eye);
                     // fire / projectile attacks (limb bytes 0x18..0x1C) have their own effects instead
@@ -387,9 +456,9 @@ impl Vfx {
                                     self.char_spark(m, p, eye);
                                 }
                             }
-                            8 => self.sprite(&data.spark, p, None, Blend::Add, eye),
-                            9 => self.sprite(&data.zero, p, None, Blend::Add, eye),
-                            _ => self.sprite(&data.dust, p, None, Blend::Half, eye),
+                            8 => self.effect("spark", &data.spark, p, None, Blend::Add, eye),
+                            9 => self.effect("zero", &data.zero, p, None, Blend::Add, eye),
+                            _ => self.effect("dust", &data.dust, p, None, Blend::Half, eye),
                         }
                     }
                 }
@@ -437,6 +506,10 @@ impl Vfx {
             p.pos += p.dir * s / 16.0 / UNITS;
         }
         self.particles.retain(|p| p.age < p.life && p.pos.y > 0.0);
+        for b in &mut self.bursts {
+            b.age += 1;
+        }
+        self.bursts.retain(|b| b.set.paths.iter().any(|p| b.age < p.len()));
         if let Some((_, t, _)) = &mut self.light {
             *t = t.saturating_sub(1);
         }
@@ -471,6 +544,16 @@ impl Vfx {
         for g in self.grounds.iter().flatten() {
             out.extend(g.puffs.iter().map(sprite));
         }
+        // a burst's particles where their paths are at its age: their size, and the brightness times 1 - the fade
+        // (0x345C10, 0x345E2C)
+        for b in &self.bursts {
+            for f in b.paths.iter().filter_map(|&k| b.set.paths.get(k)?.get(b.age)).filter(|f| f[3] > 0.0 && f[4] < 1.0) {
+                let a = 1.0 - f[4];
+                let k = b.set.level * a;
+                let color = if b.blend == Blend::Half { [1.0, 1.0, 1.0, 0.5 * a] } else { [k, k, k, 1.0] };
+                out.push(Sprite { pos: b.origin + Vec3::new(f[0], f[1], f[2]), size: b.set.size * f[3], cell: b.set.cell, color, blend: b.blend, mirror: false, nearer: 0.0 });
+            }
+        }
         if let Some(d) = &self.data {
             for p in &self.particles {
                 let ramp = &d.heavy[p.ramp];
@@ -481,5 +564,39 @@ impl Vfx {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A burst: a particle on each path from where it starts, its size and fade the path's; gone after its paths.
+    #[test]
+    fn a_burst_follows_its_paths() {
+        let set = BurstSet { cell: 2, size: 0.1, level: 0.25, random: false, paths: Arc::new(vec![vec![[0.0, 0.0, 0.0, 0.0, 1.0], [0.1, 0.2, 0.3, 0.5, 0.2]], vec![[0.0; 5]]]) };
+        let data = EffectsData { bursts: [("block".to_string(), set)].into_iter().collect(), ..Default::default() };
+        let mut v = Vfx {
+            data: Some(data.clone()),
+            slots: [None, None, None],
+            next: 0,
+            grounds: [None, None, None],
+            next_ground: 0,
+            particles: vec![],
+            bursts: vec![],
+            light: None,
+            scripts: vec![],
+            shake: None,
+            seed: 1,
+            slots_joints: vec![],
+        };
+        v.effect("block", &data.block, Vec3::new(1.0, 1.0, 0.0), None, Blend::Add, Vec3::ZERO);
+        assert!(v.sprites().is_empty() && v.slots.iter().all(Option::is_none));
+        v.advance();
+        let s = v.sprites();
+        assert_eq!(s.len(), 1);
+        assert!((s[0].pos - Vec3::new(1.1, 1.2, 0.3)).length() < 1e-6 && (s[0].color[0] - 0.2).abs() < 1e-6 && (s[0].size - 0.05).abs() < 1e-6 && s[0].cell == 2);
+        v.advance();
+        assert!(v.bursts.is_empty());
     }
 }

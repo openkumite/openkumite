@@ -29,6 +29,8 @@ struct Globals {
     // the fighters' shadows: the light's x / y and z / y, the floor's height, w = 1 when on; their colour (a: alpha)
     shadow: vec4<f32>,
     shadow_colour: vec4<f32>,
+    // Tekken Tag's shadow picture: its centre's x, z (metres), 1 / its half size, the darkening (0: none)
+    shadow_map: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var tex: texture_2d<f32>;
@@ -82,30 +84,47 @@ fn shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, joints: vec4<u32>, weights: vec4
     return o;
 }
 
-// Tekken Tag's shadow: on the plane as `vs_shadow`, drawn 0.3 m nearer the camera along the line of sight (the same
-// place on screen): its floors rise and fall that much about the plane, and the game lays the shadow on the floor's
-// own triangles (0x342128).
-// shortcut: the plane goes on past the floor's edge (a raised ring's shadow can hang over the drop); lay the shadow
-// on the stage's floor triangles to end it there
+// Tekken Tag's shadow picture (0x342390): a fighter's silhouette moved along the light onto the floor's plane,
+// seen from above: x, z about the picture's centre.
 @vertex
-fn vs_shadow_near(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
-                  @location(2) joints: vec4<u32>, @location(3) weights: vec4<f32>, @location(4) normal: vec3<f32>) -> VsOut {
+fn vs_shadow_map(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
+                 @location(2) joints: vec4<u32>, @location(3) weights: vec4<f32>, @location(4) normal: vec3<f32>) -> VsOut {
     var o = shadow_vertex(pos, uv, joints, weights);
-    let v = o.world - g.eye.xyz;
-    let p = g.eye.xyz + v * max(1.0 - 0.3 / max(length(v), 0.001), 0.0);
-    o.clip = g.view_proj * vec4(p, 1.0);
+    let k = g.shadow_map.z;
+    o.clip = vec4((o.world.x - g.shadow_map.x) * k, -(o.world.z - g.shadow_map.y) * k, 0.5, 1.0);
     return o;
+}
+
+@fragment
+fn fs_shadow_map(i: VsOut) -> @location(0) vec4<f32> {
+    return vec4(1.0);
+}
+
+// The floor drawn again over itself (0x342128: the game draws it with the shadow picture projected along the light),
+// a hair nearer, so it passes where the floor shows.
+@vertex
+fn vs_floor_shadow(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VsOut {
+    var o = static_vertex(pos, uv, color);
+    o.clip.z = o.clip.z - 0.00002 * o.clip.w;
+    return o;
+}
+
+// Each fighter's picture where this floor point's line along the light meets the plane: the floor times (1 - the
+// darkening) under each (ALPHA 0x46: Cd - Cd x As, As the arena's TA1), in the displayed colours.
+@fragment
+fn fs_floor_shadow(i: VsOut) -> @location(0) vec4<f32> {
+    let h = i.world.y - g.shadow.z;
+    let p = vec2(i.world.x - h * g.shadow.x, i.world.z - h * g.shadow.y);
+    let uv = vec2(0.5 + 0.5 * (p.x - g.shadow_map.x) * g.shadow_map.z, 0.5 + 0.5 * (p.y - g.shadow_map.y) * g.shadow_map.z);
+    let c = textureSample(tex, samp, clamp(uv, vec2(0.0), vec2(1.0)));
+    let a = g.shadow_map.w * f32(all(uv >= vec2(0.0)) && all(uv <= vec2(1.0)));
+    let f = (1.0 - a * c.r) * (1.0 - a * c.g) * (1.0 - a * c.b) * (1.0 - a * c.a);
+    return vec4(srgb_to_linear(vec3(f)), 1.0);
 }
 
 @fragment
 fn fs_shadow(i: VsOut) -> @location(0) vec4<f32> {
     return g.shadow_colour;
-}
-
-// Tekken Tag's shadow, second pass: the frame times the alpha the first pass left; the alpha back to 1.
-@fragment
-fn fs_shadow_darken(i: VsOut) -> @location(0) vec4<f32> {
-    return vec4(1.0);
 }
 
 // World-space triangles (metres), not moved with the floor.
@@ -136,6 +155,11 @@ fn fs_blob(i: VsOut) -> @location(0) vec4<f32> {
 
 @vertex
 fn vs_static(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VsOut {
+    return static_vertex(pos, uv, color);
+}
+
+// A stage mesh's vertex, moved with the floor.
+fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>) -> VsOut {
     var o: VsOut;
     let p = (g.floor * vec4(pos, 1.0)).xyz;
     o.clip = g.view_proj * vec4(p, 1.0);
