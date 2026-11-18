@@ -583,6 +583,8 @@
       let size = ttt.size;
       const arcade = await pack('arcade');
       if (arcade?.files.has('manifest.json')) for (const [p, b] of under(arcade, 'assets/')) files.set(p, b);
+      // (its manifest's arena titles: app/src/ttt.rs arcade_arenas)
+      if (arcade?.files.has('manifest.json')) files.set('arcade/manifest.json', arcade.files.get('manifest.json'));
       size += arcade?.size ?? 0;
       const json = async (b) => { try { return JSON.parse(await b.text()); } catch { return null; } };
       const extras = new Map(under(ttt, 'extras/'));

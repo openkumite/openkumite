@@ -42,6 +42,14 @@ const MESSAGE_FRAMES: u32 = 360;
 const SELECT_DONE: u32 = 40;
 /// The VS screen's frames (OpenKumite's: the original's is not decoded).
 pub const VS_FRAMES: u32 = 120;
+/// The arcade pack's arenas (OpenKumite's ids, apart from Tekken Tag's 0-22): its stage_NN.glb is 100 + NN, its
+/// hidden arena 199.
+const ARCADE_ARENA: usize = 100;
+const ARCADE_HIDDEN: usize = 199;
+/// The Tekken Tag arena whose camera row (camera.json `arena_projection`, which the simulation reads: condition 0x5C)
+/// and floor sounds an arcade arena takes, the same for every player: Paul's, the row most arenas share (H 615,
+/// 600..900, the dolly).
+pub const ARCADE_STAND_IN: usize = 0;
 
 fn int(v: &Value) -> usize {
     v.as_u64().unwrap_or(0) as usize
@@ -75,8 +83,11 @@ pub struct Data {
     rivals: Vec<Vec<Option<usize>>>,
     fallback: Vec<usize>,
     pairs: Vec<[usize; 2]>,
-    /// The arenas to fight on (stages/index.json).
-    pub arenas: Vec<usize>,
+    /// The arenas to fight on and their names (stages/index.json): those of the stage select table 0x440770, 0-19
+    /// (20 is Tekken Bowl's hall, 21 and 22 are in no list: FIGHT_DATA.md).
+    pub arenas: Vec<(usize, String)>,
+    /// The arcade pack's arenas there are and their titles ([`arcade_arenas`]).
+    pub arcade: Vec<(usize, String)>,
     /// ROUND TIME's clocks in frames (rounds.json `round_time`; past them: untimed).
     pub round_frames: Vec<u32>,
     /// The endings, the staff roll and Theater (endings.json; None: a pack without them).
@@ -84,9 +95,9 @@ pub struct Data {
 }
 
 impl Data {
-    /// From roster.json (None without `front_end`: an older pack, the plain front end); `arenas`: the pack's;
-    /// `rounds`: rounds.json; `endings`: endings.json's.
-    pub fn load(roster: &Value, arenas: Vec<usize>, rounds: &Value, endings: Option<EndingData>) -> Option<Arc<Self>> {
+    /// From roster.json (None without `front_end`: an older pack, the plain front end); `arenas`: the pack's
+    /// (stages/index.json); `rounds`: rounds.json; `endings`: endings.json's; `arcade`: the arcade pack's arenas.
+    pub fn load(roster: &Value, arenas: &Value, rounds: &Value, endings: Option<EndingData>, arcade: Vec<(usize, String)>) -> Option<Arc<Self>> {
         let raw = roster.get("front_end").filter(|f| f.is_object())?.clone();
         let opt = |v: &Value| v.as_u64().map(|x| x as usize);
         let slots = raw["select"]["slots"]
@@ -105,11 +116,19 @@ impl Data {
             rivals,
             fallback: ints(&raw["arcade"]["fallback"]),
             pairs,
-            arenas: arenas.into_iter().filter(|&a| a != 20).collect(),
+            arenas: arenas.as_array().into_iter().flatten().filter_map(|a| Some((a["id"].as_u64()? as usize, a["name"].as_str().unwrap_or_default().to_string()))).filter(|a| a.0 < 20).collect(),
+            arcade,
             round_frames: ints(&rounds["round_time"]["options_frames"]).into_iter().map(|f| f as u32).collect(),
             endings: endings.map(Arc::new),
             raw,
         }))
+    }
+
+    /// The arenas a fight is drawn on: Tekken Tag's, and the arcade pack's unless OPTIONS turned them off.
+    // shortcut: Tekken Tag has no online rooms; once it has, leave the arcade arenas out online (the arcade pack is
+    // outside the fingerprint: a peer may lack it)
+    pub fn pool(&self, p: &Progress) -> Vec<usize> {
+        self.arenas.iter().chain(self.arcade.iter().filter(|_| !p.arcade_off)).map(|a| a.0).collect()
     }
 
     /// Character `c` is selectable (kind 1) or in the CPU pool (kind 0) at unlock stage `stage` (0x3BFBB0).
@@ -145,6 +164,49 @@ impl Data {
     }
 }
 
+/// An arena of `pool` drawn at random.
+fn pick(pool: &[usize], seed: &mut u32) -> Option<usize> {
+    pool.get(lcg(seed, pool.len())).copied()
+}
+
+/// The arcade pack's file of arena `stage` (None: a Tekken Tag arena, or Tekken 3's).
+pub fn arcade_file(stage: usize) -> Option<String> {
+    match stage {
+        ARCADE_HIDDEN => Some("arcade/hidden.glb".into()),
+        s if (ARCADE_ARENA..ARCADE_HIDDEN).contains(&s) => Some(format!("arcade/stage_{:02}.glb", s - ARCADE_ARENA)),
+        _ => None,
+    }
+}
+
+/// An arcade arena's fight music (BGM id): of the fight tracks the game's random music draws from (9 + rand() % 14,
+/// 0x3BFEC0), 9 + NN for stage_NN, the last (22, Unknown's arena's) for the hidden one.
+pub fn arcade_bgm(stage: usize) -> Option<usize> {
+    match stage {
+        ARCADE_HIDDEN => Some(22),
+        s => arcade_file(s).map(|_| 9 + s - ARCADE_ARENA),
+    }
+}
+
+/// The arcade pack's arenas over Tekken Tag's game root `root` (its layer: `arcade/`), by their ids, with the titles
+/// of the pack's manifest.json (a browser's page puts it at `arcade/manifest.json`; natively it is beside the pack's
+/// assets/: packs/t3arcade/, the game root being packs/ttt/assets/).
+pub fn arcade_arenas(root: &std::path::Path) -> Vec<(usize, String)> {
+    let beside = root.parent().and_then(std::path::Path::parent).map(|p| p.join("t3arcade/manifest.json"));
+    let manifest: Value = [Some(root.join("arcade/manifest.json")), beside].iter().flatten().find_map(|f| kumite_fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let title = |file: &str| {
+        let m = manifest["stages"].as_array().into_iter().flatten().find(|s| s["game_file"].as_str().is_some_and(|g| g.ends_with(file)));
+        m.and_then(|m| m["title"].as_str()).map(|t| t.split(" (").next().unwrap_or(t).to_string())
+    };
+    (ARCADE_ARENA..ARCADE_ARENA + 13)
+        .chain([ARCADE_HIDDEN])
+        .filter_map(|id| {
+            let file = arcade_file(id)?;
+            let name = || title(&file).unwrap_or_else(|| if id == ARCADE_HIDDEN { "HIDDEN ARENA".into() } else { format!("ARCADE {}", id - ARCADE_ARENA + 1) });
+            kumite_fs::exists(&root.join(&file)).then(|| (id, name()))
+        })
+        .collect()
+}
+
 /// What the Tekken Tag save keeps (FRONTEND.md 7: the config's unlock stage, play points, endings, options).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -156,11 +218,13 @@ pub struct Progress {
     pub seen: u64,
     /// DIFFICULTY LEVEL, FIGHT COUNT, ROUND TIME as set (None: the defaults).
     pub options: Option<[usize; 3]>,
+    /// OPTIONS' ARCADE ARENAS (OpenKumite's) set OFF.
+    pub arcade_off: bool,
 }
 
 /// The save's progress as last loaded or changed (the menus read it; the app keeps it in the save), as the
 /// DIFFICULTY of the Tekken 3 menus.
-static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress { stage: 0, points: 0, seen: 0, options: None });
+static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress { stage: 0, points: 0, seen: 0, options: None, arcade_off: false });
 
 pub fn progress() -> Progress {
     PROGRESS.lock().map_or_else(|e| e.into_inner().clone(), |p| p.clone())
@@ -245,11 +309,11 @@ impl Run {
             health: [None; 2],
             wins: [0; 2],
             frames: 0,
-            stage: d.arenas.get(lcg(seed, d.arenas.len())).copied().unwrap_or(0),
+            stage: pick(&d.pool(progress), seed).unwrap_or(0),
             options: progress.options(d),
         };
         if ladder_mode(mode) {
-            run.ladder = ladder(d, roster, progress.stage, &run.teams[0], tag(mode), seed);
+            run.ladder = ladder(d, roster, progress.stage, &d.pool(progress), &run.teams[0], tag(mode), seed);
         }
         if run.teams[1].is_empty() && mode != BOWL {
             // Team Battle against the CPU: as many as the player's; Survival: the first opponent
@@ -346,7 +410,7 @@ impl Run {
                 self.wins[0] += 1;
                 self.health[0] = Some(health[0]);
                 self.teams[1] = cpu_team(d, roster, progress.stage, &self.teams[0], 1, false, seed);
-                self.stage = d.arenas.get(lcg(seed, d.arenas.len())).copied().unwrap_or(self.stage);
+                self.stage = pick(&d.pool(progress), seed).unwrap_or(self.stage);
                 Next::Fight(Box::new(self))
             }
             SURVIVAL => {
@@ -429,11 +493,11 @@ fn cpu_team(d: &Data, roster: &Roster, stage: u32, players: &Team, n: usize, ear
 
 /// The arcade ladder (0x3C02D8): fights 1-6 CPU teams from the pool, one of them a real pair (0x5207F0), fight 7 the
 /// rival team in Ogre's arena, fight 8 Unknown alone in hers; arenas 1-6 drawn without repeats.
-fn ladder(d: &Data, roster: &Roster, stage: u32, players: &Team, tag: bool, seed: &mut u32) -> Vec<(Team, usize)> {
+fn ladder(d: &Data, roster: &Roster, stage: u32, pool: &[usize], players: &Team, tag: bool, seed: &mut u32) -> Vec<(Team, usize)> {
     let a = &d.raw["arcade"];
     let n = if tag { 2 } else { 1 };
     let fights = int(&a["fights"]).max(2);
-    let mut arenas: Vec<usize> = d.arenas.iter().copied().filter(|&x| x != int(&a["rival_arena"]) && x != int(&a["boss_arena"])).collect();
+    let mut arenas: Vec<usize> = pool.iter().copied().filter(|&x| x != int(&a["rival_arena"]) && x != int(&a["boss_arena"])).collect();
     let mut out = vec![];
     let paired = lcg(seed, fights - 2);
     let costume = |i: usize, seed: &mut u32| lcg(seed, roster.characters[i].costumes.len().min(5));
@@ -481,8 +545,15 @@ pub enum Page {
     Options {
         cursor: usize,
         values: [usize; 3],
+        /// ARCADE ARENAS on.
+        arcade: bool,
     },
     Select(Box<Select>),
+    /// The VS modes' arena (OpenKumite's): RANDOM, Tekken Tag's, the arcade pack's.
+    Stage {
+        run: Box<Run>,
+        cursor: usize,
+    },
     /// The arcade ladder lost: CONTINUE? 9..0, then GAME OVER.
     Continue {
         run: Box<Run>,
@@ -706,7 +777,7 @@ impl Front {
                         sfx::play(sfx::confirm());
                         match items.get(*cursor).map(|i| i.0) {
                             Some(u32::MAX) => return Outcome::Exit,
-                            Some(OPTIONS) => Some(Page::Options { cursor: 0, values: progress.options(&d) }),
+                            Some(OPTIONS) => Some(Page::Options { cursor: 0, values: progress.options(&d), arcade: !progress.arcade_off }),
                             Some(THEATER) => Some(Page::Theater { cursor: [0, 0] }),
                             Some(m) => Some(Page::Select(Box::new(Select::new(m, &d, None)))),
                             None => None,
@@ -716,10 +787,17 @@ impl Front {
                     _ => None,
                 }
             }
-            Page::Options { cursor, values } => match key {
+            Page::Options { cursor, values, arcade } => match key {
                 Key::Up | Key::Down => {
                     sfx::play(sfx::cursor());
-                    *cursor = (*cursor + if key == Key::Up { OPTION_ROWS.len() } else { 1 }) % (OPTION_ROWS.len() + 1);
+                    let rows = option_rows(&d);
+                    *cursor = (*cursor + if key == Key::Up { rows } else { 1 }) % (rows + 1);
+                    None
+                }
+                // ARCADE ARENAS (OpenKumite's, with the arcade pack): on or off
+                Key::Left | Key::Right if *cursor == OPTION_ROWS.len() && option_rows(&d) > OPTION_ROWS.len() => {
+                    sfx::play(sfx::cursor());
+                    *arcade = !*arcade;
                     None
                 }
                 Key::Left | Key::Right if *cursor < OPTION_ROWS.len() => {
@@ -729,9 +807,10 @@ impl Front {
                     None
                 }
                 // EXIT (or back): kept in the save
-                Key::Start | Key::Button(_) | Key::Back if key == Key::Back || *cursor == OPTION_ROWS.len() => {
+                Key::Start | Key::Button(_) | Key::Back if key == Key::Back || *cursor == option_rows(&d) => {
                     sfx::play(sfx::back());
                     progress.options = Some(*values);
+                    progress.arcade_off = !*arcade;
                     set_progress(progress.clone());
                     let at = Self::items(&d, progress).iter().position(|i| i.0 == OPTIONS).unwrap_or(0);
                     self.page = Page::Menu { cursor: at };
@@ -740,6 +819,28 @@ impl Front {
                 _ => None,
             },
             Page::Select(s) => s.key(player, key, &d, roster, progress, seed),
+            Page::Stage { run, cursor } => {
+                let n = stage_list(&d).len().max(1);
+                match key {
+                    Key::Up | Key::Down => {
+                        sfx::play(sfx::cursor());
+                        *cursor = (*cursor + if key == Key::Up { n - 1 } else { 1 }) % n;
+                        None
+                    }
+                    Key::Start | Key::Button(_) => {
+                        sfx::play(sfx::confirm());
+                        let mut run = run.clone();
+                        // RANDOM: the arenas a fight is drawn on
+                        run.stage = stage_list(&d).get(*cursor).and_then(|a| a.0).or_else(|| pick(&d.pool(progress), seed)).unwrap_or(run.stage);
+                        return Outcome::TttFight(run);
+                    }
+                    Key::Back => {
+                        sfx::play(sfx::back());
+                        Some(Page::Select(Box::new(Select::new(run.mode, &d, matches!(run.mode, VS | ONE_VS).then_some(run.wins).filter(|w| *w != [0; 2])))))
+                    }
+                    _ => None,
+                }
+            }
             Page::Continue { run, countdown } => match key {
                 // START continues the same fight; a face button skips 100 frames
                 Key::Start => {
@@ -823,6 +924,11 @@ impl Front {
         match &mut self.page {
             Page::Select(s) => {
                 if let Some(run) = s.tick(&d, roster, progress, seed) {
+                    // VS BATTLE, 1 ON 1 VS, TEAM BATTLE: the arena chosen first (OpenKumite's stage select)
+                    if matches!(run.mode, VS | ONE_VS | TEAM) {
+                        self.page = Page::Stage { run: Box::new(run), cursor: 0 };
+                        return Outcome::None;
+                    }
                     return Outcome::TttFight(Box::new(run));
                 }
             }
@@ -869,19 +975,41 @@ impl Front {
                     font(painter, v, art, d, label, W / 2.0, y, 0.45, c);
                 }
             }
-            Page::Options { cursor, values } => {
+            Page::Options { cursor, values, arcade } => {
                 backdrop(painter, v, art);
                 font(painter, v, art, d, "OPTIONS", W / 2.0, 40.0, 0.6, Color32::WHITE);
-                for (k, &row) in OPTION_ROWS.iter().enumerate() {
-                    let (_, names) = d.option(row);
-                    let label = d.raw["options"][row]["label"].as_str().unwrap_or_default();
+                let mut rows: Vec<(&str, &str)> = OPTION_ROWS
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &row)| (d.raw["options"][row]["label"].as_str().unwrap_or_default(), d.raw["options"][row]["values"][values[k]].as_str().unwrap_or_default().trim()))
+                    .collect();
+                rows.extend((option_rows(d) > OPTION_ROWS.len()).then_some(("ARCADE ARENAS", if *arcade { "ON" } else { "OFF" })));
+                for (k, (label, value)) in rows.iter().enumerate() {
                     let c = if k == *cursor { Color32::WHITE } else { Color32::from_gray(150) };
                     let y = 130.0 + 40.0 * k as f32;
                     font(painter, v, art, d, label, 200.0, y, 0.35, c);
-                    font(painter, v, art, d, names.get(values[k]).map_or("", |s| s.as_str()), 500.0, y, 0.35, c);
+                    font(painter, v, art, d, value, 500.0, y, 0.35, c);
                 }
-                let c = if *cursor == OPTION_ROWS.len() { Color32::WHITE } else { Color32::from_gray(150) };
-                font(painter, v, art, d, "EXIT", W / 2.0, 130.0 + 40.0 * OPTION_ROWS.len() as f32, 0.35, c);
+                let c = if *cursor == rows.len() { Color32::WHITE } else { Color32::from_gray(150) };
+                font(painter, v, art, d, "EXIT", W / 2.0, 130.0 + 40.0 * rows.len() as f32, 0.35, c);
+            }
+            Page::Stage { cursor, .. } => {
+                backdrop(painter, v, art);
+                font(painter, v, art, d, "STAGE SELECT", W / 2.0, 30.0, 0.6, Color32::WHITE);
+                // a window of the list around the cursor
+                let list = stage_list(d);
+                let first = cursor.saturating_sub(STAGE_ROWS / 2).min(list.len().saturating_sub(STAGE_ROWS));
+                for (k, (id, name)) in list.iter().enumerate().skip(first).take(STAGE_ROWS) {
+                    let y = 90.0 + 28.0 * (k - first) as f32;
+                    if k == *cursor {
+                        Art::shade(painter, v, sv([40.0, y - 3.0, 560.0, 26.0]), [Color32::from_rgba_unmultiplied(40, 80, 200, 150); 4]);
+                    }
+                    let c = if k == *cursor { Color32::WHITE } else { Color32::from_gray(150) };
+                    font(painter, v, art, d, name, 280.0, y, 0.32, c);
+                    if id.is_some_and(|id| arcade_file(id).is_some()) {
+                        small(painter, v, "TEKKEN 3 ARCADE", 545.0, y + 5.0, Color32::from_gray(170));
+                    }
+                }
             }
             Page::Select(s) => draw_select(painter, v, art, d, roster, progress, s),
             Page::Continue { countdown, .. } => {
@@ -1030,6 +1158,19 @@ pub fn draw_ending(painter: &egui::Painter, v: &View, d: &Data, roll: Option<u32
 fn music(d: &Data) -> Vec<(usize, String)> {
     let list = d.endings.as_ref().and_then(|e| e.raw["theater"]["music"].as_array().cloned()).unwrap_or_default();
     list.iter().filter_map(|m| Some((m["bgm"].as_u64().filter(|&b| b != 254)? as usize, m["name"].as_str().unwrap_or_default().to_string()))).collect()
+}
+
+/// The stage select's rows shown at once.
+const STAGE_ROWS: usize = 11;
+
+/// The stage select's list: RANDOM, then Tekken Tag's arenas, then the arcade pack's (their ids and names).
+fn stage_list(d: &Data) -> Vec<(Option<usize>, String)> {
+    std::iter::once((None, "RANDOM".to_string())).chain(d.arenas.iter().chain(&d.arcade).map(|(id, name)| (Some(*id), name.clone()))).collect()
+}
+
+/// OPTIONS' rows: the game's, then ARCADE ARENAS with the arcade pack.
+fn option_rows(d: &Data) -> usize {
+    OPTION_ROWS.len() + usize::from(!d.arcade.is_empty())
 }
 
 /// Tekken Tag's 640 x 448 rectangle in the 368 x 480 one the screens draw on.
@@ -1378,7 +1519,8 @@ mod tests {
         }});
         // (each character's ending: its id)
         let endings = EndingData::new(serde_json::json!({"table": [[0], [1], [2], [3]], "endings": [{}, {}, {}, {}]}), &Value::Null).unwrap();
-        Data::load(&fe, (0..23).collect(), &serde_json::json!({"round_time": {"options_frames": [2160, 2820, 4260]}}), Some(endings)).unwrap()
+        let arenas: Vec<Value> = (0..23).map(|id| serde_json::json!({"id": id, "name": format!("A{id}")})).collect();
+        Data::load(&fe, &Value::from(arenas), &serde_json::json!({"round_time": {"options_frames": [2160, 2820, 4260]}}), Some(endings), vec![]).unwrap()
     }
 
     fn roster() -> Roster {
@@ -1457,7 +1599,7 @@ mod tests {
         let endings = serde_json::json!({"table": [[1, 1], [2]], "endings": [{}, {}, {}], "playback": {"unknown": 2},
             "theater": {"labels": [["(1P)PAUL", "(2P)PAUL"], ["(1P)LAW"]], "extras": [{"label": "OPENING MOVIE"}, {"label": "EMBU2", "cast": 1}]}});
         let e = EndingData::new(endings, &Value::Null).unwrap();
-        let d = Data::load(&serde_json::json!({"front_end": {}}), vec![], &serde_json::json!({}), Some(e)).unwrap();
+        let d = Data::load(&serde_json::json!({"front_end": {}}), &Value::Null, &serde_json::json!({}), Some(e), vec![]).unwrap();
         let rows = |seen| theater(&d, seen).into_iter().map(|r| r.into_iter().map(|c| (c.0, c.1)).collect::<Vec<_>>()).collect::<Vec<_>>();
         let tail = [vec![("OPENING MOVIE".to_string(), Cell::None)], vec![("MUSIC PLAYER".into(), Cell::Music)], vec![("EXIT THEATER MENU".into(), Cell::Exit)]];
         assert_eq!(rows(0), tail);
@@ -1473,7 +1615,7 @@ mod tests {
         let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE", "locked": false},
             {"mode": 8, "label": "TEKKEN BOWL", "locked": true}, {"mode": 9, "label": "THEATER", "locked": true}]},
             "unlocks": {"schedule": [{"stage": 10, "kind": 5, "character": 0}]}}});
-        let d = Data::load(&fe, vec![0], &serde_json::json!({}), None).unwrap();
+        let d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![]).unwrap();
         let modes = |stage| Front::items(&d, &Progress { stage, ..Progress::default() }).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
         assert_eq!((modes(9), modes(10)), (vec![ARCADE], vec![ARCADE, BOWL]));
         // its select: P1 picks one; 2P's START joins
@@ -1482,6 +1624,40 @@ mod tests {
         let (mut seed, roster) = (1, roster());
         s.key(1, Key::Start, &d, &roster, &Progress::default(), &mut seed);
         assert_eq!(s.sides[1].player, Some(1));
+    }
+
+    #[test]
+    fn arcade_arenas_join_the_pool_and_the_stage_select() {
+        let mut d = Arc::try_unwrap(data()).unwrap();
+        let (mut p, mut seed) = (Progress::default(), 5);
+        // without the arcade pack: Tekken Tag's fight arenas (not Tekken Bowl's, 20, nor 21, 22), no ARCADE ARENAS row
+        assert_eq!(d.pool(&p), (0..20).collect::<Vec<_>>());
+        assert_eq!((option_rows(&d), stage_list(&d).len()), (3, 21));
+        // with it: its 13 arenas and the hidden one, ids of their own, its files, the music
+        d.arcade = (ARCADE_ARENA..ARCADE_ARENA + 13).chain([ARCADE_HIDDEN]).map(|id| (id, format!("T{id}"))).collect();
+        let pool = d.pool(&p);
+        assert_eq!(pool.len(), 20 + 14);
+        assert!(d.arcade.iter().all(|a| d.arenas.iter().all(|t| t.0 != a.0) && arcade_file(a.0).is_some()));
+        assert_eq!((arcade_file(112).as_deref(), arcade_file(ARCADE_HIDDEN).as_deref(), arcade_file(22)), (Some("arcade/stage_12.glb"), Some("arcade/hidden.glb"), None));
+        assert_eq!((arcade_bgm(100), arcade_bgm(112), arcade_bgm(ARCADE_HIDDEN), arcade_bgm(3)), (Some(9), Some(21), Some(22), None));
+        assert!((0..200).any(|_| Run::new(&d, &roster(), &p, SURVIVAL, [vec![(0, 0)], vec![]], &mut seed).stage >= ARCADE_ARENA));
+        // OPTIONS' ARCADE ARENAS off: Tekken Tag's alone again; the stage select lists both kinds still
+        p.arcade_off = true;
+        assert_eq!(d.pool(&p).len(), 20);
+        assert!((0..200).all(|_| Run::new(&d, &roster(), &p, SURVIVAL, [vec![(0, 0)], vec![]], &mut seed).stage < ARCADE_ARENA));
+        let list = stage_list(&d);
+        assert_eq!((option_rows(&d), list.len(), list[0].0, list[1].0, list[21].0, list[34].0), (4, 35, None, Some(0), Some(100), Some(ARCADE_HIDDEN)));
+        // VS: the select's run waits on the stage select; a pick there is the fight's arena
+        let (r, d) = (roster(), Arc::new(d));
+        let mut s = Select::new(VS, &d, None);
+        s.sides[0].picks = vec![(0, 0), (1, 0)];
+        s.sides[1].picks = vec![(2, 0), (3, 0)];
+        s.sides.iter_mut().for_each(|x| x.done = true);
+        let run = (0..SELECT_DONE).find_map(|_| s.tick(&d, &r, &p, &mut seed)).unwrap();
+        let mut front = Front { page: Page::Stage { run: Box::new(run), cursor: 21 }, frame: 0 };
+        let mut r = r;
+        r.ttt = Some(d.clone());
+        assert!(matches!(front.key(0, Key::Start, &r, &mut seed), Outcome::TttFight(run) if run.stage == 100));
     }
 
     #[test]

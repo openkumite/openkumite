@@ -668,7 +668,9 @@ impl App {
         };
         let t = Instant::now();
         let mut game = Game::load(&self.assets, models)?;
-        game.set_arena(stage);
+        // (an arcade arena in Tekken Tag: the camera row and floor sounds of the arena it stands in)
+        let arena = if self.ttt_arcade(stage).is_some() { ttt::ARCADE_STAND_IN } else { stage };
+        game.set_arena(arena);
         game.handicap = setup.as_ref().map_or([100; 2], |s| s.handicap);
         if setup.is_none() {
             if let Some(v) = self.intro {
@@ -872,11 +874,13 @@ impl App {
             _ => 1,
         };
         // (the selection's BGM id: its descriptor's, 0x8004F2C0)
+        let arcade = self.ttt_arcade(stage).and(ttt::arcade_bgm(stage));
         if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
             let k = if watch { 0 } else { incoming };
             let bgm = self.roster.bgm_of.get(&models[k]).or(self.roster.bgm_of.get(&models[0])).copied();
             // (Tekken Tag: the arena's)
-            audio.music(sound.arena_music(stage).or_else(|| bgm.and_then(|b| sound.music(b))).or_else(|| sound.music_for(&names[k])));
+            let arcade = arcade.and_then(|b| sound.music(b));
+            audio.music(sound.arena_music(stage).or(arcade).or_else(|| bgm.and_then(|b| sound.music(b))).or_else(|| sound.music_for(&names[k])));
         }
         if watch {
             // the attract demo's fighters have 125 health (0x800516CC)
@@ -926,7 +930,7 @@ impl App {
         // the copying character (its voice row: sound.json's) picked with down held as the fight loads is wooden
         // (0x8002AA3C: pad bit 0x4000)
         let copy_row = self.sound.as_ref().and_then(|s| s.copy_row());
-        let last_moves = kumite_game::sound::SoundState { wooden: (0..2).map(|i| Some(voices[i]) == copy_row && self.down_held(i)).collect(), arena: stage, ..Default::default() };
+        let last_moves = kumite_game::sound::SoundState { wooden: (0..2).map(|i| Some(voices[i]) == copy_row && self.down_held(i)).collect(), arena, ..Default::default() };
         if last_moves.wooden.iter().any(|&w| w) {
             log::info!("a wooden copying character");
         }
@@ -1156,6 +1160,11 @@ impl App {
         }
     }
 
+    /// Tekken Tag's arcade arena `stage`: the arcade pack's file of it (Tekken 3's stage ids are its own).
+    fn ttt_arcade(&self, stage: usize) -> Option<String> {
+        self.roster.ttt.as_ref().and_then(|_| ttt::arcade_file(stage))
+    }
+
     /// A stage's meshes and the effect atlas (no fighters yet).
     fn stage_scene(&self, r: &Renderer, stage: usize) -> Scene {
         self.stage_scene_with(r, stage, false, &|p| p)
@@ -1201,7 +1210,9 @@ impl App {
         };
         // the arcade game's stage in its place, when the arcade pack has one and the setting asks for it
         let hidden = hidden.then(|| self.assets.arcade_hidden()).flatten();
-        let arcade = self.graphics.arcade_stages.then(|| hidden.or_else(|| self.assets.arcade_stage(stage))).flatten();
+        // (Tekken Tag: the arcade stages are not its arenas' stand-ins, but arenas of their own)
+        let arcade = (self.graphics.arcade_stages && self.roster.ttt.is_none()).then(|| hidden.or_else(|| self.assets.arcade_stage(stage))).flatten();
+        let arcade = self.ttt_arcade(stage).map(|f| kumite_assets::Stage::load(&self.assets.root.join(f))).or(arcade);
         match arcade.unwrap_or_else(|| self.assets.stage(stage)) {
             Ok(st) => {
                 let tex: Vec<_> = st
@@ -4075,7 +4086,7 @@ impl App {
         let mut files: Vec<std::path::PathBuf> = records.iter().flat_map(|&r| kumite_game::model_files(&self.assets, r)).collect();
         // the HUD's name plates
         files.extend(records.iter().map(|r| self.assets.root.join(format!("pictures/names/model_{r:03}_index.png"))));
-        files.push(self.assets.root.join(format!("stages/stage_{:02}.glb", setup.stage)));
+        files.push(self.assets.root.join(self.ttt_arcade(setup.stage).unwrap_or_else(|| format!("stages/stage_{:02}.glb", setup.stage))));
         files
     }
 
