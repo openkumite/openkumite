@@ -12,6 +12,7 @@ pub mod ball;
 pub mod camera;
 pub mod data;
 pub mod detmath;
+pub mod dialect;
 pub mod input;
 pub mod melee;
 
@@ -23,8 +24,8 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use std::path::Path;
 use std::sync::Arc;
 
-/// Engine-fixed aliases (kumite_converter's reference engine.md §7.1).
-pub const ALIAS_NEUTRAL: usize = 3;
+/// Tekken 3's stance alias (a moveset's own: [`data::Aliases`]).
+pub const ALIAS_NEUTRAL: usize = data::Aliases::TEKKEN3.neutral;
 /// Cancel transition "use this list's END entry" (walker 0x8002DE24).
 const TRANSITION_USE_END: u32 = 0x2C;
 /// An air hit: who hit whom, its final damage, the side it came from and the strike's downward speed.
@@ -52,10 +53,6 @@ struct AirHit {
     angle: i32,
 }
 
-/// Air reaction aliases (0x8002EE94): the late fall, the two side falls, the air recovery.
-const AIR_LATE: usize = 0xD62;
-const AIR_SIDE: [usize; 2] = [0xD63, 0xD64];
-const AIR_RECOVERY: usize = 0xD58;
 /// Cancel transition 0x1C: get up (its entries are skipped for 24 frames after one is taken).
 const TRANSITION_GETUP: u32 = 0x1C;
 /// The game's angle unit (u16, 0x10000 = one turn) in radians.
@@ -90,10 +87,6 @@ fn end_transition(set: &data::Moveset, mv: &data::Move) -> u32 {
 
 /// Cancel transitions 0x1A / 0x1B (0x80030424): continue the destination at the next frame.
 const TRANSITION_CONTINUE: u32 = 0x1A;
-/// The K.O. collapse (common_219, 80 frames).
-const KO_COLLAPSE: usize = 0xD66;
-/// The alias both fighters fall back to for a move neither set has (move-properties.md §3.1).
-const MISSING_FALLBACK: usize = 0xDC5;
 const TRANSITION_CONTINUE_2: u32 = 0x1B;
 /// Cancel transition "throw / hold link" (0x800306B8): pairs the two fighters.
 pub const TRANSITION_LINK: u32 = 0x21;
@@ -112,6 +105,9 @@ pub struct BodyVolumes {
     pub hurt: Vec<Sphere>,
     /// 8 body push spheres (head, forearms, root, shins, feet).
     pub push: Vec<Sphere>,
+    /// The pose's bone slots (world; Tekken Tag's strikes run between them, [`data::Attack::pairs`]). Empty for
+    /// Tekken 3, whose strikes are baked.
+    pub bones: Vec<Vec3>,
 }
 /// Round clock for the default option (40 s).
 pub const ROUND_FRAMES: u32 = 40 * 60;
@@ -128,6 +124,8 @@ pub struct GameData {
     pub characters: CharacterRules,
     pub moves: MoveRules,
     pub ball: BallRules,
+    /// Tekken Tag: each body's health in percent of `max_health` (empty: all 100).
+    pub health_percent: Vec<i32>,
 }
 
 /// The rules the code keeps for some moves (rules.json `moves`).
@@ -210,6 +208,9 @@ pub struct CharacterRules {
 impl GameData {
     pub fn load(gamedata: &Path) -> Result<Self> {
         let rules: serde_json::Value = data::load(&gamedata.join("rules.json"))?;
+        if rules["dialect"] == "ttt" {
+            return dialect::load(gamedata, &rules);
+        }
         let zone_percent = rules["damage_zones"]["percent"].as_array().context("rules.json: damage_zones.percent")?.iter().map(|v| v.as_i64().unwrap_or(100) as i32).collect();
         let max_health = rules["health"]["default_max"].as_i64().unwrap_or(130) as i32;
         let pct = |k: &str, d: i64| rules["juggle"][k].as_i64().unwrap_or(d) as i32;
@@ -249,7 +250,14 @@ impl GameData {
             characters,
             moves,
             ball,
+            health_percent: Vec::new(),
         })
+    }
+
+    /// A body's full health (a character id; the percent table's, else `max_health`).
+    pub fn max_health_of(&self, body: Option<i64>) -> i32 {
+        let pct = body.and_then(|b| self.health_percent.get(usize::try_from(b).ok()?)).copied().unwrap_or(100);
+        self.max_health * pct / 100
     }
 }
 
@@ -496,6 +504,8 @@ pub struct Fighter {
     pub early_end: Option<u32>,
     /// Out of play (+0xC2): a Force slot with no soldier in it; not stepped, hit or pushed.
     pub inactive: bool,
+    /// The bone slots of the pose before (Tekken Tag's strikes from where a limb was).
+    last_bones: Vec<Vec3>,
 }
 
 /// Facing angles in game units (u16 turn = 0x10000), as the actor keeps them (0x80043A94): `off` (+0x2E) the
@@ -513,6 +523,7 @@ pub struct Angles {
 
 impl Fighter {
     pub fn new(moveset: Arc<Moveset>, max_health: i32, position: Vec3, yaw: f32, side: i32) -> Self {
+        let neutral = moveset.fixed.neutral;
         let mut f = Self {
             moveset,
             input: InputState::default(),
@@ -575,8 +586,8 @@ impl Fighter {
             recover_guard: 0,
             partner: None,
             effects: Vec::new(),
-            alias: ALIAS_NEUTRAL,
-            queued_alias: ALIAS_NEUTRAL,
+            alias: neutral,
+            queued_alias: neutral,
             chain: 0,
             struck: false,
             struck_in_move: false,
@@ -584,8 +595,9 @@ impl Fighter {
             pushed: false,
             early_end: None,
             inactive: false,
+            last_bones: Vec::new(),
         };
-        f.current = f.resolve(ALIAS_NEUTRAL).unwrap_or(f.current);
+        f.current = f.resolve(neutral).unwrap_or(f.current);
         f
     }
 
@@ -611,10 +623,11 @@ impl Fighter {
                 _ => {}
             }
         }
-        if alias == MISSING_FALLBACK {
+        let missing = self.moveset.fixed.missing;
+        if alias == missing {
             return None;
         }
-        let r = self.moveset.aliases.as_ref()?.get(MISSING_FALLBACK)?;
+        let r = self.moveset.aliases.as_ref()?.get(missing)?;
         match r.bank {
             Bank::Own | Bank::Common => Some(Current { bank: r.bank, index: r.index? }),
             _ => None,
@@ -1279,6 +1292,19 @@ impl Fighter {
             0x18..=0x2E => ms != Some(r - 0x18),
             0x2F..=0x45 => self.opponent.moveset_id == Some(r - 0x2F),
             0x46..=0x5C => self.character == Some(r - 0x46),
+            // a dialect's gates, widened at load to kind << 8 | value (dialect.rs; Tekken 3's are bytes)
+            0x100.. => {
+                let v = Some(r & 0xFF);
+                match r >> 8 {
+                    dialect::REQ_MOVESET => ms == v,
+                    dialect::REQ_NOT_MOVESET => ms != v,
+                    dialect::REQ_OPPONENT_MOVESET => self.opponent.moveset_id == v,
+                    dialect::REQ_BODY => self.character == v,
+                    dialect::REQ_NOT_BODY => self.character != v,
+                    dialect::REQ_ALWAYS => true,
+                    _ => false,
+                }
+            }
             _ => self.character != Some(r - 0x5D),
         }
     }
@@ -1802,6 +1828,20 @@ impl Fighter {
         };
         a.frames.iter().filter(|f| f.frame == self.frame).flat_map(|f| f.segments.iter().map(|s| (to_world(s[0]), to_world(s[1])))).collect()
     }
+
+    /// Tekken Tag's strike this frame (0x34F288): each pair's segment from bone `start` to bone `end` of the pose, or
+    /// from the end bone's place a frame before when `start` is 0.
+    /// shortcut: slots past the pose's (Ogre's 0x13, projectiles' 0x18 / 0x19) give no segment; map them when the
+    /// app poses them.
+    fn pair_segments(&self, gd: &GameData, bones: &[Vec3]) -> Vec<(Vec3, Vec3)> {
+        let mv = self.current_move(gd);
+        let Some(a) = mv.attack.as_ref().filter(|a| !a.pairs.is_empty()) else { return vec![] };
+        if self.connected || self.frame < mv.active[0] || self.frame > mv.active[1] {
+            return vec![];
+        }
+        let at = |b: &[Vec3], k: u32| b.get(k as usize).copied();
+        a.pairs.iter().filter_map(|&[s, e]| Some((if s == 0 { at(&self.last_bones, e)? } else { at(bones, s)? }, at(bones, e)?))).collect()
+    }
 }
 
 /// Segment against a hurt sphere, the game's way (0x8004770C): a height-band clip, then a horizontal
@@ -2121,7 +2161,7 @@ impl Fight {
             }
         };
         swap(&mut self.fighters, &mut extra, &mut partner, &mut self.more, &mut m);
-        let none = BodyVolumes { hurt: vec![], push: vec![] };
+        let none = BodyVolumes::default();
         let vols: Vec<&BodyVolumes> = (0..n).map(|k| bodies.get(k).copied().unwrap_or(&none)).collect();
         let fallback = anims[0];
         let anims: Vec<&dyn Animations> = (0..n).map(|k| anims.get(k).copied().unwrap_or(fallback)).collect();
@@ -2216,7 +2256,7 @@ impl Fight {
             let f = &mut self.fighters[0];
             let d = t - f.root();
             let off = wrap_pi(d.x.datan2(d.z) - f.yaw);
-            if f.alias == ALIAS_NEUTRAL && !f.inactive && off.abs() > 0.01 {
+            if f.alias == f.moveset.fixed.neutral && !f.inactive && off.abs() > 0.01 {
                 f.yaw += off.clamp(-PI / 8.0, PI / 8.0);
                 f.root_yaw = f.yaw;
             }
@@ -2568,7 +2608,9 @@ impl Fight {
         // postures before any reaction of this frame is applied (a trade checks both against the same state)
         let postures = [self.fighters[0].posture(gd), self.fighters[1].posture(gd)];
         for a in 0..2 {
-            let segs = self.fighters[a].attack_segments(gd);
+            let mut segs = self.fighters[a].attack_segments(gd);
+            segs.extend(self.fighters[a].pair_segments(gd, &bodies[a].bones));
+            self.fighters[a].last_bones.clone_from(&bodies[a].bones);
             strike_down[a] = segs.first().map_or(0.0, |(p, q)| p.y - q.y);
             if log::log_enabled!(log::Level::Debug) {
                 for (p, q) in &segs {
@@ -2818,14 +2860,15 @@ impl Fight {
                 // guard cleared) unless the reaction is a lying one or has a jump window, or its next move is the
                 // stance anyway; elsewhere a reaction going back to the stance falls through the air table
                 let (to_stance, lying_or_air) = {
-                    let m = self.fighters[v].current_move(gd);
-                    (m.next.alias == 3 || m.next.alias == 0x28, m.posture.raw & 4 != 0 || m.bytes_18.jump_start != 0)
+                    let (m, fixed) = (self.fighters[v].current_move(gd), &self.fighters[v].moveset.fixed);
+                    (m.next.alias == fixed.neutral || m.next.alias == fixed.crouch, m.posture.raw & 4 != 0 || m.bytes_18.jump_start != 0)
                 };
                 if ko && !blocked {
                     if self.ko_collapse && (to_stance || !lying_or_air) {
                         let fv = &mut self.fighters[v];
-                        if let Some(to) = fv.resolve(KO_COLLAPSE) {
-                            fv.start_reaction(to, KO_COLLAPSE);
+                        let collapse = fv.moveset.fixed.ko_collapse;
+                        if let Some(to) = fv.resolve(collapse) {
+                            fv.start_reaction(to, collapse);
                             fv.freeze = 0;
                         }
                     } else if !self.ko_collapse && to_stance && !lying {
@@ -2889,9 +2932,10 @@ impl Fight {
         let (vf, af) = (&self.fighters[v], &self.fighters[a]);
         let plays = |f: &Fighter, alias: usize| f.resolve(alias) == Some(f.current);
         let queued = |f: &Fighter, alias: usize| f.queued.is_some_and(|q| f.resolve(alias) == Some(q.0));
-        let late = plays(vf, AIR_LATE) || ((plays(vf, AIR_SIDE[0]) || plays(vf, AIR_SIDE[1])) && vf.frame >= 19);
+        let fixed = &vf.moveset.fixed;
+        let late = plays(vf, fixed.air_late) || ((plays(vf, fixed.air_side[0]) || plays(vf, fixed.air_side[1])) && vf.frame >= 19);
         let index = if late {
-            if plays(vf, AIR_LATE) || (vf.position.y + vf.anim_root_y).abs() < 0x400 as f32 {
+            if plays(vf, fixed.air_late) || (vf.position.y + vf.anim_root_y).abs() < 0x400 as f32 {
                 2
             } else {
                 0
@@ -2902,7 +2946,7 @@ impl Fight {
             let normal = rule.is_some_and(|s| s.unless_queued.iter().any(|&q| queued(af, q)));
             if !normal && (rule.is_some() || strike_down >= 0x6E as f32) {
                 1
-            } else if plays(vf, AIR_RECOVERY) {
+            } else if plays(vf, fixed.air_recovery) {
                 0
             } else {
                 match quadrant {
