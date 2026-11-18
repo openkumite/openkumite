@@ -668,8 +668,9 @@ impl App {
         };
         let t = Instant::now();
         let mut game = Game::load(&self.assets, models)?;
-        // (an arcade arena in Tekken Tag: the camera row and floor sounds of the arena it stands in)
-        let arena = if self.ttt_arcade(stage).is_some() { ttt::ARCADE_STAND_IN } else { stage };
+        // (an arcade arena or Tekken Ball's court in Tekken Tag: the camera row and floor sounds of the arena it stands in)
+        let court = self.roster.ttt.as_ref().is_some_and(|d| d.ball == Some(stage));
+        let arena = if self.ttt_arcade(stage).is_some() || court { ttt::ARCADE_STAND_IN } else { stage };
         game.set_arena(arena);
         game.handicap = setup.as_ref().map_or([100; 2], |s| s.handicap);
         if setup.is_none() {
@@ -736,6 +737,10 @@ impl App {
             let (kind, server) = s.ball.unwrap_or((0, 0));
             game.ball = Some(kumite_game::BallSetup { data, kind, server, rounds: 0 });
             game.round_frames = u32::MAX / 2;
+            // (Tekken Tag has no effect atlas: the ball's untextured triangles take a white texel)
+            if scene.effects.is_none() {
+                scene.effects = Some(r.texture(1, 1, &[255; 4]));
+            }
             // 2 ON 2: each side's partner (actor 3 beside P1, actor 2 beside P2), on the court every round
             if let Some(partners) = s.partners {
                 let record = |p: (usize, usize)| {

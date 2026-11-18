@@ -1012,6 +1012,12 @@ impl Tag {
                 out.extend(self.sound(id, 0, arena, false));
             }
         }
+        // Ball (the Tekken 3 slice's): its sounds are ids of a group of their own (ball.json `constants.sounds`)
+        for e in f.ball.iter().flat_map(|b| &b.events) {
+            if let kumite_sim::ball::BallEvent::Sound(id) = *e {
+                out.extend(self.sound(id, 0, arena, false));
+            }
+        }
         out
     }
 }

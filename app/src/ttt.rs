@@ -31,6 +31,8 @@ const ONE_VS: u32 = 6;
 const PRACTICE: u32 = 7;
 const THEATER: u32 = 9;
 pub const BOWL: u32 = 8;
+/// Tekken Ball (OpenKumite's: Tekken 3's mode, with the Tekken 3 slice's ball.json): no mode of the game's.
+pub const BALL: u32 = 0x100;
 const OPTIONS: u32 = 11;
 /// OPTIONS' rows the engine plays (the config's DIFFICULTY LEVEL, FIGHT COUNT, ROUND TIME), then EXIT.
 const OPTION_ROWS: [usize; 3] = [0, 1, 2];
@@ -92,12 +94,15 @@ pub struct Data {
     pub round_frames: Vec<u32>,
     /// The endings, the staff roll and Theater (endings.json; None: a pack without them).
     pub endings: Option<Arc<EndingData>>,
+    /// Tekken Ball's court (None: no Tekken 3 slice, no TEKKEN BALL on the menu).
+    pub ball: Option<usize>,
 }
 
 impl Data {
     /// From roster.json (None without `front_end`: an older pack, the plain front end); `arenas`: the pack's
-    /// (stages/index.json); `rounds`: rounds.json; `endings`: endings.json's; `arcade`: the arcade pack's arenas.
-    pub fn load(roster: &Value, arenas: &Value, rounds: &Value, endings: Option<EndingData>, arcade: Vec<(usize, String)>) -> Option<Arc<Self>> {
+    /// (stages/index.json); `rounds`: rounds.json; `endings`: endings.json's; `arcade`: the arcade pack's arenas; `ball`:
+    /// Tekken Ball's court.
+    pub fn load(roster: &Value, arenas: &Value, rounds: &Value, endings: Option<EndingData>, arcade: Vec<(usize, String)>, ball: Option<usize>) -> Option<Arc<Self>> {
         let raw = roster.get("front_end").filter(|f| f.is_object())?.clone();
         let opt = |v: &Value| v.as_u64().map(|x| x as usize);
         let slots = raw["select"]["slots"]
@@ -120,6 +125,7 @@ impl Data {
             arcade,
             round_frames: ints(&rounds["round_time"]["options_frames"]).into_iter().map(|f| f as u32).collect(),
             endings: endings.map(Arc::new),
+            ball,
             raw,
         }))
     }
@@ -315,6 +321,9 @@ impl Run {
         if ladder_mode(mode) {
             run.ladder = ladder(d, roster, progress.stage, &d.pool(progress), &run.teams[0], tag(mode), seed);
         }
+        if mode == BALL {
+            run.stage = d.ball.unwrap_or(run.stage);
+        }
         if run.teams[1].is_empty() && mode != BOWL {
             // Team Battle against the CPU: as many as the player's; Survival: the first opponent
             let n = if mode == TEAM { run.teams[0].len() } else { 1 };
@@ -331,6 +340,7 @@ impl Run {
             TEAM => Mode::TeamBattle,
             TIME_ATTACK => Mode::TimeAttack,
             SURVIVAL => Mode::Survival,
+            BALL => Mode::Ball,
             _ => Mode::Practice,
         };
         let cpu = self.ladder.get(self.fight);
@@ -340,7 +350,7 @@ impl Run {
         };
         let level = (self.fight * 9 / 7).min(9);
         let stage = cpu.map_or(self.stage, |c| c.1);
-        FightSetup { mode, players: [side(0), side(1)], stage, difficulty: self.options[0].min(2), level, handicap: [100; 2], ball: None, partners: None }
+        FightSetup { mode, players: [side(0), side(1)], stage, difficulty: self.options[0].min(2), level, handicap: [100; 2], ball: (self.mode == BALL).then_some((0, 0)), partners: None }
     }
 
     /// The CPU plays side `k` (practice's dummy stands).
@@ -627,8 +637,8 @@ impl Select {
     }
 
     fn key(&mut self, player: usize, key: Key, d: &Data, roster: &Roster, progress: &Progress, seed: &mut u32) -> Option<Page> {
-        // Team Battle, Tekken Bowl: 2P's START joins
-        if matches!(self.mode, TEAM | BOWL) && player == 1 && key == Key::Start && self.sides[1].player.is_none() {
+        // Team Battle, Tekken Bowl, Tekken Ball: 2P's START joins
+        if matches!(self.mode, TEAM | BOWL | BALL) && player == 1 && key == Key::Start && self.sides[1].player.is_none() {
             sfx::play(sfx::join());
             self.sides[1].player = Some(1);
             return None;
@@ -738,7 +748,7 @@ impl Front {
     }
 
     /// The main menu's entries: of the locked ones, THEATER once an ending was seen (0x3BFED8), TEKKEN BOWL once the
-    /// unlock stage opens it (Gallery is not here yet).
+    /// unlock stage opens it (Gallery is not here yet); OpenKumite's TEKKEN BALL before OPTIONS with the Tekken 3 slice.
     fn items(d: &Data, p: &Progress) -> Vec<(u32, String)> {
         let open = |i: &&Value| {
             let mode = int(&i["mode"]) as u32;
@@ -746,6 +756,9 @@ impl Front {
         };
         let mut items: Vec<(u32, String)> =
             d.raw["menu"]["items"].as_array().into_iter().flatten().filter(open).map(|i| (int(&i["mode"]) as u32, i["label"].as_str().unwrap_or_default().to_string())).collect();
+        if d.ball.is_some() {
+            items.insert(items.iter().position(|i| i.0 == OPTIONS).unwrap_or(items.len()), (BALL, "TEKKEN BALL".into()));
+        }
         if cfg!(not(target_arch = "wasm32")) {
             items.push((u32::MAX, "EXIT".into()));
         }
@@ -1234,7 +1247,7 @@ fn small(painter: &egui::Painter, v: &View, text: &str, x: f32, y: f32, c: Color
 fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &Roster, p: &Progress, s: &Select) {
     image(painter, v, art, "141_000.png", [0.0, 0.0, W, H], Color32::from_gray(90));
     let dy = num(&d.raw["select"]["face_dy"]);
-    let title = d.raw["select"]["titles"][s.mode as usize].as_str().unwrap_or_default();
+    let title = if s.mode == BALL { "TEKKEN BALL" } else { d.raw["select"]["titles"][s.mode as usize].as_str().unwrap_or_default() };
     font(painter, v, art, d, title, W / 2.0, 14.0, 0.5, Color32::WHITE);
     for (k, slot) in d.slots.iter().enumerate() {
         if hidden(d, roster, p, k) {
@@ -1408,6 +1421,34 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
     }
 }
 
+/// Tekken Ball's gauges and floating texts in Tekken Tag (OpenKumite's: Tekken 3's are sprites of its own,
+/// 0x800B49A8 / 0x800B3F98): each side's charge in Tekken Tag's bar strips at the screen's foot, filling towards the
+/// middle, the owner's blinking while the ball has power; the texts in the chrome font. `gauges`: per side the shown
+/// and the trail part of the full; `texts`: text, Tekken 3's colour, place on the 368 x 480 screen.
+#[allow(clippy::too_many_arguments)]
+pub fn ball_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, gauges: [[f32; 2]; 2], flash: Option<usize>, texts: &[(&str, u32, [f32; 2])], frame: u32) {
+    let h = &d.raw["hud"];
+    let strip = |k: usize| h["strips"][k].as_str().unwrap_or_default();
+    let (bx, bw, y) = ([num(&h["bars"]["x"][0]), num(&h["bars"]["x"][1])], num(&h["bars"]["w"]), H - 40.0);
+    for (i, parts) in gauges.into_iter().enumerate() {
+        let tint = if flash == Some(i) && frame / 8 % 2 == 1 { Color32::from_gray(110) } else { Color32::WHITE };
+        image(painter, v, art, strip(2), [bx[i], y, bw, 10.0], tint);
+        // (the trail, then the charge)
+        for (k, part) in [(4, parts[1]), (1, parts[0])] {
+            let pw = bw * part.clamp(0.0, 1.0);
+            image(painter, v, art, strip(k), [if i == 0 { bx[i] } else { bx[i] + bw - pw }, y, pw, 10.0], tint);
+        }
+    }
+    for &(s, c, [x, y]) in texts {
+        let tint = match c {
+            2 => Color32::from_rgb(120, 190, 255),
+            5 => Color32::from_rgb(255, 120, 110),
+            _ => Color32::from_rgb(255, 230, 90),
+        };
+        font(painter, v, art, d, s, x * W / SCREEN_W, y * H / SCREEN_H, 0.35, tint);
+    }
+}
+
 /// Tekken Bowl's HUD (OpenKumite's: the original's, 0x3E4BC0, and its gauges' sprites are not decoded): each player's
 /// score sheet (ten frames, the balls' marks, the running totals; the one bowling lit), the prompt and the meters of
 /// the throw's step (the spin meter between the hand's bounds, the power meter), SPEED in MPH (0x3EAC88) once the
@@ -1520,7 +1561,7 @@ mod tests {
         // (each character's ending: its id)
         let endings = EndingData::new(serde_json::json!({"table": [[0], [1], [2], [3]], "endings": [{}, {}, {}, {}]}), &Value::Null).unwrap();
         let arenas: Vec<Value> = (0..23).map(|id| serde_json::json!({"id": id, "name": format!("A{id}")})).collect();
-        Data::load(&fe, &Value::from(arenas), &serde_json::json!({"round_time": {"options_frames": [2160, 2820, 4260]}}), Some(endings), vec![]).unwrap()
+        Data::load(&fe, &Value::from(arenas), &serde_json::json!({"round_time": {"options_frames": [2160, 2820, 4260]}}), Some(endings), vec![], None).unwrap()
     }
 
     fn roster() -> Roster {
@@ -1599,7 +1640,7 @@ mod tests {
         let endings = serde_json::json!({"table": [[1, 1], [2]], "endings": [{}, {}, {}], "playback": {"unknown": 2},
             "theater": {"labels": [["(1P)PAUL", "(2P)PAUL"], ["(1P)LAW"]], "extras": [{"label": "OPENING MOVIE"}, {"label": "EMBU2", "cast": 1}]}});
         let e = EndingData::new(endings, &Value::Null).unwrap();
-        let d = Data::load(&serde_json::json!({"front_end": {}}), &Value::Null, &serde_json::json!({}), Some(e), vec![]).unwrap();
+        let d = Data::load(&serde_json::json!({"front_end": {}}), &Value::Null, &serde_json::json!({}), Some(e), vec![], None).unwrap();
         let rows = |seen| theater(&d, seen).into_iter().map(|r| r.into_iter().map(|c| (c.0, c.1)).collect::<Vec<_>>()).collect::<Vec<_>>();
         let tail = [vec![("OPENING MOVIE".to_string(), Cell::None)], vec![("MUSIC PLAYER".into(), Cell::Music)], vec![("EXIT THEATER MENU".into(), Cell::Exit)]];
         assert_eq!(rows(0), tail);
@@ -1615,7 +1656,7 @@ mod tests {
         let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE", "locked": false},
             {"mode": 8, "label": "TEKKEN BOWL", "locked": true}, {"mode": 9, "label": "THEATER", "locked": true}]},
             "unlocks": {"schedule": [{"stage": 10, "kind": 5, "character": 0}]}}});
-        let d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![]).unwrap();
+        let d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![], None).unwrap();
         let modes = |stage| Front::items(&d, &Progress { stage, ..Progress::default() }).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
         assert_eq!((modes(9), modes(10)), (vec![ARCADE], vec![ARCADE, BOWL]));
         // its select: P1 picks one; 2P's START joins
@@ -1624,6 +1665,22 @@ mod tests {
         let (mut seed, roster) = (1, roster());
         s.key(1, Key::Start, &d, &roster, &Progress::default(), &mut seed);
         assert_eq!(s.sides[1].player, Some(1));
+    }
+
+    /// TEKKEN BALL is on the menu (before OPTIONS) only with the Tekken 3 slice's court; its run is Ball there, one
+    /// on one against a CPU.
+    #[test]
+    fn tekken_ball_with_the_slice() {
+        let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE"}, {"mode": 11, "label": "OPTIONS"}]}}});
+        let modes = |ball| {
+            Front::items(&Data::load(&fe, &Value::Null, &serde_json::json!({}), None, vec![], ball).unwrap(), &Progress::default()).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>()
+        };
+        assert_eq!((modes(None), modes(Some(23))), (vec![ARCADE, OPTIONS], vec![ARCADE, BALL, OPTIONS]));
+        let (d, roster, mut seed) = (data(), roster(), 1);
+        let d = Arc::new(Data { ball: Some(23), ..Arc::try_unwrap(d).unwrap() });
+        let run = Run::new(&d, &roster, &Progress::default(), BALL, [vec![(0, 0)], vec![]], &mut seed);
+        let s = run.setup();
+        assert_eq!((s.mode, s.stage, s.ball, run.bench(), run.teams[1].len()), (Mode::Ball, 23, Some((0, 0)), None, 1));
     }
 
     #[test]

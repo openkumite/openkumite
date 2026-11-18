@@ -297,7 +297,8 @@ pub fn load(gamedata: &Path, rules: &serde_json::Value) -> Result<GameData> {
         juggle_percent: [juggle("first_air_hit_percent", 80), juggle("later_air_hits_percent", 50)],
         characters: CharacterRules::default(),
         moves: MoveRules::default(),
-        ball: BallRules::default(),
+        // (Ball: with the Tekken 3 slice installed, its ball.json in Tekken Tag's numbers)
+        ball: if kumite_fs::exists(&gamedata.join("ball.json")) { BallRules::load(gamedata)? } else { BallRules::default() },
         health_percent: percent,
         // (0x3720C8) one 3 / 10, and chip without Tekken 3's + 2
         counter_bonus: rules["counter_hit"]["bonus_tenths"].as_array().map_or_else(|| vec![3], |v| v.iter().map(|k| k.as_i64().unwrap_or(0) as i32).collect()),

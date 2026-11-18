@@ -419,7 +419,15 @@ impl Hud {
                 at += w;
             }
         }
-        let Some(vp) = self.view_proj else { return };
+        for (s, c, [x, y]) in self.ball_texts() {
+            art.text(painter, v, g.text_font as usize, c, x - g.text_dx * s.len() as f32, y, s, Color32::WHITE);
+        }
+    }
+
+    /// Ball's floating texts on the screen: text, colour, place (at the ball, risen a pixel a frame).
+    fn ball_texts(&self) -> Vec<(&str, u32, [f32; 2])> {
+        let (Some(vp), g) = (self.view_proj, &self.data.ball) else { return Vec::new() };
+        let mut out = Vec::new();
         for (s, c, world, life) in &self.state.ball.texts {
             let clip = vp * (*world / kumite_game::UNITS).extend(1.0);
             if clip.w <= 0.0 {
@@ -427,8 +435,9 @@ impl Hud {
             }
             let (sx, sy) = ((clip.x / clip.w + 1.0) * crate::art::CENTRE, (1.0 - clip.y / clip.w) * crate::art::SCREEN_H / 2.0);
             let rise = g.text_frames.saturating_sub(*life) as f32;
-            art.text(painter, v, g.text_font as usize, *c, sx - g.text_dx * s.len() as f32, sy + g.text_dy - rise, s, Color32::WHITE);
+            out.push((s.as_str(), *c, [sx, sy + g.text_dy - rise]));
         }
+        out
     }
 
     /// A name plate (0x8004E8B4 / Force 0x800B32AC): the model's name picture on a shaded plate in the costume's
@@ -528,7 +537,13 @@ impl Hud {
         if d.bar_w == 0 {
             if let Some(t) = &info.ttt {
                 let time = info.time_base.map(|_| self.state.run_frames);
-                return crate::ttt::hud(&painter, &v, art, t, bout, info, self.state.trail, self.state.ko, self.state.frame, time);
+                crate::ttt::hud(&painter, &v, art, t, bout, info, self.state.trail, self.state.ko, self.state.frame, time);
+                if bout.game.fight.ball.is_some() && !matches!(bout.phase, Phase::Replay { .. }) {
+                    let w = self.data.ball.w.max(1) as f32;
+                    let gauges = self.state.ball.gauges.map(|(_, _, shown, trail)| [shown as f32 / w, trail as f32 / w]);
+                    crate::ttt::ball_hud(&painter, &v, art, t, gauges, self.state.ball.flash, &self.ball_texts(), self.state.frame);
+                }
+                return;
             }
             return plain(&painter, &v, bout, info, self.state.ko);
         }

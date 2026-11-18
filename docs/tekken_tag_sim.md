@@ -176,3 +176,20 @@ offsets from their decoded bases, the strike pose's length (150 frames), the cou
 spectators drawn (their K.O. is tested, not shown), the floor between the pins and the deck (the hall has a hole
 there: what the original draws in it is not found), the ball's and pins' shadows (objects 2, 3), the strike win poses 4770-4773 and the partner's, the replay, the BOWL STYLE / SWITCH HANDS menu, the pause
 menu, the records (THE KING OF IRONBOWL) and the 200 / 300 unlocks, the aiming guide.
+
+## Tekken Ball (Tekken 3's, with the Tekken 3 slice)
+
+With the Tekken 3 disc converted, ok_tekken3_converter's `ttt::install` writes Tekken 3's `gamedata/ball.json` into the
+extras in Tekken Tag's numbers: the back steps pushed back (aliases 24 / 26 / 30-33 as 65 / 66 / 70-73, and Gon's and
+Doctor B.'s own), Yoshimitsu's self-stab (move set 4, all but alias 441), the CPU pool as bodies, the court (Tekken 3's
+beach as arena 23, `stages/stage_23.glb`), and its eight sounds as a group of new ids (a bank of Tekken 3's samples;
+`Tag::step` plays them). `GameData::ball` reads it (`BallRules::load`), and the menu shows TEKKEN BALL (OpenKumite's
+entry, before OPTIONS) only when it is there. One on one, no tag, as in Tekken 3; the camera row and floor sounds of
+arena 0, the clock off; the gauges and the floating texts in Tekken Tag's strips and chrome font (`ttt::ball_hud`).
+
+A move's ball power has no table in Tekken 3: the hit on the ball (0x80047D98) takes the move's damage (none for
+damage type 1) and its hit mask (0x217 / 0x31F drives, 0x412 the smash, 0x607 / 0x706 the spike, 0x10F / 0x51F lobs),
+and the side's charge grows by damage x the ball's percent. Tekken Tag's moves carry both in the same form (the same
+masks), so its fighters' power is their own moves' damage; Gon's and Doctor B.'s are Tekken 3's moves. Test:
+`kumite_game --test crossover ball_under_tekken_tag`. Not done: the ball type (BEACH only; Tekken 3 picks it on its
+select), Tekken 3's gauge sprites and its CPU opponent draw (Tekken Tag's front end draws the CPU), 2 ON 2.

@@ -221,3 +221,53 @@ fn hits_and_voices_sound() {
     let ko = hit(&mut b, &mut st, ["f", "d+3,n*30"], 1).expect("the K.O.");
     assert!(ko.iter().any(|f| f.starts_with(&own)), "Gon's K.O.: {ko:?}");
 }
+
+/// Xiaoyu's first model.
+const XIAOYU: usize = 432;
+
+/// What a Ball match of two CPUs saw: the frames the ball was charged, the most charge, the fighters' lowest health,
+/// the Ball sounds heard (files of the slice's Ball bank), the state hashes.
+fn ball_match(a: &Assets, models: [usize; 2]) -> (u32, i32, [i32; 2], Vec<String>, Vec<u64>) {
+    let mut g = Game::load(a, models).unwrap();
+    // as the app sets Ball up (the slice's ball.json in the view): the clock off, no K.O. collapse
+    g.ball = Some(kumite_game::BallSetup { data: std::sync::Arc::new(a.gamedata("ball.json").unwrap()), kind: 0, server: 0, rounds: 0 });
+    g.round_frames = u32::MAX / 2;
+    (g.ko_collapse, g.fight.ko_collapse) = (false, false);
+    let mut b = Bout::new(g, kumite_game::ai_data(a).unwrap(), 2, false);
+    b.set_cpu(0, Some((1, 5)));
+    b.set_cpu(1, Some((1, 5)));
+    let s = SoundData::load(a).unwrap();
+    let sound: serde_json::Value = a.gamedata("sound.json").unwrap();
+    let serve = a.gamedata::<serde_json::Value>("ball.json").unwrap()["constants"]["sounds"]["serve"].as_u64().unwrap();
+    let group = sound["groups"]["entries"].as_array().unwrap().iter().find(|g| g["first_id"].as_u64() == Some(serve)).expect("the Ball group");
+    let own = format!("{:03}/", group["bank"].as_u64().unwrap());
+    let (mut st, mut charged, mut most, mut low, mut sounds, mut hashes) = (SoundState::default(), 0, 0, [i32::MAX; 2], Vec::new(), Vec::new());
+    for _ in 0..3000 {
+        b.step([Pad::default(); 2]);
+        hashes.push(b.game.state_hash());
+        let ball = b.game.fight.ball.as_ref().unwrap();
+        charged += u32::from(ball.power > 0);
+        most = most.max(ball.charge[0].max(ball.charge[1]));
+        for (k, f) in b.game.fight.fighters.iter().enumerate() {
+            low[k] = low[k].min(f.health / kumite_sim::ONE);
+        }
+        sounds.extend(heard(a, &s, &b, &mut st).into_iter().filter(|f| f.starts_with(&own)));
+    }
+    (charged, most, low, sounds, hashes)
+}
+
+/// Tekken Ball under Tekken Tag (the slice's ball.json, Tekken Tag's numbers): Paul against Gon, Jin against Xiaoyu,
+/// two CPUs. The ball is hit and charged (its power from the hitting move's damage, as Tekken 3's), health is lost
+/// (points, Attack Ball hits), the Ball sounds play; the same twice.
+#[test]
+fn ball_under_tekken_tag() {
+    let Some(a) = assets() else { return };
+    for models in [[PAUL, GON], [JIN, XIAOYU]] {
+        let (charged, most, low, sounds, hashes) = ball_match(&a, models);
+        eprintln!("{models:?}: charged {charged} frames, most {most}, lowest health {low:?}, {} Ball sounds", sounds.len());
+        assert!(charged > 0 && most > 0, "{models:?}: the ball is charged");
+        assert!(low.iter().any(|&h| h < 100), "{models:?}: health lost {low:?}");
+        assert!(!sounds.is_empty(), "{models:?}: no Ball sound");
+        assert_eq!(hashes, ball_match(&a, models).4, "{models:?}: the same twice");
+    }
+}
