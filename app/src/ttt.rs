@@ -1,9 +1,9 @@
 //! Tekken Tag Tournament's front end, when the game data has it (roster.json `front_end`, which the Tekken Tag
-//! converter reads from the PS2 executable: its docs/FRONTEND.md): the title, the main menu and its modes (Tekken
-//! Bowl and Gallery are not here yet), the character select with the tag partner, OPTIONS, the arcade ladder with
-//! CONTINUE, the modes' runs, the unlock schedule, the endings (`gamedata/endings.json`: the arcade clear's staff
-//! roll and ending, Theater), and the fight HUD, drawn from its 2D pictures (`pictures/FFF_NNN.png`) on its 640 x 448
-//! screen.
+//! converter reads from the PS2 executable: its docs/FRONTEND.md): the title, the main menu and its modes (Gallery is
+//! not here yet; Theater once an ending was seen, Tekken Bowl once unlocked), the character select with the tag
+//! partner, OPTIONS, the arcade ladder with CONTINUE, the modes' runs, the unlock schedule, the endings
+//! (`gamedata/endings.json`: the arcade clear's staff roll and ending, Theater), the fight HUD and Tekken Bowl's, drawn
+//! from its 2D pictures (`pictures/FFF_NNN.png`) on its 640 x 448 screen.
 //!
 //! Not decoded, OpenKumite's own: the VS screen, the select screen's layout below the grid and its timer (none),
 //! which button gives which costume, the banners (in the chrome font), the menu, option and Theater screens' layout,
@@ -30,6 +30,7 @@ const ONE_ARCADE: u32 = 5;
 const ONE_VS: u32 = 6;
 const PRACTICE: u32 = 7;
 const THEATER: u32 = 9;
+pub const BOWL: u32 = 8;
 const OPTIONS: u32 = 11;
 /// OPTIONS' rows the engine plays (the config's DIFFICULTY LEVEL, FIGHT COUNT, ROUND TIME), then EXIT.
 const OPTION_ROWS: [usize; 3] = [0, 1, 2];
@@ -120,6 +121,10 @@ impl Data {
     }
     fn in_pool(&self, stage: u32, c: usize) -> bool {
         self.has(0, stage, c)
+    }
+    /// Tekken Bowl is open at unlock stage `stage` (the schedule's kind 5).
+    fn bowl_open(&self, stage: u32) -> bool {
+        self.schedule.iter().any(|&(s, k, _)| k == 5 && s <= stage)
     }
 
     /// An option's default (0x439CE0 descriptors) and its values.
@@ -246,7 +251,7 @@ impl Run {
         if ladder_mode(mode) {
             run.ladder = ladder(d, roster, progress.stage, &run.teams[0], tag(mode), seed);
         }
-        if run.teams[1].is_empty() {
+        if run.teams[1].is_empty() && mode != BOWL {
             // Team Battle against the CPU: as many as the player's; Survival: the first opponent
             let n = if mode == TEAM { run.teams[0].len() } else { 1 };
             run.teams[1] = cpu_team(d, roster, progress.stage, &run.teams[0], n, false, seed);
@@ -551,8 +556,8 @@ impl Select {
     }
 
     fn key(&mut self, player: usize, key: Key, d: &Data, roster: &Roster, progress: &Progress, seed: &mut u32) -> Option<Page> {
-        // Team Battle: 2P's START joins
-        if self.mode == TEAM && player == 1 && key == Key::Start && self.sides[1].player.is_none() {
+        // Team Battle, Tekken Bowl: 2P's START joins
+        if matches!(self.mode, TEAM | BOWL) && player == 1 && key == Key::Start && self.sides[1].player.is_none() {
             sfx::play(sfx::join());
             self.sides[1].player = Some(1);
             return None;
@@ -661,17 +666,15 @@ impl Front {
         Self { page: Page::Menu { cursor: 0 }, frame: 0 }
     }
 
-    /// The main menu's entries (of the locked ones, THEATER once an ending was seen, 0x3BFED8; Tekken Bowl and
-    /// Gallery are not here yet).
-    fn items(d: &Data, seen: u64) -> Vec<(u32, String)> {
-        let theater = |i: &&Value| int(&i["mode"]) as u32 == THEATER && seen != 0 && d.endings.is_some();
-        let mut items: Vec<(u32, String)> = d.raw["menu"]["items"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|i| i["locked"] != true || theater(i))
-            .map(|i| (int(&i["mode"]) as u32, i["label"].as_str().unwrap_or_default().to_string()))
-            .collect();
+    /// The main menu's entries: of the locked ones, THEATER once an ending was seen (0x3BFED8), TEKKEN BOWL once the
+    /// unlock stage opens it (Gallery is not here yet).
+    fn items(d: &Data, p: &Progress) -> Vec<(u32, String)> {
+        let open = |i: &&Value| {
+            let mode = int(&i["mode"]) as u32;
+            i["locked"] != true || (mode == THEATER && p.seen != 0 && d.endings.is_some()) || (mode == BOWL && d.bowl_open(p.stage))
+        };
+        let mut items: Vec<(u32, String)> =
+            d.raw["menu"]["items"].as_array().into_iter().flatten().filter(open).map(|i| (int(&i["mode"]) as u32, i["label"].as_str().unwrap_or_default().to_string())).collect();
         if cfg!(not(target_arch = "wasm32")) {
             items.push((u32::MAX, "EXIT".into()));
         }
@@ -692,7 +695,7 @@ impl Front {
                 _ => None,
             },
             Page::Menu { cursor } => {
-                let items = Self::items(&d, progress.seen);
+                let items = Self::items(&d, progress);
                 match key {
                     Key::Up | Key::Down => {
                         sfx::play(sfx::cursor());
@@ -730,7 +733,7 @@ impl Front {
                     sfx::play(sfx::back());
                     progress.options = Some(*values);
                     set_progress(progress.clone());
-                    let at = Self::items(&d, progress.seen).iter().position(|i| i.0 == OPTIONS).unwrap_or(0);
+                    let at = Self::items(&d, progress).iter().position(|i| i.0 == OPTIONS).unwrap_or(0);
                     self.page = Page::Menu { cursor: at };
                     return Outcome::TttSaved;
                 }
@@ -778,7 +781,7 @@ impl Front {
                             sfx::play(sfx::confirm());
                             Some(Page::Music { cursor: 0, playing: None })
                         }
-                        Some(Cell::Exit) => Some(Page::Menu { cursor: Self::items(&d, progress.seen).iter().position(|i| i.0 == THEATER).unwrap_or(0) }),
+                        Some(Cell::Exit) => Some(Page::Menu { cursor: Self::items(&d, progress).iter().position(|i| i.0 == THEATER).unwrap_or(0) }),
                         _ => None,
                     },
                     Key::Back => Some(Page::Menu { cursor: 0 }),
@@ -856,7 +859,7 @@ impl Front {
             }
             Page::Menu { cursor } => {
                 backdrop(painter, v, art);
-                let items = Self::items(d, progress.seen);
+                let items = Self::items(d, progress);
                 for (k, (_, label)) in items.iter().enumerate() {
                     let y = 80.0 + 26.0 * k as f32;
                     if k == *cursor {
@@ -898,10 +901,14 @@ impl Front {
                 let first = r.saturating_sub(6).min(rows.len().saturating_sub(13));
                 for (k, row) in rows.iter().enumerate().skip(first).take(13) {
                     let y = 80.0 + 26.0 * (k - first) as f32;
+                    // cells as wide as the row's longest label (about 7.5 a letter), squeezed to fit the screen
+                    let longest = row.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0) as f32;
+                    let n = row.len().max(1) as f32;
+                    let step = (longest * 7.5 + 14.0).max(72.0).min((W - 60.0) / n);
                     for (j, (label, cell)) in row.iter().enumerate() {
-                        let x = if row.len() == 1 { W / 2.0 } else { 70.0 + 72.0 * j as f32 };
+                        let x = if row.len() == 1 { W / 2.0 } else { 30.0 + step * (j as f32 + 0.5) };
                         if k == *r && j == *c {
-                            Art::shade(painter, v, sv([x - 36.0, y - 3.0, 72.0, 22.0]), [Color32::from_rgba_unmultiplied(40, 80, 200, 150); 4]);
+                            Art::shade(painter, v, sv([x - step / 2.0, y - 3.0, step, 22.0]), [Color32::from_rgba_unmultiplied(40, 80, 200, 150); 4]);
                         }
                         let colour = match cell {
                             Cell::None => Color32::from_gray(90),
@@ -1260,6 +1267,100 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
     }
 }
 
+/// Tekken Bowl's HUD (OpenKumite's: the original's, 0x3E4BC0, and its gauges' sprites are not decoded): each player's
+/// score sheet (ten frames, the balls' marks, the running totals; the one bowling lit), the prompt and the meters of
+/// the throw's step (the spin meter between the hand's bounds, the power meter), SPEED in MPH (0x3EAC88) once the
+/// ball goes, and the callout in the chrome font.
+pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &Roster, scene: &kumite_game::bowl::BowlScene, frame: u64) {
+    use kumite_sim::bowl::{Mark, Phase};
+    let b = &scene.bowl;
+    let box_ = |c: Color32, r: [f32; 4]| Art::shade(painter, v, sv(r), [c; 4]);
+    let (frame_w, x0) = (48.0, 92.0);
+    for (k, card) in b.cards.iter().enumerate() {
+        let y = 14.0 + 46.0 * k as f32;
+        let lit = k == b.current && b.phase != Phase::Over;
+        box_(Color32::from_rgba_unmultiplied(0, 0, 0, 170), [12.0, y, 616.0, 42.0]);
+        let name = b.players.get(k).and_then(|p| roster.by_id(p.character)).map_or(String::new(), |c| c.name.to_uppercase());
+        small(painter, v, &format!("{}P {name}", k + 1), 52.0, y + 15.0, if lit { Color32::YELLOW } else { Color32::from_gray(200) });
+        let totals = card.totals();
+        for (f, total) in totals.iter().enumerate() {
+            let x = x0 + frame_w * f as f32;
+            let here = lit && card.at().frame == f;
+            box_(if here { Color32::from_rgba_unmultiplied(40, 80, 200, 200) } else { Color32::from_rgba_unmultiplied(255, 255, 255, 40) }, [x + 1.0, y + 2.0, frame_w - 2.0, 38.0]);
+            // the balls' marks: X a strike, / a spare, - nothing, F a foul (a split's count in red)
+            let balls = card.frame_balls(f);
+            let mut prev = 0u8;
+            for (n, i) in balls.enumerate() {
+                let (pins, mark) = (card.rolls.get(i).copied().unwrap_or(0), card.marks.get(i).copied().unwrap_or_default());
+                let text = match mark {
+                    Mark::Strike => "X".to_string(),
+                    Mark::Spare => "/".into(),
+                    Mark::Foul => "F".into(),
+                    _ if pins == 0 => "-".into(),
+                    _ if n > 0 && f == 9 && prev < 10 && prev + pins == 10 => "/".into(),
+                    _ => pins.to_string(),
+                };
+                prev = pins;
+                let c = if mark == Mark::Split { Color32::from_rgb(255, 90, 90) } else { Color32::WHITE };
+                small(painter, v, &text, x + 9.0 + 15.0 * n as f32, y + 3.0, c);
+            }
+            if let Some(t) = total {
+                small(painter, v, &t.to_string(), x + frame_w / 2.0, y + 22.0, Color32::WHITE);
+            }
+        }
+        small(painter, v, &card.total().to_string(), x0 + frame_w * 10.0 + 24.0, y + 15.0, Color32::WHITE);
+    }
+    // the throw's step: its prompt and meters
+    let meter = |y: f32, label: &str, part: f32, mark: Option<f32>| {
+        small(painter, v, label, 70.0, y - 1.0, Color32::WHITE);
+        box_(Color32::from_rgba_unmultiplied(0, 0, 0, 170), [110.0, y, 200.0, 12.0]);
+        match mark {
+            Some(m) => {
+                box_(Color32::from_gray(90), [209.0, y, 2.0, 12.0]);
+                box_(Color32::from_rgb(255, 210, 60), [110.0 + 196.0 * m.clamp(0.0, 1.0), y, 4.0, 12.0]);
+            }
+            None => box_(Color32::from_rgb(255, 80 + (175.0 * (1.0 - part)) as u8, 40), [110.0, y, 200.0 * part.clamp(0.0, 1.0), 12.0]),
+        }
+    };
+    let bowler = b.players.get(b.current);
+    let prompt = match b.phase {
+        Phase::Position => Some("LEFT / RIGHT: POSITION   CROSS: OK"),
+        Phase::Aim => Some("LEFT / RIGHT: AIM   CROSS: SPIN   CIRCLE: BACK"),
+        Phase::Power => Some("CROSS: POWER"),
+        _ => None,
+    };
+    if let Some(p) = prompt {
+        small(painter, v, p, W / 2.0, 410.0, Color32::from_gray(230));
+        // the spin meter between -2 and 2 (the hand's bounds), the power meter 0-100
+        meter(372.0, "SPIN", 0.0, Some((b.spin + 2.0) / 4.0));
+        if b.phase == Phase::Power {
+            meter(390.0, "POWER", b.power / 100.0, None);
+        }
+        let hand = if bowler.is_some_and(|p| p.left) { "LEFT-HANDED" } else { "RIGHT-HANDED" };
+        small(painter, v, hand, 560.0, 372.0, Color32::from_gray(200));
+    }
+    if b.rolled.is_some() && b.speed > 0.0 && !matches!(b.phase, Phase::Charge(_)) {
+        let mph = b.mph();
+        small(painter, v, &format!("SPEED {:3}.{:02} MPH", mph / 100, mph % 100), 540.0, 410.0, Color32::WHITE);
+    }
+    if let Some(c) = b.callout.as_deref().filter(|c| !c.is_empty()) {
+        // (a strike's callout pulses)
+        let k = if matches!(b.phase, Phase::Strike(_)) { 0.85 + 0.1 * ((frame / 8) % 2) as f32 } else { 0.8 };
+        font(painter, v, art, d, c, W / 2.0, 190.0, k, Color32::WHITE);
+    }
+    if b.phase == Phase::Over {
+        let text = match b.winner() {
+            Some(w) if b.cards.len() > 1 => format!("{}P WINS", w + 1),
+            _ if b.cards.len() > 1 => "DRAW".into(),
+            _ => format!("SCORE {}", b.cards.first().map_or(0, |c| c.total())),
+        };
+        font(painter, v, art, d, &text, W / 2.0, 190.0, 0.8, Color32::WHITE);
+        if (frame / 30).is_multiple_of(2) {
+            small(painter, v, "PRESS START", W / 2.0, 410.0, Color32::WHITE);
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
@@ -1364,7 +1465,23 @@ mod tests {
         assert_eq!(rows(1 << 1)[..2], [paul.clone(), tail[0].clone()]);
         assert_eq!(rows(1 << 1 | 1 << 2)[..2], [paul, vec![("(1P)LAW".into(), Cell::None)]]);
         // the menu shows THEATER once an ending was seen
-        assert!(!Front::items(&d, 0).iter().any(|i| i.0 == THEATER));
+        assert!(!Front::items(&d, &Progress::default()).iter().any(|i| i.0 == THEATER));
+    }
+
+    #[test]
+    fn tekken_bowl_is_on_the_menu_once_unlocked() {
+        let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE", "locked": false},
+            {"mode": 8, "label": "TEKKEN BOWL", "locked": true}, {"mode": 9, "label": "THEATER", "locked": true}]},
+            "unlocks": {"schedule": [{"stage": 10, "kind": 5, "character": 0}]}}});
+        let d = Data::load(&fe, vec![0], &serde_json::json!({}), None).unwrap();
+        let modes = |stage| Front::items(&d, &Progress { stage, ..Progress::default() }).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
+        assert_eq!((modes(9), modes(10)), (vec![ARCADE], vec![ARCADE, BOWL]));
+        // its select: P1 picks one; 2P's START joins
+        let mut s = Select::new(BOWL, &d, None);
+        assert_eq!((s.sides[0].need, s.sides[1].player), (1, None));
+        let (mut seed, roster) = (1, roster());
+        s.key(1, Key::Start, &d, &roster, &Progress::default(), &mut seed);
+        assert_eq!(s.sides[1].player, Some(1));
     }
 
     #[test]

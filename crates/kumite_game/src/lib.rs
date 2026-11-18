@@ -9,6 +9,7 @@ use kumite_sim::detmath::DetMath;
 use kumite_sim::input::Pad;
 use std::sync::Arc;
 pub mod bout;
+pub mod bowl;
 pub mod embu;
 pub mod ending;
 pub mod face;

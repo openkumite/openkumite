@@ -426,6 +426,16 @@ impl SoundData {
         self.music.get(id).map(|m| (m.0.as_path(), m.1))
     }
 
+    /// Tekken Tag: a sound entry (`kind << 12 | id`) as Tekken Bowl plays them: kinds 2-5 a voice of the character
+    /// file `model_record`'s voice row, the others sound `id` (with its bank), on arena `arena`.
+    pub fn tag_entry(&self, code: u16, model_record: usize, arena: usize) -> Option<Sound> {
+        let t = self.tag.as_ref()?;
+        let (bank, row) = t.voice_banks.iter().find(|v| v.model_record == model_record).map_or((0, usize::MAX), |v| (v.bank, v.voice_row));
+        let (kind, id) = (usize::from(code >> 12), code & 0xFFF);
+        let id = if (2..=5).contains(&kind) { t.voice(row, kind - 2, id.into())? } else { id };
+        t.sound(id, bank, arena, false)
+    }
+
     /// Sounds started by the last bout step. `last` holds each fighter's move before the step (updated
     /// here); `banks` the characters' sound banks ("m071"), `characters` their character ids (voice rows).
     pub fn step(&self, bout: &Bout, state: &mut SoundState, banks: [&str; 2], characters: [usize; 2]) -> Vec<Sound> {

@@ -9,6 +9,7 @@
 use crate::detmath::DetMath;
 pub mod ai;
 pub mod ball;
+pub mod bowl;
 pub mod camera;
 pub mod data;
 pub mod detmath;
