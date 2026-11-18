@@ -832,6 +832,8 @@ impl Bout {
                 // (a Force player seat: the stage around it)
                 force: (self.force && kumite_sim::Fight::is_player(i)).then_some(ForceSight { fight: f, me: i, pickups: &self.game.pickups }),
                 melee: false,
+                // (Tekken Tag's tag battle: the benched partner's health)
+                partner: f.teams.as_ref().and_then(|t| t.get(i)).map(|t| t.partner()).map(|p| (p.health, p.max_health * kumite_sim::ONE)),
             }
         };
         // the round setup of both CPUs comes before either thinks
@@ -852,7 +854,7 @@ impl Bout {
                 sight(2)
             } else {
                 let facing_right = (e.root() - f.fighters[0].root()).dot(f.screen_right) < 0.0;
-                Sight { gd: &f.data, me: e, op: &f.fighters[0], facing_right, opp_chest: chest[0].max(1425.0), ball: None, force: None, melee: false }
+                Sight { gd: &f.data, me: e, op: &f.fighters[0], facing_right, opp_chest: chest[0].max(1425.0), ball: None, force: None, melee: false, partner: None }
             };
             ai.prepare(&self.ai_data, &mut self.ai_rng, &s);
             extra_pad = ai.think(&self.ai_data, &mut self.ai_rng, &s);

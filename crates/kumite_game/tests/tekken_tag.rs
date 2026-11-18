@@ -79,6 +79,9 @@ fn paul_against_lei() {
     assert_eq!(r.hashes, run(&a).hashes, "the same pads, the same match");
 }
 
+/// King's first model.
+const KING: usize = 390;
+
 /// Law's and Jin's first models: Paul and Law against Lei and Jin.
 const LAW: usize = 357;
 const JIN: usize = 465;
@@ -399,10 +402,16 @@ struct CpuRun {
     guards: [u32; 2],
     hits: [u32; 2],
     wins: [u32; 2],
+    /// Side 0's CPU: string follow-ups, canned throws, delayed inputs.
+    stats: [u32; 3],
 }
 
 fn cpu_run(a: &Assets, cpu: [Option<(usize, usize)>; 2], frames: usize) -> CpuRun {
-    let mut b = Bout::new(Game::load(a, [PAUL, LEI]).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
+    cpu_run_of(a, [PAUL, LEI], cpu, frames)
+}
+
+fn cpu_run_of(a: &Assets, models: [usize; 2], cpu: [Option<(usize, usize)>; 2], frames: usize) -> CpuRun {
+    let mut b = Bout::new(Game::load(a, models).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
     for (k, c) in cpu.into_iter().enumerate() {
         b.set_cpu(k, c);
     }
@@ -423,6 +432,9 @@ fn cpu_run(a: &Assets, cpu: [Option<(usize, usize)>; 2], frames: usize) -> CpuRu
         }
     }
     r.wins = b.wins;
+    if let Some(ai) = &b.cpu[0] {
+        r.stats = [ai.strings, ai.canned, ai.delayed];
+    }
     r
 }
 
@@ -440,7 +452,7 @@ fn normal_cpus_walk_attack_guard_and_hit() {
 }
 
 /// ULTRA HARD's top level beats a fighter who stands still (and so guards highs and mids); EASY's first level
-/// attacks less often.
+/// lands fewer clean hits.
 #[test]
 fn the_top_cpu_beats_a_standing_dummy() {
     let Some(a) = assets() else { return };
@@ -448,7 +460,7 @@ fn the_top_cpu_beats_a_standing_dummy() {
     let easy = cpu_run(&a, [Some((0, 0)), None], 9000);
     eprintln!("top {:?}, easy {:?}", (top.attacks, top.hits, top.wins), (easy.attacks, easy.hits, easy.wins));
     assert_eq!(top.wins[0], 2, "the top CPU wins the match");
-    assert!(easy.attacks[0] < top.attacks[0], "EASY attacks less: {} against {}", easy.attacks[0], top.attacks[0]);
+    assert!(easy.hits[0] < top.hits[0], "EASY hits less: {} against {}", easy.hits[0], top.hits[0]);
 }
 
 /// In a tag battle the CPUs tag (the tag button of their cancel entries with command bit 14, 0x381278).
@@ -464,4 +476,27 @@ fn cpus_tag_in_a_tag_battle() {
         tags += b.game.fight.fighters.iter().filter(|f| f.input.tag).count();
     }
     assert!(tags > 0, "a tag press");
+}
+
+/// The string follow-ups (lists C and D, 0x387600 / 0x387DA8): never at NORMAL level 0 (P34 0, P3A 1), from level 4
+/// on (P3A 5, P3C 2048).
+#[test]
+fn strings_go_on_from_normal_level_4() {
+    let Some(a) = assets() else { return };
+    let (l0, l4) = (cpu_run(&a, [Some((1, 0)), None], 4000), cpu_run(&a, [Some((1, 4)), None], 4000));
+    eprintln!("NORMAL L0 {:?}, L4 {:?}", l0.stats, l4.stats);
+    assert_eq!(l0.stats[0], 0, "level 0: no follow-up");
+    assert!(l4.stats[0] > 0, "level 4: follow-ups");
+}
+
+/// King's handler (0x38BC00): his canned throws (P1A) against a fighter standing still; the delayed input (step
+/// 0x15, P74 1228) at HARD level 7, none at level 0 (P74 0).
+#[test]
+fn king_throws_canned_and_delays_inputs() {
+    let Some(a) = assets() else { return };
+    let (normal, hard, l0) =
+        (cpu_run_of(&a, [KING, LEI], [Some((1, 7)), None], 9000), cpu_run_of(&a, [KING, LEI], [Some((2, 7)), None], 9000), cpu_run_of(&a, [KING, LEI], [Some((2, 0)), None], 9000));
+    eprintln!("King NORMAL L7 {:?}, HARD L7 {:?}, HARD L0 {:?}", normal.stats, hard.stats, l0.stats);
+    assert!(normal.stats[1] > 0, "a canned throw");
+    assert!(hard.stats[2] > 0 && l0.stats[2] == 0, "delayed inputs at level 7 only");
 }
