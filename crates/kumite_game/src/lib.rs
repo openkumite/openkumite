@@ -503,6 +503,14 @@ impl Game {
         }
     }
 
+    /// The fight's arena, for a game whose camera has a projection per arena (Tekken Tag; Tekken 3's is one).
+    pub fn set_arena(&mut self, arena: usize) {
+        if let Some(d) = self.camera.data().for_arena(arena) {
+            self.camera = FightCamera::new(Arc::new(d), false, 0, true);
+            self.step_camera();
+        }
+    }
+
     /// Start with the round-start camera fly-in (variant = round counter % 10). While it plays the
     /// fighters stand in their stance, pads are ignored and the round clock does not run.
     pub fn with_intro(mut self, variant: usize, first_round: bool) -> Self {

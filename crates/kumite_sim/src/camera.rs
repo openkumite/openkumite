@@ -11,14 +11,28 @@ use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
 
+/// Tekken 3's camera.json has every key; a game whose converter writes fewer (Tekken Tag) gets Tekken 3's values for
+/// the missing ones: its tables computed, its end cameras, its framing constants.
 #[derive(Deserialize)]
 struct Json {
     projection_h: i64,
-    tables: JsonTables,
+    screen_width: Option<i64>,
+    tables: Option<JsonTables>,
     fight: JsonFight,
     intro: JsonIntro,
-    gsqrt: JsonValues,
-    end: EndData,
+    gsqrt: Option<JsonValues>,
+    end: Option<EndData>,
+    arena_projection: Option<JsonArenas>,
+}
+#[derive(Deserialize)]
+struct JsonArenas {
+    rows: Vec<JsonArena>,
+}
+#[derive(Deserialize)]
+struct JsonArena {
+    h: i64,
+    h_min: i64,
+    h_max: i64,
 }
 #[derive(Deserialize)]
 struct JsonTables {
@@ -32,12 +46,27 @@ struct JsonValues {
 #[derive(Deserialize)]
 struct JsonFight {
     distance: i64,
+    /// The depth is H * n / d (Tekken Tag), not `distance` at any H.
+    distance_per_h: Option<[i64; 2]>,
     initial_eye: [i64; 3],
+    fit_px: Option<i64>,
+    dead_zone_px: Option<i64>,
+    vertical_keep_px: Option<i64>,
+    centre_drop: Option<i64>,
+    yaw: Option<JsonYaw>,
+}
+#[derive(Deserialize)]
+struct JsonYaw {
+    /// Camera id ("0x27") -> yaw speed cap.
+    move_caps: std::collections::BTreeMap<String, i64>,
 }
 #[derive(Deserialize)]
 struct JsonIntro {
     frames_first_round: i64,
     frames_other: i64,
+    /// The offset eases over the last this many frames (Tekken 3: all of them).
+    ease_frames: Option<i64>,
+    blend_frames: Option<i64>,
     offsets: Vec<[i64; 3]>,
 }
 
@@ -136,6 +165,7 @@ pub struct EndMotions {
 }
 
 /// Camera constants and tables from camera.json.
+#[derive(Clone)]
 pub struct CameraData {
     sin: Vec<i64>,
     gsqrt_table: Vec<i64>,
@@ -143,9 +173,26 @@ pub struct CameraData {
     atn: Vec<i64>,
     pub distance: i64,
     pub h: i64,
+    /// The projection's clamp (Tekken 3: H itself).
+    pub h_range: [i64; 2],
+    /// The width in pixels H is measured on (Tekken 3 368).
+    pub screen_width: i64,
     pub initial_eye: [i64; 3],
     pub intro_frames: [i64; 2],
     pub intro_offsets: Vec<[i64; 3]>,
+    /// The fly-in's easing length and its hand-off to the fight camera (frames).
+    pub intro_ease: Option<i64>,
+    pub intro_blend: i64,
+    /// Framing (0x80064E10): the fit width, the dead zone and the top fighter's keep-in (pixels), the centre drop.
+    pub fit_px: i64,
+    pub dead_zone_px: i64,
+    pub keep_px: i64,
+    pub centre_drop: i64,
+    /// (camera id, yaw speed cap) of the moves that cap it, by id.
+    pub move_caps: Vec<(i64, i64)>,
+    /// Per arena: H, its clamp; the depth H * n / d.
+    arenas: Vec<[i64; 3]>,
+    distance_per_h: Option<[i64; 2]>,
 }
 
 impl CameraData {
@@ -153,52 +200,100 @@ impl CameraData {
         Self::from_json(crate::data::load(path)?)
     }
 
-    /// A game without a decoded camera (Tekken Tag: its pack has no camera.json): Tekken 3's constants, its sine,
-    /// atan and square root tables computed (the atan's within 1 of the PS1's), Tekken Tag's win poses (4770..4773).
-    // shortcut: Tekken 3's camera on Tekken Tag; upgrade when the converter writes Tekken Tag's camera.json
+    /// A game without a decoded camera (Tekken Tag's packs before their camera.json): Tekken 3's constants, its
+    /// tables computed (see `from_json`), Tekken Tag's win poses (4770..4773).
     pub fn provisional() -> Result<Self> {
-        use crate::detmath::DetMath;
-        let (pi, tau) = (std::f64::consts::PI, std::f64::consts::TAU);
-        let sin: Vec<i64> = (0..5120).map(|i| (4096.0 * (i as f64 * tau / 4096.0).dsin()).round() as i64).collect();
-        let atan: Vec<i64> = (0..=1024).map(|q| ((q as f64 / 1024.0).datan2(1.0) * 2048.0 / pi).round() as i64 - (q >> 1)).collect();
-        let gsqrt: Vec<i64> = (0..192).map(|k| (libm::sqrt((k + 64) as f64 / 64.0) * 4096.0) as i64).collect();
         let j = serde_json::json!({
             "projection_h": 500,
-            "tables": { "sin": { "values": sin }, "atan": { "values": atan } },
             "fight": { "distance": 5517, "initial_eye": [0, -1450, -8000] },
             "intro": { "frames_first_round": 120, "frames_other": 53, "offsets": [[0, 0, -7500], [0, 375, -6000], [6000, 375, 0], [-6000, 375, 0], [11250, 0, 0], [-11250, 0, 0], [9000, 0, 7500], [-9000, 0, 7500], [7500, -6000, -3750], [-7500, -6000, -3750]] },
-            "gsqrt": { "values": gsqrt },
-            "end": {
-                "ko_frames": 90, "draw_frames": 75, "loser_frames": 60, "pose_cap": 300,
-                "replay": { "pre_roll": 30, "min_frames": 150, "ring": 300, "blink": 16, "variant_a": { "yaw_from": -29127, "yaw_range": 123790, "offset_degrees": [25, 30] }, "variant_b": { "yaw_from": 21846, "yaw_range": 87381 }, "offset_easing_shift": 7 },
-                "aim": { "min_distance": 5800, "chest_clamp": 4004, "floor_clamp": -6917, "chest_offset": -290 },
-                "cam_a": { "arc_from": 683, "arc_range": 683, "radius": 3953, "eye_y": -850, "stop_distance": 2513, "approach": 8, "pitch_shift": 5, "yaw_shift": 5 },
-                "cam_b": { "radius": [4500, 5000, 5500], "side": [1800, 2000, 2200], "height": [-950, -1100, -1650], "drift_shift": 9, "push_distance": 2308, "push_shift": 4, "pitch_shift": 5, "yaw_shift": 4, "height_reach": -7500, "height_shift": 4 },
-                "overhead": { "height": -7853, "pitch": 1024, "yaw_from": 2048, "jitter": [-64, 63] },
-                "orbit": { "arc_from": 512, "arc_range": 1025, "radius": [3978, 6596], "large_moveset_key": 11, "eye_y": -1500, "target_y": -1425, "stop_distance": [3664, 6282], "approach": 2, "target_easing": [6, 7] },
-                // (the losers' motions are not known: none)
-                "motions": { "win": [4770, 4771, 4772, 4773], "lose_ko": usize::MAX, "lose_time_up": usize::MAX }
-            }
         });
         Self::from_json(serde_json::from_value(j)?)
     }
 
+    /// The end cameras of a game whose camera.json has none: Tekken 3's, with Tekken Tag's win poses.
+    // shortcut: Tekken 3's end cameras on Tekken Tag; upgrade when its win-pose and replay cameras are converted
+    fn provisional_end() -> Result<EndData> {
+        let j = serde_json::json!({
+            "ko_frames": 90, "draw_frames": 75, "loser_frames": 60, "pose_cap": 300,
+            "replay": { "pre_roll": 30, "min_frames": 150, "ring": 300, "blink": 16, "variant_a": { "yaw_from": -29127, "yaw_range": 123790, "offset_degrees": [25, 30] }, "variant_b": { "yaw_from": 21846, "yaw_range": 87381 }, "offset_easing_shift": 7 },
+            "aim": { "min_distance": 5800, "chest_clamp": 4004, "floor_clamp": -6917, "chest_offset": -290 },
+            "cam_a": { "arc_from": 683, "arc_range": 683, "radius": 3953, "eye_y": -850, "stop_distance": 2513, "approach": 8, "pitch_shift": 5, "yaw_shift": 5 },
+            "cam_b": { "radius": [4500, 5000, 5500], "side": [1800, 2000, 2200], "height": [-950, -1100, -1650], "drift_shift": 9, "push_distance": 2308, "push_shift": 4, "pitch_shift": 5, "yaw_shift": 4, "height_reach": -7500, "height_shift": 4 },
+            "overhead": { "height": -7853, "pitch": 1024, "yaw_from": 2048, "jitter": [-64, 63] },
+            "orbit": { "arc_from": 512, "arc_range": 1025, "radius": [3978, 6596], "large_moveset_key": 11, "eye_y": -1500, "target_y": -1425, "stop_distance": [3664, 6282], "approach": 2, "target_easing": [6, 7] },
+            // (the losers' motions are not known: none)
+            "motions": { "win": [4770, 4771, 4772, 4773], "lose_ko": usize::MAX, "lose_time_up": usize::MAX }
+        });
+        Ok(serde_json::from_value(j)?)
+    }
+
+    /// Missing tables are computed: the sine and the square root as Tekken 3's disc has them, the atan within 1.
     fn from_json(j: Json) -> Result<Self> {
-        anyhow::ensure!(j.tables.sin.values.len() == 5120, "camera.json: sin table needs 5120 entries");
-        anyhow::ensure!(j.tables.atan.values.len() == 1025, "camera.json: atan table needs 1025 entries");
+        use crate::detmath::DetMath;
+        let (pi, tau) = (std::f64::consts::PI, std::f64::consts::TAU);
+        let (sin, atn) = match j.tables {
+            Some(t) => (t.sin.values, t.atan.values),
+            None => (
+                (0..5120).map(|i| (4096.0 * (i as f64 * tau / 4096.0).dsin()).round() as i64).collect(),
+                (0..=1024).map(|q| ((q as f64 / 1024.0).datan2(1.0) * 2048.0 / pi).round() as i64 - (q >> 1)).collect(),
+            ),
+        };
+        let gsqrt_table: Vec<i64> = match j.gsqrt {
+            Some(g) => g.values,
+            None => (0..192).map(|k| (libm::sqrt((k + 64) as f64 / 64.0) * 4096.0) as i64).collect(),
+        };
+        anyhow::ensure!(sin.len() == 5120, "camera.json: sin table needs 5120 entries");
+        anyhow::ensure!(atn.len() == 1025, "camera.json: atan table needs 1025 entries");
         anyhow::ensure!(!j.intro.offsets.is_empty(), "camera.json: no intro offsets");
-        anyhow::ensure!(j.gsqrt.values.len() == 192, "camera.json: gsqrt table needs 192 entries");
+        anyhow::ensure!(gsqrt_table.len() == 192, "camera.json: gsqrt table needs 192 entries");
+        let f = j.fight;
+        let mut move_caps = Vec::new();
+        for (id, cap) in f.yaw.map(|y| y.move_caps).unwrap_or_else(|| [("0x27", 0x200), ("0x28", 0x180), ("0x29", 0x80), ("0x2A", 0x40)].map(|(k, v)| (k.to_string(), v)).into()) {
+            let id = i64::from_str_radix(id.trim_start_matches("0x"), 16).map_err(|e| anyhow::anyhow!("camera.json: move cap id {id}: {e}"))?;
+            move_caps.push((id, cap));
+        }
+        move_caps.sort_unstable();
+        let blend = j.intro.blend_frames.unwrap_or(16);
+        anyhow::ensure!(blend > 0 && j.intro.ease_frames.is_none_or(|e| e > 0), "camera.json: intro frames must be positive");
+        anyhow::ensure!(j.screen_width.is_none_or(|w| w > 0), "camera.json: screen_width must be positive");
         Ok(Self {
-            sin: j.tables.sin.values,
-            gsqrt_table: j.gsqrt.values,
-            end: j.end,
-            atn: j.tables.atan.values,
-            distance: j.fight.distance,
+            sin,
+            gsqrt_table,
+            end: match j.end {
+                Some(e) => e,
+                None => Self::provisional_end()?,
+            },
+            atn,
+            distance: f.distance,
             h: j.projection_h,
-            initial_eye: j.fight.initial_eye,
+            h_range: [j.projection_h; 2],
+            screen_width: j.screen_width.unwrap_or(368),
+            initial_eye: f.initial_eye,
             intro_frames: [j.intro.frames_first_round, j.intro.frames_other],
             intro_offsets: j.intro.offsets,
+            intro_ease: j.intro.ease_frames,
+            intro_blend: blend,
+            fit_px: f.fit_px.unwrap_or(280),
+            dead_zone_px: f.dead_zone_px.unwrap_or(48),
+            keep_px: f.vertical_keep_px.unwrap_or(112),
+            centre_drop: f.centre_drop.unwrap_or(100),
+            move_caps,
+            arenas: j.arena_projection.map_or_else(Vec::new, |a| a.rows.iter().map(|r| [r.h, r.h_min, r.h_max]).collect()),
+            distance_per_h: f.distance_per_h,
         })
+    }
+
+    /// The camera of arena `arena` (0x38DBC0 at the round reset): its H, the clamp, the depth from H; None for a game
+    /// with one projection (Tekken 3).
+    pub fn for_arena(&self, arena: usize) -> Option<Self> {
+        let &[h, lo, hi] = self.arenas.get(arena)?;
+        let mut d = self.clone();
+        (d.h, d.h_range) = (h, [lo, hi]);
+        if let Some([n, den]) = self.distance_per_h {
+            d.distance = tdiv(h * n, den);
+        }
+        Some(d)
     }
 
     /// The move set of the large character ([`Subject::large`]).
@@ -408,7 +503,7 @@ struct Replay {
 impl FightCamera {
     /// `intro`: play the round-start fly-in (variant = round counter % 10).
     pub fn new(data: Arc<CameraData>, intro: bool, intro_variant: usize, first_round: bool) -> Self {
-        let h = data.h;
+        let (h, [hmin, hmax]) = (data.h, data.h_range);
         let [ex, ey, ez] = data.initial_eye;
         let mut keys = [Key::default(); 5];
         for k in &mut keys[..2] {
@@ -419,8 +514,8 @@ impl FightCamera {
         Self {
             data,
             h,
-            hmin: h,
-            hmax: h,
+            hmin,
+            hmax,
             keys,
             st: [SlotState::default(); 5],
             samp: [Sample { x: 0, y: 0, z: 0, side: 0 }; 2],
@@ -449,7 +544,7 @@ impl FightCamera {
 
     /// One frame of the versus camera director (phase 1 intro, phase 2 normal).
     /// `frames_since_start`: the yaw controller stays frozen for the first 200 frames of a round.
-    /// `move_cam`: camera-control values of the two current moves (0x27..0x2A cap the yaw speed).
+    /// `move_cam`: camera-control values of the two current moves (`move_caps`: Tekken 3 0x27..0x2A, Tekken Tag 0x13..0x16 cap the yaw speed).
     pub fn step(&mut self, p: [Sample; 2], frames_since_start: i64, move_cam: [i64; 2]) -> View {
         self.sample(p);
         if self.intro && self.intro_t.is_none() {
@@ -592,7 +687,7 @@ impl FightCamera {
                 st.yawacc += sgn * 0x600;
             }
             st.yawvel += st.yawacc;
-            let lim = [0x27, 0x28, 0x29, 0x2A].into_iter().find(|mc| move_cam.contains(mc)).map_or(-1, |mc| [0x200, 0x180, 0x80, 0x40][(mc - 0x27) as usize]);
+            let lim = d_.move_caps.iter().find(|c| move_cam.contains(&c.0)).map_or(-1, |c| c.1);
             if lim > 0 {
                 let l = (lim * 56784) >> 8;
                 if l < st.yawvel {
@@ -634,6 +729,8 @@ impl FightCamera {
         let d_ = self.data.clone();
         let (sin6, cos6) = (|a| d_.sin6(a), |a| d_.cos6(a));
         let h = self.h;
+        // Tekken 3: fit 280 px, dead zone +-48, keep-in 112; Tekken Tag x 1.4
+        let (fit, dead, keep) = (d_.fit_px, d_.dead_zone_px, d_.keep_px);
         let dist = if dist < 0x321 { 0x320 } else { dist };
         let key = self.keys[slot];
         let st = &mut self.st[slot];
@@ -696,8 +793,8 @@ impl FightCamera {
         }
         let sxl = tdiv(xs[l] * h, zs[l]);
         let sxr = tdiv(xs[r] * h, zs[r]);
-        if sxr - sxl >= 0x119 {
-            let v1 = tdiv(h * (xs[r] - xs[l]) - 140 * (zs[r] - zs[l]), 280);
+        if sxr - sxl > fit {
+            let v1 = tdiv(h * (xs[r] - xs[l]) - (fit / 2) * (zs[r] - zs[l]), fit);
             let mut a1 = zs[l] - v1;
             if !flag {
                 let prev = st.hpull;
@@ -705,24 +802,24 @@ impl FightCamera {
             }
             st.hpull = a1;
             dz_ += a1;
-            dx_ = sra_tz(xs[l] - tdiv(-(140 * v1), h), 3);
+            dx_ = sra_tz(xs[l] - tdiv(-((fit / 2) * v1), h), 3);
             zs[0] -= a1;
             zs[1] -= a1;
             zs[2] -= a1;
             zc -= a1;
         } else {
             let mut decay = true;
-            let b2 = tdiv(48 * zs[r], h);
-            let a2 = tdiv(-48 * zs[l], h);
+            let b2 = tdiv(dead * zs[r], h);
+            let a2 = tdiv(-dead * zs[l], h);
             if flag || (b2 - (xs[r] - xs[l])) < a2 {
                 dx_ = sra_tz(xs[l] + tdiv((xs[r] - xs[l]) * zs[l], zs[l] + zs[r]), 3);
                 if flag {
                     st.hpull = 0;
                     decay = false;
                 }
-            } else if sxl < -0x30 {
+            } else if sxl < -dead {
                 dx_ += sra_tz(xs[l] - a2, 3);
-            } else if sxr > 0x30 {
+            } else if sxr > dead {
                 dx_ += sra_tz(xs[r] - b2, 3);
             }
             if decay {
@@ -750,9 +847,9 @@ impl FightCamera {
             top = 2;
         }
         let (ytop, ztop) = (ys[top], zs[top]);
-        let t1 = 100;
+        let t1 = d_.centre_drop;
         let mut a3 = sra_tz(s5 * (t1 - tdiv(450 * h, dist)), 12);
-        let mut pull = (tdiv(-(112 * (ztop - zc)) - h * (ytop - yc), a3 + 0x70) - zc).max(0);
+        let mut pull = (tdiv(-(keep * (ztop - zc)) - h * (ytop - yc), a3 + keep) - zc).max(0);
         if flag {
             pull = 0;
             st.vstep = 0;
@@ -832,24 +929,25 @@ impl FightCamera {
     fn apply(&mut self, k: Key) {
         self.keys[3] = k;
         self.h = k.h.clamp(self.hmin, self.hmax);
-        self.view = View { eye: [k.x, k.y, k.z], pitch: sra_tz(k.p, 6), yaw: sra_tz(k.w, 6), h: self.h, roll: 0 };
+        // the view's H is on Tekken 3's 368-pixel-wide screen, the one the renderer draws (Tekken Tag's is 512)
+        let h = tdiv(self.h * 368, self.data.screen_width);
+        self.view = View { eye: [k.x, k.y, k.z], pitch: sra_tz(k.p, 6), yaw: sra_tz(k.w, 6), h, roll: 0 };
     }
 
     /// 0x80068394 / 0x800684B4: intro fly-in key (slot 2); returns its weight.
     fn intro_key(&mut self) -> i64 {
         let base = self.intro_base;
         let t = self.intro_t.unwrap_or(0);
-        let f = self.data.sin[((0xC00 + tdiv(t << 10, self.intro_len)) & 0xFFF) as usize] + 0x1000;
+        // Tekken Tag eases over the last 90 frames only (0x3954E8): round 1 holds the offset for its first 30
+        let ease = self.data.intro_ease.unwrap_or(self.intro_len);
+        let f = self.data.sin[((0xC00 + tdiv(t.min(ease) << 10, ease)) & 0xFFF) as usize] + 0x1000;
         let o = self.data.intro_offsets[self.intro_var];
         let eye = [base.x + sra_tz(o[0] * f, 12), base.y + sra_tz(o[1] * f, 12), base.z + sra_tz(o[2] * f, 12)];
         self.keys[2] = self.lookat(eye, [base.x, base.y, 0], base.h);
         let t = t - 1;
         self.intro_t = Some(t);
-        if t > 0x10 {
-            0x1000
-        } else {
-            t << 8
-        }
+        // the hand-off: 16 frames (Tekken 3), 13 (Tekken Tag)
+        tdiv(t << 12, self.data.intro_blend).min(0x1000)
     }
 
     /// 0x80062B74 slot mixer (the versus director only uses slots 0 and 2).

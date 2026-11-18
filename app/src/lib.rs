@@ -635,6 +635,7 @@ impl App {
         };
         let t = Instant::now();
         let mut game = Game::load(&self.assets, models)?;
+        game.set_arena(stage);
         game.handicap = setup.as_ref().map_or([100; 2], |s| s.handicap);
         if setup.is_none() {
             if let Some(v) = self.intro {
