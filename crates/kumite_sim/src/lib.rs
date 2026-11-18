@@ -1401,8 +1401,8 @@ impl Fighter {
     /// Character gate (`req`, kumite_converter's reference move-properties.md §2.2): only the "this moveset" gates for
     /// now. The entry's `req` byte (0x8002DF00): own moveset is / is not, the opponent's moveset is, own character is /
     /// is not.
-    pub(crate) fn passes_gate(&self, c: &Cancel) -> bool {
-        let r = c.req as i64;
+    pub(crate) fn passes_gate(&self, req: u32) -> bool {
+        let r = req as i64;
         let ms = self.moveset.moveset_id;
         match r {
             0 => true,
@@ -1463,7 +1463,7 @@ impl Fighter {
         if self.frame < c.win_start || self.frame > c.win_end {
             return None;
         }
-        if !self.passes_gate(c) {
+        if !self.passes_gate(c.req) {
             return None;
         }
         if !self.condition(gd, c.cond, c.param) || (c.cond_tag && !self.tag_test(c.param)) {
@@ -1718,8 +1718,9 @@ impl Fighter {
                 _ => false,
             }
         };
-        let ok =
-            |c: &Cancel| c.cond >= 0x45 && (c.win_start..=c.win_end).contains(&self.frame) && self.passes_gate(c) && c.kind == CancelKind::Command && self.input.matches_command(c.cmd) && catches(c);
+        let ok = |c: &Cancel| {
+            c.cond >= 0x45 && (c.win_start..=c.win_end).contains(&self.frame) && self.passes_gate(c.req) && c.kind == CancelKind::Command && self.input.matches_command(c.cmd) && catches(c)
+        };
         let mv = self.current_move(gd);
         let cancels = &self.moves(gd, self.current.bank).cancels;
         for c in cancels.get(mv.cancel_start..).into_iter().flatten() {

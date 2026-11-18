@@ -1228,7 +1228,7 @@ pub fn view_camera(v: &View) -> (Vec3, Vec3, f32) {
     (eye, forward, 2.0 * (240.0 / (v.h as f32 * 7122.0 / 4096.0)).atan())
 }
 
-/// The CPU AI tables (gamedata/ai.json; a game without them, Tekken Tag, gets none).
+/// The CPU AI tables (gamedata/ai.json; a game without them, a Tekken Tag pack before format 7, gets none).
 pub fn ai_data(assets: &Assets) -> Result<Arc<kumite_sim::ai::AiData>> {
     let path = assets.root.join("gamedata/ai.json");
     if !kumite_fs::exists(&path) {
