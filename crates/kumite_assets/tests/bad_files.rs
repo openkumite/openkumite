@@ -168,3 +168,15 @@ fn every_converted_glb_loads() {
         }
     }
 }
+
+/// A stage object's keys go round: the last key is where the first one's motion goes on, never shown.
+#[test]
+fn joint_keys_go_round() {
+    use glam::{Quat, Vec3};
+    let j = kumite_assets::Joint { rest: (Vec3::ZERO, Quat::IDENTITY, Vec3::ONE), translations: (0..4).map(|k| Vec3::X * k as f32).collect(), rotations: vec![] };
+    let x = |f| j.at(f).w_axis.x;
+    assert_eq!([x(0), x(1), x(2), x(3), x(4)], [0.0, 1.0, 2.0, 0.0, 1.0]);
+    let parent = kumite_assets::Joint { rest: (Vec3::Y, Quat::IDENTITY, Vec3::splat(2.0)), ..Default::default() };
+    let m = kumite_assets::Joint::chain(&[parent, j], 1);
+    assert_eq!(m.transform_point3(Vec3::ZERO), Vec3::new(2.0, 1.0, 0.0));
+}

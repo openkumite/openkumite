@@ -620,6 +620,8 @@ enum MovingKind {
     Spin { vertices: Vec<StaticVertex>, pivot: glam::Vec3, axis: glam::Vec3, rate: f32, period: Option<u32> },
     /// Its pictures, each shown for `step` frames.
     Frames { textures: Vec<Arc<kumite_render::Texture>>, step: u32 },
+    /// Placed by its chain of joints (from its own axes, `vertices`), then by `place` (the stage's placement).
+    Track { vertices: Vec<StaticVertex>, chain: Vec<kumite_assets::Joint>, place: glam::Mat4 },
 }
 
 impl Scene {
@@ -642,6 +644,11 @@ impl Scene {
                     if let Some(t) = textures.get((frame / u64::from(*step)) as usize % textures.len().max(1)) {
                         mesh.set_texture(t.clone());
                     }
+                }
+                MovingKind::Track { vertices, chain, place } => {
+                    let m = *place * kumite_assets::Joint::chain(chain, frame);
+                    let moved: Vec<StaticVertex> = vertices.iter().map(|v| StaticVertex { pos: m.transform_point3(glam::Vec3::from(v.pos)).to_array(), ..*v }).collect();
+                    r.move_mesh(mesh, &moved);
                 }
             }
         }
@@ -1251,11 +1258,18 @@ impl App {
                     |m: &kumite_assets::Mesh| -> Vec<StaticVertex> { m.vertices.iter().map(|v| StaticVertex { pos: place(glam::Vec3::from(v.pos)).to_array(), uv: v.uv, color: v.color }).collect() };
                 scene.sky = st.sky.iter().map(|m| r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone())).collect();
                 let moving = |(mesh, m): (usize, &kumite_assets::Mesh)| {
-                    let kind = match m.motion? {
+                    let kind = match m.motion.clone()? {
                         kumite_assets::Motion::Spin { pivot, axis, rate, period } => {
                             MovingKind::Spin { vertices: conv(m), pivot: place(pivot), axis: (place(pivot + axis) - place(pivot)).normalize_or_zero(), rate, period }
                         }
                         kumite_assets::Motion::Frames { frames, step } => MovingKind::Frames { textures: tex.get(m.texture..m.texture + frames)?.to_vec(), step },
+                        kumite_assets::Motion::Track(chain) => {
+                            // (the placement as an affine map: its origin and axes)
+                            let o = place(glam::Vec3::ZERO);
+                            let place = glam::Mat4::from_cols((place(glam::Vec3::X) - o).extend(0.0), (place(glam::Vec3::Y) - o).extend(0.0), (place(glam::Vec3::Z) - o).extend(0.0), o.extend(1.0));
+                            let vertices = m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color }).collect();
+                            MovingKind::Track { vertices, chain, place }
+                        }
                     };
                     Some(Moving { mesh, kind })
                 };
