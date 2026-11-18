@@ -536,6 +536,8 @@ impl Hud {
         let d = &self.data;
         if d.bar_w == 0 {
             if let Some(t) = &info.ttt {
+                // (Force's pickups behind the HUD)
+                under(&painter, &v);
                 let time = info.time_base.map(|_| self.state.run_frames);
                 crate::ttt::hud(&painter, &v, art, t, bout, info, self.state.trail, self.state.ko, self.state.frame, time);
                 if bout.game.fight.ball.is_some() && !matches!(bout.phase, Phase::Replay { .. }) {

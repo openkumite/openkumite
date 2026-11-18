@@ -271,3 +271,142 @@ fn ball_under_tekken_tag() {
         assert_eq!(hashes, ball_match(&a, models).4, "{models:?}: the same twice");
     }
 }
+
+/// A model record of character `c` in Tekken Tag's roster.json: its costume `k`'s (else its first), or selection
+/// `c` itself when `k` is None (the slice's soldiers: Crow's).
+fn record_of(a: &Assets, c: usize, k: Option<usize>) -> usize {
+    let roster: serde_json::Value = a.gamedata("roster.json").unwrap();
+    let list = roster["selections"]["entries"].as_array().unwrap();
+    let e = match k {
+        None => list.iter().find(|e| e["selection"] == c),
+        Some(k) => list.iter().filter(|e| e["character"] == c && e["model_record"].is_u64()).nth(k).or_else(|| list.iter().find(|e| e["character"] == c && e["model_record"].is_u64())),
+    };
+    e.unwrap()["model_record"].as_u64().unwrap() as usize
+}
+
+/// What a Force stage saw: the camera's way, the kills, the soldiers' hits taken and their reactions (another alias
+/// within 10 frames of a hit), the player's hits taken, the boss met and its health lost, frames without a motion,
+/// the state hashes.
+#[derive(Debug, Default)]
+struct ForceRun {
+    progress: i32,
+    kills: u32,
+    soldier_hits: u32,
+    reactions: u32,
+    player_hits: u32,
+    boss: Option<(usize, usize)>,
+    boss_lost: i32,
+    missing: usize,
+    hashes: Vec<u64>,
+}
+
+/// Stage 1 of Tekken Force under Tekken Tag (the slice's force.json: Crow's soldiers, the bosses in Tekken Tag's
+/// numbers) as the app plays it, the AI playing `player` (hard); `boss`: straight to the boss. Up to `frames` frames.
+fn force_stage(a: &Assets, player: usize, boss: bool, frames: usize) -> ForceRun {
+    use kumite_game::force::{ForceData, ForceEvent, ForceStage};
+    use kumite_game::Actor;
+    let data: std::sync::Arc<ForceData> = std::sync::Arc::new(a.gamedata("force.json").unwrap());
+    let soldier = |k: usize| record_of(a, data.soldier_selection_base + data.soldier_costumes[0][k].min(3), None);
+    let soldiers = [0, 1].map(|k| Actor::load(a, soldier(k)).unwrap());
+    let mut game = Game::load(a, [player, soldier(0)]).unwrap();
+    game.round_frames = kumite_game::force::CLOCK;
+    (game.ko_collapse, game.fight.ko_collapse) = (false, false);
+    let mut b = Bout::new(game, kumite_game::ai_data(a).unwrap(), 1, false);
+    b.force = true;
+    let (d, l) = (1, data.ai_level(0));
+    b.set_cpu(1, Some((d, l)));
+    b.extra_cpu = Some(kumite_sim::ai::Ai::new(d, l, 1));
+    // (the app's selection in Tekken Tag: body x 8 + costume)
+    let body = b.game.fight.fighters[0].character.unwrap_or(0).max(0) as usize;
+    let mut st = ForceStage::new(data.clone(), 0, soldiers, body * 8, body, 0, 0, 0, 0);
+    st.setup(&mut b.game);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    b.set_cpu(0, Some((2, 9)));
+    b.cpu[0] = Some(kumite_sim::ai::Ai::new(2, 9, 0));
+    if boss {
+        st.skip_to_boss(&mut b.game);
+    }
+    let mut r = ForceRun::default();
+    let mut hit_at: Option<(usize, usize, usize)> = None;
+    for k in 0..frames {
+        // (the soldiers' aliases before the step: a hit's reaction may start in it)
+        let before: Vec<usize> = (0..3).map(|i| b.game.fight.actor(i).map_or(0, |x| x.alias)).collect();
+        b.step([Pad::default(); 2]);
+        let fighting = b.phase == Phase::Fight;
+        let won = matches!(b.phase, Phase::RoundOver { winner: Some(0) } | Phase::MatchOver { winner: Some(0) });
+        st.step(&mut b.game, fighting, won);
+        for e in std::mem::take(&mut st.events) {
+            match e {
+                ForceEvent::Swapped => b.swap_cpus(),
+                ForceEvent::LoadBoss(ch, cos) => {
+                    st.set_boss(&mut b.game, &Actor::load(a, record_of(a, ch, Some(cos))).unwrap(), (ch, cos));
+                    b.set_cpu(1, Some((d, l)));
+                    r.boss = Some((ch, cos));
+                }
+                _ => {}
+            }
+        }
+        let f = &b.game.fight;
+        for h in f.hits.iter().filter(|h| !h.blocked) {
+            if h.attacker == 0 {
+                r.soldier_hits += 1;
+                hit_at = Some((k, h.victim, before.get(h.victim).copied().unwrap_or(0)));
+            } else if h.victim == 0 {
+                r.player_hits += 1;
+            }
+        }
+        if let Some((at, v, alias)) = hit_at {
+            if f.actor(v).is_some_and(|x| x.alias != alias) {
+                r.reactions += 1;
+                hit_at = None;
+            } else if k > at + 10 {
+                hit_at = None;
+            }
+        }
+        if r.boss.is_some() {
+            r.boss_lost = f.fighters[1].max_health - f.fighters[1].health / kumite_sim::ONE;
+        }
+        r.missing += (0..2).filter(|&i| !f.fighters[i].inactive && b.game.clip(i).is_none()).count();
+        r.hashes.push(b.game.state_hash());
+        if st.tally_done || f.fighters[0].health <= 0 {
+            break;
+        }
+    }
+    (r.progress, r.kills) = (st.cam_x, st.kills_total);
+    r
+}
+
+/// Tekken Force under Tekken Tag (the slice's force.json): Paul and Jin (the AI playing them) fight Crow's soldiers
+/// through stage 1's first area (the camera at its second arena, 11776): the soldiers are hit and react, they hit the
+/// player, every frame on a motion; then the stage's boss (a Tekken Tag fighter, by Tekken 3's route) comes in and is
+/// fought; the same twice.
+#[test]
+fn force_under_tekken_tag() {
+    let Some(a) = assets() else { return };
+    if a.gamedata::<serde_json::Value>("force.json").is_err() {
+        eprintln!("skipped: no Tekken Force in the slice");
+        return;
+    }
+    // its sounds (the countdown voices, the chicken's) are ids of a group of their own, its final music a BGM of Tekken 3's
+    let f: serde_json::Value = a.gamedata("force.json").unwrap();
+    let s = SoundData::load(&a).unwrap();
+    for code in f["constants"]["countdown"]["codes"].as_array().unwrap().iter().chain([&f["constants"]["chicken"]["sfx"], &f["constants"]["tally"]["sfx"]]) {
+        assert!(s.system(code.as_u64().unwrap() as u16).is_some_and(|x| kumite_fs::exists(&x.file)), "Force sound {code}");
+    }
+    assert!(s.music(f["constants"]["final"]["bgm"].as_u64().unwrap() as usize).is_some_and(|m| kumite_fs::exists(m.0)));
+    for player in [PAUL, JIN] {
+        let r = force_stage(&a, player, false, 60 * 60 * 3);
+        eprintln!(
+            "model {player}: progress {}, kills {}, hits {} / {} reactions, hit {} times, {} frames without a motion",
+            r.progress, r.kills, r.soldier_hits, r.reactions, r.player_hits, r.missing
+        );
+        assert!(r.progress >= 11776 && r.kills >= 5, "model {player}: the first area: {r:?}");
+        assert!(r.soldier_hits > 0 && r.reactions > 0 && r.player_hits > 0 && r.missing == 0, "model {player}: {:?}", (r.soldier_hits, r.reactions, r.player_hits, r.missing));
+        let boss = force_stage(&a, player, true, 60 * 40);
+        eprintln!("model {player}: boss {:?}, its health lost {}", boss.boss, boss.boss_lost);
+        assert!(boss.boss.is_some() && boss.boss_lost > 0 && boss.missing == 0, "model {player}: the boss fight {:?}", (boss.boss, boss.boss_lost, boss.missing));
+        assert_eq!(boss.hashes, force_stage(&a, player, true, 60 * 40).hashes, "model {player}: the same twice");
+    }
+}

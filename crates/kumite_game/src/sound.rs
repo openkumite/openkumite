@@ -316,8 +316,12 @@ impl SoundData {
         self.volumes.get(((code >> 6) & 0xF) as usize).map_or(1.0, |&v| v as f32 / 127.0)
     }
 
-    /// A system sound (menus: bank 1) by its SePlay code.
+    /// A system sound (menus: bank 1) by its SePlay code; Tekken Tag: by its sound id (the Tekken 3 slice's Force
+    /// sounds are a group of their own).
     pub fn system(&self, code: u16) -> Option<Sound> {
+        if let Some(t) = &self.tag {
+            return t.sound(code, 0, 0, false);
+        }
         self.sound(code, "")
     }
 

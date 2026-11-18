@@ -234,6 +234,12 @@ impl ForceRun {
         }
     }
 
+    /// Bar k: its shown and trail lengths and its full length (px).
+    pub fn bar(&self, k: usize) -> (i32, i32, i32) {
+        let b = self.bars.get(k).copied().unwrap_or_default();
+        (b.2, b.3, self.bar_w(k) - 4)
+    }
+
     /// Bar k's width: the players' the full width, a soldier's its class's.
     fn bar_w(&self, k: usize) -> i32 {
         let full = self.data.draw["bars"]["right"].as_i64().unwrap_or(0) as i32;
@@ -254,10 +260,15 @@ impl ForceRun {
         art: &Art,
         hud: &crate::hud::Hud,
         roster: &crate::menu::Roster,
-        game: &kumite_game::Game,
+        bout: &kumite_game::bout::Bout,
         frame: u64,
         project: &dyn Fn(Vec3) -> Option<(f32, f32)>,
     ) {
+        // (Tekken Tag: in its pictures)
+        if let Some(d) = roster.ttt.as_deref() {
+            return crate::ttt::force_hud(painter, v, art, d, self, bout, frame, project);
+        }
+        let game = &bout.game;
         let Some(st) = &self.stage else { return };
         let src: &[&str] = &["exe"];
         let dr = &self.data.draw;
