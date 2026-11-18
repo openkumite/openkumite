@@ -50,6 +50,35 @@ pub struct Moveset {
     /// Scripted camera motions, by camera selector index (decoder 0x80038CE4).
     #[serde(default)]
     pub camera_motions: std::collections::HashMap<String, CameraMotion>,
+    /// The aliases the engine plays by number (Tekken 3's unless a dialect sets its own, `dialect.rs`).
+    #[serde(skip)]
+    pub fixed: Aliases,
+}
+
+/// Aliases the code names (kumite_converter's reference engine.md §7.1).
+#[derive(Clone, Debug)]
+pub struct Aliases {
+    /// The stance, and the crouch (a K.O. reaction going back to either collapses at once).
+    pub neutral: usize,
+    pub crouch: usize,
+    /// The K.O. collapse (common_219, 80 frames).
+    pub ko_collapse: usize,
+    /// The alias both fighters fall back to for a move neither set has (move-properties.md §3.1).
+    pub missing: usize,
+    /// Air reactions (0x8002EE94): the late fall, the two side falls, the air recovery.
+    pub air_late: usize,
+    pub air_side: [usize; 2],
+    pub air_recovery: usize,
+}
+
+impl Aliases {
+    pub const TEKKEN3: Self = Self { neutral: 3, crouch: 0x28, ko_collapse: 0xD66, missing: 0xDC5, air_late: 0xD62, air_side: [0xD63, 0xD64], air_recovery: 0xD58 };
+}
+
+impl Default for Aliases {
+    fn default() -> Self {
+        Self::TEKKEN3
+    }
 }
 
 impl Moveset {
@@ -204,6 +233,9 @@ pub struct Attack {
     pub header_bytes: Vec<u32>,
     #[serde(default)]
     pub bones: Option<AttackBones>,
+    /// Tekken Tag's strike (no baked path): up to two (start, end) bone slots, posed every frame (`dialect.rs`).
+    #[serde(default)]
+    pub pairs: Vec<[u32; 2]>,
 }
 
 /// Bone slots of the strike path (end0 < 0xC = an arm, else a leg; used to pick block sounds).
@@ -291,6 +323,7 @@ pub struct Step {
     pub raw: u32,
     pub dir: u32,
     pub buttons: Vec<u32>,
+    #[serde(default)]
     pub any_of: bool,
 }
 

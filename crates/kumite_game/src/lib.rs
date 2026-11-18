@@ -669,7 +669,7 @@ impl Game {
     /// Force's co-op step: the four actors, each borrowing from the one it fights.
     fn step_coop(&mut self, pads: [Pad; 2]) {
         let n = self.fight.actor_count();
-        let spheres: Vec<BodyVolumes> = (0..n).map(|k| self.actor_spheres(k).unwrap_or(BodyVolumes { hurt: vec![], push: vec![] })).collect();
+        let spheres: Vec<BodyVolumes> = (0..n).map(|k| self.actor_spheres(k).unwrap_or_default()).collect();
         let bodies: Vec<Arc<Body>> = (0..n).map(|k| self.body_of(k).cloned().unwrap_or_else(|| self.bodies[0].clone())).collect();
         let anims: Vec<FighterAnims> = (0..n).map(|k| FighterAnims { own: &bodies[k], other: &bodies[self.fight.opponent_index(k).min(n - 1)] }).collect();
         let a: Vec<&dyn Animations> = anims.iter().map(|a| a as &dyn Animations).collect();
@@ -1063,7 +1063,7 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
     let make = |layout: &[(usize, Vec3, f32, usize)]| -> Vec<Sphere> {
         layout.iter().map(|&(node, offset, radius, zone)| Sphere { centre: (place.transform_point3(pose[node].w_axis.truncate()) + offset) * UNITS, radius, zone }).collect()
     };
-    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push) }
+    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones: Vec::new() }
 }
 
 /// Render camera for a game view: eye and look direction in glTF metres (y up), vertical field of view from
