@@ -30,6 +30,8 @@ fn ttt_fighters_on_an_arena() {
             c
         })
         .collect();
+    // (an opaque primitive, then a blended one)
+    assert!(fighters.iter().all(|c| c.blend_from > 0 && c.blend_from < c.indices.len()));
     let stage = assets.stage(0).unwrap();
     assert!(stage.sky_model && !stage.sky.is_empty() && !stage.meshes.is_empty());
 
@@ -52,12 +54,10 @@ fn ttt_fighters_on_an_arena() {
     let mut gpu = Vec::new();
     for (k, c) in fighters.iter().enumerate() {
         let verts: Vec<SkinVertex> = c.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal }).collect();
-        assert!(c.blend_from <= c.indices.len() && c.clips.len() > 30);
+        assert!(c.clips.len() > 30);
         let model = r.skinned(&verts, &c.indices, c.blend_from, r.texture(c.texture.width, c.texture.height, &c.texture.rgba));
         let (clip, frame) = if k == 0 { (c.clip("motion_0000").unwrap(), 0) } else { (30, 20) };
         let pose = c.pose(clip, frame, true);
-        let sk = c.skin_matrices(&pose, Mat4::IDENTITY);
-        let ys: Vec<f32> = c.vertices.iter().map(|v| (0..4).map(|j| (sk[v.joints[j] as usize] * glam::Vec4::from((Vec3::from(v.pos), 1.0))) * v.weights[j]).sum::<glam::Vec4>().y).collect();
         // (the motion's tracks bound to the fighter's joints by name)
         let arm = c.nodes.iter().position(|n| n.name == "upperarm_A").unwrap();
         assert!(c.clips[clip].rotations[arm].is_some() && c.clips[clip].translations[0].is_some());
