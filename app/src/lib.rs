@@ -4454,6 +4454,7 @@ impl App {
                 cam.sky_first = scene.sky_first;
                 // (an arcade stage's model: both sides of its faces)
                 cam.sky_cull = !scene.sky_model || scene.sky_cull;
+                cam.sky_depth = scene.sky_model;
                 cam.background = Some(scene.background);
                 scene_lighting(&mut cam, scene);
                 (cam, Vec::new())
@@ -4470,6 +4471,7 @@ impl App {
                 cam.sky_first = scene.sky_first;
                 // (an arcade stage's model: both sides of its faces)
                 cam.sky_cull = !scene.sky_model || scene.sky_cull;
+                cam.sky_depth = scene.sky_model;
                 cam.background = Some(scene.background);
                 (cam, Vec::new())
             }
@@ -5272,6 +5274,7 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
     if scene.sky_model {
         cam.sky = glam::Mat4::from_translation(glam::Vec3::new(mid.x, 0.0, mid.z));
         (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, false, scene.sky_cull);
+        cam.sky_depth = true;
     }
     // Force's backdrop wall, the original's 2D strip (0x800B4914): drawn first, the floor over it up to the wall; not
     // turned by the camera's roll but stepped up along the screen (its posts stay upright)
