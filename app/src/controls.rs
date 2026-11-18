@@ -1,11 +1,12 @@
 //! The controls, kept in the save: each player's gamepad (OPTION > KEY CONFIGURATION, the original's screen:
 //! the eight buttons L2 R2 L1 R1 triangle circle cross square each give one of 13 commands) and keyboard
 //! (OPTION > KEYBOARD, OpenKumite's). A command is what the game reads: a direction, a set of the four buttons
-//! (LP 1, RP 2, LK 3, RK 4; two at once as LP+RP and so on), a sidestep (STEP up / down), START or BACK. The
+//! (LP 1, RP 2, LK 3, RK 4; two at once as LP+RP and so on), Tekken Tag's TAG, a sidestep (STEP up / down), START or
+//! BACK. The
 //! gamepads (native and in a browser) are read by their buttons' places, named as on the original pad.
 
 use crate::menu::Key;
-use kumite_sim::input::Pad;
+use kumite_sim::input::{Pad, TAG};
 use serde::{Deserialize, Serialize};
 use winit::keyboard::KeyCode;
 
@@ -17,7 +18,7 @@ pub enum Command {
     Down,
     Left,
     Right,
-    /// Buttons 1..4 as bits 0..3 (several: pressed together).
+    /// Buttons 1..4 as bits 0..3 (several: pressed together); TAG as bit 4 ([`TAG`]).
     Buttons(u8),
     /// A sidestep: a new press taps up (down); held, the directions rest (0x8002C154 / 0x8002C278).
     StepUp,
@@ -57,6 +58,7 @@ impl Command {
             Command::Down => "DOWN".into(),
             Command::Left => "LEFT".into(),
             Command::Right => "RIGHT".into(),
+            Command::Buttons(TAG) => "TAG".into(),
             Command::Buttons(b) => (0..4).filter(|i| b & (1 << i) != 0).map(name).collect::<Vec<_>>().join("+"),
             Command::Start => "START".into(),
             Command::Back => "BACK".into(),
@@ -84,7 +86,7 @@ impl Command {
             Command::Down => Key::Down,
             Command::Left => Key::Left,
             Command::Right => Key::Right,
-            Command::Buttons(b) if b.count_ones() == 1 => Key::Button(b.trailing_zeros() as usize),
+            Command::Buttons(b) if b.count_ones() == 1 && b != TAG => Key::Button(b.trailing_zeros() as usize),
             Command::Start => Key::Start,
             Command::Back => Key::Back,
             _ => return None,
@@ -156,15 +158,15 @@ pub struct PadLayout {
 }
 
 impl Default for PadLayout {
-    /// The original's (0x800B94FC): square LP, triangle RP, cross LK, circle RK, the shoulders NO USE; no
-    /// vibration.
+    /// The original's (0x800B94FC): square LP, triangle RP, cross LK, circle RK, the shoulders NO USE (but R1:
+    /// Tekken Tag's TAG); no vibration.
     fn default() -> Self {
         use PadButton as B;
         let buttons = vec![
             (B::L2, Command::None),
             (B::R2, Command::None),
             (B::L1, Command::None),
-            (B::R1, Command::None),
+            (B::R1, Command::Buttons(TAG)),
             (B::North, Command::Buttons(2)),
             (B::East, Command::Buttons(8)),
             (B::South, Command::Buttons(4)),
@@ -227,7 +229,7 @@ impl Step {
     pub fn apply(&mut self, mut pad: Pad, steps: u8) -> Pad {
         let new = steps & !self.held;
         self.held = steps;
-        if steps != 0 && pad.buttons == 0 {
+        if steps != 0 && pad.buttons & 0xF == 0 {
             pad.up = false;
             pad.down = false;
             pad.left = false;
@@ -244,7 +246,7 @@ impl Step {
 }
 
 /// The keyboard's commands, in KEY CONFIG's order.
-pub const KEY_COMMANDS: [Command; 15] = [
+pub const KEY_COMMANDS: [Command; 16] = [
     Command::Up,
     Command::Down,
     Command::Left,
@@ -259,6 +261,7 @@ pub const KEY_COMMANDS: [Command; 15] = [
     Command::Buttons(10),
     Command::Buttons(9),
     Command::Buttons(6),
+    Command::Buttons(TAG),
     Command::Start,
 ];
 
@@ -276,7 +279,7 @@ impl KeyLayout {
         Self { keys: keys.iter().map(|(c, k)| (*c, k.to_vec())).collect() }
     }
 
-    /// P1: WASD, F G V B (and U I J K), Space start.
+    /// P1: WASD, F G V B (and U I J K), H (and L) tag, Space start.
     pub fn p1() -> Self {
         use KeyCode as K;
         Self::new(&[
@@ -294,11 +297,13 @@ impl KeyLayout {
             (Command::Buttons(10), &[]),
             (Command::Buttons(9), &[]),
             (Command::Buttons(6), &[]),
+            (Command::Buttons(TAG), &[K::KeyH, K::KeyL]),
             (Command::Start, &[K::Space]),
         ])
     }
 
-    /// P2: the arrows, ; ' . / (numpad 4 5 1 2), numpad Enter / right Shift start (Enter is always P1's).
+    /// P2: the arrows, ; ' . / (numpad 4 5 1 2), backslash (numpad 6) tag, numpad Enter / right Shift start (Enter
+    /// is always P1's).
     pub fn p2() -> Self {
         use KeyCode as K;
         Self::new(&[
@@ -316,6 +321,7 @@ impl KeyLayout {
             (Command::Buttons(10), &[]),
             (Command::Buttons(9), &[]),
             (Command::Buttons(6), &[]),
+            (Command::Buttons(TAG), &[K::Backslash, K::Numpad6]),
             (Command::Start, &[K::NumpadEnter, K::ShiftRight]),
         ])
     }

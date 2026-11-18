@@ -7,10 +7,10 @@
 //! aliases, all into it.
 
 use crate::data::{
-    self, AirPushback, AirReaction, AirReactions, Aliases, Bank, Cancel, CancelKind, CloseRange, CloseRangeEntry, MoveRef, Moveset, PushbackCurve, PushbackCurves, ReactionEntry, Reactions,
-    ReversalFamilies, Sequences, Shared, SharedCancels, ThrowVictims,
+    self, AirPushback, AirReaction, AirReactions, Aliases, Bank, Cancel, CloseRange, CloseRangeEntry, MoveRef, Moveset, PushbackCurve, PushbackCurves, ReactionEntry, Reactions, ReversalFamilies,
+    Sequences, Shared, SharedCancels, ThrowVictims,
 };
-use crate::{BallRules, CharacterRules, GameData, MoveRules, TRANSITION_LINK};
+use crate::{BallRules, CharacterRules, GameData, MoveRules, TagRules, TRANSITION_LINK};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
@@ -21,7 +21,11 @@ pub const REQ_NOT_MOVESET: i64 = 2;
 pub const REQ_OPPONENT_MOVESET: i64 = 3;
 pub const REQ_BODY: i64 = 4;
 pub const REQ_NOT_BODY: i64 = 5;
-pub const REQ_ALWAYS: i64 = 6;
+/// The tag partner's moveset / body is (0x369008: team member +0x2; never in a fight without a partner), and the
+/// Kazuya-Devil pair (value 0: the pair, 1: not).
+pub const REQ_PARTNER_MOVESET: i64 = 7;
+pub const REQ_PARTNER_BODY: i64 = 8;
+pub const REQ_DEVIL_PAIR: i64 = 9;
 const REQ_NEVER: u32 = 0xFF;
 /// A condition code no arm of the engine's takes: never true.
 const COND_NEVER: u32 = 0xFF;
@@ -33,6 +37,10 @@ pub const COND_NOT_BACK: u32 = 0x100;
 pub const TRANSITION_FACE: u32 = 0x2D;
 pub const TRANSITION_AXIS: u32 = 0x2E;
 pub const TRANSITION_ACROSS: u32 = 0x2F;
+/// The engine's numbers for Tekken Tag's off-screen condition (0x5C: ends the tag-out runs) and the tag swap
+/// (transition bit 0x2000 without a parameter, section 10), beside the transition's bits 0x40 / 0x80.
+pub const COND_OFF_SCREEN: u32 = 0x101;
+pub const TRANSITION_SWAP: u32 = 0x100;
 
 /// A game's numbering, as ranges `(first, last, the engine's number for first)` and pairs `(its, the engine's)`.
 pub struct Dialect {
@@ -45,8 +53,8 @@ pub struct Dialect {
     /// Transition bits for the engine's 0x80 (turn around first) and 0x40.
     pub turn_bit: u32,
     pub bit6: u32,
-    /// The plain-command bit of a button one on one has not (the tag button): its entries never match.
-    pub never_button: u32,
+    /// The swap bit (with no parameter in bits 7-12: else Unknown's moveset change, not run).
+    pub swap_bit: u32,
     /// flags24 bits.
     pub flag_bits: &'static [(u32, u32)],
     /// Timed property ops; the others are dropped.
@@ -58,16 +66,17 @@ pub struct Dialect {
 
 /// Tekken Tag Tournament (FIGHT_DATA.md sections 1, 2, 5, 7, 8).
 pub static TTT: Dialect = Dialect {
-    // 0-0x24 kept; 0x25 not back turned; Tekken 3's 0x25-0x44 are 3 up; reversals from 0x60 (Tekken 3's 0x45); 0x26 /
-    // 0x27 (unused) and 0x48-0x5F (camera, screen sides, off screen, round decided: tag-out runs and one win) never
-    cond: &[(0, 0x24, 0), (0x25, 0x25, COND_NOT_BACK), (0x28, 0x47, 0x25), (0x60, 0x66, 0x45)],
-    req: &[(0x01, 0x21, 1), (0x22, 0x42, 2), (0x43, 0x63, 3), (0x85, 0xA6, 4), (0xC9, 0xEA, 5), (0xED, 0xED, 6)],
+    // 0-0x24 kept; 0x25 not back turned; Tekken 3's 0x25-0x44 are 3 up; 0x5C off screen; reversals from 0x60 (Tekken
+    // 3's 0x45); 0x26 / 0x27 (unused) and 0x48-0x5B, 0x5D-0x5F (camera-relative, screen sides, round decided: the
+    // tag-out runs' variants and one win) never
+    cond: &[(0, 0x24, 0), (0x25, 0x25, COND_NOT_BACK), (0x28, 0x47, 0x25), (0x5C, 0x5C, COND_OFF_SCREEN), (0x60, 0x66, 0x45)],
+    req: &[(0x01, 0x21, 1), (0x22, 0x42, 2), (0x43, 0x63, 3), (0x64, 0x84, 7), (0x85, 0xA6, 4), (0xA7, 0xC8, 8), (0xC9, 0xEA, 5), (0xEC, 0xED, 9)],
     // 0-28 kept; 29 / 30 are Tekken 3's 0x1D / 0x1E, 31 / 32 its link (33), 36-45 its 0x22-0x2B, 46 its use END (44);
     // 33-35 the engine's own
     transition: &[(0, 28, 0), (29, 30, 0x1D), (31, 31, TRANSITION_LINK), (32, 32, TRANSITION_LINK), (33, 35, TRANSITION_FACE), (36, 45, 0x22), (46, 46, 0x2C)],
     turn_bit: 0x8000,
     bit6: 0x4000,
-    never_button: 0x4000,
+    swap_bit: 0x2000,
     flag_bits: &[(0, 8), (2, 10), (3, 11), (4, 12), (5, 13), (6, 14), (9, 16), (11, 18), (19, 28), (20, 29), (22, 30)],
     ops: &[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10), (0x0C, 0x0B), (0x0D, 0x0C)],
     reaction_none: 0x592,
@@ -80,12 +89,8 @@ fn range(t: &[(u32, u32, u32)], x: u32) -> Option<u32> {
 
 impl Dialect {
     /// A cancel entry in the engine's numbers. `offsets`: where each reversal family starts (the family
-    /// condition's parameter is one). (The partner bit, `cond_tag`, tests the opponent's tagging, which one on one
-    /// never happens: the bit's test passes and the code alone decides, 0x3693E0.)
+    /// condition's parameter is one). (The tag button's commands keep their bit 14: [`crate::input::TAG_COMMAND`].)
     fn cancel(&self, mut c: Cancel, offsets: &[u32]) -> Cancel {
-        if c.kind == CancelKind::Command && c.cmd & self.never_button != 0 {
-            c.kind = CancelKind::Other;
-        }
         if c.req != 0 {
             c.req = self.req.iter().find(|r| (r.0..=r.1).contains(&c.req)).map_or(REQ_NEVER << 8, |r| r.2 << 8 | (c.req - r.0));
         }
@@ -94,7 +99,9 @@ impl Dialect {
             c.param = offsets.iter().position(|&o| o == c.param).map_or(u32::MAX, |k| k as u32);
         }
         let t = c.transition;
-        c.transition = range(self.transition, t & 0x7F).unwrap_or(6) | if t & self.turn_bit != 0 { 0x80 } else { 0 } | if t & self.bit6 != 0 { 0x40 } else { 0 };
+        let bit = |b: u32, to: u32| if t & b != 0 { to } else { 0 };
+        let swap = if t >> 7 & 0x3F == 0 { bit(self.swap_bit, TRANSITION_SWAP) } else { 0 };
+        c.transition = range(self.transition, t & 0x7F).unwrap_or(6) | bit(self.turn_bit, 0x80) | bit(self.bit6, 0x40) | swap;
         c
     }
 
@@ -290,7 +297,33 @@ pub fn load(gamedata: &Path, rules: &serde_json::Value) -> Result<GameData> {
         counter_bonus: rules["counter_hit"]["bonus_tenths"].as_array().map_or_else(|| vec![3], |v| v.iter().map(|k| k.as_i64().unwrap_or(0) as i32).collect()),
         chip_add: rules["chip_damage"]["add"].as_i64().unwrap_or(0) as i32,
         tag_juggles: true,
+        tag: tag_rules(rules),
     })
+}
+
+/// The tag rules (rules.json `tag` from the converter's tag export on; an older pack: the defaults, no relations).
+fn tag_rules(rules: &serde_json::Value) -> TagRules {
+    let d = TagRules::default();
+    let (t, a) = (&rules["tag"], &rules["tag"]["anger"]);
+    let int = |v: &serde_json::Value, k: i32| v.as_i64().map_or(k, |x| x as i32);
+    // (0.6 and 1.4 as f32: tenths, so that the cap stays integer)
+    let tenths = |k: &str, x: i32| rules["health"]["recoverable"][k]["value"].as_f64().map_or(x, |v| (v * 10.0).round() as i32);
+    let field = |e: &serde_json::Value, k: &str| e[k].as_i64().unwrap_or(-1);
+    TagRules {
+        regen_divisor: int(&t["regen_divisor"], d.regen_divisor).max(1),
+        cap_tenths: [tenths("damage_factor", d.cap_tenths[0]), tenths("damage_factor_flag_12a", d.cap_tenths[1])],
+        anger_start: int(&a["start"], d.anger_start),
+        angry: int(&a["angry"], d.angry),
+        anger_hit: [int(&a["hit"], d.anger_hit[0]), int(&a["hit_no_damage"], d.anger_hit[1])],
+        angry_tenths: int(&a["damage_tenths"], d.angry_tenths),
+        any_body: a["any_body"].as_i64().unwrap_or(d.any_body),
+        relations: a["relations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| [field(e, "partner_body"), field(e, "partner_mask"), field(e, "active_body"), field(e, "active_mask"), field(e, "effect")])
+            .collect(),
+    }
 }
 
 /// A fighter's moveset (`movesets/moveset_NN.json`): its aliases, all into the common set.
@@ -318,6 +351,7 @@ mod tests {
             let want = match x {
                 0..=0x24 => x,
                 0x25 => COND_NOT_BACK,
+                0x5C => COND_OFF_SCREEN,
                 // back turned left / right, own quadrants, opponent's, the always-false arm, then 0x30-0x44
                 0x28..=0x47 => x - 3,
                 0x60..=0x66 => x - 0x60 + 0x45,
@@ -338,5 +372,24 @@ mod tests {
             };
             assert_eq!(trans(x), want, "transition {x}");
         }
+    }
+
+    /// The tag swap bit, the anger relations and the time-up score.
+    #[test]
+    fn tag_rules() {
+        let cancel =
+            |t: u32| Cancel { cmd: 0x10, kind: data::CancelKind::Command, input: String::new(), req: 0, cond: 0, cond_tag: false, param: 0, dest: 0, win_start: 0, win_end: 0, exec: 0, transition: t };
+        // 0x6021: type 33, the swap bit, 0x4000; Unknown's 0x3186 (a parameter in bits 7-12) is no swap
+        assert_eq!(TTT.cancel(cancel(0x6021), &[]).transition, TRANSITION_FACE | TRANSITION_SWAP | 0x40);
+        assert_eq!(TTT.cancel(cancel(0x3186), &[]).transition & TRANSITION_SWAP, 0);
+        let r = TagRules { relations: vec![[1, 31, 0, 31, 1], [0, 31, 11, 21, 1], [5, 31, 18, 31, -9], [0x22, 31, 4, 31, -1]], ..TagRules::default() };
+        assert_eq!(r.anger(Some(1), Some(0), 5), 5, "Paul hit, Law angrier");
+        assert_eq!(r.anger(Some(5), Some(18), 5), 0, "none");
+        assert_eq!(r.anger(Some(9), Some(4), 5), 3, "any partner");
+        assert_eq!((r.anger(Some(9), Some(9), 5), r.anger(Some(9), Some(9), 0)), (4, 6));
+        let set = std::sync::Arc::new(Moveset { moveset_id: None, moves: Vec::new(), cancels: Vec::new(), aliases: None, camera_motions: Default::default(), fixed: TTT.fixed.clone() });
+        let m = |health: i32| crate::TagMember { health: health * crate::ONE, ..crate::TagMember::new(set.clone(), None, 100, &r) };
+        let t = crate::TagTeam { members: [m(100), m(50)], active: 0 };
+        assert_eq!(t.score(25 * crate::ONE), (1024 + 2048) / 2);
     }
 }

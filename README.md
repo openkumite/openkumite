@@ -144,6 +144,7 @@ Useful flags:
 
 ```sh
 openkumite --fight --models A,B --stage N        # straight into a free fight
+openkumite --fight --models A,B,C,D              # Tekken Tag: a tag battle, C and D the partners of A and B
 openkumite --shot out.png --frames 120           # headless screenshot
 openkumite --screen select --shot select.png     # render a menu screen
 openkumite --keys "30:start,60:b1,400:shot" --quit-after 600   # scripted run

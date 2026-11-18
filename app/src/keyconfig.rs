@@ -398,7 +398,7 @@ impl KeyboardConfig {
         }
         let layout = &self.controls.keyboard[self.player];
         for (k, row) in rows.iter().enumerate().skip(1) {
-            let y = 96.0 + 20.0 * (k - 1) as f32 + if matches!(row, Row::Default | Row::Exit) { 8.0 } else { 0.0 };
+            let y = 96.0 + 19.0 * (k - 1) as f32 + if matches!(row, Row::Default | Row::Exit) { 8.0 } else { 0.0 };
             match row {
                 Row::Command(c) => {
                     art.text(painter, v, 0, colour(k), 24.0, y, &c.label(&art.screens["key_config"]["texts"]["commands"]), Color32::WHITE);
