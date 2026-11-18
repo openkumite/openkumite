@@ -254,7 +254,12 @@ pub fn load(gamedata: &Path, rules: &serde_json::Value) -> Result<GameData> {
     let index: Index = data::load(&gamedata.join("movesets/index.json"))?;
     let files: std::collections::BTreeSet<&str> = index.fighters.iter().map(|f| f.moveset_file.as_str()).collect();
     for f in files {
-        let set: MovesetFile = data::load(&gamedata.join("movesets").join(f))?;
+        let set: serde_json::Value = data::load(&gamedata.join("movesets").join(f))?;
+        // (a moveset with its own moves names its throws in them)
+        if set.get("moves").is_some() {
+            continue;
+        }
+        let set: MovesetFile = serde_json::from_value(set).with_context(|| format!("parsing movesets/{f}"))?;
         for &a in &links {
             if let Some(m) = set.aliases.get(a).copied().flatten().and_then(|i| moves.get_mut(i)) {
                 m.reaction.table = "throw_victims".into();
@@ -327,17 +332,26 @@ fn tag_rules(rules: &serde_json::Value) -> TagRules {
     }
 }
 
-/// A fighter's moveset (`movesets/moveset_NN.json`): its aliases, all into the common set.
+/// A fighter's moveset (`movesets/moveset_NN.json`): its aliases, all into the common set; or, with `moves`, a
+/// moveset of Tekken 3's move system renumbered into Tekken Tag's aliases (the crossover's fighters, from the
+/// extras): its own moves and cancels, its aliases into them or the common set.
 /// `n`: the common set's move count.
 pub fn moveset(n: usize, path: &Path) -> Result<Moveset> {
-    let f: MovesetFile = data::load(path)?;
-    let aliases = f.aliases.into_iter().map(|a| MoveRef { bank: if a.is_some() { Bank::Common } else { Bank::None }, index: a }).collect::<Vec<_>>();
-    for (k, r) in aliases.iter().enumerate() {
-        anyhow::ensure!(r.index.is_none_or(|i| i < n), "{}: alias {k} past the {n} moves", path.display());
-    }
-    let fixed = TTT.fixed.clone();
-    anyhow::ensure!(aliases.get(fixed.neutral).is_some_and(|r| r.index.is_some()), "{}: no stance", path.display());
-    Ok(Moveset { moveset_id: Some(f.moveset_id), moves: Vec::new(), cancels: Vec::new(), aliases: Some(aliases), camera_motions: Default::default(), fixed })
+    let file: serde_json::Value = data::load(path)?;
+    let set = if file.get("moves").is_some() {
+        let set: Moveset = serde_json::from_value(file).with_context(|| format!("parsing {}", path.display()))?;
+        set.check(n).with_context(|| format!("{}", path.display()))?;
+        Moveset { fixed: TTT.fixed.clone(), ..set }
+    } else {
+        let f: MovesetFile = serde_json::from_value(file).with_context(|| format!("parsing {}", path.display()))?;
+        let aliases = f.aliases.into_iter().map(|a| MoveRef { bank: if a.is_some() { Bank::Common } else { Bank::None }, index: a }).collect::<Vec<_>>();
+        for (k, r) in aliases.iter().enumerate() {
+            anyhow::ensure!(r.index.is_none_or(|i| i < n), "{}: alias {k} past the {n} moves", path.display());
+        }
+        Moveset { moveset_id: Some(f.moveset_id), moves: Vec::new(), cancels: Vec::new(), aliases: Some(aliases), camera_motions: Default::default(), fixed: TTT.fixed.clone() }
+    };
+    anyhow::ensure!(set.aliases.as_ref().and_then(|a| a.get(set.fixed.neutral)).is_some_and(|r| r.index.is_some()), "{}: no stance", path.display());
+    Ok(set)
 }
 
 #[cfg(test)]
@@ -392,5 +406,22 @@ mod tests {
         let m = |health: i32| crate::TagMember { health: health * crate::ONE, ..crate::TagMember::new(set.clone(), None, 100, &r) };
         let t = crate::TagTeam { members: [m(100), m(50)], active: 0 };
         assert_eq!(t.score(25 * crate::ONE), (1024 + 2048) / 2);
+    }
+
+    /// A moveset with its own moves (the crossover's Tekken 3 fighters): loaded whole, with Tekken Tag's fixed
+    /// aliases; an alias past the common set refused.
+    #[test]
+    fn a_moveset_with_its_own_moves() {
+        let mv = serde_json::json!({"index": 0, "anim": "motion_000", "frames": 10, "posture": {"raw": 0, "base": 0}, "attack_mask": {"mask": 0, "level": 0, "level_name": ""},
+            "cancel_start": 0, "next": {"alias": 58}, "damage": 0, "damage_type": 0, "active": [0, 0], "reaction": {"index": 0}});
+        let mut aliases = vec![serde_json::json!({"bank": "none", "move": null}); 59];
+        aliases[TTT.fixed.neutral] = serde_json::json!({"bank": "own", "move": 0});
+        aliases[3] = serde_json::json!({"bank": "common", "move": 4});
+        let path = std::env::temp_dir().join(format!("ok_own_moves_{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::json!({"moveset_id": 19, "moves": [mv], "cancels": [], "aliases": aliases}).to_string()).unwrap();
+        let set = moveset(5, &path).unwrap();
+        assert_eq!((set.moves.len(), set.moveset_id, set.fixed.neutral, set.fixed.ko_collapse), (1, Some(19), TTT.fixed.neutral, TTT.fixed.ko_collapse));
+        assert!(moveset(4, &path).is_err(), "common move 4 of 4");
+        std::fs::remove_file(&path).unwrap();
     }
 }

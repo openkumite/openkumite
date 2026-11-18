@@ -268,7 +268,8 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let gd = assets.root.join("gamedata");
     let entry = index.models.iter().find(|m| m.model_record == record).with_context(|| format!("model {record} not in the moveset index"))?;
     let path = gd.join("movesets").join(&entry.moveset_file);
-    // Tekken Tag (rules.json's dialect): a moveset is aliases into the common set, the motions are files of their own
+    // Tekken Tag (rules.json's dialect): a moveset is aliases into the common set (a crossover fighter's: its own
+    // moves too), the motions are files of their own
     let tag = rules["dialect"] == "ttt";
     let moveset = if tag {
         kumite_sim::dialect::moveset(common, &path)?
