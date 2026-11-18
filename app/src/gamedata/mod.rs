@@ -208,10 +208,10 @@ fn part_about(p: Part) -> &'static str {
 fn part_input(p: Part, folders: bool) -> &'static str {
     match (p, folders) {
         (Part::Cs, _) => "Choose the Half-Life folder (with cstrike/ and valve/).",
-        (Part::Arcade, true) => "Choose the folder that holds its ROM set: MAME's tekken3.zip.",
+        (Part::Arcade, true) => "Choose the folder that holds its ROM set, MAME's tekken3.zip: a folder of its own, not Download itself.",
         (Part::Arcade, false) => "Choose its ROM set: MAME's tekken3.zip.",
         (Part::Ttt, false) => "Choose its disc image: the .cue (its .bin file beside it), .iso, .chd, or a .zip of it.",
-        (_, true) => "Choose the folder that holds its disc image: .cue with its .bin files, .chd, .iso, .pbp, or a .zip or .7z of them.",
+        (_, true) => "Choose the folder that holds its disc image (a folder of its own, not Download itself): .cue with its .bin files, .chd, .iso, .pbp, or a .zip or .7z of them.",
         _ => "Choose its disc image: the .cue (its .bin files beside it), .chd, .iso, .pbp, .ccd, .mds, .ecm, or a .zip, .7z, .tar, .gz, .xz or .zst of it.",
     }
 }

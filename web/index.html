@@ -224,7 +224,7 @@
 
   // ---- the on-screen pad: window.__oktouch, the standard gamepad layout's 17 buttons held, read by the game as a
   // gamepad (gamepad_web.rs). Shown on touch screens (or with #touch).
-  const B = { cross: 0, circle: 1, square: 2, triangle: 3, select: 8, start: 9, up: 12, down: 13, left: 14, right: 15 };
+  const B = { cross: 0, circle: 1, square: 2, triangle: 3, r1: 5, select: 8, start: 9, up: 12, down: 13, left: 14, right: 15 };
   const held = new Array(17).fill(false);
   function setupPad() {
     if (document.body.classList.contains('touch')) return;
@@ -233,7 +233,7 @@
     const pad = document.getElementById('pad');
     const left = pad.querySelector('.left'), right = pad.querySelector('.right');
     const ring = pad.querySelector('.ring'), knob = pad.querySelector('.knob');
-    // the face buttons (the original pad's places), the two pairs the game uses most, START and SELECT
+    // the face buttons (the original pad's places), the two pairs the game uses most (and Tekken Tag's TAG), START and SELECT
     const faces = [
       { label: '△', b: [B.triangle], dx: 0, dy: -1, color: '#5fdc8b' },
       { label: '□', b: [B.square], dx: -1, dy: 0, color: '#f08cd8' },
@@ -244,6 +244,8 @@
       { label: '1+2', b: [B.square, B.triangle], dx: -1.15, dy: -1.15 },
       { label: '3+4', b: [B.cross, B.circle], dx: 1.15, dy: 1.15 },
     ];
+    // Tekken Tag Tournament the main game (the page reloads into it): its TAG, R1 (controls.rs), in the free corner
+    try { if (localStorage.getItem('openkumite_game') === 'ttt') pairs.push({ label: 'TAG', b: [B.r1], dx: 1.15, dy: -1.15 }); } catch {}
     const els = [];
     const make = (spec, cls) => {
       const e = document.createElement('div');
@@ -270,7 +272,7 @@
       const size = gap * 0.92;
       const cx = r.width - gap * 1.6 - 12, cy = r.height - gap * 1.6 - 12;
       for (const { e, spec } of els) {
-        const s = spec.label.includes('+') ? size * 0.72 : size;
+        const s = spec.color ? size : size * 0.72;
         Object.assign(e.style, { width: `${s}px`, height: `${s}px`, left: `${cx + spec.dx * gap - s / 2}px`, top: `${cy + spec.dy * gap - s / 2}px` });
         spec.cx = r.left + cx + spec.dx * gap; spec.cy = r.top + cy + spec.dy * gap; spec.r = s * 0.62;
       }

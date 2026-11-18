@@ -4635,7 +4635,11 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))]
         let (mut dialog_action, mut status_action) = (None, None);
         // Android: the on-screen pad over it all (or its editor, the panel's changes to it); the Game data and Touch
-        // controls buttons on the title and the main menu, Touch controls in a fight's pause
+        // controls buttons on the title and the main menu, Touch controls in a fight's pause; TAG with Tekken Tag
+        #[cfg(target_os = "android")]
+        if let Some(g) = self.gamepads.as_mut() {
+            g.touch.tag = self.roster.ttt.is_some();
+        }
         #[cfg(target_os = "android")]
         let mut touch = self.gamepads.as_ref().map(|g| g.touch.clone()).filter(|t| t.shown || t.edit.is_some());
         let at_title = matches!(self.screen, Some(Screen::Title { .. } | Screen::Menu(_)));
