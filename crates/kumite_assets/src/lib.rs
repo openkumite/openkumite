@@ -490,6 +490,9 @@ pub struct Stage {
     /// both sides of its faces are drawn, but with `sky_cull` (`drum_cull`: wound anticlockwise from the front).
     pub sky_model: bool,
     pub sky_cull: bool,
+    /// The model shares the floor's depth buffer (scene extras `drum_depth: "floor"`: Tekken Tag's arenas, which the
+    /// PS2 draws with one z-buffer), so the floor hides what lies under it and the model hides the fighters.
+    pub sky_floor_depth: bool,
     /// The 2D panorama behind the model (scene extras `sky`), and how it follows the camera.
     pub sky_picture: Option<SkyPicture>,
     /// An extra level (scene extras `level`): its name.
@@ -586,6 +589,7 @@ impl Stage {
             tiled: vec![false; images.len()],
             sky_model: false,
             sky_cull: false,
+            sky_floor_depth: false,
             sky_picture: None,
             extra_level: None,
             walls: None,
@@ -612,6 +616,7 @@ impl Stage {
             st.sky_first = v["drum_before_floor"].as_bool().unwrap_or(false);
             st.sky_model = v["drum"] == "model";
             st.sky_cull = v["drum_cull"] == true;
+            st.sky_floor_depth = v["drum_depth"] == "floor";
             let sky = &v["sky"];
             if let Some(image) = sky["image"].as_u64().map(|i| i as usize).filter(|&i| i < images.len()) {
                 let num = |k: &str| sky[k].as_f64().map(|x| x as f32);

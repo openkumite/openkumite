@@ -150,6 +150,8 @@ struct Scene {
     /// `sky_picture` (how it follows the camera, its texture and size, a white texture for its plain colours).
     sky_model: bool,
     sky_cull: bool,
+    /// The model shares the floor's depth (Tekken Tag's arenas).
+    sky_floor_depth: bool,
     sky_picture: Option<(kumite_assets::SkyPicture, Arc<kumite_render::Texture>, [f32; 2], Arc<kumite_render::Texture>)>,
     /// The full-screen fill behind the stage (sRGB; one stage's sky blue, black elsewhere).
     background: [u8; 3],
@@ -1190,6 +1192,7 @@ impl App {
             wall_z: None,
             sky_model: false,
             sky_cull: false,
+            sky_floor_depth: false,
             sky_picture: None,
             background: [0; 3],
             strip: None,
@@ -1258,7 +1261,7 @@ impl App {
                 (scene.sky_base_y, scene.sky_y_scale, scene.sky_first, scene.floor_period) = (st.sky_base_y, st.sky_y_scale, st.sky_first, st.floor_period);
                 // (a mesh carries the glb's whole vertex list: its own are the ones its indices name)
                 scene.wall_z = st.sky.first().and_then(|m| m.vertices.get(*m.indices.first()? as usize)).filter(|_| st.backdrop_wall).map(|v| place(glam::Vec3::from(v.pos)).z);
-                (scene.sky_model, scene.sky_cull) = (st.sky_model, st.sky_cull);
+                (scene.sky_model, scene.sky_cull, scene.sky_floor_depth) = (st.sky_model, st.sky_cull, st.sky_floor_depth);
                 scene.sky_picture = st
                     .sky_picture
                     .filter(|p| st.textures.get(p.image).is_some_and(|t| t.width.max(t.height) <= r.max_texture()))
@@ -4816,6 +4819,7 @@ impl App {
                 cam.sky_first = scene.sky_first;
                 cam.sky_cull = !scene.sky_model || scene.sky_cull;
                 cam.sky_depth = scene.sky_model;
+                cam.sky_floor_depth = scene.sky_floor_depth;
                 cam.background = Some(scene.background);
                 scene_lighting(&mut cam, scene);
                 (cam, Vec::new())
@@ -4838,6 +4842,7 @@ impl App {
                 // (an arcade stage's model: both sides of its faces)
                 cam.sky_cull = !scene.sky_model || scene.sky_cull;
                 cam.sky_depth = scene.sky_model;
+                cam.sky_floor_depth = scene.sky_floor_depth;
                 cam.background = Some(scene.background);
                 scene_lighting(&mut cam, scene);
                 (cam, Vec::new())
@@ -4875,6 +4880,7 @@ impl App {
                 // (an arcade stage's model: both sides of its faces)
                 cam.sky_cull = !scene.sky_model || scene.sky_cull;
                 cam.sky_depth = scene.sky_model;
+                cam.sky_floor_depth = scene.sky_floor_depth;
                 cam.background = Some(scene.background);
                 (cam, Vec::new())
             }
@@ -5709,7 +5715,7 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
     if scene.sky_model {
         cam.sky = glam::Mat4::from_translation(glam::Vec3::new(mid.x, 0.0, mid.z));
         (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, false, scene.sky_cull);
-        cam.sky_depth = true;
+        (cam.sky_depth, cam.sky_floor_depth) = (true, scene.sky_floor_depth);
     }
     // Force's backdrop wall, the original's 2D strip (0x800B4914): drawn first, the floor over it up to the wall; not
     // turned by the camera's roll but stepped up along the screen (its posts stay upright)

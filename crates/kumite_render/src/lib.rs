@@ -132,6 +132,9 @@ pub struct Camera {
     /// faces hiding one another by their depth, the fighters over all of it. The arcade game sorts its faces instead,
     /// and so do the original's drums here; sorted by triangle, a model's large faces come out in the wrong order.
     pub sky_depth: bool,
+    /// With `sky_depth`: the model is depth-tested against the floor too, one depth buffer for all (Tekken Tag's
+    /// arenas): the floor hides the ground under it, the model the fighters behind it.
+    pub sky_floor_depth: bool,
     /// The stage's fill behind everything (sRGB 0..255), else the renderer's clear colour.
     pub background: Option<[u8; 3]>,
     /// The stage meshes' placement (the floor follows the fighters by whole map periods).
@@ -183,6 +186,7 @@ impl Camera {
             sky_first: false,
             sky_cull: true,
             sky_depth: false,
+            sky_floor_depth: false,
             background: None,
             floor: Mat4::IDENTITY,
             hit_light: None,
@@ -1263,8 +1267,10 @@ impl Renderer {
         // a model with depth: over the floor with a depth buffer of its own; then the floor's depth again, for the
         // fighters and their shadows
         if sky_depth {
-            for (label, pipeline, meshes) in [("stage model", &self.sky_depth_pipeline, sky), ("floor depth", &self.static_depth_pipeline, statics)] {
-                let mut pass = begin(&mut enc, (label, wgpu::LoadOp::Load, wgpu::LoadOp::Clear(1.0)));
+            let passes = [("stage model", &self.sky_depth_pipeline, sky), ("floor depth", &self.static_depth_pipeline, statics)];
+            for (label, pipeline, meshes) in passes.into_iter().take(if cam.sky_floor_depth { 1 } else { 2 }) {
+                let depth = if cam.sky_floor_depth { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(1.0) };
+                let mut pass = begin(&mut enc, (label, wgpu::LoadOp::Load, depth));
                 pass.set_bind_group(0, &self.globals_group, &[]);
                 pass.set_pipeline(pipeline);
                 for m in meshes {
