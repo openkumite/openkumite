@@ -612,7 +612,6 @@ impl Renderer {
         // particles: depth-tested against the scene, never written
         let particle_alpha = make("particles alpha", &static_layout, "vs_static", "fs_particle_alpha", &static_vb, false, true, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
         let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-        let keep = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
         let particle_add = make("particles add", &static_layout, "vs_static", "fs_particle_add", &static_vb, false, true, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
         // shadows: opaque, depth-tested against the stage (the original sorts them behind what stands nearer), never
         // written
@@ -1156,6 +1155,8 @@ impl Renderer {
             })
             .forget_lifetime()
         };
+        // (a drum drawn first is no model over the floor: a wall, a drum around the camera)
+        let sky_depth = cam.sky_depth && !cam.sky_first;
         {
             let mut pass = begin(&mut enc, pass_desc("stage", true));
             pass.set_bind_group(0, &self.globals_group, &[]);
@@ -1173,7 +1174,7 @@ impl Renderer {
             // the drum goes after the floor without depth (the game's OT 1010 vs 1021), or first on the stage
             // stages.json names
             let order = if cam.sky_first { [(&self.sky_pipeline, sky), (&self.static_pipeline, statics)] } else { [(&self.static_pipeline, statics), (&self.sky_pipeline, sky)] };
-            for (pipeline, meshes) in order.into_iter().filter(|o| !(cam.sky_depth && std::ptr::eq(o.0, &self.sky_pipeline))) {
+            for (pipeline, meshes) in order.into_iter().filter(|o| !(sky_depth && std::ptr::eq(o.0, &self.sky_pipeline))) {
                 pass.set_pipeline(pipeline);
                 for m in meshes {
                     pass.set_bind_group(1, m.texture.group(smooth), &[]);
@@ -1187,7 +1188,7 @@ impl Renderer {
         }
         // a model with depth: over the floor with a depth buffer of its own; then the floor's depth again, for the
         // fighters and their shadows
-        if cam.sky_depth {
+        if sky_depth {
             for (label, pipeline, meshes) in [("stage model", &self.sky_depth_pipeline, sky), ("floor depth", &self.static_depth_pipeline, statics)] {
                 let mut pass = begin(&mut enc, (label, wgpu::LoadOp::Load, wgpu::LoadOp::Clear(1.0)));
                 pass.set_bind_group(0, &self.globals_group, &[]);
@@ -1198,6 +1199,10 @@ impl Renderer {
                     pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..m.count, 0, 0..1);
                     stats.draw_calls += 1;
+                    // (the floor's triangles are counted where its colour is drawn)
+                    if std::ptr::eq(pipeline, &self.sky_depth_pipeline) {
+                        stats.triangles += m.count / 3;
+                    }
                 }
             }
         }
