@@ -63,17 +63,17 @@ fn paul_against_lei() {
     };
     let a = Assets::new(std::path::Path::new(&root)).unwrap();
     let r = run(&a);
-    // Lei's health: the base (130) times his percent (108)
-    assert_eq!(r.health[0], 140);
+    // Lei's health: the default life (140) times his percent (108)
+    assert_eq!(r.health[0], 151);
     // the jab from the start distance whiffs
     assert!(r.alias[20..40].contains(&JAB), "the first jab: {:?}", &r.alias[20..40]);
-    assert_eq!(r.health[80], 140, "the jab from afar whiffs");
+    assert_eq!(r.health[80], 151, "the jab from afar whiffs");
     // walked in, the jab lands for 5
     assert!(r.alias[120..140].contains(&JAB), "the second jab: {:?}", &r.alias[120..140]);
-    assert_eq!(r.health[180], 135, "the jab from near lands");
+    assert_eq!(r.health[180], 146, "the jab from near lands");
     // the K.O. ends round 1, and round 2 starts with full health
     assert!(r.ko, "the K.O.");
     let second = r.round.iter().position(|&n| n == 2).expect("round 2");
-    assert_eq!(r.health[second + 1], 140);
+    assert_eq!(r.health[second + 1], 151);
     assert_eq!(r.hashes, run(&a).hashes, "the same pads, the same match");
 }
