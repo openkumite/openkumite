@@ -1615,7 +1615,7 @@ mod tests {
         let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE", "locked": false},
             {"mode": 8, "label": "TEKKEN BOWL", "locked": true}, {"mode": 9, "label": "THEATER", "locked": true}]},
             "unlocks": {"schedule": [{"stage": 10, "kind": 5, "character": 0}]}}});
-        let d = Data::load(&fe, vec![0], &serde_json::json!({}), None).unwrap();
+        let d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![]).unwrap();
         let modes = |stage| Front::items(&d, &Progress { stage, ..Progress::default() }).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
         assert_eq!((modes(9), modes(10)), (vec![ARCADE], vec![ARCADE, BOWL]));
         // its select: P1 picks one; 2P's START joins
