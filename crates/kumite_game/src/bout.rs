@@ -20,6 +20,51 @@ pub const CALL_FRAMES: u32 = CALL_OTHER[2];
 /// or a held button (0x8002D45C).
 pub const WIN_POSES: [usize; 4] = [0xD67, 0xD68, 0xD69, 0xD6A];
 
+/// Tekken Tag's round machine where it differs (0x36E198; rounds.json, ok_tekken_tag_converter FIGHT_DATA.md
+/// section 13). Tekken 3 has none: its round flow is the constants above and camera.json's `end`.
+#[derive(Clone, Debug)]
+pub struct RoundRules {
+    /// The call's frame the fight starts on (inputs on): round 1, later rounds.
+    pub fight_starts: [u32; 2],
+    /// The ROUND banner's first and last frame, and READY! from this frame until the fight: round 1, later rounds.
+    pub banner: [[u32; 2]; 2],
+    pub ready_from: [u32; 2],
+    /// After a K.O.: the replay starts on this frame and plays this many times.
+    pub replay_from: u32,
+    pub replay_plays: u32,
+    /// After a time up: the round is done on this frame (no replay).
+    pub time_up_done: u32,
+    /// The win poses (0x368528), and the pose stage's frames (START ends it from `skip_from`).
+    pub win_poses: [usize; 4],
+    pub pose_frames: u32,
+    pub skip_from: u32,
+    /// The round clock: the 60 s option's frames (a displayed second is 70 frames).
+    pub round_frames: u32,
+}
+
+impl RoundRules {
+    pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
+        use anyhow::Context;
+        let r: serde_json::Value = kumite_sim::data::load(path)?;
+        let at = |p: &str| -> anyhow::Result<u32> { r.pointer(p).and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()).with_context(|| format!("{}: {p}", path.display())) };
+        let both = |p: &str| -> anyhow::Result<[u32; 2]> { Ok([at(&format!("{p}/first_round"))?, at(&format!("{p}/other_rounds"))?]) };
+        let pose = |k: usize| at(&format!("/win_poses/aliases/{k}")).map(|a| a as usize);
+        Ok(Self {
+            fight_starts: both("/call/fight_starts")?,
+            banner: [[at("/call/banner/first_round/0")?, at("/call/banner/first_round/1")?], [at("/call/banner/other_rounds/0")?, at("/call/banner/other_rounds/1")?]],
+            ready_from: both("/call/ready_from")?,
+            replay_from: at("/end/ko/replay_from")?,
+            replay_plays: at("/end/ko/replay_plays")?,
+            time_up_done: at("/end/time_up/done")?,
+            win_poses: [pose(0)?, pose(1)?, pose(2)?, pose(3)?],
+            pose_frames: at("/win_poses/frames")?,
+            skip_from: at("/win_poses/start_skips_from")?,
+            // (the default option is not written by any code found: the 60 s one, option 2)
+            round_frames: at("/round_time/options_frames/2")?,
+        })
+    }
+}
+
 /// The fly-in variant counter (0x8009854C): never reset, so variants run on across rounds and matches
 /// (the first round after start-up uses variant 1).
 static INTRO_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -383,7 +428,7 @@ impl Bout {
     pub fn skip(&mut self) {
         match self.phase {
             Phase::Replay { .. } => self.skip = true,
-            Phase::Result { .. } if self.phase_frame >= 1 => self.skip = true,
+            Phase::Result { .. } if self.phase_frame >= self.game.rounds.as_ref().map_or(1, |r| r.skip_from) => self.skip = true,
             _ => {}
         }
     }
@@ -444,7 +489,9 @@ impl Bout {
                 // the round's start moves (0x8002D31C), picked on its first frame: round 1 an intro (a held □ / △
                 // picks alias 0, × alias 2, else a coin flip, P1 first; the CPU's idle pad always flips), later
                 // rounds alias 1. Inputs are off for the whole call (input mode 0); each start move's END link takes
-                // the fighter to its stance by the FIGHT cue
+                // the fighter to its stance by the FIGHT cue. Tekken Tag (0x368398): □ / △ alias 4, × / ○ 6, later
+                // rounds 5 from frame 1
+                let tag = self.game.rounds.is_some();
                 if self.phase_frame == 1 {
                     let aliases: [usize; 2] = std::array::from_fn(|i| {
                         let b = if self.cpu[i].is_some() { 0 } else { pads[i].buttons };
@@ -452,7 +499,7 @@ impl Bout {
                             2
                         } else if b & 0b0011 != 0 {
                             0
-                        } else if b & 0b0100 != 0 {
+                        } else if b & 0b0100 != 0 || (tag && b & 0b1000 != 0) {
                             1
                         } else if self.random(2) == 1 {
                             0
@@ -462,12 +509,21 @@ impl Bout {
                         self.game.fight.fighters[i].moveset.fixed.round_start[k]
                     });
                     self.game.set_start_moves(aliases);
+                    if tag && self.round > 1 {
+                        for (f, a) in self.game.fight.fighters.iter_mut().zip(aliases) {
+                            if f.alias == a {
+                                f.frame = 1;
+                            }
+                        }
+                    }
                 }
                 // fighters play them while the round is called (the fly-in plays inside the call); the clock waits
                 let clock = self.game.fight.clock;
                 self.game.step([Pad::default(); 2]);
                 self.game.fight.clock = clock;
                 let [round, number, fight] = self.call();
+                // (Tekken Tag: the fight starts the frame after FIGHT, as Tekken 3's)
+                let fight = self.game.rounds.as_ref().map_or(fight, |r| r.fight_starts[usize::from(self.round > 1)] - 1);
                 let f = self.phase_frame;
                 if f == round {
                     self.events.push(if self.is_final_round() { Announcement::FinalRound } else { Announcement::Round(self.round) });
@@ -507,7 +563,13 @@ impl Bout {
                     }
                 }
                 self.game.step(p);
-                if self.phase_frame >= self.game.camera.data().end.ko_frames {
+                // Tekken Tag: the replay from frame 16 of a K.O., a time up done on frame 160
+                let frames = match &self.game.rounds {
+                    Some(r) if self.ko_at.is_some() => r.replay_from,
+                    Some(r) => r.time_up_done,
+                    None => self.game.camera.data().end.ko_frames,
+                };
+                if self.phase_frame >= frames {
                     if self.force {
                         self.phase = Phase::MatchOver { winner };
                         self.phase_frame = 0;
@@ -524,7 +586,7 @@ impl Bout {
                     return;
                 };
                 // Ball's earlier passes run at full speed, the last at half (0x80032398)
-                r.pos += if r.passes_left > 0 { 2 } else { 1 };
+                r.pos += if r.passes_left > 0 && self.game.ball.is_some() { 2 } else { 1 };
                 if !self.skip && r.pos >= r.end && r.passes_left > 0 {
                     r.passes_left -= 1;
                     r.pos = r.start;
@@ -543,7 +605,10 @@ impl Bout {
                 self.game.step([Pad::default(); 2]);
                 let end = &self.game.camera.data().end;
                 let (cap, loser_frames, draw_frames) = (end.pose_cap, end.loser_frames, end.draw_frames);
+                // Tekken Tag: the pose stage's 300 frames
+                let cap = self.game.rounds.as_ref().map_or(cap, |r| r.pose_frames);
                 let done = match self.result {
+                    ResultKind::Pose(_) if self.game.rounds.is_some() => false,
                     ResultKind::Pose(w) => {
                         let f = &self.game.fight.fighters[w];
                         let mv = f.current_move(&self.game.fight.data);
@@ -623,7 +688,8 @@ impl Bout {
         if len < 2 {
             return self.start_result(winner);
         }
-        let passes = self.game.fight.ball.as_ref().map_or(1, |b| b.replay_passes.max(1));
+        // (Tekken Tag's K.O. replay plays twice)
+        let passes = self.game.fight.ball.as_ref().map_or(self.game.rounds.as_ref().map_or(1, |r| r.replay_plays.max(1)), |b| b.replay_passes.max(1));
         let run = ReplayRun { pos: 2 * start, end: 2 * len - 2, start: 2 * start, passes_left: passes - 1 };
         self.replay = Some(run);
         self.game.show(Some((start, false)));
@@ -657,8 +723,10 @@ impl Bout {
         let motions = data.end.motions.clone();
         self.phase = Phase::Result { winner };
         self.phase_frame = 0;
+        let tag = self.game.rounds.clone();
         match winner {
-            Some(w) if !decided || self.cpu[w].is_none() => {
+            // (Tekken Tag has no loser shot outside the arcade)
+            Some(w) if !decided || self.cpu[w].is_none() || tag.is_some() => {
                 // the win motion: the frame counter's parity, or a held button (□ △ × ○ -> 0xD67..0xD6A)
                 let b = self.last_pads[w].buttons;
                 let pick = if b & 1 != 0 {
@@ -672,9 +740,10 @@ impl Bout {
                 } else {
                     (self.frames & 1) as usize
                 };
+                let win = tag.as_ref().map_or(motions.win, |r| r.win_poses.to_vec());
                 let f = &mut self.game.fight.fighters[w];
-                if !f.play_alias(motions.win.get(pick).copied().unwrap_or(WIN_POSES[0])) {
-                    f.play_alias(motions.win[0]);
+                if !f.play_alias(win.get(pick).copied().unwrap_or(WIN_POSES[0])) {
+                    f.play_alias(win.first().copied().unwrap_or(WIN_POSES[0]));
                 }
                 let b_variant = self.count(WINNER).is_multiple_of(2);
                 let p = self.game.subject(w);
@@ -682,6 +751,10 @@ impl Bout {
                 let cam = EndCam::winner(&data, &p, b_variant, &mut rnd);
                 self.game.camera_mode = CameraMode::End { cam, who: w };
                 self.game.visible = [w == 0, w == 1];
+                // a tag battle: the winner's partner poses the same alias beside it (0x3B5DB0)
+                if tag.is_some() && self.game.pose_partner(w) {
+                    self.game.visible = [true; 2];
+                }
                 self.result = ResultKind::Pose(w);
             }
             Some(w) => {

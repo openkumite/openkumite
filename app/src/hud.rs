@@ -511,7 +511,7 @@ impl Hud {
         let painter = painter.with_clip_rect(v.rect);
         let d = &self.data;
         if d.bar_w == 0 {
-            return plain(&painter, &v, bout, info);
+            return plain(&painter, &v, bout, info, self.state.ko);
         }
         let src: &[&str] = &["exe"];
         // no HUD during the replay, only its blinking REPLAY
@@ -697,8 +697,9 @@ impl Hud {
 }
 
 /// The HUD of a game without its tables (Tekken Tag): plain health bars with the rounds won under them, the names,
-/// the seconds left and the round's call or end, in egui's font (OpenKumite's own).
-fn plain(painter: &egui::Painter, v: &View, bout: &Bout, info: &HudInfo) {
+/// the seconds left and the round's call or end, in egui's font (OpenKumite's own). Tekken Tag's round machine
+/// (rounds.json): the ROUND banner and READY! on its frames, its seconds of 70 frames.
+fn plain(painter: &egui::Painter, v: &View, bout: &Bout, info: &HudInfo, result: Option<Announcement>) {
     use egui::Align2;
     if matches!(bout.phase, Phase::Replay { .. }) {
         return;
@@ -746,13 +747,24 @@ fn plain(painter: &egui::Painter, v: &View, bout: &Bout, info: &HudInfo) {
             Art::shade(painter, v, [gx, y + 18.0, 6.0, 6.0], [c; 4]);
         }
     }
-    let secs = bout.game.fight.clock.div_ceil(60).min(99);
+    let rounds = bout.game.rounds.as_ref();
+    let clock = bout.game.fight.clock;
+    // (Tekken Tag: (t * 6 / 7 - 1) / 60, 0x36D640)
+    let secs = rounds.map_or(clock.div_ceil(60), |_| (clock * 6 / 7).saturating_sub(1) / 60).min(99);
     text(crate::art::CENTRE, y - 6.0, Align2::CENTER_TOP, &secs.to_string(), 1.6);
+    let later = usize::from(bout.round > 1);
+    let (f, banner) = (bout.phase_frame, rounds.map(|r| r.banner[later]));
     let call = match bout.phase {
+        Phase::Call if banner.is_some_and(|[a, b]| f < a || f > b) && rounds.is_some_and(|r| f < r.ready_from[later]) => return,
+        Phase::Call if rounds.is_some_and(|r| f >= r.ready_from[later]) => "READY!".into(),
         Phase::Call if bout.is_final_round() => "FINAL ROUND".to_string(),
         Phase::Call => format!("ROUND {}", bout.round),
+        // shortcut: FIGHT! for 40 frames is OpenKumite's (Tekken Tag's text after READY! is not decoded)
+        Phase::Fight if rounds.is_some() && f <= 40 => "FIGHT!".into(),
         Phase::RoundOver { winner: None } => "DRAW".into(),
-        Phase::RoundOver { .. } if bout.game.fight.clock == 0 => "TIME UP".into(),
+        Phase::RoundOver { .. } if result == Some(Announcement::Perfect) => "PERFECT".into(),
+        Phase::RoundOver { .. } if result == Some(Announcement::Great) => "GREAT".into(),
+        Phase::RoundOver { .. } if clock == 0 => "TIME UP".into(),
         Phase::RoundOver { .. } => "K.O.".into(),
         Phase::Result { winner: Some(w) } | Phase::MatchOver { winner: Some(w) } => format!("{} WINS", info.names[w].to_uppercase()),
         _ => return,

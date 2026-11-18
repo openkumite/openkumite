@@ -166,6 +166,8 @@ struct Scene {
     /// Tekken Tag's tag battle: the benched partners' GPU models, and which member each side's `models` shows.
     bench: Vec<SkinnedModel>,
     bench_active: [usize; 2],
+    /// ... and the side whose partner the loser's place shows (the win pose, `Game::posing_partner`).
+    bench_posing: Option<usize>,
     /// The effect atlas (hit-spark sheets + generated cells), if the converted sheets are there.
     effects: Option<Arc<kumite_render::Texture>>,
     /// What each fighter's texture shows of its face animation (eyes shut, the moving pupils' offsets), per GPU model.
@@ -820,7 +822,8 @@ impl App {
         if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
             let k = if watch { 0 } else { incoming };
             let bgm = self.roster.bgm_of.get(&models[k]).or(self.roster.bgm_of.get(&models[0])).copied();
-            audio.music(bgm.and_then(|b| sound.music(b)).or_else(|| sound.music_for(&names[k])));
+            // (Tekken Tag: the arena's)
+            audio.music(sound.arena_music(stage).or_else(|| bgm.and_then(|b| sound.music(b))).or_else(|| sound.music_for(&names[k])));
         }
         if watch {
             // the attract demo's fighters have 125 health (0x800516CC)
@@ -863,7 +866,7 @@ impl App {
         // the copying character (its voice row: sound.json's) picked with down held as the fight loads is wooden
         // (0x8002AA3C: pad bit 0x4000)
         let copy_row = self.sound.as_ref().and_then(|s| s.copy_row());
-        let last_moves = kumite_game::sound::SoundState { wooden: (0..2).map(|i| Some(voices[i]) == copy_row && self.down_held(i)).collect(), ..Default::default() };
+        let last_moves = kumite_game::sound::SoundState { wooden: (0..2).map(|i| Some(voices[i]) == copy_row && self.down_held(i)).collect(), arena: stage, ..Default::default() };
         if last_moves.wooden.iter().any(|&w| w) {
             log::info!("a wooden copying character");
         }
@@ -1125,6 +1128,7 @@ impl App {
             force_models: None,
             bench: vec![],
             bench_active: [0; 2],
+            bench_posing: None,
             effects: effect_atlas(r, &self.assets.root.join("pictures")),
             faces_shown: Default::default(),
             walls: None,
@@ -1366,7 +1370,7 @@ impl App {
         for code in menu::sfx::take() {
             if let (Some(sound), Some(audio)) = (self.sound.as_ref(), self.audio.as_mut()) {
                 if let Some(s) = sound.system(code) {
-                    audio.sfx(&s.file, s.volume);
+                    audio.sfx(&s.file, s.volume, s.speed);
                 }
             }
         }
@@ -1389,7 +1393,7 @@ impl App {
                     _ => None,
                 };
                 if let Some(s) = call.and_then(|c| sound.call(c)) {
-                    audio.sfx(&s.file, s.volume);
+                    audio.sfx(&s.file, s.volume, s.speed);
                 }
             }
             // the result screens: a tick per row / count, the final line, then the records
@@ -1430,7 +1434,7 @@ impl App {
                     theater::RollEvent::Sfx(code) => {
                         if let (Some(sound), Some(audio)) = (self.sound.as_ref(), self.audio.as_mut()) {
                             if let Some(f) = sound.file(code, "r301") {
-                                audio.sfx(f, 1.0);
+                                audio.sfx(f, 1.0, 1.0);
                             }
                         }
                     }
@@ -1790,7 +1794,7 @@ impl App {
             sounds.extend(fight.bout.events.iter().filter_map(|&e| sound.announce(e, humans)));
             if let Some(audio) = self.audio.as_mut() {
                 for s in sounds {
-                    audio.sfx(&s.file, s.volume);
+                    audio.sfx(&s.file, s.volume, s.speed);
                 }
             }
         }
@@ -3973,7 +3977,7 @@ impl App {
             }
             if let Some(audio) = self.audio.as_mut() {
                 for s in sounds {
-                    audio.sfx(&s.file, s.volume);
+                    audio.sfx(&s.file, s.volume, s.speed);
                 }
             }
         }
@@ -4306,8 +4310,18 @@ impl App {
         self.debug.frame_tick();
         let page_full = self.page_full_screen();
         let Some(r) = self.renderer.as_mut() else { return };
-        // a tag battle's swap: the side shows its other member's GPU model
+        // a tag battle's swap: the side shows its other member's GPU model; the win pose: the loser's place the winner's
+        // partner's (put back first)
         if let (Some(fight), Some(scene)) = (self.fight.as_ref(), self.scene.as_mut()) {
+            let posing = fight.bout.game.posing_partner;
+            if posing != scene.bench_posing {
+                for w in scene.bench_posing.into_iter().chain(posing) {
+                    if let (Some(m), Some(b)) = (scene.models.get_mut(1 - w.min(1)), scene.bench.get_mut(w)) {
+                        std::mem::swap(m, b);
+                    }
+                }
+                scene.bench_posing = posing;
+            }
             if let Some(t) = fight.bout.game.fight.teams.as_ref() {
                 for i in 0..2 {
                     if t[i].active != scene.bench_active[i] && i < scene.bench.len() && i < scene.models.len() {
@@ -6170,19 +6184,31 @@ impl App {
 /// made a video, off-screen, a frame each game step (and a second more on its last), its sounds mixed (video.rs).
 /// Prints `PROGRESS done total` as it goes (the game shows it), then `DONE`.
 #[cfg(not(target_arch = "wasm32"))]
-fn export_video(app: &mut App, id: &str, out: &Path, (width, height): (u32, u32), hud: bool, free_cam: Option<debug::FreeCam>) -> Result<()> {
-    use std::io::Write;
-    let entry = replay::list().into_iter().find(|e| e.id == id || id == "latest").with_context(|| format!("no replay {id}"))?;
-    let total = entry.file.steps;
+fn export_video(app: &mut App, id: &str, frames: u64, out: &Path, (width, height): (u32, u32), hud: bool, free_cam: Option<debug::FreeCam>) -> Result<()> {
+    // `--export-video fight --frames N`: the sandbox's fight as the command line sets it (Tekken Tag's has no replays)
+    let entry = if id == "fight" { None } else { Some(replay::list().into_iter().find(|e| e.id == id || id == "latest").with_context(|| format!("no replay {id}"))?) };
+    let total = entry.as_ref().map_or(frames, |e| e.file.steps);
     let mut r = Renderer::headless(width, height)?;
     // (the picture at the video's size: the 3D at 1x, whatever the window's scale)
     r.set_settings(kumite_render::RenderSettings { scale: 1.0, ..app.graphics.render() });
     app.egui = Some(EguiLayer::new(r.device(), r.overlay_format(), None));
     app.audio = Some(audio::Audio::capture());
+    let Some(entry) = entry else {
+        app.load(&r, None, Vec::new())?;
+        app.renderer = Some(r);
+        return record_video(app, total, out, width, height, free_cam);
+    };
     app.renderer = Some(r);
     app.play_replay(entry);
     let v = app.replay_view.as_mut().context("the replay did not load (its game data, or its files)")?;
     (v.hud, v.bar) = (hud, false);
+    record_video(app, total, out, width, height, free_cam)
+}
+
+/// [`export_video`]'s steps, pictures and sound, the match loaded.
+#[cfg(not(target_arch = "wasm32"))]
+fn record_video(app: &mut App, total: u64, out: &Path, width: u32, height: u32, free_cam: Option<debug::FreeCam>) -> Result<()> {
+    use std::io::Write;
     app.debug.free_cam = free_cam;
     let mut writer = video::Writer::new(out, width, height)?;
     let all = total + video::FPS;
@@ -7167,7 +7193,8 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         let out = arg("--out").context("--export-video ID --out FILE.mp4")?;
         let size = arg("--size").map_or(Ok((1920, 1080)), |s| s.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))).context("--size WIDTHxHEIGHT"))?;
         let free_cam = app.debug.free_cam;
-        return export_video(&mut app, &id, Path::new(&out), size, !flag("--no-hud"), free_cam).map(|()| None);
+        let frames = arg("--frames").and_then(|f| f.parse().ok()).unwrap_or(600);
+        return export_video(&mut app, &id, frames, Path::new(&out), size, !flag("--no-hud"), free_cam).map(|()| None);
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(path) = arg("--shot") {

@@ -10,11 +10,12 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// One sound to start: a WAV file and a volume (0..1).
+/// One sound to start: a WAV file, a volume (0..1) and the speed it plays at (1: its own rate).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sound {
     pub file: PathBuf,
     pub volume: f32,
+    pub speed: f32,
 }
 
 struct Sample {
@@ -25,7 +26,12 @@ struct Sample {
     file: PathBuf,
 }
 
+#[derive(Default)]
 pub struct SoundData {
+    /// Tekken Tag's tables (sound.json's dialect "ttt"): its sounds are played by [`Tag`], none of the others.
+    tag: Option<Tag>,
+    /// Tekken Tag: the fight's BGM id by arena (music.json `by_arena`, 0x4FB9C0).
+    arena_bgm: Vec<usize>,
     /// Move sound-list index -> SePlay code (0x80097050).
     codes: Vec<u16>,
     /// Character voice rows: counts per category and codes.
@@ -135,6 +141,10 @@ pub struct SoundState {
     pub script: Vec<Option<(usize, u32)>>,
     /// rand() for the light arm impacts' pick (0x8007A318).
     pub seed: u32,
+    /// Tekken Tag: the arena (its floor's steps and landing) and each fighter's footstep pair's second step to come
+    /// (frames).
+    pub arena: usize,
+    pub footstep: Vec<Option<u32>>,
     /// Each fighter's voice lock (the original's 0x800971E8, the extra fighters' 0x800A1AF4): frames left before a
     /// voice may play again.
     pub voice_lock: Vec<u32>,
@@ -171,6 +181,31 @@ impl SoundData {
         let sound = read(assets.root.join("gamedata/sound.json"))?;
         let audio = read(assets.root.join("audio/index.json"))?;
         let music_json = read(assets.root.join("gamedata/music.json"))?;
+        let music_dir = assets.root.join("audio/music");
+        let music = music_json["bgm"]
+            .as_array()
+            .context("music.json: bgm")?
+            .iter()
+            .map(|b| {
+                let col = &b["columns"][0];
+                let names = b["characters"].as_array().into_iter().flatten().filter_map(|n| n.as_str()).map(str::to_string).collect();
+                (music_dir.join(col["file"].as_str().unwrap_or_default()), col["loop"].as_bool().unwrap_or(false), names)
+            })
+            .collect();
+        let music_arcade = music_json["bgm"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|b| {
+                let col = &b["columns"][1];
+                (music_dir.join(col["file"].as_str().unwrap_or_default()), col["loop"].as_bool().unwrap_or(false))
+            })
+            .collect();
+        if sound["dialect"] == "ttt" {
+            let arena_bgm = music_json["by_arena"]["bgm"].as_array().into_iter().flatten().filter_map(|v| v.as_u64()).map(|v| v as usize).collect();
+            let tag = Tag::load(&sound, &audio, assets.root.join("audio/sfx"))?;
+            return Ok(Self { tag: Some(tag), arena_bgm, music, music_arcade, announcer: sound["announcer"].clone(), ..Default::default() });
+        }
         let codes: Vec<u16> = sound["sfx_table"]["codes"].as_array().context("sound.json: sfx_table")?.iter().map(|v| v.as_u64().unwrap_or(0) as u16).collect();
         let voices = sound["voice_rows"]["rows"]
             .as_array()
@@ -212,26 +247,6 @@ impl SoundData {
                 }
             }
         }
-        let music_dir = assets.root.join("audio/music");
-        let music = music_json["bgm"]
-            .as_array()
-            .context("music.json: bgm")?
-            .iter()
-            .map(|b| {
-                let col = &b["columns"][0];
-                let names = b["characters"].as_array().into_iter().flatten().filter_map(|n| n.as_str()).map(str::to_string).collect();
-                (music_dir.join(col["file"].as_str().unwrap_or_default()), col["loop"].as_bool().unwrap_or(false), names)
-            })
-            .collect();
-        let music_arcade = music_json["bgm"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|b| {
-                let col = &b["columns"][1];
-                (music_dir.join(col["file"].as_str().unwrap_or_default()), col["loop"].as_bool().unwrap_or(false))
-            })
-            .collect();
         let scripts =
             sound["scripts"]["entries"].as_array().into_iter().flatten().map(|s| s.as_array().into_iter().flatten().map(|e| [0, 1, 2].map(|k| e[k].as_u64().unwrap_or(0) as u32)).collect()).collect();
         let system_start = sound["voice_rows"]["rows"].as_array().into_iter().flatten().map(|r| r["system_start"].as_u64().map(|s| s as usize)).collect();
@@ -268,6 +283,7 @@ impl SoundData {
             volumes,
             impacts,
             moves,
+            ..Default::default()
         })
     }
 
@@ -338,7 +354,7 @@ impl SoundData {
     }
 
     fn sound(&self, code: u16, own: &str) -> Option<Sound> {
-        self.file(code, own).map(|f| Sound { file: f.to_path_buf(), volume: self.volume(code) })
+        self.file(code, own).map(|f| Sound { file: f.to_path_buf(), volume: self.volume(code), speed: 1.0 })
     }
 
     fn index(&self, path: &[&str]) -> Option<u16> {
@@ -358,7 +374,8 @@ impl SoundData {
         use crate::bout::Announcement as A;
         let index = match a {
             A::Round(_) => self.index(&["round"]),
-            A::RoundNumber(n) => self.announcer["round_numbers"]["by_round"].get(n as usize).and_then(|v| v.as_u64()).map(|i| i as u16),
+            // (Tekken Tag's table starts at round 1)
+            A::RoundNumber(n) => (n as usize).checked_sub(usize::from(self.tag.is_some())).and_then(|k| self.announcer["round_numbers"]["by_round"].get(k)).and_then(|v| v.as_u64()).map(|i| i as u16),
             A::FinalRound => self.index(&["final_round"]),
             A::Fight => self.index(&["fight"]),
             A::TimeUp => self.index(&["result", "time_up"]),
@@ -369,6 +386,10 @@ impl SoundData {
             A::Wins(i) => self.index(&["match", if humans[i] { "you_win" } else { "you_lose" }]),
             A::Draw => self.index(&["match", "draw"]),
         }?;
+        // Tekken Tag: sound entries (1 << 12 | id) the round code plays (0x36EC50, 0x36EEE0)
+        if let Some(t) = &self.tag {
+            return t.sound(index, 0, 0, false);
+        }
         self.table(index)
     }
 
@@ -395,6 +416,11 @@ impl SoundData {
         self.music(id)
     }
 
+    /// Tekken Tag: the fight music of arena `stage` (music.json `by_arena`), and whether it loops.
+    pub fn arena_music(&self, stage: usize) -> Option<(&Path, bool)> {
+        self.music(*self.arena_bgm.get(stage)?)
+    }
+
     /// Music by BGM id, and whether it loops (the jingles play once).
     pub fn music(&self, id: usize) -> Option<(&Path, bool)> {
         self.music.get(id).map(|m| (m.0.as_path(), m.1))
@@ -409,6 +435,9 @@ impl SoundData {
     /// [`SoundData::step`] with a co-op partner (actor 3: Force's, Ball 2 ON 2's) and actor 2's own
     /// voice (Ball 2 ON 2): their banks and character ids.
     pub fn step_with_partner(&self, bout: &Bout, state: &mut SoundState, banks: [&str; 2], characters: [usize; 2], partner: Option<(&str, usize)>, extra: Option<(&str, usize)>) -> Vec<Sound> {
+        if let Some(t) = &self.tag {
+            return t.step(bout, state);
+        }
         let f = &bout.game.fight;
         // (Force's other soldier is actor 2: it plays the target's sound bank, unvoiced)
         let mut fighters: Vec<&kumite_sim::Fighter> = f.fighters.iter().chain(f.extra.as_deref()).collect();
@@ -707,6 +736,270 @@ impl SoundData {
                     };
                     play(&mut out, index(entry), banks[a], row_a);
                 }
+            }
+        }
+        out
+    }
+}
+
+/// Tekken Tag's sounds (sound.json's dialect "ttt"; ok_tekken_tag_converter FIGHT_DATA.md section 14): entries are
+/// `type << 12 | id`, the id a sample of the group holding it.
+struct Tag {
+    /// The groups (0x42EBD8); each WAV's rate by bank file; where the banks are.
+    groups: Vec<TagGroup>,
+    rates: HashMap<u32, Vec<u32>>,
+    sfx: PathBuf,
+    /// Each character file's voice bank and voice row (the roster's byte 6, player +0x2C).
+    voice_banks: Vec<VoiceBank>,
+    rows: Vec<VoiceRow>,
+    impacts: TagImpacts,
+    moves: TagMoves,
+    arenas: TagArenas,
+    /// Timed sound scripts (0x505C10): [frame, kind, entry].
+    scripts: Vec<Vec<[u32; 3]>>,
+}
+
+#[derive(Deserialize)]
+struct TagGroup {
+    first_id: u16,
+    count: u16,
+    /// The bank file; none: a voice group, the fighter's own bank.
+    bank: Option<u32>,
+    samples: Vec<TagSample>,
+}
+#[derive(Deserialize)]
+struct TagSample {
+    /// 0x1000 = 48 kHz.
+    pitch: u32,
+}
+#[derive(Deserialize)]
+struct VoiceBank {
+    model_record: usize,
+    bank: u32,
+    voice_row: usize,
+}
+#[derive(Deserialize)]
+struct VoiceRow {
+    counts: [usize; 4],
+    codes: Vec<u16>,
+    cooldown: u32,
+}
+#[derive(Deserialize)]
+struct TagImpacts {
+    blocked: u16,
+    ko: [u16; 2],
+    ko_arm_end_bone_below: u32,
+    auto: Vec<u16>,
+    damage_bands: [i32; 3],
+    legs: [u16; 4],
+    arms: TagArms,
+}
+/// By damage band: column 0, or 0 / 1 by rand() in band 0; the bodies' own rows (0x500D10).
+#[derive(Deserialize)]
+struct TagArms {
+    rows: Vec<[u16; 4]>,
+    bodies: Vec<i64>,
+    rows_of_bodies: Vec<[u16; 4]>,
+}
+#[derive(Deserialize)]
+struct TagMoves {
+    take_off: u16,
+    footsteps_gap_frames: u32,
+    landing: u16,
+}
+#[derive(Deserialize)]
+struct TagArenas {
+    /// [landing, step, step] by arena (0x5007F8).
+    by_arena: Vec<[u16; 3]>,
+    specials: Vec<TagSpecial>,
+}
+#[derive(Deserialize)]
+struct TagSpecial {
+    id: u16,
+    arenas: Vec<usize>,
+    sounds: Vec<u16>,
+}
+
+/// The id a script plays that starts a footstep pair.
+const FOOTSTEPS: u16 = 0x13;
+/// The arena's footstep id (0x3755C8).
+const STEP: u16 = 0x321;
+
+impl Tag {
+    fn load(sound: &serde_json::Value, audio: &serde_json::Value, sfx: PathBuf) -> Result<Self> {
+        let get = |what: &str| -> Result<serde_json::Value> { Ok(sound.pointer(what).with_context(|| format!("sound.json: {what}"))?.clone()) };
+        let rates = audio["sfx"]
+            .as_array()
+            .context("audio/index.json: sfx")?
+            .iter()
+            .filter_map(|b| Some((b["bank"].as_u64()? as u32, b["samples"].as_array()?.iter().map(|s| s["rate"].as_u64().unwrap_or(0) as u32).collect())))
+            .collect();
+        Ok(Self {
+            groups: serde_json::from_value(get("/groups/entries")?)?,
+            rates,
+            sfx,
+            voice_banks: serde_json::from_value(get("/voice_banks/characters")?)?,
+            rows: serde_json::from_value(get("/voice_rows/rows")?)?,
+            impacts: serde_json::from_value(get("/impact_rules")?)?,
+            moves: serde_json::from_value(get("/move_sounds")?)?,
+            arenas: serde_json::from_value(get("/arena_sounds")?)?,
+            scripts: serde_json::from_value(get("/scripts/entries")?)?,
+        })
+    }
+
+    /// Sound `id` (an entry's low 12 bits; 0x374B48): sample id - first of its group, from bank file `voice` for a
+    /// voice group; ids 0x321-0x326 are the arena's (0x3755C8: 0x321 its step, the second of a pair the other
+    /// one; 0x322 its landing). Played at the sample's pitch (x 48000 / 4096 Hz).
+    fn sound(&self, id: u16, voice: u32, arena: usize, second: bool) -> Option<Sound> {
+        let floor = self.arenas.by_arena.get(arena);
+        let id = match id & 0xFFF {
+            STEP => floor?[1 + usize::from(second)],
+            0x322 => floor?[0],
+            k @ 0x323..=0x326 => self.arenas.specials.iter().find(|s| s.id == k).and_then(|s| s.sounds.get(s.arenas.iter().position(|&a| a == arena)?).copied())?,
+            k => k,
+        };
+        let g = self.groups.iter().find(|g| id != 0 && (g.first_id..g.first_id.saturating_add(g.count)).contains(&id))?;
+        let n = usize::from(id - g.first_id);
+        let bank = g.bank.unwrap_or(voice);
+        let rate = self.rates.get(&bank)?.get(n).copied().filter(|&r| r > 0)?;
+        let pitch = g.samples.get(n).map_or(0x1000, |s| s.pitch);
+        Some(Sound { file: self.sfx.join(format!("{bank:03}/{n:03}.wav")), volume: 1.0, speed: pitch as f32 * 48000.0 / 4096.0 / rate as f32 })
+    }
+
+    /// Voice `index` of category `cat` (entry types 2-5) of voice row `row` (0x375AA8).
+    fn voice(&self, row: usize, cat: usize, index: usize) -> Option<u16> {
+        let r = self.rows.get(row)?;
+        if index >= *r.counts.get(cat)? {
+            return None;
+        }
+        r.codes.get(r.counts[..cat].iter().sum::<usize>() + index).copied()
+    }
+
+    /// The step's sounds (0x375B60 a fighter a frame, the hits, the arena's steps). Each fighter's voice bank and
+    /// row come from its character file (a tag swap brings the partner's).
+    fn step(&self, bout: &Bout, state: &mut SoundState) -> Vec<Sound> {
+        let (g, mut out) = (&bout.game, Vec::new());
+        let (f, arena) = (&g.fight, state.arena);
+        state.last.resize(2.max(state.last.len()), None);
+        state.script.resize(2.max(state.script.len()), None);
+        state.voice_lock.resize(2.max(state.voice_lock.len()), 0);
+        state.footstep.resize(2.max(state.footstep.len()), None);
+        let voices: [(u32, usize); 2] = std::array::from_fn(|i| self.voice_banks.iter().find(|v| v.model_record == g.bodies[i].model_record).map_or((0, usize::MAX), |v| (v.bank, v.voice_row)));
+        let rand = |seed: &mut u32| {
+            *seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
+            (*seed >> 16) & 0x7FFF
+        };
+        // an entry of fighter `who`'s: types 2-5 its voices, the others an effect (0x13 a footstep pair)
+        let entry = |out: &mut Vec<Sound>, footstep: &mut Option<u32>, who: usize, code: u32| {
+            let (kind, id) = ((code >> 12) as usize, (code & 0xFFF) as u16);
+            let (bank, row) = voices[who];
+            if (2..=5).contains(&kind) {
+                out.extend(self.voice(row, kind - 2, id.into()).and_then(|v| self.sound(v, bank, arena, false)));
+            } else if id == FOOTSTEPS {
+                out.extend(self.sound(STEP, bank, arena, false));
+                *footstep = Some(self.moves.footsteps_gap_frames);
+            } else {
+                out.extend(self.sound(id, bank, arena, false));
+            }
+        };
+        for i in 0..2 {
+            let fighter = &f.fighters[i];
+            let (bank, row) = voices[i];
+            let now = (fighter.current, fighter.frame);
+            let started = fighter.frame <= 1 && state.last[i].is_none_or(|(c, fr)| c != fighter.current || fr > 1);
+            let advanced = state.last[i] != Some(now);
+            let new_move = started || state.last[i].is_none_or(|(c, _)| c != fighter.current);
+            state.last[i] = Some(now);
+            if advanced {
+                state.voice_lock[i] = state.voice_lock[i].saturating_sub(1);
+                // a footstep pair's second step, 4 frames after the first
+                if let Some(n) = state.footstep[i].as_mut() {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        state.footstep[i] = None;
+                        out.extend(self.sound(STEP, bank, arena, true));
+                    }
+                }
+            }
+            let mv = fighter.current_move(&f.data);
+            let entries: Vec<&kumite_sim::data::SoundEntry> = mv.sounds.iter().flatten().take(3).collect();
+            // the K.O. (+0x138): a category-2 voice, then the fighter is silent (+0xB6)
+            if f.hits.iter().any(|h| h.victim == i && h.health <= 0 && !h.blocked) {
+                let k = self.rows.get(row).map_or(0, |r| r.counts[2]);
+                let c = ((rand(&mut state.seed) & 0xFF) as usize * k) >> 8;
+                out.extend(self.voice(row, 2, c).and_then(|v| self.sound(v, bank, arena, false)));
+            }
+            let silent = fighter.health <= 0;
+            // timed scripts (type 8, 0x37623C): one starts with its move and runs on (the move's frame) to its last
+            // step; kind 0 an effect, 1 an entry of the fighter's, 2 of the opponent's
+            if new_move {
+                if let Some(e) = entries.iter().find(|e| e.kind == 8 && e.index != 255) {
+                    state.script[i] = Some((e.index as usize, fighter.frame.saturating_sub(1)));
+                }
+            }
+            if let (true, Some((index, counter))) = (advanced, state.script[i].as_mut()) {
+                *counter += 1;
+                let list = self.scripts.get(*index).map(Vec::as_slice).unwrap_or_default();
+                for &[_, kind, code] in list.iter().filter(|e| e[0] == *counter) {
+                    match kind {
+                        0 => out.extend(self.sound(code as u16, bank, arena, false)),
+                        1 => entry(&mut out, &mut state.footstep[i], i, code),
+                        2 => entry(&mut out, &mut state.footstep[1 - i], 1 - i, code),
+                        _ => {}
+                    }
+                }
+                if list.last().is_none_or(|e| e[0] <= *counter) {
+                    state.script[i] = None;
+                }
+            }
+            // types 2 and 3: a category-0 / 1 voice on the move's first frame; type 2 only when the voice cooldown
+            // is out, and sets it (the row's: 10 or 6 frames)
+            for e in entries.iter().filter(|_| started && !silent) {
+                match e.kind {
+                    2 if state.voice_lock[i] == 0 => {
+                        out.extend(self.voice(row, 0, e.index as usize).and_then(|v| self.sound(v, bank, arena, false)));
+                        state.voice_lock[i] = self.rows.get(row).map_or(10, |r| r.cooldown);
+                    }
+                    3 => out.extend(self.voice(row, 1, e.index as usize).and_then(|v| self.sound(v, bank, arena, false))),
+                    _ => {}
+                }
+            }
+            // the jump's take-off (move +0x19), the landing (+0x137: the arena's)
+            let js = mv.bytes_18.jump_start;
+            if advanced && js != 0 && fighter.frame == js {
+                out.extend(self.sound(self.moves.take_off, bank, arena, false));
+            }
+            if fighter.landing != 0 {
+                out.extend(self.sound(self.moves.landing, bank, arena, false));
+            }
+        }
+        // the hit sounds (types 1 and 7) on the frame the move connects (0x3769D0): a K.O. 0x0A by an arm (end bone
+        // below 0xB) else 0x0D; guarded 0x10; the generic ids by the attacker's damage band and limb (end bone 0xC
+        // and up a leg), an arm's band 0 one of two by rand(); the other ids as written
+        let im = &self.impacts;
+        for h in &f.hits {
+            let Some(fa) = f.fighters.get(h.attacker) else { continue };
+            let mv = fa.current_move(&f.data);
+            let end = mv.attack.as_ref().and_then(|a| a.bones.as_ref()).map_or(0, |b| b.end0);
+            if h.health <= 0 && !h.blocked {
+                out.extend(self.sound(im.ko[usize::from(end >= im.ko_arm_end_bone_below)], 0, arena, false));
+                continue;
+            }
+            let band = im.damage_bands.iter().filter(|&&b| attack_damage(mv) >= b).count();
+            for e in mv.sounds.iter().flatten().take(3).filter(|e| e.kind == 1 || e.kind == 7) {
+                let code = ((e.kind << 12) | e.index) as u16;
+                let id = if h.blocked {
+                    im.blocked
+                } else if !im.auto.contains(&code) {
+                    code
+                } else if end >= 0xC {
+                    im.legs[band]
+                } else {
+                    let rows = if fa.character.is_some_and(|c| im.arms.bodies.contains(&c)) { &im.arms.rows_of_bodies } else { &im.arms.rows };
+                    let column = if band == 0 { (rand(&mut state.seed) & 1) as usize } else { 0 };
+                    rows.get(band).map_or(0, |r| r[column])
+                };
+                out.extend(self.sound(id, 0, arena, false));
             }
         }
         out

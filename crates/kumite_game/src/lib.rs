@@ -239,6 +239,10 @@ pub struct Game {
     /// Tekken Tag's tag battle: each side's benched partner (its body and character trade places with the fighter's
     /// when the team swaps, [`Game::start_tag`]).
     pub tag_bench: Option<[Actor; 2]>,
+    /// Tekken Tag's round machine (rounds.json); None: Tekken 3's.
+    pub rounds: Option<bout::RoundRules>,
+    /// A tag battle's win pose: the side whose benched partner poses in the loser's place (0x3B5DB0).
+    pub posing_partner: Option<usize>,
 }
 
 /// A character's body and move set by model record.
@@ -432,6 +436,8 @@ impl Game {
         let roster: serde_json::Value = kumite_sim::data::load(&gd.join("roster.json")).unwrap_or_default();
         let character = |m: usize| roster["selections"]["entries"].as_array().into_iter().flatten().find(|e| e["model_record"].as_u64() == Some(m as u64)).and_then(|e| e["character"].as_i64());
         let characters = [character(models[0]), character(models[1])];
+        let rounds = gd.join("rounds.json");
+        let rounds = if kumite_fs::exists(&rounds) { Some(bout::RoundRules::load(&rounds)?) } else { None };
         let mut game = Self {
             fight: Fight::new(data, movesets[0].clone(), movesets[1].clone()),
             bodies: [Arc::new(b0), Arc::new(b1)],
@@ -445,7 +451,7 @@ impl Game {
             handicap: [100; 2],
             max_health: [None; 2],
             start_health: [None; 2],
-            round_frames: kumite_sim::ROUND_FRAMES,
+            round_frames: rounds.as_ref().map_or(kumite_sim::ROUND_FRAMES, |r| r.round_frames),
             ball: None,
             extra_body: None,
             extra_pad: Pad::default(),
@@ -469,6 +475,8 @@ impl Game {
             copiers: [None, None],
             copy_seed: 0,
             tag_bench: None,
+            rounds,
+            posing_partner: None,
         };
         for (f, c) in game.fight.fighters.iter_mut().zip(characters) {
             f.character = c;
@@ -508,6 +516,33 @@ impl Game {
         if let Some(d) = self.camera.data().for_arena(arena) {
             self.camera = FightCamera::new(Arc::new(d), false, 0, true);
             self.step_camera();
+        }
+    }
+
+    /// The win pose of a tag battle (0x3B5DB0): side `w`'s benched partner takes the loser's place, x 0x400 and z
+    /// -0xC00 from the winner (taken as to its right and behind it), playing the winner's alias. False without a
+    /// partner.
+    pub fn pose_partner(&mut self, w: usize) -> bool {
+        let (Some(t), Some(_), None) = (self.fight.teams.as_deref(), self.tag_bench.as_ref(), self.posing_partner) else { return false };
+        let m = t[w].partner().clone();
+        self.partner_trade(w);
+        self.posing_partner = Some(w);
+        let winner = &self.fight.fighters[w];
+        let (sin, cos) = winner.yaw.dsin_cos();
+        let at = winner.root() + Vec3::new(cos, 0.0, -sin) * 1024.0 - Vec3::new(sin, 0.0, cos) * 3072.0;
+        let (alias, yaw, side) = (winner.alias, winner.yaw, self.fight.fighters[1 - w].side);
+        let mut f = kumite_sim::Fighter::new(m.moveset, m.max_health, Vec3::new(at.x, 0.0, at.z), yaw, side);
+        f.character = m.character;
+        f.play_alias(alias);
+        self.fight.fighters[1 - w] = f;
+        true
+    }
+
+    /// The loser's slot and side `w`'s benched partner trade bodies (the partner's win pose; again: back).
+    fn partner_trade(&mut self, w: usize) {
+        if let Some(b) = self.tag_bench.as_mut() {
+            std::mem::swap(&mut self.bodies[1 - w], &mut b[w].body);
+            std::mem::swap(&mut self.characters[1 - w], &mut b[w].character);
         }
     }
 
@@ -556,6 +591,12 @@ impl Game {
         // Ball: the loser of the round serves the next (0x8003CE14)
         if let (Some(ball), kumite_sim::RoundState::Ko { winner }) = (self.ball.as_mut(), self.fight.state) {
             ball.server = 1 - winner;
+        }
+        // the partner's win pose over: the loser's member back in its place
+        if let (Some(w), Some(t)) = (self.posing_partner.take(), self.fight.teams.as_deref()) {
+            let l = 1 - w;
+            self.fight.fighters[l].moveset = t[l].members[t[l].active].moveset.clone();
+            self.partner_trade(w);
         }
         // a tag battle: the round starts with the first members again
         if let Some(t) = self.fight.teams.take() {

@@ -18,8 +18,8 @@ type Clip = Buffered<Decoder<BufReader<File>>>;
 pub enum Event {
     /// The music: a track (looped or once), or none.
     Music(Option<(PathBuf, bool)>),
-    /// A one-shot sound at this volume (the effects' volume included).
-    Sfx(PathBuf, f32),
+    /// A one-shot sound at this volume (the effects' volume included) and speed.
+    Sfx(PathBuf, f32, f32),
     /// The music quieter (or not).
     Duck(bool),
 }
@@ -97,13 +97,13 @@ impl Audio {
         }
     }
 
-    /// Start a one-shot sound.
-    pub fn sfx(&mut self, path: &Path, volume: f32) {
+    /// Start a one-shot sound at a speed (1: its own rate; its pitch goes with it).
+    pub fn sfx(&mut self, path: &Path, volume: f32, speed: f32) {
         if self.muted {
             return;
         }
         if let Some(c) = self.capture.as_mut() {
-            c.events.push((c.step, Event::Sfx(path.to_path_buf(), volume * self.sfx_volume)));
+            c.events.push((c.step, Event::Sfx(path.to_path_buf(), volume * self.sfx_volume, speed)));
             return;
         }
         let Some(sink) = self.sink.as_ref() else { return };
@@ -121,7 +121,7 @@ impl Audio {
                 }
             },
         };
-        sink.mixer().add(clip.amplify(volume * self.sfx_volume));
+        sink.mixer().add(clip.amplify(volume * self.sfx_volume).speed(speed));
     }
 
     pub fn toggle_mute(&mut self) -> bool {
@@ -214,8 +214,8 @@ mod tests {
         audio.sfx_volume = 0.0;
         let index: serde_json::Value = serde_json::from_slice(&kumite_fs::read(&a.join("audio/index.json")).unwrap()).unwrap();
         audio.music(Some((&a.join("audio/music").join(index["music"][3]["file"].as_str().unwrap()), true)));
-        audio.sfx(&a.join("audio/sfx/sys/04.wav"), 1.0);
-        audio.sfx(&a.join("audio/sfx/sys/04.wav"), 1.0); // second play comes from the cache
+        audio.sfx(&a.join("audio/sfx/sys/04.wav"), 1.0, 1.0);
+        audio.sfx(&a.join("audio/sfx/sys/04.wav"), 1.0, 1.0); // second play comes from the cache
         assert_eq!(audio.cache.len(), 1);
         std::thread::sleep(Duration::from_millis(200));
         assert!(audio.music.as_ref().is_some_and(|p| !p.empty()), "music should be queued");
