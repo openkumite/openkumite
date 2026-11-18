@@ -508,6 +508,9 @@ impl Hud {
         let v = View::fit(ctx.content_rect());
         let painter = painter.with_clip_rect(v.rect);
         let d = &self.data;
+        if d.bar_w == 0 {
+            return plain(&painter, &v, bout, info);
+        }
         let src: &[&str] = &["exe"];
         // no HUD during the replay, only its blinking REPLAY
         let replay = matches!(bout.phase, Phase::Replay { .. });
@@ -689,6 +692,47 @@ impl Hud {
         t.x = centre - (per_char * name.len() as f32 + offset);
         t.draw(painter, v, art);
     }
+}
+
+/// The HUD of a game without its tables (Tekken Tag): plain health bars with the rounds won under them, the names,
+/// the seconds left and the round's call or end, in egui's font (OpenKumite's own).
+fn plain(painter: &egui::Painter, v: &View, bout: &Bout, info: &HudInfo) {
+    use egui::Align2;
+    if matches!(bout.phase, Phase::Replay { .. }) {
+        return;
+    }
+    let font = egui::FontId::proportional(v.rect.height() / 22.0);
+    let text = |x: f32, y: f32, align: Align2, s: &str, size: f32| {
+        painter.text(v.pos(x, y), align, s, egui::FontId::proportional(font.size * size), Color32::WHITE);
+    };
+    let (w, y) = (150.0, 30.0);
+    for (i, f) in bout.game.fight.fighters.iter().enumerate() {
+        let left = if i == 0 { 14.0 } else { crate::art::SCREEN_W - 14.0 - w };
+        let full = (f.health.max(0) as f32 / (f.max_health * kumite_sim::ONE).max(1) as f32).clamp(0.0, 1.0);
+        Art::shade(painter, v, [left - 1.0, y - 1.0, w + 2.0, 14.0], [Color32::from_rgb(20, 20, 30); 4]);
+        // (P1's drains towards the centre from the left, P2's from the right)
+        let x0 = if i == 0 { left + w * (1.0 - full) } else { left };
+        Art::shade(painter, v, [x0, y, w * full, 12.0], [Color32::from_rgb(250, 210, 60); 4]);
+        let (edge, align) = if i == 0 { (left, Align2::LEFT_TOP) } else { (left + w, Align2::RIGHT_TOP) };
+        text(edge, y + 16.0, align, &info.names[i].to_uppercase(), 1.0);
+        for k in 0..bout.rounds_to_win {
+            let gx = if i == 0 { left + w - 8.0 - 10.0 * k as f32 } else { left + 2.0 + 10.0 * k as f32 };
+            let c = if k < bout.wins[i] { Color32::from_rgb(250, 210, 60) } else { Color32::from_rgb(60, 60, 70) };
+            Art::shade(painter, v, [gx, y + 18.0, 6.0, 6.0], [c; 4]);
+        }
+    }
+    let secs = bout.game.fight.clock.div_ceil(60).min(99);
+    text(crate::art::CENTRE, y - 6.0, Align2::CENTER_TOP, &secs.to_string(), 1.6);
+    let call = match bout.phase {
+        Phase::Call if bout.is_final_round() => "FINAL ROUND".to_string(),
+        Phase::Call => format!("ROUND {}", bout.round),
+        Phase::RoundOver { winner: None } => "DRAW".into(),
+        Phase::RoundOver { .. } if bout.game.fight.clock == 0 => "TIME UP".into(),
+        Phase::RoundOver { .. } => "K.O.".into(),
+        Phase::Result { winner: Some(w) } | Phase::MatchOver { winner: Some(w) } => format!("{} WINS", info.names[w].to_uppercase()),
+        _ => return,
+    };
+    text(crate::art::CENTRE, 200.0, Align2::CENTER_CENTER, &call, 2.0);
 }
 
 /// A health bar at `xy` (0x8004E274): fill, trail and empty strips (a 1-texel column stretched; side 0 fills

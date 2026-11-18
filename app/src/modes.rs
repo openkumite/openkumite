@@ -113,7 +113,8 @@ impl ModeData {
                 let r = &m["rules"][k];
                 (u(&r["rounds_to_win"]).max(1), r["round_frames"].as_u64().map(|f| f as u32), u(&r["max_health"]).max(1) as i32)
             }),
-            rounds_to_win: u(&m["rules"]["default_rounds_to_win"]).max(1),
+            // (a game without the table, Tekken Tag: two, as Tekken 3's)
+            rounds_to_win: m["rules"]["default_rounds_to_win"].as_u64().map_or(2, |r| r.max(1) as u32),
         }
     }
 

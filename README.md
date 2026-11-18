@@ -42,7 +42,7 @@ copied; the space it needs is checked before it starts. Choose:
 | Tekken 2 (PlayStation, USA v1.1) | its disc image | its fighters in the roster (optional) |
 | Counter-Strike (Half-Life) | the Half-Life folder, with `cstrike/` and `valve/` | its levels as arenas, two more Tekken Force stages (optional) |
 | Tekken 3 arcade (Namco System 12) | its ROM set: MAME's `tekken3.zip`, or the folder of its files | its 13 stages, 3D models, in place of the PlayStation game's panoramas (optional) |
-| Tekken Tag Tournament (PlayStation 2, USA v2.00, SLUS-20001) | its disc image | a game of its own (needed only as the main game; not playable yet) |
+| Tekken Tag Tournament (PlayStation 2, USA v2.00, SLUS-20001) | its disc image | a game of its own (needed only as the main game; a first one-on-one fight, not yet in the browser) |
 
 With both Tekken 3 and Tekken Tag Tournament converted, the screen's MAIN GAME row chooses which one the game plays
 (kept as `openkumite_game` beside the save; none is Tekken 3). Each keeps its own records: Tekken Tag Tournament's in

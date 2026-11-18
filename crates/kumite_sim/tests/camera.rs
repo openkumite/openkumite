@@ -74,3 +74,17 @@ fn ratan2_quadrants() {
     assert_eq!(d.ratan2(0, -1), 0xC00);
     assert_eq!(d.ratan2(100, 100), 0x200);
 }
+
+/// The provisional camera (a game without camera.json: Tekken Tag) computes Tekken 3's tables: the sine and the
+/// square root as the disc's, the atan within 1, its constants Tekken 3's.
+#[test]
+fn the_provisional_camera_is_tekken_3s() {
+    let Some(t3) = data() else { return };
+    let p = CameraData::provisional().unwrap();
+    assert!((0..4096).all(|a| p.sin(a) == t3.sin(a) && p.cos(a) == t3.cos(a)));
+    assert!((0..1 << 20).step_by(997).all(|a| p.gsqrt(a) == t3.gsqrt(a)));
+    for (x, y) in (-40..40).flat_map(|x| (-40..40).map(move |y| (x * 97, y * 89))) {
+        assert!((p.ratan2(x, y) - t3.ratan2(x, y)).abs() <= 1, "ratan2({x}, {y})");
+    }
+    assert_eq!((p.distance, p.h, p.initial_eye, p.intro_frames, p.intro_offsets.clone()), (t3.distance, t3.h, t3.initial_eye, t3.intro_frames, t3.intro_offsets.clone()));
+}

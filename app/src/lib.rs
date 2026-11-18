@@ -654,7 +654,11 @@ impl App {
         }
         let names: [String; 2] = std::array::from_fn(|i| match &setup {
             Some(s) => self.roster.characters[s.players[i].0].name.clone(),
-            None => game.bodies[i].character.name.split(" (").next().unwrap_or("?").to_string(),
+            // (a model without a name, Tekken Tag's: the roster's)
+            None => match game.bodies[i].character.name.split(" (").next().filter(|n| !n.is_empty()) {
+                Some(n) => n.to_string(),
+                None => self.roster.characters.iter().find(|c| c.costumes.contains(&models[i])).map_or("?".into(), |c| c.name.clone()),
+            },
         });
         // the run's rules: rounds, clock, full health, the health carried over (0x800516CC, rec10 0x800DA910)
         let mut rounds = self.roster.modes.rounds_to_win;
@@ -709,6 +713,8 @@ impl App {
         let (counters, round_frames, max_health, start_health, copy_seed) = (kumite_game::bout::counters(), game.round_frames, game.max_health, game.start_health, game.copy_seed);
         let mut bout = Bout::new(game, self.ai.clone(), rounds, setup.is_some());
         match setup.as_ref().map(|s| s.mode) {
+            // a game without its menus yet (Tekken Tag: no screens.json) plays its fight as a match
+            None if self.roster.screens.is_null() => {}
             None => bout = bout.free_fight(),
             Some(Mode::Arcade) => {
                 let Some(s) = setup.as_ref() else { anyhow::bail!("the mode's setup is missing") };
@@ -2934,8 +2940,8 @@ impl App {
             L::Arcade => {
                 let mut ladder = menu::arcade_ladder(roster, id(p1), &mut self.seed);
                 let level = spec.level.min(ladder.len().saturating_sub(1));
-                if spec.given[1] {
-                    ladder[level] = id(p2);
+                if let (true, Some(l)) = (spec.given[1], ladder.get_mut(level)) {
+                    *l = id(p2);
                 }
                 let mut setup = menu::arcade_setup(roster, p1, spec.difficulty, &ladder, level);
                 if spec.given[1] {
@@ -6640,8 +6646,9 @@ pub fn main() -> Result<()> {
         EventLoop::new()?.run_app(&mut datascreen::Root::data(root, args))?;
         return Ok(());
     }
-    anyhow::ensure!(state.game == packs::Game::T3, "{}: Tekken 3 is the main game on the Game data screen", gamedata::NOT_YET);
-    run(packs::game_root(&root, state.game), args)
+    let game_root = packs::game_root(&root, state.game);
+    anyhow::ensure!(game_root.is_dir(), "{}: its pack has no {}", gamedata::NOT_YET, game_root.display());
+    run(game_root, args)
 }
 
 /// `--help`: the command line.

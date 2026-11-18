@@ -66,7 +66,7 @@ pub static TTT: Dialect = Dialect {
     flag_bits: &[(0, 8), (2, 10), (3, 11), (4, 12), (5, 13), (6, 14), (9, 16), (11, 18), (19, 28), (20, 29), (22, 30)],
     ops: &[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10), (0x0C, 0x0B), (0x0D, 0x0C)],
     reaction_none: 0x592,
-    fixed: Aliases { neutral: 58, crouch: 80, ko_collapse: 4769, missing: usize::MAX, air_late: usize::MAX, air_side: [usize::MAX; 2], air_recovery: usize::MAX },
+    fixed: Aliases { neutral: 58, crouch: 80, ko_collapse: 4769, missing: usize::MAX, air_late: usize::MAX, air_side: [usize::MAX; 2], air_recovery: usize::MAX, round_start: [usize::MAX; 3] },
 };
 
 fn range(t: &[(u32, u32, u32)], x: u32) -> Option<u32> {
@@ -275,9 +275,9 @@ pub fn load(gamedata: &Path, rules: &serde_json::Value) -> Result<GameData> {
 }
 
 /// A fighter's moveset (`movesets/moveset_NN.json`): its aliases, all into the common set.
-pub fn moveset(gd: &GameData, path: &Path) -> Result<Moveset> {
+/// `n`: the common set's move count.
+pub fn moveset(n: usize, path: &Path) -> Result<Moveset> {
     let f: MovesetFile = data::load(path)?;
-    let n = gd.common.moves.len();
     let aliases = f.aliases.into_iter().map(|a| MoveRef { bank: if a.is_some() { Bank::Common } else { Bank::None }, index: a }).collect::<Vec<_>>();
     for (k, r) in aliases.iter().enumerate() {
         anyhow::ensure!(r.index.is_none_or(|i| i < n), "{}: alias {k} past the {n} moves", path.display());

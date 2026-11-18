@@ -65,7 +65,7 @@ struct Run {
 }
 
 fn run(gd: &Arc<GameData>, dir: &Path, steps: usize) -> Run {
-    let set = |m: (i64, &str)| Arc::new(dialect::moveset(gd, &dir.join("movesets").join(m.1)).unwrap());
+    let set = |m: (i64, &str)| Arc::new(dialect::moveset(gd.common.moves.len(), &dir.join("movesets").join(m.1)).unwrap());
     let mut fight = Fight::new(gd.clone(), set(PAUL), set(JIN));
     for (f, body) in fight.fighters.iter_mut().zip([PAUL.0, JIN.0]) {
         f.character = Some(body);

@@ -40,4 +40,16 @@ Tekken 3's data never goes through it. The whole move and cancel tables are the 
   fallback alias are unknown.
 - Damage zones, counter-hit scaling, other property ops (hand poses, sounds' numbers, camera scripts).
 - Ogre's bone 0x13 and projectile bones 0x18 / 0x19 give no strike segment.
-- The game layer (`kumite_game::Game`, bouts, win poses 4770-4773, AI) does not load Tekken Tag yet.
+- The AI (no ai.json: a CPU does little), the round-start moves (the fighters stand), the losers' end motions.
+
+## The game
+
+`kumite_game::Game::load` builds a Tekken Tag fight from its pack: the fighters with their motions
+(`movesets/motions_NN.json`), movesets through the dialect, hurt and push spheres from rules.json's tables on the posed
+skeleton, the 18 bone slots (`BONE_SLOTS`) for the strikes, the motions' root translation. `openkumite --assets
+<pack>/assets --fight --models 345,372 --stage 0` (or Tekken Tag the main game) plays a match of rounds for two
+pads, with a plain HUD (`hud::plain`: no screens.json). Test: `OK_TTT_ASSETS=<pack>/assets cargo test --release -p
+kumite_game --test tekken_tag`.
+
+Provisional: the camera (`CameraData::provisional`, Tekken 3's constants; no camera.json), two rounds to win, the heads
+do not turn to the opponent. Not there: sounds and music, hit sparks, shadows, menus, the browser build.

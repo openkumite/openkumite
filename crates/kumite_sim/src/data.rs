@@ -69,10 +69,12 @@ pub struct Aliases {
     pub air_late: usize,
     pub air_side: [usize; 2],
     pub air_recovery: usize,
+    /// The round-start moves (0x8002D31C): round 1's by a held □ / △ and by ×, later rounds' (Tekken Tag's are not known).
+    pub round_start: [usize; 3],
 }
 
 impl Aliases {
-    pub const TEKKEN3: Self = Self { neutral: 3, crouch: 0x28, ko_collapse: 0xD66, missing: 0xDC5, air_late: 0xD62, air_side: [0xD63, 0xD64], air_recovery: 0xD58 };
+    pub const TEKKEN3: Self = Self { neutral: 3, crouch: 0x28, ko_collapse: 0xD66, missing: 0xDC5, air_late: 0xD62, air_side: [0xD63, 0xD64], air_recovery: 0xD58, round_start: [0, 2, 1] };
 }
 
 impl Default for Aliases {
