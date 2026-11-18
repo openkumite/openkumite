@@ -117,19 +117,34 @@ volume byte, the music's loop point, YOU WIN / LOSE. Tests: `kumite_game --test 
 
 With a pack whose roster.json has `front_end` (converter format 8; `app/src/ttt.rs`), Tekken Tag gets its own front
 end in place of the `--fight` sandbox; an older pack keeps the plain one. Title (`134_003`, PRESS P1 START), the main
-menu 0x51EFE0 (ARCADE, VS BATTLE, TEAM BATTLE, TIME ATTACK, SURVIVAL, 1 ON 1, 1 ON 1 VS, PRACTICE, OPTIONS; the locked
-TEKKEN BOWL, THEATER and GALLERY not shown), the select grid 0x440A68 (faces at (x, y + 52), locked faces by the unlock
+menu 0x51EFE0 (ARCADE, VS BATTLE, TEAM BATTLE, TIME ATTACK, SURVIVAL, 1 ON 1, 1 ON 1 VS, PRACTICE, OPTIONS; THEATER
+once an ending was seen; the locked TEKKEN BOWL and GALLERY not shown), the select grid 0x440A68 (faces at (x, y + 52), locked faces by the unlock
 stage, RANDOM; tag modes pick two, 1 ON 1 one, Team Battle up to eight with START ending, 2P's START joins), a VS
 screen, the fight with the HUD from the art (the six strips, angry strips, name plates on their streaks, round lamps,
 the timer's digits, STAGE n / FINAL, the partner's bar), CONTINUE? 9..0 (898 frames, a button skips 100), GAME OVER,
 OPTIONS (DIFFICULTY LEVEL, FIGHT COUNT, ROUND TIME: kept in the save). Arcade, Time Attack and 1 ON 1: eight fights,
 1-6 from the CPU pool (one a pair of 0x5207F0), 7 the rival team in Ogre's arena, 8 Unknown alone, one round, in hers.
 Team Battle: one match a member, the winner stays with 15 % back. Survival: one round a fight, the health carried.
-The save (`openkumite_save_ttt.json`, `ttt`): the unlock stage (0x440818: a new front character's clear or 50 matches
-advance it), points, endings, options.
+The save (`openkumite_save_ttt.json`, `ttt`): the unlock stage (0x440818: a clear with a new ending or 50 matches
+advance it), points, the endings seen (`seen`, a bit per ending), options.
+
+Endings (a pack of converter format 10: `gamedata/endings.json`, `endings/`; `kumite_game::ending`): an Arcade, Time
+Attack or 1 ON 1 clear picks the front member's ending by costume (0x51B678), the partner's when the front's was seen
+and the partner's was not (0x3AA9D4), and plays the staff roll alone for 4620 frames (BGM 6; the 434 lines of
+0x51B880 rising 1.5 px a frame, 32 px apart; START skips it), then the ending's scene under it, then the roll to its
+end. The scene is real time: its arena, two actor slots the script fills from the cast (the player's costume where
+the cast says -1), each slot's body track (the root's track places it), the camera path (H on Tekken Tag's 512-pixel
+screen, as the fight camera's), the script's fades from and to black, white flashes and fade to white; every record
+runs once its frame has come, the tracks and the camera are sampled at the camera's frame, so a frame depends on its
+number alone. Unknown's ending (a movie) gives the roll alone. THEATER (0x3544C8): a row per character with an ending
+seen, a cell per labelled costume whose ending was seen (the scene with BGM 7, no roll), then OPENING MOVIE, ARCADE
+MOVIE and EMBU (shown, not playable), MUSIC PLAYER (0x455D80's BGM list), EXIT.
 
 OpenKumite's (not decoded): the menus' and the select's layout below the grid (portraits of files 143-181, the backdrop
 of file 182 / 141), the VS screen, which button gives which costume (1-4, START the fifth), which strip is which,
-the partner bar's place, the banners in the chrome font `003_001`, a play point a match, an ending a character, the
-Mokujin / Unknown slots shown once unlocked. Not done: Tekken Bowl, Theater, Gallery, the endings, the records, the
-select timer, the help lines, Practice's own menus (a free fight), replays of a tag battle.
+the partner bar's place, the banners in the chrome font `003_001`, a play point a match, the Mokujin / Unknown slots
+shown once unlocked, Theater's layout, the staff roll's fonts (egui's) and its logo cards. Not done: Tekken Bowl,
+Gallery, the records, the select timer, the help lines, Practice's own menus (a free fight), replays of a tag battle;
+in the endings, the effect ops (sparks, objects, show / hide), the face and hand tracks, the arenas' background
+characters, BGM 7's start 134.87 s into its stream (the Theater's ending music starts at the stream's start); the
+movies (MPEG-2, not converted) and the EMBU exhibition.
