@@ -1,7 +1,7 @@
 //! Android: the on-screen pad on a touch screen, a DualShock to the game (gamepad_android.rs: the menus, KEY
 //! CONFIGURATION, all), laid out and behaving as the browser's (web/index.html) by default: the face buttons'
 //! diamond (□ △ ○ ✕ in the original pad's places, and the 1+2 and 3+4 pairs) in the margin beside the picture on the
-//! right, SELECT and START small at the top corners. On the left a fixed 8-way D-pad (the default: a thumb slides
+//! right, Tekken Tag's TAG (R1) above the 3+4 pair when it is the main game, SELECT and START small at the top corners. On the left a fixed 8-way D-pad (the default: a thumb slides
 //! across it without lifting, the diagonals' zones wider), or the browser's stick (the left 45% of the screen: where
 //! the finger lands is its centre; 8 ways past a dead zone). The player chooses which, and moves and sizes every
 //! control ([`Edit`], saved per device: [`Settings`]). Sizes are the page's CSS pixels as Android's dp; places in the
@@ -24,13 +24,16 @@ pub enum Control {
     Cross,
     Pair12,
     Pair34,
+    /// Tekken Tag's TAG (R1: controls.rs).
+    Tag,
     Select,
     Start,
 }
 
 impl Control {
     /// Drawn last to first, hit first to last: the small ones over the large ones.
-    const ALL: [Control; 10] = [Control::Select, Control::Start, Control::Triangle, Control::Square, Control::Circle, Control::Cross, Control::Pair12, Control::Pair34, Control::Dpad, Control::Stick];
+    const ALL: [Control; 11] =
+        [Control::Select, Control::Start, Control::Triangle, Control::Square, Control::Circle, Control::Cross, Control::Pair12, Control::Pair34, Control::Tag, Control::Dpad, Control::Stick];
 
     /// The buttons it holds (the D-pad's and the stick's: by where the finger is).
     pub fn buttons(self) -> &'static [PadButton] {
@@ -42,6 +45,7 @@ impl Control {
             Control::Cross => &[South],
             Control::Pair12 => &[West, North],
             Control::Pair34 => &[South, East],
+            Control::Tag => &[R1],
             Control::Select => &[Select],
             Control::Start => &[Start],
             Control::Dpad | Control::Stick => &[],
@@ -63,6 +67,7 @@ impl Control {
             Control::Cross => "cross",
             Control::Pair12 => "1+2",
             Control::Pair34 => "3+4",
+            Control::Tag => "TAG",
             Control::Select => "SELECT",
             Control::Start => "START",
         }
@@ -176,6 +181,7 @@ fn default_place(c: Control, cw: f32, ch: f32) -> (f32, f32, f32, f32) {
         Control::Cross => face(0.0, 1.0, r),
         Control::Pair12 => face(-1.15, -1.15, r * 0.72),
         Control::Pair34 => face(1.15, 1.15, r * 0.72),
+        Control::Tag => face(1.15, -1.15, r * 0.72),
         Control::Select => (46.0, 22.0, 36.0, 14.0),
         Control::Start => (cw - 46.0, 22.0, 36.0, 14.0),
         Control::Dpad => (12.0 + gap * 1.6, cy, gap * 1.4, gap * 1.4),
@@ -190,13 +196,13 @@ pub fn clamp(x: f32, y: f32, hw: f32, hh: f32, w: f32, h: f32) -> (f32, f32) {
     (fit(x, hw, w), fit(y, hh, h))
 }
 
-/// The pad for `settings` on a screen of `w` x `h` physical pixels, `dp` of them to a dp. (The window is the safe
-/// area: the activity is not laid out into a display cutout.)
-pub fn layout(w: f32, h: f32, dp: f32, settings: &Settings) -> Layout {
+/// The pad for `settings` on a screen of `w` x `h` physical pixels, `dp` of them to a dp; TAG with `tag`. (The window
+/// is the safe area: the activity is not laid out into a display cutout.)
+pub fn layout(w: f32, h: f32, dp: f32, settings: &Settings, tag: bool) -> Layout {
     let (cw, ch) = (w / dp, h / dp);
     let items = Control::ALL
         .iter()
-        .filter(|&&c| c != if settings.stick { Control::Dpad } else { Control::Stick })
+        .filter(|&&c| c != if settings.stick { Control::Dpad } else { Control::Stick } && (tag || c != Control::Tag))
         .map(|&c| {
             let (x, y, hw, hh) = default_place(c, cw, ch);
             // (the global size: the buttons and the D-pad)
@@ -310,18 +316,19 @@ pub struct Edit {
 }
 
 /// The fingers on the pad, the player's settings, whether it is shown (a gamepad in use hides it; the next touch
-/// brings it back), and the editor when open.
+/// brings it back), whether it has TAG (Tekken Tag the main game), and the editor when open.
 #[derive(Clone, Debug)]
 pub struct TouchPad {
     fingers: BTreeMap<u64, Finger>,
     pub settings: Settings,
     pub shown: bool,
+    pub tag: bool,
     pub edit: Option<Edit>,
 }
 
 impl Default for TouchPad {
     fn default() -> Self {
-        Self { fingers: BTreeMap::new(), settings: Settings::default(), shown: true, edit: None }
+        Self { fingers: BTreeMap::new(), settings: Settings::default(), shown: true, tag: false, edit: None }
     }
 }
 
@@ -330,7 +337,7 @@ impl TouchPad {
     /// editor's: every finger).
     #[allow(clippy::too_many_arguments)] // one touch, and the screen it is on
     pub fn touch(&mut self, id: u64, phase: TouchPhase, x: f32, y: f32, w: f32, h: f32, dp: f32) -> bool {
-        let l = layout(w, h, dp, &self.settings);
+        let l = layout(w, h, dp, &self.settings, self.tag);
         // (the editor: the fingers that grab a control; the others are the panel's)
         if let Some(e) = self.edit.as_mut() {
             return match phase {
@@ -392,7 +399,7 @@ impl TouchPad {
     /// The buttons the fingers hold on a `w` x `h` screen.
     pub fn held(&self, w: f32, h: f32, dp: f32) -> Vec<PadButton> {
         let mut out = Vec::new();
-        let pad = layout(w, h, dp, &self.settings).item(Control::Dpad).copied();
+        let pad = layout(w, h, dp, &self.settings, self.tag).item(Control::Dpad).copied();
         for f in self.fingers.values() {
             match f {
                 Finger::Stick { x0, y0, x, y } => add(&mut out, stick(x - x0, y - y0, dp)),
@@ -407,7 +414,7 @@ impl TouchPad {
     /// The control chosen in the editor resized to `size` times its default.
     pub fn size_chosen(&mut self, size: f32, w: f32, h: f32, dp: f32) {
         let Some(c) = self.edit.as_ref().and_then(|e| e.chosen) else { return };
-        let Some(i) = layout(w, h, dp, &self.settings).item(c).copied() else { return };
+        let Some(i) = layout(w, h, dp, &self.settings, self.tag).item(c).copied() else { return };
         self.settings.place(c, i.x, i.y, w, h);
         if let Some(p) = self.settings.placed.iter_mut().find(|p| p.control == c) {
             p.size = size.clamp(0.5, 2.0);
@@ -418,7 +425,7 @@ impl TouchPad {
     pub fn draw(&self, ctx: &egui::Context, w: f32, h: f32) {
         use egui::{Color32, Stroke};
         let dp = ctx.pixels_per_point();
-        let l = layout(w, h, dp, &self.settings);
+        let l = layout(w, h, dp, &self.settings, self.tag);
         let held = self.held(w, h, dp);
         let a = self.settings.opacity;
         let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("touch_pad")));
@@ -601,7 +608,7 @@ mod tests {
         // a control placed off the screen (a smaller screen than it was placed on) comes back in
         let mut s = Settings::default();
         s.placed.push(Placed { control: Control::Cross, x: 1.5, y: -0.2, size: 1.0 });
-        let l = layout(2400.0, 1080.0, 2.625, &s);
+        let l = layout(2400.0, 1080.0, 2.625, &s, true);
         for i in &l.items {
             assert!(i.x - i.hw >= 0.0 && i.x + i.hw <= 2400.0 && i.y - i.hh >= 0.0 && i.y + i.hh <= 1080.0, "{i:?}");
         }
@@ -623,7 +630,7 @@ mod tests {
         // a 2400 x 1080 phone at 2.625 pixels to the dp; the D-pad by default
         let (w, h, dp) = (2400.0, 1080.0, 2.625);
         let mut pad = TouchPad::default();
-        let l = layout(w, h, dp, &pad.settings);
+        let l = layout(w, h, dp, &pad.settings, false);
         let item = |c: Control| *l.item(c).unwrap();
         let (dp_, square, cross, pair) = (item(Control::Dpad), item(Control::Square), item(Control::Cross), item(Control::Pair34));
         assert!(l.item(Control::Stick).is_none(), "the D-pad is the default");
@@ -658,7 +665,7 @@ mod tests {
     fn the_editor_moves_and_sizes_controls() {
         let (w, h, dp) = (2400.0, 1080.0, 2.625);
         let mut pad = TouchPad { edit: Some(Edit::default()), ..TouchPad::default() };
-        let cross = *layout(w, h, dp, &pad.settings).item(Control::Cross).unwrap();
+        let cross = *layout(w, h, dp, &pad.settings, false).item(Control::Cross).unwrap();
         // a finger on no control (the panel's slider) is not the editor's, nor are its moves
         assert!(!pad.touch(5, TouchPhase::Started, 1200.0, 300.0, w, h, dp));
         assert!(!pad.touch(5, TouchPhase::Moved, 1300.0, 300.0, w, h, dp));
@@ -666,19 +673,44 @@ mod tests {
         // grabbed off its centre, dragged: it keeps the finger's offset; then off the screen: kept on it
         assert!(pad.touch(1, TouchPhase::Started, cross.x + 10.0, cross.y, w, h, dp));
         pad.touch(1, TouchPhase::Moved, 1210.0, 500.0, w, h, dp);
-        let moved = *layout(w, h, dp, &pad.settings).item(Control::Cross).unwrap();
+        let moved = *layout(w, h, dp, &pad.settings, false).item(Control::Cross).unwrap();
         assert_eq!((moved.x, moved.y), (1200.0, 500.0));
         pad.touch(1, TouchPhase::Moved, 5000.0, 500.0, w, h, dp);
-        let edge = *layout(w, h, dp, &pad.settings).item(Control::Cross).unwrap();
+        let edge = *layout(w, h, dp, &pad.settings, false).item(Control::Cross).unwrap();
         assert_eq!(edge.x, w - edge.hw);
         pad.touch(1, TouchPhase::Ended, 5000.0, 500.0, w, h, dp);
         assert!(pad.fingers.is_empty(), "the editor's fingers press nothing");
         pad.size_chosen(1.5, w, h, dp);
-        let big = *layout(w, h, dp, &pad.settings).item(Control::Cross).unwrap();
+        let big = *layout(w, h, dp, &pad.settings, false).item(Control::Cross).unwrap();
         assert!((big.hw - cross.hw * 1.5).abs() < 0.01);
         // pressed where it now is (the editor closed)
         pad.edit = None;
         pad.touch(2, TouchPhase::Started, big.x, big.y, w, h, dp);
         assert_eq!(pad.held(w, h, dp), [South]);
+    }
+
+    #[test]
+    fn tag_only_with_tekken_tag() {
+        let (w, h, dp) = (2400.0, 1080.0, 2.625);
+        let mut pad = TouchPad::default();
+        assert!(layout(w, h, dp, &pad.settings, false).item(Control::Tag).is_none(), "Tekken 3's pad as it was");
+        pad.tag = true;
+        let l = layout(w, h, dp, &pad.settings, true);
+        let (tag, circle, pair) = (*l.item(Control::Tag).unwrap(), *l.item(Control::Circle).unwrap(), *l.item(Control::Pair34).unwrap());
+        // above the 3+4 pair, the pairs' size, clear of the faces
+        assert!(tag.x == pair.x && tag.y < circle.y && tag.hw == pair.hw);
+        assert_eq!(l.under(tag.x, tag.y), [R1]);
+        pad.touch(1, TouchPhase::Started, tag.x, tag.y, w, h, dp);
+        assert_eq!(pad.held(w, h, dp), [R1]);
+        // placed and sized in the editor, saved as the others
+        pad.edit = Some(Edit::default());
+        pad.lift();
+        pad.touch(2, TouchPhase::Started, tag.x, tag.y, w, h, dp);
+        pad.touch(2, TouchPhase::Moved, 1200.0, 500.0, w, h, dp);
+        pad.size_chosen(1.5, w, h, dp);
+        let s = Settings::from_json(&pad.settings.to_json());
+        assert_eq!(s.placed(Control::Tag).map(|p| p.size), Some(1.5));
+        let moved = *layout(w, h, dp, &s, true).item(Control::Tag).unwrap();
+        assert!((moved.x - 1200.0).abs() < 0.5 && (moved.y - 500.0).abs() < 0.5);
     }
 }
