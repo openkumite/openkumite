@@ -126,6 +126,13 @@ pub struct GameData {
     pub ball: BallRules,
     /// Tekken Tag: each body's health in percent of `max_health` (empty: all 100).
     pub health_percent: Vec<i32>,
+    /// A counter hit's bonus: the victim's move damage times each of these tenths in turn (rules.json
+    /// `counter_hit.bonus_tenths`; Tekken 3 [3, 3], 0x80044C94).
+    pub counter_bonus: Vec<i32>,
+    /// Chip damage on a block: damage / 10 + this (Tekken 3 2, 0x80044BD8).
+    pub chip_add: i32,
+    /// Tekken Tag's choice of the air reaction (0x374048), not Tekken 3's (dialect.rs).
+    pub tag_juggles: bool,
 }
 
 /// The rules the code keeps for some moves (rules.json `moves`).
@@ -251,6 +258,9 @@ impl GameData {
             moves,
             ball,
             health_percent: Vec::new(),
+            counter_bonus: vec![3, 3],
+            chip_add: 2,
+            tag_juggles: false,
         })
     }
 
@@ -833,12 +843,12 @@ impl Fighter {
         let yaw = self.yaw;
         let auto = |to: f32, n: u32| Some((wrap_pi(to - yaw) / n as f32, n));
         match t {
-            0 | 0x1F | 0x20 | 0x2C.. if !self.locked => {
+            0 | 0x1F | 0x20 | 0x2C | dialect::TRANSITION_FACE if !self.locked => {
                 self.yaw = a2a;
                 self.root_yaw = a2a;
             }
             1 | 6 | 7 | 8 | TRANSITION_CONTINUE | TRANSITION_CONTINUE_2 | 0x17 | 0x1C | 0x1D | 0x25 | 0x27..=0x2B => self.root_yaw = yaw,
-            4 | 5 | 0xA => self.root_yaw = yaw,
+            4 | 5 | 0xA | dialect::TRANSITION_AXIS | dialect::TRANSITION_ACROSS => self.root_yaw = yaw,
             9 | 0xB | 0xF | 0x18 | 0x1E | 0x23 | 0x24 | 0x26 => self.root_yaw = target,
             0xC..=0xE => self.root_yaw = if near { a2a } else { target },
             0x10 | 0x12 | 0x13 => self.root_yaw = a2a,
@@ -865,7 +875,16 @@ impl Fighter {
                 }
             }
             0x16 => (self.mode, self.turn) = (8, None),
-            0x18 | 0x19 => self.mode = 8,
+            0x18 | 0x19 | dialect::TRANSITION_FACE => self.mode = 8,
+            // Tekken Tag's 34 / 35 (0x36BB1C, modes 0xC / 0xD): over 8 frames, at most 10° a frame, to the screen axis
+            // nearest the facing, or across it
+            // shortcut: the pair's line stands in for the screen axis (the fight camera looks across it); take the
+            // camera's yaw once the sim runs Tekken Tag's camera
+            dialect::TRANSITION_AXIS | dialect::TRANSITION_ACROSS => {
+                let axis = if t == dialect::TRANSITION_AXIS { target } else { a2a + FRAC_PI_2.copysign(wrap_pi(yaw - a2a)) };
+                let max = 0x71C as f32 * ANGLE;
+                (self.mode, self.turn) = (0xB, Some(((wrap_pi(axis - yaw) / 8.0).clamp(-max, max), 8)));
+            }
             0x17 => self.mode = 9,
             0x1C | 0x1D => (self.mode, self.turn) = (0xA, None),
             0x1E | 0x24 | 0x25 | 0x27..=0x2B => (self.mode, self.turn) = (0xB, None),
@@ -899,8 +918,10 @@ impl Fighter {
         }
         if t == 0x1E {
             // an air setup (0x80030574: one character's rebound, the air recoveries): a flight to the air table's entry
-            // 5 height, 10 more drift, counted as a juggle, the stun pool as an air hit's, one per airtime
-            let target = gd.reactions.air_reactions.entries.get(5).map_or(1357.0, |a| a.target_height as f32);
+            // 5 height (Tekken Tag's 4: transition 30, 0x36B570), 10 more drift, counted as a juggle, the stun pool as
+            // an air hit's, one per airtime
+            let setup = if gd.tag_juggles { 4 } else { 5 };
+            let target = gd.reactions.air_reactions.entries.get(setup).map_or(1357.0, |a| a.target_height as f32);
             self.stun = if old_flags & 0x1000 != 0 { 0 } else { (self.stun / 2).min(0x42) };
             let pop = Pop { damage: 0, strike_down: 0.0, target, prev: (old_anim.clone(), old_len, old_frame), y0: old_height, falling: old_falling, spike: false, extra_drift: 10, kind: 5 };
             self.air_pop(gd, pop);
@@ -1529,6 +1550,7 @@ impl Fighter {
             0x44 => self.ki == 0,
             // back-turned states (0x8002E41C..0x8002E6A8, facing_re §4)
             0x24 => back,
+            dialect::COND_NOT_BACK => !back,
             0x25 => (0x4E38 as f32..0x8000 as f32).contains(&off),
             0x26 => (-0x8000 as f32..=(0xB1C6 - 0x10000) as f32).contains(&off),
             0x27 => quadrant == 0,
@@ -2740,10 +2762,10 @@ impl Fight {
             // chip (0x80044BD8): with GUARD DAMAGE on, or from a charging attacker; a chip KO becomes a clean hit
             // but keeps the chip's damage (0x80044730)
             let chip = blocked && (self.guard_damage || ki[a]);
-            let chip_ko = chip && self.fighters[v].health <= (mv.damage / 10 + 2) * ONE;
+            let chip_ko = chip && self.fighters[v].health <= (mv.damage / 10 + gd.chip_add) * ONE;
             let mut damage = if blocked {
                 if chip {
-                    mv.damage / 10 + 2
+                    mv.damage / 10 + gd.chip_add
                 } else {
                     0
                 }
@@ -2754,12 +2776,13 @@ impl Fight {
             };
             if counter {
                 // D * 12/10 + (3 * (3 * |victim's move damage| / 10) / 10) * f / max(startup, f), truncating each
-                // step (0x80044C94); during a ki charge the bonus is 0.3 * |victim's move damage|
+                // step (0x80044C94; Tekken Tag's bonus has one 3 / 10, 0x3720C8: `counter_bonus`); during a ki charge
+                // the bonus is 0.3 * |victim's move damage|
                 let vm = &moves[v];
                 let f = self.fighters[v].frame as i32;
                 let dv = vm.damage.abs();
                 let startup = vm.active[0] as i32;
-                let bonus = if ki[0] || ki[1] { dv * 3 / 10 } else { 3 * (3 * dv / 10) / 10 * f / if startup == 0 || startup < f { f.max(1) } else { startup } };
+                let bonus = if ki[0] || ki[1] { dv * 3 / 10 } else { gd.counter_bonus.iter().fold(dv, |x, k| x * k / 10) * f / if startup == 0 || startup < f { f.max(1) } else { startup } };
                 damage = damage * 12 / 10 + bonus;
             }
             if chip_ko {
@@ -2934,7 +2957,35 @@ impl Fight {
         let queued = |f: &Fighter, alias: usize| f.queued.is_some_and(|q| f.resolve(alias) == Some(q.0));
         let fixed = &vf.moveset.fixed;
         let late = plays(vf, fixed.air_late) || ((plays(vf, fixed.air_side[0]) || plays(vf, fixed.air_side[1])) && vf.frame >= 19);
-        let index = if late {
+        let index = if gd.tag_juggles {
+            // Tekken Tag (0x374048): a face-down victim, or one in aliases 0x129B-0x129D (0x129E / 0x129F before frame
+            // 19), takes 7 on a spike, else 5 / 6 by height; the others the attacker's move's own entry (+0x2F), 1 on
+            // a spike, 0 in the launch fall 0x1279, 2 / 3 from quadrant 3 / 1, else 0
+            let spiked = strike_down >= 0x6E as f32;
+            let early = matches!(vf.alias, 0x129B..=0x129D) || (matches!(vf.alias, 0x129E | 0x129F) && vf.frame < 19);
+            if vf.posture(gd) & posture::LYING_FACEDOWN != 0 || early {
+                // shortcut: the root's height stands in for +0x520 (not decoded); decode it if 5 / 6 look wrong
+                if spiked {
+                    7
+                } else if (vf.position.y + vf.anim_root_y).abs() > 0x2DF as f32 {
+                    5
+                } else {
+                    6
+                }
+            } else if af.current_move(gd).air_reaction != 0 {
+                af.current_move(gd).air_reaction
+            } else if spiked {
+                1
+            } else if vf.alias == 0x1279 {
+                0
+            } else {
+                match quadrant {
+                    3 => 2,
+                    1 => 3,
+                    _ => 0,
+                }
+            }
+        } else if late {
             if plays(vf, fixed.air_late) || (vf.position.y + vf.anim_root_y).abs() < 0x400 as f32 {
                 2
             } else {
@@ -2956,7 +3007,7 @@ impl Fight {
                 }
             }
         };
-        let spike = index == 1;
+        let spike = index == 1 || (gd.tag_juggles && index == 7);
         let Some(air) = table.get(index).or_else(|| table.first()) else { return false };
         let f = &mut self.fighters[v];
         // knockdown stun (0x80030AF8): this hit's damage plus half the pool left (none after a 0x1000 move)
@@ -2976,7 +3027,9 @@ impl Fight {
         // the fall's root travel runs along the line to the attacker (0x80030A7C), turned by p0 after a 0x1000 move
         f.root_yaw = toward + if left_1000 { angle as f32 * std::f32::consts::TAU / 65536.0 } else { 0.0 };
         let mv_frames = f.current_move(gd).frames;
-        f.air_pop(gd, Pop { damage, strike_down, target, prev: (old_motion, old_frames, old_frame), y0, falling, spike, extra_drift: 0, kind: index });
+        // (kind 5 is the air setup's; Tekken Tag's entry 5 a face-down fall)
+        let kind = if gd.tag_juggles { 0 } else { index };
+        f.air_pop(gd, Pop { damage, strike_down, target, prev: (old_motion, old_frames, old_frame), y0, falling, spike, extra_drift: 0, kind });
         if spike {
             // it slides 40 units a frame away from the attacker for the rest of the animation
             let away = f.root() - self.fighters[a].root();
