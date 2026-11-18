@@ -712,10 +712,22 @@ impl Fighter {
     /// partner moves) until they reach a common move.
     /// An alias in this fighter's merged table: its own entry, else the opponent's (see [`Fighter::borrow`]).
     pub(crate) fn resolve(&self, alias: usize) -> Option<Current> {
-        let r: &MoveRef = self.moveset.aliases.as_ref()?.get(alias)?;
+        // (past a Tekken Tag set's table, which has no missing-move alias: a crossover fighter's own alias, the
+        // opponent's entry alone; past a Tekken 3 one's, a Tekken 2 fighter's, none)
+        let Some(r) = self.moveset.aliases.as_ref()?.get(alias) else { return self.partner_entry(alias).filter(|_| self.moveset.fixed.missing == usize::MAX) };
         match r.bank {
             Bank::None | Bank::Partner => self.borrow(alias),
             bank => Some(Current { bank, index: r.index? }),
+        }
+    }
+
+    /// The opponent's entry of `alias`: its own record (played from its file) or a common one.
+    fn partner_entry(&self, alias: usize) -> Option<Current> {
+        let r = self.partner.as_ref()?.aliases.as_ref()?.get(alias)?;
+        match r.bank {
+            Bank::Own => Some(Current { bank: Bank::Partner, index: r.index? }),
+            Bank::Common => Some(Current { bank: Bank::Common, index: r.index? }),
+            _ => None,
         }
     }
 
@@ -723,12 +735,8 @@ impl Fighter {
     /// opponent's entry (its own record, played from its file, or a common one); when both lack it, the own
     /// entry of alias 0xDC5.
     fn borrow(&self, alias: usize) -> Option<Current> {
-        if let Some(r) = self.partner.as_ref().and_then(|p| p.aliases.as_ref()).and_then(|a| a.get(alias)) {
-            match r.bank {
-                Bank::Own => return Some(Current { bank: Bank::Partner, index: r.index? }),
-                Bank::Common => return Some(Current { bank: Bank::Common, index: r.index? }),
-                _ => {}
-            }
+        if let Some(c) = self.partner_entry(alias) {
+            return Some(c);
         }
         let missing = self.moveset.fixed.missing;
         if alias == missing {

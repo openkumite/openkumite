@@ -2809,9 +2809,11 @@ dependencies = [
  "glam",
  "kumite_assets",
  "kumite_fs",
+ "kumite_packs",
  "kumite_sim",
  "libm",
  "log",
+ "ok_converter_common",
  "png",
  "serde",
  "serde_json",
@@ -3943,7 +3945,7 @@ dependencies = [
 [[package]]
 name = "ok_tekken3_converter"
 version = "0.3.0"
-source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#764fb5663b6c1fb1e268d69419395ffa819e7bd8"
+source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#28f638a2373749b3d55c04a5e43467fef92fe0d1"
 dependencies = [
  "anyhow",
  "chrono",
