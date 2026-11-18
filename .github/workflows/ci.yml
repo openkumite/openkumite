@@ -43,8 +43,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # (macOS on Intel: GitHub's Apple Silicon runners are often out of capacity)
-        os: [ubuntu-24.04, windows-latest, macos-15-intel]
+        # shortcut: Windows only for faster results (the user's request, 2026-11-18); macOS and Linux back with
+        # [ubuntu-24.04, windows-latest, macos-15-intel] and the main ruleset's required checks
+        # "test (ubuntu-24.04)", "test (macos-15-intel)". (macOS on Intel: Apple Silicon runners are often full.)
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

@@ -2,12 +2,14 @@
 # game data) on x86-64. Only when what it builds from changes.
 name: nix
 
+# shortcut: the Linux (Nix) build is off for pull requests and pushes for faster results (the user's request,
+# 2026-11-18); run it by hand (workflow_dispatch); back with the pull_request / push triggers below.
+#  pull_request:
+#    paths: [flake.nix, flake.lock, Cargo.lock, "**/Cargo.toml", .github/workflows/nix.yml]
+#  push:
+#    branches: [main]
+#    paths: [flake.nix, flake.lock, Cargo.lock, "**/Cargo.toml", .github/workflows/nix.yml]
 on:
-  pull_request:
-    paths: [flake.nix, flake.lock, Cargo.lock, "**/Cargo.toml", .github/workflows/nix.yml]
-  push:
-    branches: [main]
-    paths: [flake.nix, flake.lock, Cargo.lock, "**/Cargo.toml", .github/workflows/nix.yml]
   workflow_dispatch:
 
 permissions:
