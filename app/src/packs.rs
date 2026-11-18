@@ -277,6 +277,9 @@ mod tests {
                 _ => (0, 0),
             };
             assert_eq!((moving(true), moving(false)), expected, "stage {n}");
+            // (the carousel is set back every 136 frames; the rotors turn on)
+            let periods: Vec<_> = stage.sky.iter().filter_map(|m| if let Some(kumite_assets::Motion::Spin { period, .. }) = m.motion { Some(period) } else { None }).collect();
+            assert_eq!(periods, if n == 3 { vec![Some(136)] } else { vec![None; moving(true)] }, "stage {n}");
         }
         run(&root, &Job::Remove(Part::Arcade), &|_| {}, &AtomicBool::new(false)).unwrap();
         assert!(State::of(&root).get(Part::Arcade).is_none());

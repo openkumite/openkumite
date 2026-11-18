@@ -577,7 +577,7 @@ struct Moving {
 
 enum MovingKind {
     /// Turned about `pivot` along `axis`, `rate` radians a frame, from the vertices as they were made.
-    Spin { vertices: Vec<StaticVertex>, pivot: glam::Vec3, axis: glam::Vec3, rate: f32 },
+    Spin { vertices: Vec<StaticVertex>, pivot: glam::Vec3, axis: glam::Vec3, rate: f32, period: Option<u32> },
     /// Its pictures, each shown for `step` frames.
     Frames { textures: Vec<Arc<kumite_render::Texture>>, step: u32 },
 }
@@ -591,7 +591,8 @@ impl Scene {
         for m in &self.moving {
             let Some(mesh) = self.sky.get_mut(m.mesh) else { continue };
             match &m.kind {
-                MovingKind::Spin { vertices, pivot, axis, rate } => {
+                MovingKind::Spin { vertices, pivot, axis, rate, period } => {
+                    let frame = period.map_or(frame, |p| frame % u64::from(p));
                     // (the angle kept small: a turn's remainder)
                     let turn = glam::Quat::from_axis_angle(*axis, (f64::from(*rate) * frame as f64).rem_euclid(std::f64::consts::TAU) as f32);
                     let moved: Vec<StaticVertex> = vertices.iter().map(|v| StaticVertex { pos: (*pivot + turn * (glam::Vec3::from(v.pos) - *pivot)).to_array(), ..*v }).collect();
@@ -1147,8 +1148,8 @@ impl App {
                 scene.sky = st.sky.iter().map(|m| r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone())).collect();
                 let moving = |(mesh, m): (usize, &kumite_assets::Mesh)| {
                     let kind = match m.motion? {
-                        kumite_assets::Motion::Spin { pivot, axis, rate } => {
-                            MovingKind::Spin { vertices: conv(m), pivot: place(pivot), axis: (place(pivot + axis) - place(pivot)).normalize_or_zero(), rate }
+                        kumite_assets::Motion::Spin { pivot, axis, rate, period } => {
+                            MovingKind::Spin { vertices: conv(m), pivot: place(pivot), axis: (place(pivot + axis) - place(pivot)).normalize_or_zero(), rate, period }
                         }
                         kumite_assets::Motion::Frames { frames, step } => MovingKind::Frames { textures: tex.get(m.texture..m.texture + frames)?.to_vec(), step },
                     };
