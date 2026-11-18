@@ -425,6 +425,9 @@ pub struct Mesh {
     pub indices: Vec<u32>,
     /// How it moves (the primitive's extras: the arcade stages' carousel, helicopter rotors and flames).
     pub motion: Option<Motion>,
+    /// 1 added to what is behind it, 2 multiplying it (its material named `additive` or `shade`: Tekken Tag's
+    /// lights and gloss, its painted shadows); 0 drawn over it.
+    pub blend: u8,
 }
 
 /// A stage mesh's motion, by frames of 1/60 s.
@@ -592,7 +595,12 @@ impl Stage {
                     }
                     None => None,
                 };
-                out.push(Mesh { texture, vertices, indices, motion });
+                let blend = match prim.material().name() {
+                    Some("additive") => 1,
+                    Some("shade") => 2,
+                    _ => 0,
+                };
+                out.push(Mesh { texture, vertices, indices, motion, blend });
             }
             Ok(out)
         };

@@ -1256,7 +1256,7 @@ impl App {
                 (scene.walls, scene.camera_walls) = (st.walls.as_ref().map(walls), st.camera_walls.as_ref().map(walls));
                 let conv =
                     |m: &kumite_assets::Mesh| -> Vec<StaticVertex> { m.vertices.iter().map(|v| StaticVertex { pos: place(glam::Vec3::from(v.pos)).to_array(), uv: v.uv, color: v.color }).collect() };
-                scene.sky = st.sky.iter().map(|m| r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone())).collect();
+                scene.sky = st.sky.iter().map(|m| r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone()).blended(m.blend)).collect();
                 let moving = |(mesh, m): (usize, &kumite_assets::Mesh)| {
                     let kind = match m.motion.clone()? {
                         kumite_assets::Motion::Spin { pivot, axis, rate, period } => {
@@ -1289,7 +1289,7 @@ impl App {
                     scene.moving.clear();
                     scene.strip = Some(*at);
                 }
-                scene.statics = st.meshes.iter().map(|m| r.static_mesh(&conv(m), &m.indices, tex[m.texture].clone())).collect();
+                scene.statics = st.meshes.iter().map(|m| r.static_mesh(&conv(m), &m.indices, tex[m.texture].clone()).blended(m.blend)).collect();
                 log::info!("stage {stage}: {}", st.name);
             }
             Err(e) => {

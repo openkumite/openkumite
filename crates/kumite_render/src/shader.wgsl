@@ -333,3 +333,17 @@ fn fs_particle_alpha(i: VsOut) -> @location(0) vec4<f32> {
     if (t.a < 0.5) { discard; }
     return vec4(t.rgb * i.color.rgb, i.color.a);
 }
+
+// Tekken Tag's stage strips (the GS's ALPHA 0x48 and 0x89): lights and gloss add Cs x As; painted shadows and dirt
+// multiply what is behind by As (vertex alpha x texture alpha, 0x80 = 1).
+@fragment
+fn fs_stage_add(i: VsOut) -> @location(0) vec4<f32> {
+    let t = textureSample(tex, samp, i.uv);
+    return vec4(t.rgb * i.color.rgb * t.a * i.color.a, 0.0);
+}
+
+@fragment
+fn fs_stage_shade(i: VsOut) -> @location(0) vec4<f32> {
+    let t = textureSample(tex, samp, i.uv);
+    return vec4(0.0, 0.0, 0.0, t.a * i.color.a);
+}
