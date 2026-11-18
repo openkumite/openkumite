@@ -6,6 +6,7 @@
 
 use kumite_assets::Assets;
 use kumite_game::bout::{Bout, Phase};
+use kumite_game::sound::{SoundData, SoundState};
 use kumite_game::{parse_script, Game};
 use kumite_sim::input::Pad;
 use ok_converter_common::io::StdFs;
@@ -171,4 +172,52 @@ fn cpu_plays_them() {
         assert!(starts[0] > 10 && hits[0] > 0 && missing == 0, "model {p1}: attacks {starts:?}, hits {hits:?}, {missing} frames without a motion");
         assert_eq!(hashes, cpu_fight(&a, p1).3);
     }
+}
+
+/// What the sound tables make a step play: the files under audio/sfx.
+fn heard(a: &Assets, s: &SoundData, b: &Bout, st: &mut SoundState) -> Vec<String> {
+    s.step(b, st, ["", ""], [0, 0]).iter().map(|x| x.file.strip_prefix(a.root.join("audio/sfx")).unwrap().to_string_lossy().into_owned()).collect()
+}
+
+/// Their sounds (sound.json, its voice groups added): Gon's hit on Paul and Paul's on Gon play the impacts (bank 1);
+/// a voiced move of Gon's plays a sample of his own bank, and so does his K.O.
+#[test]
+fn hits_and_voices_sound() {
+    let Some(a) = assets() else { return };
+    let s = SoundData::load(&a).unwrap();
+    let sound: serde_json::Value = a.gamedata("sound.json").unwrap();
+    let bank = sound["voice_banks"]["characters"].as_array().unwrap().iter().find(|v| v["model_record"] == GON).unwrap()["bank"].as_u64().unwrap();
+    let own = format!("{bank:03}/");
+    let mut b = Bout::new(Game::load(&a, [GON, PAUL]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut st = SoundState::default();
+    // each side's hit until one lands: (Gon jabs, Paul walks in), then (Gon walks in, Paul kicks low)
+    let hit = |b: &mut Bout, st: &mut SoundState, scripts: [&str; 2], attacker: usize| {
+        let pads = scripts.map(|s| parse_script(s).unwrap());
+        (0..600).find_map(|k| {
+            b.step([0, 1].map(|i| pads[i][k % pads[i].len()]));
+            let heard = heard(&a, &s, b, st);
+            b.game.fight.hits.iter().any(|h| h.attacker == attacker && !h.blocked).then_some(heard)
+        })
+    };
+    let gon_hits = hit(&mut b, &mut st, ["1,n*15", "b"], 0).expect("Gon's jab lands");
+    assert!(gon_hits.iter().any(|f| f.starts_with("001/")), "Gon's hit: {gon_hits:?}");
+    let paul_hits = hit(&mut b, &mut st, ["f", "d+3,n*30"], 1).expect("Paul's low kick lands");
+    assert!(paul_hits.iter().any(|f| f.starts_with("001/")), "Paul's hit: {paul_hits:?}");
+    // a move of Gon's with a voice (type 2) on its first frame
+    for _ in 0..90 {
+        b.step([Pad::default(); 2]);
+        heard(&a, &s, &b, &mut st);
+    }
+    let gon = &b.game.fight.fighters[0];
+    let voiced = gon.moveset.aliases.as_ref().unwrap().iter().position(|r| r.index.is_some_and(|i| gon.moveset.moves[i].sounds.iter().flatten().any(|e| e.kind == 2))).expect("a voiced move");
+    b.game.fight.fighters[0].play_alias(voiced);
+    let voice = heard(&a, &s, &b, &mut st);
+    assert!(voice.iter().any(|f| f.starts_with(&own)), "Gon's voice: {voice:?}");
+    // his K.O.: a voice of his own bank
+    b.game.fight.fighters[0].health = kumite_sim::ONE;
+    let ko = hit(&mut b, &mut st, ["f", "d+3,n*30"], 1).expect("the K.O.");
+    assert!(ko.iter().any(|f| f.starts_with(&own)), "Gon's K.O.: {ko:?}");
 }
