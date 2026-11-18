@@ -619,6 +619,8 @@ pub struct Roster {
     pub extra_levels_title: String,
     /// The arcade ladder and the bosses (ai.json `arcade`).
     pub arcade: ArcadeData,
+    /// Tekken Tag's front end (roster.json `front_end`); None: the game's own (Tekken 3's) or the plain one.
+    pub ttt: Option<std::sync::Arc<crate::ttt::Data>>,
 }
 
 impl Roster {
@@ -720,6 +722,7 @@ impl Roster {
                 log::error!("ai.json arcade: {e}");
                 ArcadeData::default()
             }),
+            ttt: crate::ttt::Data::load(&roster, read("../stages/index.json").as_array().into_iter().flatten().filter_map(|s| s["id"].as_u64()).map(|s| s as usize).collect(), &read("rounds.json")),
         }
     }
 
@@ -1016,6 +1019,8 @@ pub enum Screen {
     KeyConfig(Box<crate::keyconfig::KeyConfig>),
     /// OPTION > KEYBOARD (OpenKumite's: each player's keys).
     Keyboard(Box<crate::keyconfig::KeyboardConfig>),
+    /// Tekken Tag's own front end (its title, menu, select, options, continue, results), when the game data has it.
+    Ttt(Box<crate::ttt::Front>),
 }
 
 /// What the VS screen shows besides the two fighters: how many humans play (the lightning and bar of some modes),
@@ -1026,6 +1031,8 @@ pub struct VsExtra {
     pub teams: Option<[crate::modes::Team; 2]>,
     /// Force: the stage number (0-based; None: the final stage) and its name's two lines and colour.
     pub force: Option<(Option<usize>, [String; 2], u32)>,
+    /// Tekken Tag: each side's tag partner (roster index, costume).
+    pub bench: Option<[(usize, usize); 2]>,
 }
 
 /// Where a movie leads.
@@ -1099,6 +1106,10 @@ pub enum Outcome {
     Controls(crate::controls::Controls),
     /// A graphics setting changed: apply and keep it.
     Graphics(crate::graphics::Graphics),
+    /// Tekken Tag: a run's next fight.
+    TttFight(Box<crate::ttt::Run>),
+    /// Tekken Tag: its options changed (kept in the save).
+    TttSaved,
 }
 
 pub struct Menu {
@@ -1257,6 +1268,7 @@ impl Screen {
 
     /// Handle a key of `player` (0 = P1, 1 = P2).
     pub fn key(&mut self, player: usize, key: Key, roster: &Roster, seed: &mut u32) -> Outcome {
+        self.own_front(roster);
         match self {
             // START (only) goes to the main menu from any part of the title (0x800DB528)
             Screen::Title { difficulty, .. } => match key {
@@ -1418,6 +1430,7 @@ impl Screen {
                     *self = Screen::Options { frame: 0, cursor: 2, difficulty: d };
                 }
             }
+            Screen::Ttt(f) => return f.key(player, key, roster, seed),
             Screen::Keyboard(k) => {
                 if let Some(o) = k.key(key) {
                     return o;
@@ -1560,9 +1573,20 @@ impl Screen {
         Outcome::None
     }
 
+    /// Tekken Tag: its own front end for the title and the main menu (wherever the app asks for them).
+    fn own_front(&mut self, roster: &Roster) {
+        match self {
+            Screen::Title { .. } | Screen::Presents { .. } if roster.ttt.is_some() => *self = Screen::Ttt(Box::new(crate::ttt::Front::title())),
+            Screen::Menu(_) if roster.ttt.is_some() => *self = Screen::Ttt(Box::new(crate::ttt::Front::menu())),
+            _ => {}
+        }
+    }
+
     /// Per 60 Hz frame: animations, countdowns, and the select screen's start of the fight.
     pub fn tick(&mut self, roster: &Roster, seed: &mut u32) -> Outcome {
+        self.own_front(roster);
         match self {
+            Screen::Ttt(f) => return f.tick(roster, seed),
             Screen::Title { frame, .. } => {
                 *frame += 1;
                 if *frame >= TITLE_END {
@@ -1607,7 +1631,7 @@ impl Screen {
             // the VS screen: 8 frames of slide, then it stays until 60 frames have passed (and the fight loads)
             Screen::Versus { setup, ladder, frame, .. } => {
                 *frame += 1;
-                if *frame >= roster.ui.vs.hold {
+                if *frame >= if roster.ttt.is_some() { crate::ttt::VS_FRAMES } else { roster.ui.vs.hold } {
                     return Outcome::Load(setup.clone(), ladder.clone());
                 }
             }
@@ -1665,6 +1689,7 @@ impl Screen {
             Screen::Graphics(g) => g.draw(&painter, &v, art),
             Screen::KeyConfig(k) => k.draw(&painter, &v, art),
             Screen::Keyboard(k) => k.draw(&painter, &v, art),
+            Screen::Ttt(f) => f.draw(&painter, &v, art, roster),
             // "CONTINUE? n" (0x8004FFF0, printf 0x80050168) and GAME OVER (0x80050BDC, of 0x80050428) in the big font
             Screen::Continue { countdown, .. } => {
                 let text = roster.ui.continue_text.replace("%d", &countdown.div_ceil(CONTINUE_STEP).to_string());
@@ -1675,6 +1700,7 @@ impl Screen {
                 let t = crate::modes::Text::from(&art.screens["hud"]["continue"]["game_over"]);
                 art.text(&painter, &v, t.font, t.colour, t.x, t.y, &roster.ui.game_over, Color32::WHITE)
             }
+            Screen::Versus { setup, frame, extra, .. } if roster.ttt.is_some() => crate::ttt::draw_vs(&painter, &v, art, roster, setup, extra.bench, *frame),
             Screen::Versus { setup, frame, number, extra, .. } => draw_versus(&painter, &v, art, roster, setup, *frame, *number, extra),
             Screen::Results(r) => r.draw(&painter, &v, art, roster),
             Screen::ForceResults(r) => r.draw(&painter, &v, art, roster),
