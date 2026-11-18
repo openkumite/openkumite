@@ -150,6 +150,8 @@ struct Scene {
     /// `sky_picture` (how it follows the camera, its texture and size, a white texture for its plain colours).
     sky_model: bool,
     sky_cull: bool,
+    /// The model shares the floor's depth (Tekken Tag's arenas).
+    sky_floor_depth: bool,
     sky_picture: Option<(kumite_assets::SkyPicture, Arc<kumite_render::Texture>, [f32; 2], Arc<kumite_render::Texture>)>,
     /// The full-screen fill behind the stage (sRGB; one stage's sky blue, black elsewhere).
     background: [u8; 3],
@@ -896,7 +898,9 @@ impl App {
         }
         self.debug.infinite_health = setup.as_ref().is_some_and(|s| s.mode == Mode::Practice) || (setup.is_none() && self.debug.infinite_health);
         self.scene = Some(scene);
-        self.vfx = Some(kumite_game::vfx::Vfx::new(&self.assets));
+        let mut vfx = kumite_game::vfx::Vfx::new(&self.assets);
+        vfx.set_stage(stage);
+        self.vfx = Some(vfx);
         let mode = setup.as_ref().map(|s| s.mode);
         let info = HudInfo {
             models,
@@ -1190,6 +1194,7 @@ impl App {
             wall_z: None,
             sky_model: false,
             sky_cull: false,
+            sky_floor_depth: false,
             sky_picture: None,
             background: [0; 3],
             strip: None,
@@ -1258,7 +1263,7 @@ impl App {
                 (scene.sky_base_y, scene.sky_y_scale, scene.sky_first, scene.floor_period) = (st.sky_base_y, st.sky_y_scale, st.sky_first, st.floor_period);
                 // (a mesh carries the glb's whole vertex list: its own are the ones its indices name)
                 scene.wall_z = st.sky.first().and_then(|m| m.vertices.get(*m.indices.first()? as usize)).filter(|_| st.backdrop_wall).map(|v| place(glam::Vec3::from(v.pos)).z);
-                (scene.sky_model, scene.sky_cull) = (st.sky_model, st.sky_cull);
+                (scene.sky_model, scene.sky_cull, scene.sky_floor_depth) = (st.sky_model, st.sky_cull, st.sky_floor_depth);
                 scene.sky_picture = st
                     .sky_picture
                     .filter(|p| st.textures.get(p.image).is_some_and(|t| t.width.max(t.height) <= r.max_texture()))
@@ -4816,6 +4821,7 @@ impl App {
                 cam.sky_first = scene.sky_first;
                 cam.sky_cull = !scene.sky_model || scene.sky_cull;
                 cam.sky_depth = scene.sky_model;
+                cam.sky_floor_depth = scene.sky_floor_depth;
                 cam.background = Some(scene.background);
                 scene_lighting(&mut cam, scene);
                 (cam, Vec::new())
@@ -4838,6 +4844,7 @@ impl App {
                 // (an arcade stage's model: both sides of its faces)
                 cam.sky_cull = !scene.sky_model || scene.sky_cull;
                 cam.sky_depth = scene.sky_model;
+                cam.sky_floor_depth = scene.sky_floor_depth;
                 cam.background = Some(scene.background);
                 scene_lighting(&mut cam, scene);
                 (cam, Vec::new())
@@ -4875,6 +4882,7 @@ impl App {
                 // (an arcade stage's model: both sides of its faces)
                 cam.sky_cull = !scene.sky_model || scene.sky_cull;
                 cam.sky_depth = scene.sky_model;
+                cam.sky_floor_depth = scene.sky_floor_depth;
                 cam.background = Some(scene.background);
                 (cam, Vec::new())
             }
@@ -5638,7 +5646,13 @@ fn stage_lights(gd: &Path) -> std::collections::HashMap<usize, (Option<kumite_re
                 let toward = glam::Vec3::new(f(&t[0]), f(&t[1]), f(&t[2])).normalize_or_zero();
                 // (Tekken Tag's: the floor darkened by its `alpha`)
                 let alpha = sh["alpha"].as_f64().map(|a| a.clamp(0.0, 1.0) as f32);
-                return Some((id, (None, Some(kumite_render::Shadow { toward, floor: 0.0, colour: rgb(&sh["colour"]), alpha }), None)));
+                // (Tekken Tag's `lights`: towards each of three, their colours and the ambient, 128 = 1)
+                let ls = &s["lights"];
+                let v = |a: &serde_json::Value| glam::Vec3::new(f(&a[0]), f(&a[1]), f(&a[2]));
+                let lit = |k: usize| (v(&ls["colour"][k]) / 128.0, v(&ls["toward"][k]));
+                let light =
+                    ls.is_object().then(|| kumite_render::StageLight { ambient: v(&ls["ambient"]) / 128.0, key: lit(0).0, toward: lit(0).1, material: glam::Vec3::ONE, more: Some([lit(1), lit(2)]) });
+                return Some((id, (light, Some(kumite_render::Shadow { toward, floor: 0.0, colour: rgb(&sh["colour"]), alpha }), None)));
             };
             let amb = (l["ambient"].as_u64()? >> 4) as f32 / 256.0;
             let key = &l["key_color_rgb"];
@@ -5650,6 +5664,7 @@ fn stage_lights(gd: &Path) -> std::collections::HashMap<usize, (Option<kumite_re
                 key: glam::Vec3::new(f(&key[0]), f(&key[1]), f(&key[2])) / 256.0,
                 toward,
                 material: glam::Vec3::new(f(&mat[0]), f(&mat[1]), f(&mat[2])) / 128.0,
+                more: None,
             };
             let sa = &l["shadow_angles"];
             let turn = |v: f32| v * std::f32::consts::TAU / 4096.0;
@@ -5709,7 +5724,7 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
     if scene.sky_model {
         cam.sky = glam::Mat4::from_translation(glam::Vec3::new(mid.x, 0.0, mid.z));
         (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, false, scene.sky_cull);
-        cam.sky_depth = true;
+        (cam.sky_depth, cam.sky_floor_depth) = (true, scene.sky_floor_depth);
     }
     // Force's backdrop wall, the original's 2D strip (0x800B4914): drawn first, the floor over it up to the wall; not
     // turned by the camera's roll but stepped up along the screen (its posts stay upright)

@@ -101,6 +101,8 @@ pub struct StageLight {
     pub key: Vec3,
     pub toward: Vec3,
     pub material: Vec3,
+    /// Tekken Tag's: its two other lights (colour, towards each), and no fill from above.
+    pub more: Option<[(Vec3, Vec3); 2]>,
 }
 
 /// Vertex of a static (stage) mesh: world position, atlas UV, RGBA modulation colour.
@@ -132,6 +134,9 @@ pub struct Camera {
     /// faces hiding one another by their depth, the fighters over all of it. The arcade game sorts its faces instead,
     /// and so do the original's drums here; sorted by triangle, a model's large faces come out in the wrong order.
     pub sky_depth: bool,
+    /// With `sky_depth`: the model is depth-tested against the floor too, one depth buffer for all (Tekken Tag's
+    /// arenas): the floor hides the ground under it, the model the fighters behind it.
+    pub sky_floor_depth: bool,
     /// The stage's fill behind everything (sRGB 0..255), else the renderer's clear colour.
     pub background: Option<[u8; 3]>,
     /// The stage meshes' placement (the floor follows the fighters by whole map periods).
@@ -183,6 +188,7 @@ impl Camera {
             sky_first: false,
             sky_cull: true,
             sky_depth: false,
+            sky_floor_depth: false,
             background: None,
             floor: Mat4::IDENTITY,
             hit_light: None,
@@ -227,6 +233,8 @@ struct Globals {
     shadow_colour: [f32; 4],
     // Tekken Tag's shadow picture: its centre's x, z (metres), 1 / its half size, the darkening (0: none)
     shadow_map: [f32; 4],
+    // Tekken Tag's two other lights: towards each, its colour
+    lights: [[f32; 4]; 4],
 }
 
 /// RGBA texture with its bind group.
@@ -1125,7 +1133,7 @@ impl Renderer {
             cutaway: cam.cutaway.map_or([0.0; 4], |(p, m)| [p[0].x, p[0].y, p[0].z, m]),
             cutaway2: cam.cutaway.map_or([0.0; 4], |(p, _)| [p[1].x, p[1].y, p[1].z, f32::from(u8::from(cam.cutaway_all))]),
             near_cut: cam.near_cut.map_or([0.0; 4], |z| [z, 1.0, 0.0, 0.0]),
-            key_color: cam.light.map_or([0.0; 4], |l| [l.key.x, l.key.y, l.key.z, 1.0]),
+            key_color: cam.light.map_or([0.0; 4], |l| [l.key.x, l.key.y, l.key.z, if l.more.is_some() { 2.0 } else { 1.0 }]),
             ambient: cam.light.map_or([0.0; 4], |l| l.ambient.extend(0.0).to_array()),
             material: cam.light.map_or([0.0; 4], |l| l.material.extend(0.0).to_array()),
             shadow: cam.shadow.filter(|s| s.toward.y > 0.05).map_or([0.0; 4], |s| [s.toward.x / s.toward.y, s.toward.z / s.toward.y, s.floor, 1.0]),
@@ -1134,6 +1142,9 @@ impl Renderer {
                 // sRGB to the frame's linear colour
                 let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
                 [lin(s.colour.x), lin(s.colour.y), lin(s.colour.z), 1.0]
+            }),
+            lights: cam.light.and_then(|l| l.more).map_or([[0.0; 4]; 4], |[(c1, l1), (c2, l2)]| {
+                [l1.normalize_or_zero().extend(0.0).to_array(), c1.extend(0.0).to_array(), l2.normalize_or_zero().extend(0.0).to_array(), c2.extend(0.0).to_array()]
             }),
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
@@ -1263,8 +1274,10 @@ impl Renderer {
         // a model with depth: over the floor with a depth buffer of its own; then the floor's depth again, for the
         // fighters and their shadows
         if sky_depth {
-            for (label, pipeline, meshes) in [("stage model", &self.sky_depth_pipeline, sky), ("floor depth", &self.static_depth_pipeline, statics)] {
-                let mut pass = begin(&mut enc, (label, wgpu::LoadOp::Load, wgpu::LoadOp::Clear(1.0)));
+            let passes = [("stage model", &self.sky_depth_pipeline, sky), ("floor depth", &self.static_depth_pipeline, statics)];
+            for (label, pipeline, meshes) in passes.into_iter().take(if cam.sky_floor_depth { 1 } else { 2 }) {
+                let depth = if cam.sky_floor_depth { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(1.0) };
+                let mut pass = begin(&mut enc, (label, wgpu::LoadOp::Load, depth));
                 pass.set_bind_group(0, &self.globals_group, &[]);
                 pass.set_pipeline(pipeline);
                 for m in meshes {

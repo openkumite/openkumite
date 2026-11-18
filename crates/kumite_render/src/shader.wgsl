@@ -31,6 +31,8 @@ struct Globals {
     shadow_colour: vec4<f32>,
     // Tekken Tag's shadow picture: its centre's x, z (metres), 1 / its half size, the darkening (0: none)
     shadow_map: vec4<f32>,
+    // Tekken Tag's two other lights: towards light 1, its colour, towards light 2, its colour
+    lights: array<vec4<f32>, 4>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var tex: texture_2d<f32>;
@@ -281,8 +283,15 @@ fn lit(i: VsOut, t: vec3<f32>) -> vec3<f32> {
         if (dot(i.normal, i.normal) > 1e-8) {
             n = normalize(i.normal);
         }
-        let lum = g.ambient.rgb + g.key_color.rgb * max(0.0, dot(n, g.light_dir.xyz)) + 0.5 * g.key_color.rgb * max(0.0, n.y);
         let hit = g.hit_colour.rgb * max(0.0, dot(n, to_hit));
+        if (g.key_color.w > 1.5) {
+            // Tekken Tag's three lights (each side's light block, 0x353918): the ambient and each colour × max(0, n·L),
+            // 128 = 1, the GS's modulation saturating at 255
+            let l3 = g.ambient.rgb + g.key_color.rgb * max(0.0, dot(n, g.light_dir.xyz))
+                + g.lights[1].rgb * max(0.0, dot(n, g.lights[0].xyz)) + g.lights[3].rgb * max(0.0, dot(n, g.lights[2].xyz));
+            return min(t * (min(l3, vec3(255.0 / 128.0)) + hit), vec3(1.0));
+        }
+        let lum = g.ambient.rgb + g.key_color.rgb * max(0.0, dot(n, g.light_dir.xyz)) + 0.5 * g.key_color.rgb * max(0.0, n.y);
         return min(t * (g.material.rgb * lum + hit), vec3(1.0));
     }
     let l = abs(dot(flat, g.light_dir.xyz));
