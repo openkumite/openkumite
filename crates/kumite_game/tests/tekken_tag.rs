@@ -387,3 +387,81 @@ fn the_winner_poses_with_its_partner() {
         assert_eq!((b.game.bodies[1].model_record, b.game.fight.fighters[1].moveset.moveset_id), (LEI, lei), "Lei back for round 2");
     }
 }
+
+/// What a match of Paul against Lei did over `frames` steps, each side a CPU at (difficulty, level) or an idle pad:
+/// the state hashes, and per side its fight steps holding forward without a button (walks), its button presses
+/// (attacks), its steps in a guard, the hits it landed unblocked, and the rounds won.
+#[derive(Debug, Default)]
+struct CpuRun {
+    hashes: Vec<u64>,
+    walks: [u32; 2],
+    attacks: [u32; 2],
+    guards: [u32; 2],
+    hits: [u32; 2],
+    wins: [u32; 2],
+}
+
+fn cpu_run(a: &Assets, cpu: [Option<(usize, usize)>; 2], frames: usize) -> CpuRun {
+    let mut b = Bout::new(Game::load(a, [PAUL, LEI]).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
+    for (k, c) in cpu.into_iter().enumerate() {
+        b.set_cpu(k, c);
+    }
+    let mut r = CpuRun::default();
+    for _ in 0..frames {
+        b.step([Pad::default(); 2]);
+        r.hashes.push(b.game.state_hash());
+        if b.phase != Phase::Fight {
+            continue;
+        }
+        for (k, f) in b.game.fight.fighters.iter().enumerate() {
+            r.walks[k] += u32::from(f.input.dir == 6 && f.input.held == 0);
+            r.attacks[k] += u32::from(f.input.pressed != 0);
+            r.guards[k] += u32::from(f.posture(&b.game.fight.data) & kumite_sim::posture::GUARDS != 0);
+        }
+        for h in b.game.fight.hits.iter().filter(|h| !h.blocked && h.attacker < 2) {
+            r.hits[h.attacker] += 1;
+        }
+    }
+    r.wins = b.wins;
+    r
+}
+
+/// Two CPUs at NORMAL (the default difficulty), fight 1's level: they walk, attack, guard and land hits within 40
+/// seconds, and the same match plays again the same.
+#[test]
+fn normal_cpus_walk_attack_guard_and_hit() {
+    let Some(a) = assets() else { return };
+    let r = cpu_run(&a, [Some((1, 0)); 2], 2400);
+    eprintln!("{r:?}", r = (r.walks, r.attacks, r.guards, r.hits, r.wins));
+    for k in 0..2 {
+        assert!(r.walks[k] > 0 && r.attacks[k] > 0 && r.guards[k] > 0 && r.hits[k] > 0, "side {k}: {:?}", (r.walks, r.attacks, r.guards, r.hits));
+    }
+    assert_eq!(r.hashes, cpu_run(&a, [Some((1, 0)); 2], 2400).hashes, "the same match twice");
+}
+
+/// ULTRA HARD's top level beats a fighter who stands still (and so guards highs and mids); EASY's first level
+/// attacks less often.
+#[test]
+fn the_top_cpu_beats_a_standing_dummy() {
+    let Some(a) = assets() else { return };
+    let top = cpu_run(&a, [Some((4, 7)), None], 9000);
+    let easy = cpu_run(&a, [Some((0, 0)), None], 9000);
+    eprintln!("top {:?}, easy {:?}", (top.attacks, top.hits, top.wins), (easy.attacks, easy.hits, easy.wins));
+    assert_eq!(top.wins[0], 2, "the top CPU wins the match");
+    assert!(easy.attacks[0] < top.attacks[0], "EASY attacks less: {} against {}", easy.attacks[0], top.attacks[0]);
+}
+
+/// In a tag battle the CPUs tag (the tag button of their cancel entries with command bit 14, 0x381278).
+#[test]
+fn cpus_tag_in_a_tag_battle() {
+    let Some(a) = assets() else { return };
+    let mut b = tag_bout(&a, LAW);
+    b.set_cpu(0, Some((4, 7)));
+    b.set_cpu(1, Some((4, 7)));
+    let mut tags = 0;
+    for _ in 0..9000 {
+        b.step([Pad::default(); 2]);
+        tags += b.game.fight.fighters.iter().filter(|f| f.input.tag).count();
+    }
+    assert!(tags > 0, "a tag press");
+}

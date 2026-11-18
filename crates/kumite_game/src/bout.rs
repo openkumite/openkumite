@@ -276,9 +276,9 @@ impl Bout {
             phase: Phase::Intro,
             phase_frame: 0,
             cpu: [None, None],
-            ai_data,
             // (the game seeds libc rand once at boot; a fixed seed keeps equal inputs giving equal fights)
-            ai_rng: AiRng::new(0x2545_F491),
+            ai_rng: ai_data.rng(0x2545_F491),
+            ai_data,
             events: Vec::new(),
             intros,
             free: false,

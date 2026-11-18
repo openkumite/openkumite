@@ -12,6 +12,14 @@
 //! Not ported (never reached outside these modes): Ball / Force hooks and the attract demo's
 //! frame skip and halved cooldowns. (A CPU Force player, OpenKumite's own, plays the stage over the routine: chickens,
 //! the way on, the soldiers around it; [`ForceSight`].)
+//!
+//! Tekken Tag Tournament (ok_tekken_tag_converter's ai.json, `"dialect": "ttt"`; its FIGHT_DATA.md section 19): the
+//! PS2 routine 0x380A50 has this one's structure, so this routine plays it on Tekken Tag's tables, with the
+//! differences read in its code: libc rand()'s low bits and the AI generator's start, the round setup's cooldowns
+//! (0x380568), the cooldown drawn from rand() (0x385250), no rage, the tag button (command bit 14, 0x381278) and the
+//! string follow-up list's executor (0x387600). Its own decision steps (0x380F38's chain) are not read one by one:
+//! shortcut: Tekken 3's steps stand in for Tekken Tag's (its steps 8, 0x11, 0x14, 0x15 and the B / D lists' executors are
+//! not ported, its handlers are stubs); port them one by one where its CPU plays differently.
 
 use crate::data::{Cancel, CancelKind, Move};
 use crate::input::Pad;
@@ -56,6 +64,11 @@ pub struct Profile {
     pub in_string_interrupt_cap: i32,
     pub in_string_guard_prob: i32,
     pub in_string_guard_cap: i32,
+    /// P2E / P30: Tekken Tag's string follow-ups (list C), how many and how likely a frame (Tekken 3's are unread).
+    #[serde(default)]
+    pub followup_count_a: i32,
+    #[serde(default)]
+    pub followup_prob_a: i32,
     /// P32, P36: consecutive attack limits (the larger one counts).
     pub consecutive_attack_limit_a: i32,
     pub consecutive_attack_limit_b: i32,
@@ -87,18 +100,48 @@ struct Json {
     profiles: Entries<ProfileEntry>,
     spacing: Entries<SpacingEntry>,
     zone_masks: ZoneMasks,
+    // (Tekken Tag's has no per-moveset table, punish pads or rules: their routines are not read)
+    #[serde(default)]
     per_moveset: Entries<PerMovesetEntry>,
     handlers: Handlers,
     canned_sequences: Entries<CannedEntry>,
     motion_records: Entries<MotionRecord>,
+    #[serde(default)]
     boss_punish_pads: PunishPads,
     evade_choices: Vec<u8>,
     wakeup_categories: Vec<u32>,
+    #[serde(default)]
     rules: Rules,
+    /// `"ttt"`: Tekken Tag's tables, read by Tekken Tag's differences (ok_tekken_tag_converter's ai.json).
+    #[serde(default)]
+    dialect: Option<String>,
+    #[serde(default)]
+    rng: RngJson,
 }
-#[derive(Default, Deserialize)]
+/// The random generators' differences (Tekken 3's file describes its own in words: the defaults).
+#[derive(Deserialize)]
+struct RngJson {
+    #[serde(default)]
+    ai_lcg_seed: u32,
+    #[serde(default = "rand_shift")]
+    rand_shift: u32,
+}
+fn rand_shift() -> u32 {
+    16
+}
+impl Default for RngJson {
+    fn default() -> Self {
+        Self { ai_lcg_seed: 0, rand_shift: rand_shift() }
+    }
+}
+#[derive(Deserialize)]
 struct Entries<T> {
     entries: Vec<T>,
+}
+impl<T> Default for Entries<T> {
+    fn default() -> Self {
+        Self { entries: Vec::new() }
+    }
 }
 #[derive(Deserialize)]
 struct ProfileEntry {
@@ -156,7 +199,7 @@ struct MotionRecord {
     cmd: u32,
     steps: Vec<u16>,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct PunishPads {
     pad_words: Vec<u16>,
 }
@@ -305,7 +348,8 @@ struct Rules {
     evade_closer: Closer,
 }
 
-/// Everything the AI reads from ai.json (default: a game without it, Tekken Tag: no tables, a CPU does little).
+/// Everything the AI reads from ai.json (default: a game without it, an older Tekken Tag pack: no tables, a CPU does
+/// little).
 #[derive(Default)]
 pub struct AiData {
     /// [difficulty 0..3][level 0..10]
@@ -335,6 +379,12 @@ pub struct AiData {
     /// Evade plans (0x80022E80) and wake-up categories (0x80022E74).
     evade: Vec<u8>,
     wakecat: Vec<u32>,
+    /// Tekken Tag's tables (FIGHT_DATA.md section 19: 5 difficulties x 8 levels, Tekken 3's routine with the
+    /// differences read in 0x380568 and 0x385250); the AI generator's start, and libc rand() returning its state's
+    /// bits 0-14 (Tekken Tag's 0x40FBD0; Tekken 3's: 16-30).
+    ttt: bool,
+    lcg_seed: u32,
+    rand_low: bool,
 }
 
 /// The most characters or movesets ai.json's tables may name.
@@ -343,10 +393,12 @@ const MAX_ROWS: usize = 1024;
 impl AiData {
     pub fn load(path: &Path) -> Result<Self> {
         let j: Json = crate::data::load(path)?;
-        let mut profiles = vec![vec![Profile::default(); 10]; 3];
+        // (Tekken 3: 3 difficulties x 10 levels; Tekken Tag: 5 x 8)
+        let size = j.profiles.entries.iter().fold((0, 0), |s, e| (s.0.max(e.difficulty + 1), s.1.max(e.level + 1)));
+        let mut profiles = vec![vec![Profile::default(); size.1.min(16)]; size.0.min(8)];
         for e in j.profiles.entries {
-            if e.difficulty < 3 && e.level < 10 {
-                profiles[e.difficulty][e.level] = e.fields;
+            if let Some(p) = profiles.get_mut(e.difficulty).and_then(|p| p.get_mut(e.level)) {
+                *p = e.fields;
             }
         }
         // (a table's rows by character and moveset: a number past any is a bad file, skipped, not memory asked for)
@@ -400,16 +452,31 @@ impl AiData {
             throws_stand: group("throws_stand_"),
             throws_crouch: group("throws_crouch_"),
             throws_down: group("throws_down_"),
-            dash_records: j.motion_records.entries.into_iter().map(|r| (r.cmd, r.steps)).collect(),
+            // (Tekken Tag's commands 0x8001 / 0x8002 as Tekken 3's 0xC001 / 0xC002, as [`Ent::of`] reads them)
+            dash_records: j.motion_records.entries.into_iter().map(|r| (r.cmd | 0xC000, r.steps)).collect(),
             punish_pads: j.boss_punish_pads.pad_words,
             evade: j.evade_choices,
             wakecat: j.wakeup_categories,
+            ttt: j.dialect.as_deref() == Some("ttt"),
+            lcg_seed: j.rng.ai_lcg_seed,
+            rand_low: j.rng.rand_shift == 0,
         })
+    }
+
+    /// The random streams of a match of this game (`seed`: libc's state).
+    pub fn rng(&self, seed: u32) -> AiRng {
+        AiRng { lcg: self.lcg_seed, rand: seed, shift: if self.rand_low { 0 } else { 16 } }
     }
 
     pub fn profile(&self, difficulty: usize, level: usize) -> &Profile {
         static NONE: std::sync::OnceLock<Profile> = std::sync::OnceLock::new();
-        self.profiles.get(difficulty.min(2)).and_then(|p| p.get(level.min(9))).unwrap_or_else(|| NONE.get_or_init(Profile::default))
+        let d = self.profiles.get(difficulty.min(self.profiles.len().saturating_sub(1)));
+        d.and_then(|p| p.get(level.min(p.len().saturating_sub(1)))).unwrap_or_else(|| NONE.get_or_init(Profile::default))
+    }
+
+    /// The highest difficulty and level (Tekken 3: 2 and 9; Tekken Tag: 4 and 7).
+    fn top(&self) -> (i32, i32) {
+        (self.profiles.len() as i32 - 1, self.profiles.first().map_or(0, |p| p.len() as i32 - 1))
     }
 
     /// The handlers for a moveset (0x80062868: the first table entry with it): against it, and its own.
@@ -447,12 +514,13 @@ impl AiData {
 pub struct AiRng {
     lcg: u32,
     rand: u32,
+    shift: u32,
 }
 
 impl AiRng {
     /// `seed`: the libc state (OpenKumite seeds it per bout, so equal inputs give equal fights).
     pub fn new(seed: u32) -> Self {
-        Self { lcg: 0, rand: seed }
+        Self { lcg: 0, rand: seed, shift: 16 }
     }
 
     /// Step the AI LCG, returning its old value (the tests use the old value).
@@ -462,10 +530,10 @@ impl AiRng {
         o
     }
 
-    /// libc rand(): 0..0x7FFF.
+    /// libc rand(): 0..0x7FFF (Tekken 3's: the state's bits 16-30; Tekken Tag's: 0-14).
     fn rand(&mut self) -> i32 {
         self.rand = self.rand.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
-        ((self.rand >> 16) & 0x7FFF) as i32
+        ((self.rand >> self.shift) & 0x7FFF) as i32
     }
 
     /// 0x800566E8: 0..n from both streams, then the LCG steps.
@@ -519,7 +587,7 @@ impl Rec {
             f24: m.flags24.raw,
             next_alias: m.next.alias,
             desc0: m.desc0.unwrap_or(0),
-            l0_cmd: l0.map_or(0xC000, |c| c.cmd),
+            l0_cmd: l0.map_or(0xC000, |c| Ent::of(c).cmd),
             l0_cond: l0.map_or(0, |c| c.cond),
             l0_we: l0.map_or(0, |c| c.win_end as i32),
         })
@@ -552,8 +620,13 @@ struct Ent {
 
 impl Ent {
     fn of(c: &Cancel) -> Self {
+        // (by kind: Tekken Tag's END, CALL, RETURN, dash and backdash are 0x8000, 0x8004, 0x8005, 0x8001, 0x8002)
         let cmd = match c.kind {
             CancelKind::End => 0xC000,
+            CancelKind::Call => 0xC00C,
+            CancelKind::Return => 0xC00D,
+            CancelKind::Dash => 0xC001,
+            CancelKind::Backdash => 0xC002,
             _ => c.cmd,
         };
         Self { cmd, req: c.req, cond: c.cond, param: c.param, dest: c.dest, trans: c.transition, ws: c.win_start as i32, we: c.win_end as i32, extra: c.exec as usize }
@@ -655,6 +728,8 @@ impl Cx<'_> {
             0x2F..=0x45 => self.op_moveset == r - 0x2F,
             0x46..=0x5C => ch == r - 0x46,
             0x5D..=0x73 => ch != r - 0x5D,
+            // Tekken Tag's gates, widened at load (dialect.rs)
+            0x100.. => self.me.passes_gate(e.req),
             _ => false,
         }
     }
@@ -727,7 +802,8 @@ fn word_to_pad(w: u16) -> u16 {
 fn to_pad(out: u16, facing_right: bool) -> Pad {
     let (fwd, back) = (out & 0x2000 != 0, out & 0x8000 != 0);
     let (right, left) = if facing_right { (fwd, back) } else { (back, fwd) };
-    let buttons = BTN.iter().enumerate().filter(|(_, &b)| out & b != 0).fold(0u8, |a, (k, _)| a | 1 << k);
+    let tag = if out & 4 != 0 { crate::input::TAG } else { 0 };
+    let buttons = BTN.iter().enumerate().filter(|(_, &b)| out & b != 0).fold(tag, |a, (k, _)| a | 1 << k);
     Pad { up: out & 0x1000 != 0, down: out & 0x4000 != 0, left, right, buttons, start: false }
 }
 
@@ -929,10 +1005,11 @@ pub struct Ai {
     chain_fire: i32,
     chain_move: Option<Current>,
     chain_entry: Option<Ent>,
-    /// +0xC0 / +0xC2, +0xD8 / +0xDA, +0x1A0 / +0x1A2: follow-up lists C (string starters), B, D (flag, count);
-    /// their executors never fire, the collection still holds frames. +0xD4: exclude string starters.
+    /// +0xC0 / +0xC2, +0xD8 / +0xDA, +0x1A0 / +0x1A2: follow-up lists C (string starters: the entries), B, D (flag,
+    /// count); in Tekken 3 their executors never fire, the collection still holds frames (Tekken Tag's list C
+    /// executor is live: [`Ai::string_followup`]). +0xD4: exclude string starters.
     lc_c: i32,
-    nc_c: i32,
+    list_c: Vec<Ent>,
     lc_b: i32,
     nc_b: i32,
     lc_d: i32,
@@ -1098,7 +1175,7 @@ impl Ai {
             chain_move: None,
             chain_entry: None,
             lc_c: 0,
-            nc_c: 0,
+            list_c: Vec::new(),
             lc_b: 0,
             nc_b: 0,
             lc_d: 0,
@@ -1168,7 +1245,7 @@ impl Ai {
         self.npool = 0;
         self.cand.clear();
         self.lc_c = 0;
-        self.nc_c = 0;
+        self.list_c.clear();
         self.hp_prev = s.me.health;
         self.nostart = false;
         self.lc_b = 0;
@@ -1191,8 +1268,14 @@ impl Ai {
         self.load_profile(data, s.me, s.op, -1, -1);
         self.h_vs = data.handlers_of(s.op.moveset.moveset_id).0;
         self.h_self = data.handlers_of(s.me.moveset.moveset_id).1;
-        self.cd = self.p.attack_cooldown_0;
-        self.mvcd40 = 30 + rng.randint(30);
+        if data.ttt {
+            // 0x380568: 60 + P0A x a random 0..255 / 256 (the top 8 of randint's 15 bits); movement 50 + randint(48)
+            self.cd = 60 + self.p.attack_cooldown_0 * rng.randint(128) / 256;
+            self.mvcd40 = 50 + rng.randint(48);
+        } else {
+            self.cd = self.p.attack_cooldown_0;
+            self.mvcd40 = 30 + rng.randint(30);
+        }
     }
 
     /// The tag brawl's target changed to `s.op` (OpenKumite's own): what the CPU keeps of its opponent from
@@ -1211,7 +1294,8 @@ impl Ai {
     fn load_profile(&mut self, data: &AiData, me: &Fighter, op: &Fighter, diff: i32, level: i32) {
         let d = if diff < 1 { self.difficulty as i32 } else { diff };
         let l = if level < 1 { self.level as i32 } else { level };
-        self.p = data.profile(d.clamp(0, 2) as usize, l.clamp(0, 9) as usize).clone();
+        let top = data.top();
+        self.p = data.profile(d.clamp(0, top.0.max(0)) as usize, l.clamp(0, top.1.max(0)) as usize).clone();
         self.thr_me = data.thresholds(me.character);
         self.thr_op = data.thresholds(op.character);
         self.natk_max = self.p.consecutive_attack_limit_a.max(self.p.consecutive_attack_limit_b);
@@ -1680,19 +1764,18 @@ impl Ai {
             self.frame_prev = cx.mf;
             if self.lc_c >= 1 {
                 // list C: string starters, up to 4
-                let mut n = 0;
+                self.list_c.clear();
                 for e in cx.my_list() {
                     if cx.req_ok(&e) && cx.rec(e.dest).is_some_and(|r| r.f24 & 0x2000 != 0) {
-                        n += 1;
-                        if n >= 4 {
+                        self.list_c.push(e);
+                        if self.list_c.len() >= 4 {
                             break;
                         }
                     }
                 }
-                self.nc_c = n;
                 handled = true;
-                if n < 1 {
-                    (self.nc_c, self.lc_c) = (0, 0);
+                if self.list_c.is_empty() {
+                    self.lc_c = 0;
                 } else {
                     self.out = self.prev_out & 0xF000;
                 }
@@ -1733,7 +1816,8 @@ impl Ai {
                 }
             } else if !self.stance {
                 if m.as_ == 0 {
-                    (self.nc_d, self.nc_b, self.nc_c, self.lc_d, self.lc_b, self.lc_c) = (0, 0, 0, 0, 0, 0);
+                    (self.nc_d, self.nc_b, self.lc_d, self.lc_b, self.lc_c) = (0, 0, 0, 0, 0);
+                    self.list_c.clear();
                 } else {
                     // list D: entries open from frame 1 to their extra byte
                     let mut n = 0;
@@ -1870,9 +1954,13 @@ impl Ai {
             return;
         }
 
-        // ---- 4.P the dead executors' state side effects
+        // ---- 4.P the dead executors' state side effects (Tekken Tag: list C's executor, 0x387600)
+        if cx.data.ttt && self.lc_c > 0 && self.string_followup(cx) {
+            return;
+        }
         if self.lc_c > 0 {
-            (self.lc_c, self.nc_c, self.nostart) = (0, 0, true);
+            (self.lc_c, self.nostart) = (0, true);
+            self.list_c.clear();
         }
         if self.lc_b > 0 {
             (self.lc_b, self.nc_b) = (0, 0);
@@ -2983,7 +3071,8 @@ impl Ai {
             // rage: hit a third time by the same move -> the level 9 profile for 600 frames
             self.rage = false;
             let his = cx.h.id;
-            if self.ring.iter().filter(|&&x| x.is_some() && x == his).count() > 1 {
+            // (not in Tekken Tag's code)
+            if !cx.data.ttt && self.ring.iter().filter(|&&x| x.is_some() && x == his).count() > 1 {
                 if self.raget < 1 {
                     self.load_profile(cx.data, me, op, 0, 9);
                 }
@@ -3179,12 +3268,18 @@ impl Ai {
         }
         let c = self.cand[idx as usize];
         self.cmd_to_pad(cx, c.e.cmd, Some(c.mv));
-        // 0x80058958: an attack restarts the cooldown and stops the movement
-        if c.mv.rec8 & 0x40_0000 != 0 {
+        self.picked(cx, c.mv);
+        idx
+    }
+
+    /// 0x80058958 (Tekken Tag's 0x385250): an attack restarts the cooldown and stops the movement.
+    fn picked(&mut self, cx: &mut Cx, mv: Rec) {
+        if mv.rec8 & 0x40_0000 != 0 {
             self.chain += 1;
         }
-        if c.mv.as_ != 0 {
-            let k = cx.lcg() & 3;
+        if mv.as_ != 0 {
+            // (Tekken Tag's 0x385250 draws it from rand())
+            let k = if cx.data.ttt { cx.rand() as u32 & 3 } else { cx.lcg() & 3 };
             self.cd = self.p.attack_cooldown_base + self.p.cooldown(k);
             self.cdash = -1;
             if self.jumpt > 0 {
@@ -3192,33 +3287,66 @@ impl Ai {
             }
             (self.run3a, self.walk38, self.mvcd40, self.hold48) = (0, 0, 0x28, -1);
         }
-        idx
+    }
+
+    /// Tekken Tag's list C executor (0x387600): the string's next part, one of the entries collected when the
+    /// starter came out, input in its window (the profile's P34 of 4096 a frame, else the direction held); one with
+    /// an attack only while his comes later, and only P32 of them. With none usable (or turned away), the list ends
+    /// and the string starters are left out (+0x144). Returns whether the frame is done.
+    /// shortcut: the per-alias rules of 0x3876A4 (0x4CA never, 0x181 / 0x197 not on EASY, some by moveset on rand()
+    /// & 0x70) are left out: put them in ai.json's rules if a string goes on where the game's stops.
+    fn string_followup(&mut self, cx: &mut Cx) -> bool {
+        let list: Vec<Ent> = self.list_c.iter().copied().filter(|e| cx.in_window(e) && cx.req_ok(e) && self.cond_ok(cx, e)).collect();
+        let end = |s: &mut Self| {
+            (s.lc_c, s.nostart) = (0, true);
+            s.list_c.clear();
+            false
+        };
+        if list.is_empty() || self.turn >= 0x2000 {
+            return end(self);
+        }
+        if (cx.rand() & 0xFFF) >= self.p.followup_prob_a {
+            self.out = self.prev_out & 0xF000;
+            return true;
+        }
+        let e = list[cx.randint(list.len() as i32) as usize];
+        let rec = cx.rec(e.dest);
+        if let Some(r) = rec.filter(|r| r.as_ != 0) {
+            self.lc_c += 1;
+            if self.p.followup_count_a < self.lc_c || self.until < r.as_ {
+                return end(self);
+            }
+        }
+        self.cmd_to_pad(cx, e.cmd, rec);
+        if let Some(r) = rec {
+            self.picked(cx, r);
+        }
+        true
     }
 
     /// 0x800618C0: the output for a command: a single-frame command now (every listed button), a motion input
     /// played a word a frame. Anything else writes nothing.
     fn cmd_to_pad(&mut self, cx: &Cx, cmd: u32, rec: Option<Rec>) {
         let cmd = cmd & 0xFFFF;
-        if cmd & 0xC000 == 0 {
+        // (Tekken 3's plain commands are below 0x4000; Tekken Tag's 0x381278 adds the tag button, pad 0x4, for bit 14)
+        if cmd & 0x8000 == 0 {
             let dir = (1..=9).rev().find(|&n| cmd & (1 << (4 + n)) != 0).unwrap_or(0);
-            self.out = (0..4).filter(|b| cmd & (1 << b) != 0).fold(DIRPAD[dir], |p, b| p | BTN[b]);
+            let tag = if cmd & crate::input::TAG_COMMAND != 0 { 4 } else { 0 };
+            self.out = (0..4).filter(|b| cmd & (1 << b) != 0).fold(DIRPAD[dir] | tag, |p, b| p | BTN[b]);
             self.last_rec = rec;
             return;
         }
-        if cmd & 0xC000 != 0xC000 {
-            return;
-        }
-        // 0x8002CD7C: the dash records, the motion input tables
+        // 0x8002CD7C: the dash records, the motion input tables (Tekken 3's 0xC00E..0xC04C, 0xC7FF..0xC827; Tekken
+        // Tag's from 0x8006)
         let steps: Vec<u16> = match cmd {
             0xC001 | 0xC002 => match cx.data.dash_records.iter().find(|r| r.0 == cmd) {
                 Some(r) => r.1.clone(),
                 None => return,
             },
-            0xC00E..=0xC04C | 0xC7FF..=0xC827 => match cx.gd.shared.sequences.entries.iter().find(|s| s.cmd == cmd) {
+            _ => match cx.gd.shared.sequences.entries.iter().find(|s| s.cmd == cmd) {
                 Some(s) => s.steps.iter().map(|st| st.raw as u16).collect(),
                 None => return,
             },
-            _ => return,
         };
         self.seq = steps.iter().skip(1).copied().take_while(|&w| w != 0).collect();
         self.out = steps.first().map_or(0, |&w| word_to_pad(w));
@@ -3905,7 +4033,7 @@ mod tests {
     }
 
     fn rng(seed: u32) -> AiRng {
-        AiRng { lcg: seed.wrapping_mul(0x9E37_79B9), rand: seed }
+        AiRng { lcg: seed.wrapping_mul(0x9E37_79B9), rand: seed, shift: 16 }
     }
 
     #[test]
