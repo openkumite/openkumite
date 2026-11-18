@@ -522,3 +522,34 @@ fn king_throws_canned_and_delays_inputs() {
     assert!(normal.stats[1] > 0, "a canned throw");
     assert!(ultra.stats[2] > 0 && hard.stats[2] == 0, "delayed inputs with P74 only");
 }
+
+/// Each frame of an ending: the scene frame, the camera, each slot's cast member and root, the fades.
+fn play_ending(a: &Assets, d: &kumite_game::ending::EndingData, e: usize) -> Vec<String> {
+    let mut s = kumite_game::ending::EndingScene::new(a, d, e, 0).unwrap();
+    let mut out = Vec::new();
+    while !s.done && out.len() < 8000 {
+        s.step();
+        let slots: Vec<_> = (0..2).map(|k| s.pose(k).map(|(m, pose, _)| (m, pose[0].w_axis))).collect();
+        out.push(format!("{} {:?} {slots:?} {:?}", s.frame(), s.camera(), s.fades()));
+    }
+    out
+}
+
+#[test]
+fn an_ending_plays_to_its_end() {
+    let Some(a) = assets() else { return };
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    // King's ending: King, then Armor King and Mokujin swapped into slot 1; 1800 frames, op -1 on the last
+    assert_eq!(d.ending(3, 0), Some(4));
+    let r = play_ending(&a, &d, 4);
+    assert_eq!(r.len(), 1800);
+    assert!(r[0].ends_with("(255, 0)") && r[100].ends_with("(0, 0)"), "black, then faded in: {} / {}", r[0], r[100]);
+    assert!(r[30].contains("[Some((0,") && r[30].contains("Some((1,") && r[100].contains("Some((2,"), "the cast swaps: {}", r[100]);
+    assert_eq!(r, play_ending(&a, &d, 4), "the same frames");
+    // the costume picks Xiaoyu's; a seen ending gives the partner's when it is new
+    assert_eq!((d.ending(7, 0), d.ending(7, 4), d.ending(33, 0)), (Some(9), Some(10), Some(37)));
+    assert_eq!(d.pick(&[(7, 4), (0, 2)], 0), Some((10, 4)));
+    assert_eq!(d.pick(&[(7, 4), (0, 2)], 1 << 10), Some((1, 2)));
+    assert_eq!(d.pick(&[(7, 4), (0, 2)], 1 << 10 | 1 << 1), Some((10, 4)));
+    assert_eq!(d.pick(&[(7, 0)], 1 << 9), Some((9, 0)));
+}

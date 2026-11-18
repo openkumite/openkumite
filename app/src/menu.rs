@@ -722,7 +722,12 @@ impl Roster {
                 log::error!("ai.json arcade: {e}");
                 ArcadeData::default()
             }),
-            ttt: crate::ttt::Data::load(&roster, read("../stages/index.json").as_array().into_iter().flatten().filter_map(|s| s["id"].as_u64()).map(|s| s as usize).collect(), &read("rounds.json")),
+            ttt: crate::ttt::Data::load(
+                &roster,
+                read("../stages/index.json").as_array().into_iter().flatten().filter_map(|s| s["id"].as_u64()).map(|s| s as usize).collect(),
+                &read("rounds.json"),
+                kumite_fs::exists(&gamedata.join("endings.json")).then(|| kumite_game::ending::EndingData::load(gamedata).map_err(|e| log::warn!("endings.json: {e:#}")).ok()).flatten(),
+            ),
         }
     }
 
@@ -1110,6 +1115,8 @@ pub enum Outcome {
     TttFight(Box<crate::ttt::Run>),
     /// Tekken Tag: its options changed (kept in the save).
     TttSaved,
+    /// Tekken Tag's Theater: an ending (number, the player's costume), then the Theater at this cell again.
+    TttEnding(usize, usize, [usize; 2]),
 }
 
 pub struct Menu {

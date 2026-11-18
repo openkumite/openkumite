@@ -1,17 +1,19 @@
 //! Tekken Tag Tournament's front end, when the game data has it (roster.json `front_end`, which the Tekken Tag
 //! converter reads from the PS2 executable: its docs/FRONTEND.md): the title, the main menu and its modes (Tekken
-//! Bowl, Theater and Gallery are not here yet), the character select with the tag partner, OPTIONS, the arcade
-//! ladder with CONTINUE, the modes' runs, the unlock schedule, and the fight HUD, drawn from its 2D pictures
-//! (`pictures/FFF_NNN.png`) on its 640 x 448 screen.
+//! Bowl and Gallery are not here yet), the character select with the tag partner, OPTIONS, the arcade ladder with
+//! CONTINUE, the modes' runs, the unlock schedule, the endings (`gamedata/endings.json`: the arcade clear's staff
+//! roll and ending, Theater), and the fight HUD, drawn from its 2D pictures (`pictures/FFF_NNN.png`) on its 640 x 448
+//! screen.
 //!
 //! Not decoded, OpenKumite's own: the VS screen, the select screen's layout below the grid and its timer (none),
-//! which button gives which costume, the banners (in the chrome font), the menu and option screens' layout, and
-//! which of the six health-bar strips is which.
+//! which button gives which costume, the banners (in the chrome font), the menu, option and Theater screens' layout,
+//! the staff roll's fonts, and which of the six health-bar strips is which.
 
 use crate::art::{additive, Art, Screen as View, SCREEN_H, SCREEN_W};
 use crate::menu::{lcg, sfx, FightSetup, Key, Mode, Outcome, Roster};
 use egui::{Color32, Pos2, Rect};
 use kumite_game::bout::{Announcement, Bout, Phase};
+use kumite_game::ending::EndingData;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -27,6 +29,7 @@ const SURVIVAL: u32 = 4;
 const ONE_ARCADE: u32 = 5;
 const ONE_VS: u32 = 6;
 const PRACTICE: u32 = 7;
+const THEATER: u32 = 9;
 const OPTIONS: u32 = 11;
 /// OPTIONS' rows the engine plays (the config's DIFFICULTY LEVEL, FIGHT COUNT, ROUND TIME), then EXIT.
 const OPTION_ROWS: [usize; 3] = [0, 1, 2];
@@ -75,12 +78,14 @@ pub struct Data {
     pub arenas: Vec<usize>,
     /// ROUND TIME's clocks in frames (rounds.json `round_time`; past them: untimed).
     pub round_frames: Vec<u32>,
+    /// The endings, the staff roll and Theater (endings.json; None: a pack without them).
+    pub endings: Option<Arc<EndingData>>,
 }
 
 impl Data {
     /// From roster.json (None without `front_end`: an older pack, the plain front end); `arenas`: the pack's;
-    /// `rounds`: rounds.json.
-    pub fn load(roster: &Value, arenas: Vec<usize>, rounds: &Value) -> Option<Arc<Self>> {
+    /// `rounds`: rounds.json; `endings`: endings.json's.
+    pub fn load(roster: &Value, arenas: Vec<usize>, rounds: &Value, endings: Option<EndingData>) -> Option<Arc<Self>> {
         let raw = roster.get("front_end").filter(|f| f.is_object())?.clone();
         let opt = |v: &Value| v.as_u64().map(|x| x as usize);
         let slots = raw["select"]["slots"]
@@ -101,6 +106,7 @@ impl Data {
             pairs,
             arenas: arenas.into_iter().filter(|&a| a != 20).collect(),
             round_frames: ints(&rounds["round_time"]["options_frames"]).into_iter().map(|f| f as u32).collect(),
+            endings: endings.map(Arc::new),
             raw,
         }))
     }
@@ -141,15 +147,15 @@ pub struct Progress {
     /// The unlock stage (config +0x18) and the play points towards the next (+0x20).
     pub stage: u32,
     pub points: u32,
-    /// The endings seen (+0x10), here a bit per character id.
-    pub endings: u64,
+    /// The endings seen (+0x10): a bit per ending (endings.json).
+    pub seen: u64,
     /// DIFFICULTY LEVEL, FIGHT COUNT, ROUND TIME as set (None: the defaults).
     pub options: Option<[usize; 3]>,
 }
 
 /// The save's progress as last loaded or changed (the menus read it; the app keeps it in the save), as the
 /// DIFFICULTY of the Tekken 3 menus.
-static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress { stage: 0, points: 0, endings: 0, options: None });
+static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress { stage: 0, points: 0, seen: 0, options: None });
 
 pub fn progress() -> Progress {
     PROGRESS.lock().map_or_else(|e| e.into_inner().clone(), |p| p.clone())
@@ -168,7 +174,7 @@ impl Progress {
     }
 
     /// A match finished: a play point (shortcut: one a match; the per-match value 0x35AE14 is not decoded); 50 make
-    /// the next stage. An arcade clear with a new ending (front character `ending`) makes the next stage too.
+    /// the next stage. An arcade clear with a new ending (`clear`) makes the next stage too.
     /// True when the stage advanced.
     pub fn played(&mut self, d: &Data, clear: Option<usize>) -> bool {
         let per = d.raw["unlocks"]["points_per_stage"].as_u64().unwrap_or(50) as u32;
@@ -178,8 +184,8 @@ impl Progress {
             self.points = 0;
             up = true;
         }
-        if let Some(c) = clear.filter(|&c| c < 64 && self.endings >> c & 1 == 0) {
-            self.endings |= 1 << c;
+        if let Some(c) = clear.filter(|&c| c < 64 && self.seen >> c & 1 == 0) {
+            self.seen |= 1 << c;
             up = true;
         }
         if up && self.stage < LAST_STAGE {
@@ -304,8 +310,11 @@ impl Run {
         let won = winner == Some(0);
         match self.mode {
             ARCADE | TIME_ATTACK | ONE_ARCADE if won && self.fight + 1 >= self.ladder.len() => {
-                let front = self.teams[0].first().and_then(|p| roster.characters.get(p.0)).map(|c| c.id);
-                let up = progress.played(d, front);
+                // (by the game's costume numbers)
+                let members: Vec<(usize, usize)> =
+                    (self.teams[0].iter()).filter_map(|p| roster.characters.get(p.0).map(|c| (c.id, c.costumes.get(p.1).and_then(|r| roster.costume_of.get(r)).copied().unwrap_or(0)))).collect();
+                let ending = d.endings.as_ref().and_then(|e| e.pick(&members, progress.seen));
+                let up = progress.played(d, ending.map(|e| e.0));
                 let mut lines = vec!["CONGRATULATIONS!".to_string()];
                 if self.mode == TIME_ATTACK {
                     lines.push(clock(self.frames));
@@ -313,7 +322,11 @@ impl Run {
                 if up {
                     lines.push(unlocked(d, roster, progress.stage));
                 }
-                Next::Screen(Page::Message { lines, frame: 0, title: true })
+                let page = Page::Message { lines, frame: 0, title: true };
+                match ending {
+                    Some((e, costume)) => Next::Ending(e, costume, page),
+                    None => Next::Screen(page),
+                }
             }
             ARCADE | TIME_ATTACK | ONE_ARCADE if won => {
                 progress.played(d, None);
@@ -371,6 +384,8 @@ impl Run {
 pub enum Next {
     Fight(Box<Run>),
     Screen(Page),
+    /// The arcade cleared: the staff roll and the ending (its number, the player's costume), then the page.
+    Ending(usize, usize, Page),
 }
 
 /// The next unlock's news.
@@ -473,6 +488,15 @@ pub enum Page {
         lines: Vec<String>,
         frame: u32,
         title: bool,
+    },
+    /// THEATER (screen 0xC): its rows and cells, the cursor's [row, cell].
+    Theater {
+        cursor: [usize; 2],
+    },
+    /// The music player (screen 0xE): the cursor, the BGM chosen.
+    Music {
+        cursor: usize,
+        playing: Option<usize>,
     },
 }
 
@@ -637,10 +661,17 @@ impl Front {
         Self { page: Page::Menu { cursor: 0 }, frame: 0 }
     }
 
-    /// The main menu's entries (the locked ones, Tekken Bowl, Theater, Gallery, are not here yet).
-    fn items(d: &Data) -> Vec<(u32, String)> {
-        let mut items: Vec<(u32, String)> =
-            d.raw["menu"]["items"].as_array().into_iter().flatten().filter(|i| i["locked"] != true).map(|i| (int(&i["mode"]) as u32, i["label"].as_str().unwrap_or_default().to_string())).collect();
+    /// The main menu's entries (of the locked ones, THEATER once an ending was seen, 0x3BFED8; Tekken Bowl and
+    /// Gallery are not here yet).
+    fn items(d: &Data, seen: u64) -> Vec<(u32, String)> {
+        let theater = |i: &&Value| int(&i["mode"]) as u32 == THEATER && seen != 0 && d.endings.is_some();
+        let mut items: Vec<(u32, String)> = d.raw["menu"]["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|i| i["locked"] != true || theater(i))
+            .map(|i| (int(&i["mode"]) as u32, i["label"].as_str().unwrap_or_default().to_string()))
+            .collect();
         if cfg!(not(target_arch = "wasm32")) {
             items.push((u32::MAX, "EXIT".into()));
         }
@@ -661,7 +692,7 @@ impl Front {
                 _ => None,
             },
             Page::Menu { cursor } => {
-                let items = Self::items(&d);
+                let items = Self::items(&d, progress.seen);
                 match key {
                     Key::Up | Key::Down => {
                         sfx::play(sfx::cursor());
@@ -673,6 +704,7 @@ impl Front {
                         match items.get(*cursor).map(|i| i.0) {
                             Some(u32::MAX) => return Outcome::Exit,
                             Some(OPTIONS) => Some(Page::Options { cursor: 0, values: progress.options(&d) }),
+                            Some(THEATER) => Some(Page::Theater { cursor: [0, 0] }),
                             Some(m) => Some(Page::Select(Box::new(Select::new(m, &d, None)))),
                             None => None,
                         }
@@ -698,7 +730,7 @@ impl Front {
                     sfx::play(sfx::back());
                     progress.options = Some(*values);
                     set_progress(progress.clone());
-                    let at = Self::items(&d).iter().position(|i| i.0 == OPTIONS).unwrap_or(0);
+                    let at = Self::items(&d, progress.seen).iter().position(|i| i.0 == OPTIONS).unwrap_or(0);
                     self.page = Page::Menu { cursor: at };
                     return Outcome::TttSaved;
                 }
@@ -721,6 +753,58 @@ impl Front {
                 Key::Start | Key::Button(_) => Some(if *title { Page::Title } else { Page::Menu { cursor: 0 } }),
                 _ => None,
             },
+            Page::Theater { cursor } => {
+                let rows = theater(&d, progress.seen);
+                let [r, c] = cursor;
+                let len = |r: usize| rows.get(r).map_or(1, Vec::len).max(1);
+                match key {
+                    Key::Up | Key::Down => {
+                        sfx::play(sfx::cursor());
+                        *r = (*r + if key == Key::Up { rows.len() - 1 } else { 1 }) % rows.len();
+                        *c = (*c).min(len(*r) - 1);
+                        None
+                    }
+                    Key::Left | Key::Right => {
+                        sfx::play(sfx::cursor());
+                        *c = (*c + if key == Key::Left { len(*r) - 1 } else { 1 }) % len(*r);
+                        None
+                    }
+                    Key::Start | Key::Button(_) => match rows.get(*r).and_then(|row| row.get(*c)).map(|cell| cell.1) {
+                        Some(Cell::Ending(e, costume)) => {
+                            sfx::play(sfx::confirm());
+                            return Outcome::TttEnding(e, costume, [*r, *c]);
+                        }
+                        Some(Cell::Music) => {
+                            sfx::play(sfx::confirm());
+                            Some(Page::Music { cursor: 0, playing: None })
+                        }
+                        Some(Cell::Exit) => Some(Page::Menu { cursor: Self::items(&d, progress.seen).iter().position(|i| i.0 == THEATER).unwrap_or(0) }),
+                        _ => None,
+                    },
+                    Key::Back => Some(Page::Menu { cursor: 0 }),
+                }
+            }
+            Page::Music { cursor, playing } => {
+                let list = music(&d);
+                match key {
+                    Key::Up | Key::Down => {
+                        sfx::play(sfx::cursor());
+                        *cursor = (*cursor + if key == Key::Up { list.len() } else { 1 }) % (list.len() + 1);
+                        None
+                    }
+                    Key::Start | Key::Button(_) if *cursor < list.len() => {
+                        *playing = list.get(*cursor).map(|m| m.0);
+                        None
+                    }
+                    Key::Start | Key::Button(_) | Key::Back => {
+                        sfx::play(sfx::back());
+                        let rows = theater(&d, progress.seen);
+                        let at = rows.iter().position(|r| r.first().is_some_and(|c| matches!(c.1, Cell::Music))).unwrap_or(0);
+                        Some(Page::Theater { cursor: [at, 0] })
+                    }
+                    _ => None,
+                }
+            }
         };
         if let Some(p) = next {
             self.page = p;
@@ -772,7 +856,7 @@ impl Front {
             }
             Page::Menu { cursor } => {
                 backdrop(painter, v, art);
-                let items = Self::items(d);
+                let items = Self::items(d, progress.seen);
                 for (k, (_, label)) in items.iter().enumerate() {
                     let y = 80.0 + 26.0 * k as f32;
                     if k == *cursor {
@@ -806,8 +890,139 @@ impl Front {
                     font(painter, v, art, d, l, W / 2.0, 150.0 + 50.0 * k as f32, if k == 0 { 0.7 } else { 0.45 }, Color32::WHITE);
                 }
             }
+            // OpenKumite's layout: a row a character, its cells side by side, 13 rows about the cursor's
+            Page::Theater { cursor: [r, c] } => {
+                backdrop(painter, v, art);
+                font(painter, v, art, d, "THEATER", W / 2.0, 20.0, 0.6, Color32::WHITE);
+                let rows = theater(d, progress.seen);
+                let first = r.saturating_sub(6).min(rows.len().saturating_sub(13));
+                for (k, row) in rows.iter().enumerate().skip(first).take(13) {
+                    let y = 80.0 + 26.0 * (k - first) as f32;
+                    for (j, (label, cell)) in row.iter().enumerate() {
+                        let x = if row.len() == 1 { W / 2.0 } else { 70.0 + 72.0 * j as f32 };
+                        if k == *r && j == *c {
+                            Art::shade(painter, v, sv([x - 36.0, y - 3.0, 72.0, 22.0]), [Color32::from_rgba_unmultiplied(40, 80, 200, 150); 4]);
+                        }
+                        let colour = match cell {
+                            Cell::None => Color32::from_gray(90),
+                            _ if k == *r && j == *c => Color32::WHITE,
+                            _ => Color32::from_gray(170),
+                        };
+                        small(painter, v, label, x, y, colour);
+                    }
+                }
+                if let Some((_, Cell::None)) = rows.get(*r).and_then(|row| row.get(*c)) {
+                    small(painter, v, "NOT AVAILABLE: THE MOVIES AND THE EMBU ARE NOT CONVERTED", W / 2.0, 430.0, Color32::from_gray(200));
+                }
+            }
+            Page::Music { cursor, playing } => {
+                backdrop(painter, v, art);
+                font(painter, v, art, d, "MUSIC PLAYER", W / 2.0, 20.0, 0.6, Color32::WHITE);
+                let list = music(d);
+                for (k, (bgm, name)) in list.iter().map(|(b, n)| (Some(*b), n.as_str())).chain([(None, "EXIT")]).enumerate() {
+                    let y = 70.0 + 16.0 * k as f32;
+                    let colour = if k == *cursor { Color32::WHITE } else { Color32::from_gray(150) };
+                    let mark = if bgm.is_some() && bgm == *playing { "> " } else { "" };
+                    small(painter, v, &format!("{mark}{name}"), W / 2.0, y, colour);
+                }
+            }
         }
     }
+
+    /// The BGM the page plays (the music player's).
+    pub fn music(&self) -> Option<usize> {
+        match self.page {
+            Page::Music { playing, .. } => playing,
+            _ => None,
+        }
+    }
+}
+
+/// What a Theater cell does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Cell {
+    /// Ending (number, the player's costume).
+    Ending(usize, usize),
+    Music,
+    Exit,
+    /// Not playable here: a movie (the converter keeps the MPEG-2 streams as they are), Unknown's (a movie), the
+    /// embu.
+    None,
+}
+
+/// Theater's rows (0x3544C8, 0x3545A8): each character with an ending seen, its cells the costumes labelled whose
+/// ending was seen; then OPENING MOVIE, ARCADE MOVIE, EMBU (and EMBU2, not shown: the last unlock's), MUSIC PLAYER,
+/// EXIT THEATER MENU.
+fn theater(d: &Data, seen: u64) -> Vec<Vec<(String, Cell)>> {
+    let Some(e) = d.endings.as_deref() else { return vec![vec![("EXIT THEATER MENU".into(), Cell::Exit)]] };
+    let t = &e.raw["theater"];
+    let unknown = e.raw["playback"]["unknown"].as_u64().unwrap_or(37) as usize;
+    let mut rows: Vec<Vec<(String, Cell)>> = (0..34)
+        .map(|c| {
+            (0..8)
+                .filter_map(|k| {
+                    let label = t["labels"][c][k].as_str()?;
+                    let n = e.ending(c, k).filter(|&n| n < 64 && seen >> n & 1 == 1)?;
+                    Some((label.to_string(), if n == unknown { Cell::None } else { Cell::Ending(n, k) }))
+                })
+                .collect()
+        })
+        .filter(|r: &Vec<_>| !r.is_empty())
+        .collect();
+    rows.extend(t["extras"].as_array().into_iter().flatten().filter(|x| x["cast"].is_null()).map(|x| vec![(x["label"].as_str().unwrap_or_default().to_string(), Cell::None)]));
+    rows.push(vec![("MUSIC PLAYER".into(), Cell::Music)]);
+    rows.push(vec![("EXIT THEATER MENU".into(), Cell::Exit)]);
+    rows
+}
+
+/// The staff roll's lines (0x51B880, after its two cards; the logos 0xAB / 0xAC are not drawn): each text and whether
+/// a heading; of an alternative pair the first (the one until Tekken Bowl is unlocked, which is not here yet).
+fn roll_lines(e: &EndingData) -> Vec<(String, bool)> {
+    let r = &e.raw["staff_roll"];
+    let cards = r["cards"].as_array().into_iter().flatten().flat_map(|c| [(c.as_str().unwrap_or_default().to_string(), true), (String::new(), false)]);
+    let mut alt = false;
+    let lines = r["lines"].as_array().into_iter().flatten().filter(|l| {
+        let (a, was) = (l["alternative"] == true, alt);
+        alt = a;
+        !(a && was)
+    });
+    cards.chain(lines.map(|l| (l["text"].as_str().unwrap_or_default().to_string(), l["font"] == 7))).collect()
+}
+
+/// The staff roll's start, line spacing and speed (px, px a frame).
+fn roll_metrics(e: &EndingData) -> (f32, f32, f32) {
+    let r = &e.raw["staff_roll"];
+    (r["start_y"].as_f64().unwrap_or(480.0) as f32, r["line_px"].as_f64().unwrap_or(32.0) as f32, r["scroll_px"].as_f64().unwrap_or(1.5).max(0.1) as f32)
+}
+
+/// The staff roll's length in frames: until its last line has gone off the top.
+pub fn roll_frames(e: &EndingData) -> u32 {
+    let (y, line, speed) = roll_metrics(e);
+    ((y + line * (roll_lines(e).len() + 1) as f32) / speed) as u32
+}
+
+/// An ending's overlay: the scene's fades (black, then white), and the staff roll at its frame `roll` (0x3AC018: the
+/// lines rise from y 480 at 1.5 px a frame, 32 px apart; the fonts are egui's).
+pub fn draw_ending(painter: &egui::Painter, v: &View, d: &Data, roll: Option<u32>, black: u8, white: u8) {
+    // (the whole window: the scene fills it)
+    painter.rect_filled(painter.clip_rect(), 0.0, Color32::from_black_alpha(black));
+    painter.rect_filled(painter.clip_rect(), 0.0, Color32::from_white_alpha(white));
+    let (Some(f), Some(e)) = (roll, d.endings.as_deref()) else { return };
+    let (y0, line, speed) = roll_metrics(e);
+    for (k, (text, heading)) in roll_lines(e).iter().enumerate() {
+        let y = y0 + line * k as f32 - speed * f as f32;
+        if (-line..H).contains(&y) {
+            let [x, y, _, h] = sv([W / 2.0, y, 0.0, if *heading { 17.0 } else { 14.0 }]);
+            let c = if *heading { Color32::from_rgb(255, 214, 120) } else { Color32::WHITE };
+            painter.text(v.pos(x, y), egui::Align2::CENTER_TOP, text, egui::FontId::proportional(h * v.rect.height() / SCREEN_H), c);
+        }
+    }
+}
+
+/// The music player's list (0x455D80): BGM and name, EXIT left out.
+fn music(d: &Data) -> Vec<(usize, String)> {
+    let list = d.endings.as_ref().and_then(|e| e.raw["theater"]["music"].as_array().cloned()).unwrap_or_default();
+    list.iter().filter_map(|m| Some((m["bgm"].as_u64().filter(|&b| b != 254)? as usize, m["name"].as_str().unwrap_or_default().to_string()))).collect()
 }
 
 /// Tekken Tag's 640 x 448 rectangle in the 368 x 480 one the screens draw on.
@@ -1060,7 +1275,9 @@ mod tests {
             "team_battle": {"refill_percent": 15},
             "options": [{"default": 1, "values": ["EASY", "NORMAL"]}, {"default": 1, "values": ["1", "2", "3"]}, {"default": 2, "values": ["30", "40", "60"]}],
         }});
-        Data::load(&fe, (0..23).collect(), &serde_json::json!({"round_time": {"options_frames": [2160, 2820, 4260]}})).unwrap()
+        // (each character's ending: its id)
+        let endings = EndingData::new(serde_json::json!({"table": [[0], [1], [2], [3]], "endings": [{}, {}, {}, {}]}), &Value::Null).unwrap();
+        Data::load(&fe, (0..23).collect(), &serde_json::json!({"round_time": {"options_frames": [2160, 2820, 4260]}}), Some(endings)).unwrap()
     }
 
     fn roster() -> Roster {
@@ -1114,8 +1331,8 @@ mod tests {
         let mut p = Progress::default();
         assert!(matches!(run.clone().after(&d, &r, &mut p, Some(1), [0; 2], [1; 2], 0, &mut seed), Next::Screen(Page::Continue { .. })));
         assert!(matches!(run.clone().after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], 0, &mut seed), Next::Fight(f) if f.fight == 1));
-        assert!(matches!(last.after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], 0, &mut seed), Next::Screen(Page::Message { title: true, .. })));
-        assert_eq!(p.stage, 1);
+        assert!(matches!(last.after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], 0, &mut seed), Next::Ending(0, 0, Page::Message { title: true, .. })));
+        assert_eq!((p.stage, p.seen), (1, 1));
     }
 
     #[test]
@@ -1131,6 +1348,23 @@ mod tests {
         let Next::Fight(next) = run.after(&d, &r, &mut Progress::default(), Some(0), [max / 2, 0], [max; 2], 0, &mut seed) else { panic!() };
         assert_eq!((next.health[0], next.member), (Some(max / 2 + max / 100 * 15), [0, 1]));
         assert!(matches!(next.after(&d, &r, &mut Progress::default(), Some(0), [max, 0], [max; 2], 0, &mut seed), Next::Screen(Page::Message { .. })));
+    }
+
+    #[test]
+    fn theater_lists_the_endings_seen() {
+        // Paul's costumes play ending 1, Law's ending 2 (here Unknown's, a movie)
+        let endings = serde_json::json!({"table": [[1, 1], [2]], "endings": [{}, {}, {}], "playback": {"unknown": 2},
+            "theater": {"labels": [["(1P)PAUL", "(2P)PAUL"], ["(1P)LAW"]], "extras": [{"label": "OPENING MOVIE"}, {"label": "EMBU2", "cast": 1}]}});
+        let e = EndingData::new(endings, &Value::Null).unwrap();
+        let d = Data::load(&serde_json::json!({"front_end": {}}), vec![], &serde_json::json!({}), Some(e)).unwrap();
+        let rows = |seen| theater(&d, seen).into_iter().map(|r| r.into_iter().map(|c| (c.0, c.1)).collect::<Vec<_>>()).collect::<Vec<_>>();
+        let tail = [vec![("OPENING MOVIE".to_string(), Cell::None)], vec![("MUSIC PLAYER".into(), Cell::Music)], vec![("EXIT THEATER MENU".into(), Cell::Exit)]];
+        assert_eq!(rows(0), tail);
+        let paul = vec![("(1P)PAUL".to_string(), Cell::Ending(1, 0)), ("(2P)PAUL".into(), Cell::Ending(1, 1))];
+        assert_eq!(rows(1 << 1)[..2], [paul.clone(), tail[0].clone()]);
+        assert_eq!(rows(1 << 1 | 1 << 2)[..2], [paul, vec![("(1P)LAW".into(), Cell::None)]]);
+        // the menu shows THEATER once an ending was seen
+        assert!(!Front::items(&d, 0).iter().any(|i| i.0 == THEATER));
     }
 
     #[test]

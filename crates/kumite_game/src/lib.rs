@@ -10,6 +10,7 @@ use kumite_sim::input::Pad;
 use std::sync::Arc;
 pub mod bout;
 pub mod embu;
+pub mod ending;
 pub mod face;
 pub mod force;
 pub mod head;
