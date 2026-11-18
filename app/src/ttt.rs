@@ -901,10 +901,14 @@ impl Front {
                 let first = r.saturating_sub(6).min(rows.len().saturating_sub(13));
                 for (k, row) in rows.iter().enumerate().skip(first).take(13) {
                     let y = 80.0 + 26.0 * (k - first) as f32;
+                    // cells as wide as the row's longest label (about 7.5 a letter), squeezed to fit the screen
+                    let longest = row.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0) as f32;
+                    let n = row.len().max(1) as f32;
+                    let step = (longest * 7.5 + 14.0).max(72.0).min((W - 60.0) / n);
                     for (j, (label, cell)) in row.iter().enumerate() {
-                        let x = if row.len() == 1 { W / 2.0 } else { 70.0 + 72.0 * j as f32 };
+                        let x = if row.len() == 1 { W / 2.0 } else { 30.0 + step * (j as f32 + 0.5) };
                         if k == *r && j == *c {
-                            Art::shade(painter, v, sv([x - 36.0, y - 3.0, 72.0, 22.0]), [Color32::from_rgba_unmultiplied(40, 80, 200, 150); 4]);
+                            Art::shade(painter, v, sv([x - step / 2.0, y - 3.0, step, 22.0]), [Color32::from_rgba_unmultiplied(40, 80, 200, 150); 4]);
                         }
                         let colour = match cell {
                             Cell::None => Color32::from_gray(90),
