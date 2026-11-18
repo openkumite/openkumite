@@ -14,8 +14,9 @@
 //!   48 frames).
 //!
 //! Tekken Tag's effects (effects.json `bursts`, its 0x3A2758) are bursts instead: a particle on each of its set's
-//! paths (a frame each: the position from where the effect starts, the quad's size, its fade), the guard's on paths
-//! drawn at random.
+//! paths (a frame each: the position from where the effect starts, the quad's size, its fade), turned about y so that
+//! their +z runs along the strike (0x345A00's matrix); the dust as the arena's row says (stages.json `dust`, table
+//! 0x437AC0): so many particles on paths drawn at random, larger by its scale, in its colour.
 //!
 //! Moves fire effects with timed properties: shakes (ops 1-3), a ground impact (op 4), the own / other character
 //! spark (ops 6 / 7) and the red / pink / dust sprites (ops 8 / 9 / 0xA) at a bone.
@@ -60,7 +61,8 @@ pub struct BurstSet {
     pub paths: Arc<Vec<Vec<[f32; 5]>>>,
 }
 
-/// A burst playing: where it started, the set, the path each particle follows, its age in frames.
+/// A burst playing: where it started, the set, the path each particle follows, its age in frames, its turn about y
+/// (sin, cos) and colour (1 = as drawn).
 #[derive(Clone, Debug)]
 pub struct Burst {
     pub origin: Vec3,
@@ -68,6 +70,16 @@ pub struct Burst {
     pub blend: Blend,
     pub paths: Vec<usize>,
     pub age: usize,
+    pub turn: [f32; 2],
+    pub colour: [f32; 3],
+}
+
+/// The arena's dust (stages.json `dust`, 0x437AC0): particles, their size's scale, their colour (1 = as drawn).
+#[derive(Clone, Copy, Debug)]
+pub struct Dust {
+    pub count: usize,
+    pub scale: f32,
+    pub colour: [f32; 3],
 }
 
 /// effects.json.
@@ -219,6 +231,9 @@ pub struct Vfx {
     seed: u32,
     /// Bone slot -> joint name (rules.json `bone_slots`).
     slots_joints: Vec<String>,
+    /// Each arena's dust (stages.json `dust`), and the fight's arena's.
+    dusts: HashMap<usize, Dust>,
+    pub dust: Option<Dust>,
 }
 
 impl Vfx {
@@ -228,6 +243,16 @@ impl Vfx {
         let scripts =
             camera["shake"]["scripts"].as_array().into_iter().flatten().map(|s| s["pitch_offsets"].as_array().into_iter().flatten().map(|v| v.as_i64().unwrap_or(0) as i32).collect()).collect();
         let slots_joints = read("rules.json")["bone_slots"]["joints"].as_array().into_iter().flatten().map(|v| v.as_str().unwrap_or("").to_string()).collect();
+        let dusts = read("stages.json")["stages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| {
+                let d = s.get("dust")?;
+                let c = |k: usize| d["colour"][k].as_f64().unwrap_or(128.0) as f32 / 128.0;
+                Some((s["id"].as_u64()? as usize, Dust { count: d["count"].as_u64()?.min(64) as usize, scale: d["scale"].as_f64()? as f32, colour: [c(0), c(1), c(2)] }))
+            })
+            .collect();
         let data = EffectsData::load(assets);
         if data.is_none() {
             log::warn!("no pictures/effects/effects.json: no hit sparks (convert with export_effects)");
@@ -245,7 +270,14 @@ impl Vfx {
             shake: None,
             seed: 1,
             slots_joints,
+            dusts,
+            dust: None,
         }
+    }
+
+    /// The fight's arena: its dust, when stages.json has one.
+    pub fn set_stage(&mut self, stage: usize) {
+        self.dust = self.dusts.get(&stage).copied();
     }
 
     /// PsyQ `rand()`.
@@ -296,12 +328,18 @@ impl Vfx {
     /// Effect `name` (a strip's): Tekken Tag's burst where the data has one (its particles from `pos`), else the
     /// strip's sprite.
     fn effect(&mut self, name: &str, strip: &Strip, pos: Vec3, dir: Option<Vec3>, blend: Blend, eye: Vec3) {
-        let Some(set) = self.data.as_ref().and_then(|d| d.bursts.get(name)).cloned() else {
+        let Some(mut set) = self.data.as_ref().and_then(|d| d.bursts.get(name)).cloned() else {
             return self.sprite(strip, pos, dir, blend, eye);
         };
-        let n = set.paths.len();
-        let paths = (0..n).map(|k| if set.random { self.rand() as usize % n } else { k }).collect();
-        self.bursts.push(Burst { origin: pos, set, blend, paths, age: 0 });
+        let (n, mut count, mut colour) = (set.paths.len(), set.paths.len(), [1.0; 3]);
+        if let Some(d) = self.dust.filter(|_| name == "dust") {
+            (count, colour, set.size) = (d.count, d.colour, set.size * d.scale);
+        }
+        let paths = (0..count).map(|k| if set.random { self.rand() as usize % n.max(1) } else { k }).collect();
+        // (heading atan2(dx, dz) of the strike, 0x3A2758 -> +0x74)
+        let flat = dir.map_or(glam::Vec2::ZERO, |d| glam::Vec2::new(d.x, d.z)).normalize_or_zero();
+        let turn = if flat == glam::Vec2::ZERO { [0.0, 1.0] } else { [flat.x, flat.y] };
+        self.bursts.push(Burst { origin: pos, set, blend, paths, age: 0, turn, colour });
     }
 
     /// A ground impact at a root (x, z): 6 dust puffs 250 mm up (Tekken Tag's: the dust burst at the feet).
@@ -425,10 +463,12 @@ impl Vfx {
         for h in hits {
             let pos = h.point / UNITS;
             let strike = Vec3::new(h.strike.x, h.strike.y, h.strike.z);
+            // (Tekken Tag's bursts turn with the strike; Tekken 3's guard and zero sparks stand still)
+            let turn = Some(strike).filter(|_| !data.bursts.is_empty());
             if h.blocked {
-                self.effect("block", &data.block, pos, None, Blend::Add, eye);
+                self.effect("block", &data.block, pos, turn, Blend::Add, eye);
             } else if h.base_damage == 0 {
-                self.effect("zero", &data.zero, pos, None, Blend::Add, eye);
+                self.effect("zero", &data.zero, pos, turn, Blend::Add, eye);
             } else {
                 // every hit: the red spark thrown along the strike (0x80076C28)
                 self.effect("spark", &data.spark, pos, Some(strike), Blend::Add, eye);
@@ -550,8 +590,11 @@ impl Vfx {
             for f in b.paths.iter().filter_map(|&k| b.set.paths.get(k)?.get(b.age)).filter(|f| f[3] > 0.0 && f[4] < 1.0) {
                 let a = 1.0 - f[4];
                 let k = b.set.level * a;
-                let color = if b.blend == Blend::Half { [1.0, 1.0, 1.0, 0.5 * a] } else { [k, k, k, 1.0] };
-                out.push(Sprite { pos: b.origin + Vec3::new(f[0], f[1], f[2]), size: b.set.size * f[3], cell: b.set.cell, color, blend: b.blend, mirror: false, nearer: 0.0 });
+                let [r, g, bl] = b.colour;
+                let color = if b.blend == Blend::Half { [r, g, bl, 0.5 * a] } else { [k * r, k * g, k * bl, 1.0] };
+                let [s, c] = b.turn;
+                let at = Vec3::new(f[0] * c + f[2] * s, f[1], f[2] * c - f[0] * s);
+                out.push(Sprite { pos: b.origin + at, size: b.set.size * f[3], cell: b.set.cell, color, blend: b.blend, mirror: false, nearer: 0.0 });
             }
         }
         if let Some(d) = &self.data {
@@ -589,6 +632,8 @@ mod tests {
             shake: None,
             seed: 1,
             slots_joints: vec![],
+            dusts: HashMap::new(),
+            dust: None,
         };
         v.effect("block", &data.block, Vec3::new(1.0, 1.0, 0.0), None, Blend::Add, Vec3::ZERO);
         assert!(v.sprites().is_empty() && v.slots.iter().all(Option::is_none));
@@ -598,5 +643,18 @@ mod tests {
         assert!((s[0].pos - Vec3::new(1.1, 1.2, 0.3)).length() < 1e-6 && (s[0].color[0] - 0.2).abs() < 1e-6 && (s[0].size - 0.05).abs() < 1e-6 && s[0].cell == 2);
         v.advance();
         assert!(v.bursts.is_empty());
+        // turned with a strike along +x: the path's +z runs along it
+        v.effect("block", &data.block, Vec3::ZERO, Some(Vec3::X), Blend::Add, Vec3::ZERO);
+        v.advance();
+        assert!((v.sprites()[0].pos - Vec3::new(0.3, 0.2, -0.1)).length() < 1e-6);
+        // the arena's dust: so many particles at random, larger, in its colour
+        v.bursts.clear();
+        v.data.as_mut().unwrap().bursts.insert("dust".into(), BurstSet { random: true, paths: Arc::new(vec![vec![[0.0; 5], [0.1, 0.2, 0.3, 0.5, 0.2]]; 2]), ..data.bursts["block"].clone() });
+        v.dust = Some(Dust { count: 3, scale: 2.0, colour: [0.5, 1.0, 1.0] });
+        v.ground(Vec3::ZERO);
+        assert_eq!(v.bursts[0].paths.len(), 3);
+        v.advance();
+        let s = v.sprites();
+        assert!(!s.is_empty() && s.iter().all(|s| (s.size - 0.1).abs() < 1e-6 && s.color[0] == 0.5));
     }
 }

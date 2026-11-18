@@ -898,7 +898,9 @@ impl App {
         }
         self.debug.infinite_health = setup.as_ref().is_some_and(|s| s.mode == Mode::Practice) || (setup.is_none() && self.debug.infinite_health);
         self.scene = Some(scene);
-        self.vfx = Some(kumite_game::vfx::Vfx::new(&self.assets));
+        let mut vfx = kumite_game::vfx::Vfx::new(&self.assets);
+        vfx.set_stage(stage);
+        self.vfx = Some(vfx);
         let mode = setup.as_ref().map(|s| s.mode);
         let info = HudInfo {
             models,
