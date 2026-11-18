@@ -51,7 +51,7 @@ pub fn needed(part: Part, input: &Path) -> u64 {
         Part::T2 => 1_800_000_000,
         Part::Cs => 200_000_000,
         Part::Arcade => 30_000_000,
-        Part::Ttt => 1_700_000_000,
+        Part::Ttt => 600_000_000,
     };
     let name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     // (the arcade ROM set's .zip is read as it is)

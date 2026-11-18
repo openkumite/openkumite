@@ -761,7 +761,7 @@
   const NAMES = { t3: 'Tekken 3', t2: 'Tekken 2', cs: 'Counter-Strike', t3arcade: 'Tekken 3 arcade', ttt: 'Tekken Tag Tournament' };
   const PARTS = ['t3', 't2', 'cs', 't3arcade', 'ttt'];
   // what a conversion writes (its pack and the extras it installs), and an archive's image unpacked
-  const NEEDED = { t3: 1.5e9, t2: 1.8e9, cs: 0.2e9, t3arcade: 0.03e9, ttt: 1.7e9 };
+  const NEEDED = { t3: 1.5e9, t2: 1.8e9, cs: 0.2e9, t3arcade: 0.03e9, ttt: 0.6e9 };
   const STORES = { t3: ['assets.pack', 'assets.idx'], t2: ['t2.pack', 't2.idx'], cs: ['cs.pack', 'cs.idx'], t3arcade: ['arcade.pack', 'arcade.idx'], ttt: ['ttt.pack', 'ttt.idx'] };
   const fileSize = async (name) => { try { return (await (await (await root()).getFileHandle(name)).getFile()).size; } catch { return 0; } };
   // the files picked or dropped for a part as [name, File]: a disc image's (the converter finds the image among
@@ -785,8 +785,7 @@
       for (const p of PARTS) parts[p] = { converted: !!s?.[p], size: this.sizes[p], manifest: s?.[p] ?? null };
       const job = this.job && { kind: this.job.kind, part: this.job.part, seconds: (Date.now() - this.job.started) / 1000, log: this.job.log, cancelling: !!this.job.cancelling };
       return JSON.stringify({
-        // (Tekken Tag Tournament does not play yet)
-        loading: this.loading, parts, playable: !!(s?.t3 && s?.installed) && mainGame() !== 'ttt', main: mainGame() === 'ttt' ? 'ttt' : 't3', job, outcome: this.outcome,
+        loading: this.loading, parts, playable: mainGame() === 'ttt' ? !!s?.ttt : !!(s?.t3 && s?.installed), main: mainGame() === 'ttt' ? 'ttt' : 't3', job, outcome: this.outcome,
         pending: this.pending && { part: this.pending.part, image: this.pending.image, needed: this.pending.needed, free: this.pending.free },
         picking: this.picking, dropped: !!this.dropped, hovering: this.hovering, message: this.message, changed: this.changed,
       });
@@ -923,8 +922,8 @@
     if (folder) local = await folderFiles(folder);
   } catch (e) { fail(`Cannot read the folder "${folder.name}" (${e.message}).`); }
   // no game data here yet: the game starts on its Game data screen (the engine's; this page its host: okData)
-  // (Tekken Tag Tournament the main game: it does not play yet)
-  const noData = mainGame() === 'ttt' || !local && !(serverAssets && (await fetch('assets/manifest.json', { method: 'HEAD' }).then((r) => r.ok, () => false)));
+  // (Tekken Tag Tournament the main game: its pack alone)
+  const noData = mainGame() === 'ttt' ? !kept : !local && !(serverAssets && (await fetch('assets/manifest.json', { method: 'HEAD' }).then((r) => r.ok, () => false)));
   window.okNoData = noData;
   okData.refresh();
   let preload = [];

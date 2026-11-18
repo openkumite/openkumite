@@ -256,7 +256,7 @@ fn job(options: &str) -> Result<String> {
                     }
                     Part::Ttt => {
                         let disc = disc()?;
-                        ok_tekken_tag_converter::pack::convert(&ctx, disc.data()?)?;
+                        ok_tekken_tag_converter::pack::convert(&ctx, disc.data()?, false)?;
                     }
                 }
                 Ok(())
