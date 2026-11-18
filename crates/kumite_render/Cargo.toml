@@ -16,5 +16,10 @@ wgpu.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
 
+[dev-dependencies]
+kumite_assets.workspace = true
+png.workspace = true
+serde_json.workspace = true
+
 [lints]
 workspace = true
