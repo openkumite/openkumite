@@ -129,6 +129,9 @@ pub struct Move {
     pub active: [u32; 2],
     #[serde(default)]
     pub hitstop: u32,
+    /// Tekken Tag's record +0x2F: the air reaction this move's juggle hits take (8-43; 0 none, and in Tekken 3).
+    #[serde(default, alias = "byte_2F")]
+    pub air_reaction: usize,
     pub reaction: Reaction,
     #[serde(default)]
     pub attack: Option<Attack>,
