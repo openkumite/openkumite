@@ -8,6 +8,8 @@
 //! ROOT/packs/t3arcade/ the Tekken 3 arcade pack (ok_tekken3_arcade_converter: the ROM set alone); not installed, its
 //!                      `assets/arcade/` stages are read as they are
 //! ROOT/extras/         the packs installed: the files they add to or change in the Tekken 3 pack, and manifest.json
+//! ROOT/packs/ttt/      the Tekken Tag Tournament pack (ok_tekken_tag_converter: its disc alone); not installed, a
+//!                      game of its own: its `assets/` the game root when it is the main game ([`game`])
 //! ```
 //!
 //! The game reads the layers ([`activate`]: kumite_fs): a file of ROOT from `extras/`, else a pack's `assets/` (the
@@ -18,7 +20,7 @@
 //! part of the Tekken 3 pack's own.
 
 use anyhow::{bail, Context, Result};
-pub use kumite_packs::Part;
+pub use kumite_packs::{Game, Part};
 use ok_converter_common::disc::Disc;
 use ok_converter_common::io::{Ctx, DiscFile, StdFs, Vfs};
 use serde_json::Value;
@@ -36,6 +38,23 @@ pub fn dir(part: Part, root: &Path) -> PathBuf {
     }
 }
 
+/// The main game's root: Tekken 3's is ROOT, Tekken Tag Tournament's its pack's `assets/`.
+pub fn game_root(root: &Path, game: Game) -> PathBuf {
+    match game {
+        Game::T3 => root.to_path_buf(),
+        Game::Ttt => dir(Part::Ttt, root).join(kumite_packs::ASSETS),
+    }
+}
+
+/// The main game, as the player chose it (the save's `openkumite_game`; none: Tekken 3).
+pub fn game() -> Game {
+    if crate::save::main_game().as_deref() == Some(Part::Ttt.kind()) {
+        Game::Ttt
+    } else {
+        Game::T3
+    }
+}
+
 /// What the game data's parts are now.
 #[derive(Clone, Debug, Default)]
 pub struct State {
@@ -43,14 +62,16 @@ pub struct State {
     pub manifests: kumite_packs::Manifests,
     /// The packs there are installed, as they are (the extras are theirs).
     pub installed: bool,
+    /// The main game.
+    pub game: Game,
 }
 
 impl State {
-    pub fn of(root: &Path) -> Self {
+    pub fn of(root: &Path, game: Game) -> Self {
         let m = |p: Part| p.manifest(&StdFs(dir(p, root)));
-        let manifests = kumite_packs::Manifests { t3: m(Part::T3), t2: m(Part::T2), cs: m(Part::Cs), arcade: m(Part::Arcade) };
+        let manifests = kumite_packs::Manifests { t3: m(Part::T3), t2: m(Part::T2), cs: m(Part::Cs), arcade: m(Part::Arcade), ttt: m(Part::Ttt) };
         let installed = manifests.installed(&StdFs(root.join(EXTRAS)));
-        Self { manifests, installed }
+        Self { manifests, installed, game }
     }
 
     pub fn get(&self, part: Part) -> Option<&Value> {
@@ -61,9 +82,10 @@ impl State {
         self.manifests.has_packs()
     }
 
-    /// The game can start: Tekken 3 converted, the packs installed.
+    /// The game can start: Tekken 3 the main game, converted, the packs installed.
+    /// shortcut: Tekken Tag Tournament never plays yet (`gamedata::NOT_YET`); its pack converted, once the engine reads it
     pub fn playable(&self) -> bool {
-        self.manifests.t3.is_some() && self.installed
+        self.game == Game::T3 && self.manifests.t3.is_some() && self.installed
     }
 }
 
@@ -82,10 +104,11 @@ fn layers(root: &Path, state: &State) -> Vec<PathBuf> {
     out
 }
 
-/// The game reads ROOT's layers from now on (none while the packs are not installed: Tekken 3 alone).
+/// The game reads ROOT's layers from now on (none while the packs are not installed: Tekken 3 alone; none for
+/// Tekken Tag Tournament).
 pub fn activate(root: &Path) -> State {
-    let state = State::of(root);
-    kumite_fs::set_layers(root, if state.installed { layers(root, &state) } else { Vec::new() });
+    let state = State::of(root, game());
+    kumite_fs::set_layers(root, if state.installed && state.game == Game::T3 { layers(root, &state) } else { Vec::new() });
     state
 }
 
@@ -192,6 +215,11 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync), cancel: &AtomicB
                         if from.is_dir() { Box::new(FolderRoms(&folder)) } else { Box::new(ZipRoms::new(std::fs::File::open(from).with_context(|| format!("cannot open {}", from.display()))?)?) };
                     ok_tekken3_arcade_converter::pack::convert(&ctx, roms.as_ref()).inspect_err(|_| drop(remove(&dir(Part::Arcade, root))))?;
                 }
+                Part::Ttt => {
+                    let disc = Disc::open_path_in(from, root, log)?;
+                    log(&disc.summary());
+                    ok_tekken_tag_converter::pack::convert(&ctx, disc.data()?).inspect_err(|_| drop(remove(&dir(Part::Ttt, root))))?;
+                }
             }
         }
         Job::Remove(Part::T3) => {
@@ -203,8 +231,8 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync), cancel: &AtomicB
         Job::Remove(part) => remove(&dir(*part, root))?,
         Job::Install => {}
     }
-    // (the arcade pack is not installed: nothing of the extras changes with it)
-    if matches!(job, Job::Convert(Part::Arcade, _) | Job::Remove(Part::Arcade)) {
+    // (the arcade and Tekken Tag Tournament packs are not installed: nothing of the extras changes with them)
+    if matches!(job, Job::Convert(Part::Arcade | Part::Ttt, _) | Job::Remove(Part::Arcade | Part::Ttt)) {
         return Ok(());
     }
     install(root, log, cancel)
@@ -240,12 +268,63 @@ mod tests {
     fn no_packs_no_layers_and_nothing_to_install() {
         let dir = std::env::temp_dir().join(format!("ok_packs_none_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let s = State::of(&dir);
+        let s = State::of(&dir, Game::T3);
         assert!(s.get(Part::T3).is_none() && !s.has_packs() && s.installed && !s.playable());
         assert!(layers(&dir, &s).is_empty());
         install(&dir, &|_| {}, &AtomicBool::new(false)).unwrap();
         assert!(!dir.join(EXTRAS).exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Tekken 3 alone: playable, no layers, as before Tekken Tag Tournament; its pack beside changes neither, and as
+    /// the main game nothing plays.
+    #[test]
+    fn tekken_3_alone_and_tekken_tag_beside_it() {
+        let root = std::env::temp_dir().join(format!("ok_packs_t3_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(dir(Part::Ttt, &root)).unwrap();
+        std::fs::write(root.join("manifest.json"), format!("{{\"format\": {}, \"fingerprint\": \"x\"}}", kumite_assets::FORMAT)).unwrap();
+        let t3 = State::of(&root, Game::T3);
+        assert!(t3.playable() && t3.installed && !t3.has_packs() && layers(&root, &t3).is_empty() && t3.get(Part::Ttt).is_none());
+        let manifest = serde_json::json!({"pack": "ttt", "format": ok_tekken_tag_converter::pack::FORMAT});
+        std::fs::write(dir(Part::Ttt, &root).join("manifest.json"), manifest.to_string()).unwrap();
+        let both = State::of(&root, Game::T3);
+        assert!(both.playable() && both.installed && layers(&root, &both).is_empty() && both.get(Part::Ttt).is_some());
+        assert!(!State::of(&root, Game::Ttt).playable());
+        assert_eq!(game_root(&root, Game::T3), root);
+        assert_eq!(game_root(&root, Game::Ttt), root.join("packs/ttt/assets"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The main game kept and read back; Tekken 3's is no item at all, and its save the file it always was.
+    #[test]
+    fn the_main_game_round_trips() {
+        let _game = crate::save::GAME_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!((game(), crate::save::file()), (Game::T3, crate::save::FILE));
+        crate::save::set_main_game(Part::Ttt.kind());
+        assert_eq!((game(), crate::save::file()), (Game::Ttt, "openkumite_save_ttt.json"));
+        crate::save::set_main_game(Part::T3.kind());
+        assert_eq!((game(), crate::save::file()), (Game::T3, crate::save::FILE));
+        assert!(!crate::save::save_dir().join("openkumite_game").exists());
+    }
+
+    /// The Tekken Tag Tournament pack converted into packs/ttt/ and found, nothing installed with it: with `TTT_DISC`
+    /// (its disc image, any format).
+    #[test]
+    fn the_tekken_tag_pack_lands_in_its_folder() {
+        let Ok(disc) = std::env::var("TTT_DISC") else {
+            eprintln!("TTT_DISC is not set: skipped");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("ok_packs_ttt_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        run(&root, &Job::Convert(Part::Ttt, disc.into()), &|_| {}, &AtomicBool::new(false)).unwrap();
+        let state = State::of(&root, Game::Ttt);
+        assert!(state.get(Part::Ttt).is_some() && state.get(Part::T3).is_none() && !state.playable() && !root.join(EXTRAS).exists());
+        assert!(dir(Part::Ttt, &root).join("manifest.json").is_file());
+        run(&root, &Job::Remove(Part::Ttt), &|_| {}, &AtomicBool::new(false)).unwrap();
+        assert!(State::of(&root, Game::Ttt).get(Part::Ttt).is_none());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// The arcade pack is read as it is, no extras made: with `OK_ARCADE_ROMS` (MAME's tekken3.zip, or its folder).
@@ -258,7 +337,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ok_packs_arcade_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         run(&root, &Job::Convert(Part::Arcade, roms.into()), &|_| {}, &AtomicBool::new(false)).unwrap();
-        let state = State::of(&root);
+        let state = State::of(&root, Game::T3);
         assert!(state.get(Part::Arcade).is_some() && !state.has_packs() && state.installed && !root.join(EXTRAS).exists());
         assert_eq!(layers(&root, &state), vec![dir(Part::Arcade, &root).join(kumite_packs::ASSETS)]);
         let hidden = kumite_assets::Stage::load(&dir(Part::Arcade, &root).join("assets/arcade/hidden.glb")).unwrap();
@@ -282,7 +361,7 @@ mod tests {
             assert_eq!(periods, if n == 3 { vec![Some(136)] } else { vec![None; moving(true)] }, "stage {n}");
         }
         run(&root, &Job::Remove(Part::Arcade), &|_| {}, &AtomicBool::new(false)).unwrap();
-        assert!(State::of(&root).get(Part::Arcade).is_none());
+        assert!(State::of(&root, Game::T3).get(Part::Arcade).is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

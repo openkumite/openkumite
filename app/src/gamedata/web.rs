@@ -9,16 +9,18 @@ use serde_json::Value;
 use wasm_bindgen::{JsCast, JsValue};
 
 /// The games (natively `kumite_packs::Part`; the browser's game has no converters in it: their names only).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Part {
+    #[default]
     T3,
     T2,
     Cs,
     Arcade,
+    Ttt,
 }
 
 impl Part {
-    pub const ALL: [Part; 4] = [Part::T3, Part::T2, Part::Cs, Part::Arcade];
+    pub const ALL: [Part; 5] = [Part::T3, Part::T2, Part::Cs, Part::Arcade, Part::Ttt];
 
     /// Its short name (the page's, the packs').
     pub fn kind(self) -> &'static str {
@@ -27,6 +29,7 @@ impl Part {
             Part::T2 => "t2",
             Part::Cs => "cs",
             Part::Arcade => "t3arcade",
+            Part::Ttt => "ttt",
         }
     }
 }
@@ -140,6 +143,7 @@ impl WebHost {
         Status {
             parts,
             playable: v["playable"].as_bool().unwrap_or(false),
+            main: v["main"].as_str().and_then(part_of).unwrap_or(Part::T3),
             loading: v["loading"].as_bool().unwrap_or(false),
             job,
             outcome,
@@ -183,6 +187,11 @@ impl WebHost {
             Command::Seen => drop(call("seen", &[])),
             Command::Import => drop(call("importFolder", &[])),
             Command::Copy(text) => drop(call("copy", &[JsValue::from_str(&text)])),
+            // (the page starts again on the other game's data: index.html's `stored`)
+            Command::MainGame(p) if !self.busy() => {
+                crate::save::set_main_game(p.kind());
+                Self::reload();
+            }
             other => return Some(other),
         }
         None

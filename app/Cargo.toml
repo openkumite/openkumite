@@ -59,6 +59,7 @@ ok_tekken3_converter = { git = "https://github.com/openkumite/ok_tekken3_convert
 ok_tekken2_converter = { git = "https://github.com/openkumite/ok_tekken2_converter", branch = "main" }
 ok_hl_cs_converter = { git = "https://github.com/openkumite/ok_hl_cs_converter", branch = "main" }
 ok_tekken3_arcade_converter = { git = "https://github.com/openkumite/ok_tekken3_arcade_converter", branch = "main" }
+ok_tekken_tag_converter = { git = "https://github.com/openkumite/ok_tekken_tag_converter", branch = "main" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 fs4 = "1"
 

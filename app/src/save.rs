@@ -17,6 +17,31 @@
 use serde::{Deserialize, Serialize};
 
 pub const FILE: &str = "openkumite_save.json";
+/// The main game (the Game data screen's MAIN GAME), an item beside the save: its pack's kind, "ttt" for Tekken Tag
+/// Tournament; absent, Tekken 3.
+const GAME: &str = "openkumite_game";
+
+/// The main game's kind, as kept (None: Tekken 3).
+pub fn main_game() -> Option<String> {
+    read(GAME).map(|g| g.trim().to_string())
+}
+
+/// The save's file: the main game's own (Tekken 3's [`FILE`]).
+pub fn file() -> &'static str {
+    if main_game().as_deref() == Some("ttt") {
+        "openkumite_save_ttt.json"
+    } else {
+        FILE
+    }
+}
+
+fn backup() -> String {
+    format!("{}.bak", file())
+}
+
+/// Held by the tests that change the main game, or read the save's file (the tests share a save folder).
+#[cfg(test)]
+pub static GAME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A new entry waiting for its name (the records screen's name entry).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,11 +220,11 @@ fn medium() -> usize {
 
 /// The saved records: the save, else its backup; one that does not read is kept aside.
 fn load_text() -> Option<Records> {
-    let backup = read(BACKUP);
-    let main = read(FILE);
+    let backup = read(&backup());
+    let main = read(file());
     let (records, broken) = choose(main.as_deref(), backup.as_deref());
     // (one there that does not read as text at all: not UTF-8, no permission)
-    let broken = broken || (main.is_none() && present(FILE));
+    let broken = broken || (main.is_none() && present(file()));
     if broken && !read_only() && !keep_aside(main.as_deref().unwrap_or_default()) {
         failed("The save does not read and could not be kept aside: nothing is saved this time".into());
         set_read_only();
@@ -213,25 +238,24 @@ fn choose(main: Option<&str>, backup: Option<&str>) -> (Option<Records>, bool) {
     let broken = match main.map(parse) {
         Some(Ok(r)) => return (Some(r), false),
         Some(Err(e)) => {
-            log::warn!("{FILE} does not read ({e}): kept aside, the backup instead");
+            log::warn!("{} does not read ({e}): kept aside, the backup instead", file());
             true
         }
         None => false,
     };
     match backup.map(parse) {
         Some(Ok(r)) => {
-            log::warn!("{FILE}: loaded from {BACKUP}");
+            log::warn!("{}: loaded from its backup", file());
             (Some(r), broken)
         }
         Some(Err(e)) => {
-            log::warn!("{BACKUP} does not read either ({e}): a new save");
+            log::warn!("{}.bak does not read either ({e}): a new save", file());
             (None, broken)
         }
         None => (None, broken),
     }
 }
 
-const BACKUP: &str = "openkumite_save.json.bak";
 #[cfg(not(target_arch = "wasm32"))]
 const LOCK: &str = "openkumite_save.lock";
 /// A records table's longest kept, and a record name's (the game's are three letters).
@@ -307,11 +331,24 @@ fn present(name: &str) -> bool {
     at(name).exists()
 }
 
+/// The main game chosen ("t3": the item removed, as before there was a choice).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_main_game(kind: &str) {
+    let r = match kind {
+        "t3" => std::fs::remove_file(at(GAME)).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }),
+        _ => std::fs::create_dir_all(save_dir()).and_then(|_| std::fs::write(at(GAME), kind)),
+    };
+    if let Err(e) = r {
+        failed(format!("The main game could not be kept: {e}"));
+    }
+}
+
 /// A save that does not read: its bytes copied to `.corrupt-<unix time>` (never written over); whether they are.
 #[cfg(not(target_arch = "wasm32"))]
 fn keep_aside(_text: &str) -> bool {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    std::fs::copy(at(FILE), at(&format!("{FILE}.corrupt-{t}"))).map_err(|e| log::warn!("keeping {FILE} aside: {e}")).is_ok()
+    let file = file();
+    std::fs::copy(at(file), at(&format!("{file}.corrupt-{t}"))).map_err(|e| log::warn!("keeping {file} aside: {e}")).is_ok()
 }
 
 /// The save folder's lock, held from the first call to the end of the run; when another window holds it, saving
@@ -346,8 +383,8 @@ fn write(text: &str) {
     if read_only() {
         return;
     }
-    if let Err(e) = std::fs::create_dir_all(save_dir()).and_then(|_| write_atomic(&at(FILE), text.as_bytes())) {
-        log::warn!("saving {}: {e}", at(FILE).display());
+    if let Err(e) = std::fs::create_dir_all(save_dir()).and_then(|_| write_atomic(&at(file()), text.as_bytes())) {
+        log::warn!("saving {}: {e}", at(file()).display());
         failed(format!("The game could not be saved: {e}"));
     }
 }
@@ -403,8 +440,16 @@ fn present(name: &str) -> bool {
 }
 
 #[cfg(target_arch = "wasm32")]
+pub fn set_main_game(kind: &str) {
+    let r = storage().map(|s| if kind == "t3" { s.remove_item(GAME) } else { s.set_item(GAME, kind) });
+    if !matches!(r, Some(Ok(()))) {
+        failed("The main game could not be kept: this browser keeps no storage for the page".into());
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 fn keep_aside(text: &str) -> bool {
-    storage().is_some_and(|s| s.set_item(&format!("{FILE}.corrupt-{}", js_sys::Date::now() as u64), text).is_ok())
+    storage().is_some_and(|s| s.set_item(&format!("{}.corrupt-{}", file(), js_sys::Date::now() as u64), text).is_ok())
 }
 
 /// In a browser each item is written whole (local storage); the last save is kept as the backup item first.
@@ -417,11 +462,11 @@ fn write(text: &str) {
         failed("The game could not be saved: this browser keeps no storage for the page".into());
         return;
     };
-    if let Some(old) = s.get_item(FILE).ok().flatten().filter(|o| serde_json::from_str::<Records>(o).is_ok()) {
-        let _ = s.set_item(BACKUP, &old);
+    if let Some(old) = s.get_item(file()).ok().flatten().filter(|o| serde_json::from_str::<Records>(o).is_ok()) {
+        let _ = s.set_item(&backup(), &old);
     }
     // (the page's storage is shared with the replays: full, some of them go)
-    if s.set_item(FILE, text).is_err() {
+    if s.set_item(file(), text).is_err() {
         failed("The game could not be saved: the browser's storage for this page is full (delete some replays)".into());
     }
 }
@@ -509,6 +554,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_save_not_text_is_kept_aside() {
+        let _game = GAME_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         std::fs::create_dir_all(save_dir()).unwrap();
         let bytes = b"{\"name_unlock\": \xff}";
         std::fs::write(at(FILE), bytes).unwrap();

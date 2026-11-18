@@ -146,6 +146,14 @@ impl Progress {
                     self.doing = format!("Stage {}", stage.split(':').next().unwrap_or("").trim_start_matches("stage_"));
                 }
             }
+            Kind::Convert(Part::Ttt) => {
+                // (its lines: the disc's files begun, most of the time, and done; the motions; the fight data)
+                if l.starts_with("[ttt] ") {
+                    let at = [0.01, 0.85, 0.95, 0.98].get(self.count as usize).copied().unwrap_or(0.98);
+                    self.count += 1;
+                    self.mark(at, if self.count == 1 { 0.85 } else { (at + 0.04).min(0.99) }, t);
+                }
+            }
             Kind::Install | Kind::Remove => {}
         }
     }

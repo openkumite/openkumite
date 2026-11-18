@@ -2787,6 +2787,7 @@ dependencies = [
  "ok_tekken2_converter",
  "ok_tekken3_arcade_converter",
  "ok_tekken3_converter",
+ "ok_tekken_tag_converter",
  "serde_json",
  "wasm-bindgen",
 ]
@@ -2838,6 +2839,7 @@ dependencies = [
  "ok_tekken2_converter",
  "ok_tekken3_arcade_converter",
  "ok_tekken3_converter",
+ "ok_tekken_tag_converter",
  "serde_json",
 ]
 
@@ -3953,6 +3955,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ok_tekken_tag_converter"
+version = "0.1.0"
+source = "git+https://github.com/openkumite/ok_tekken_tag_converter?branch=main#a85996cadab9c3f855b88b4388cef9893e6ce602"
+dependencies = [
+ "anyhow",
+ "libm",
+ "ok_converter_common",
+ "png",
+ "serde_json",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4017,6 +4031,7 @@ dependencies = [
  "ok_tekken2_converter",
  "ok_tekken3_arcade_converter",
  "ok_tekken3_converter",
+ "ok_tekken_tag_converter",
  "opus-rs",
  "png",
  "rav1e",

@@ -6640,7 +6640,8 @@ pub fn main() -> Result<()> {
         EventLoop::new()?.run_app(&mut datascreen::Root::data(root, args))?;
         return Ok(());
     }
-    run(root, args)
+    anyhow::ensure!(state.game == packs::Game::T3, "{}: Tekken 3 is the main game on the Game data screen", gamedata::NOT_YET);
+    run(packs::game_root(&root, state.game), args)
 }
 
 /// `--help`: the command line.
@@ -6924,7 +6925,7 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         save::set_read_only();
     }
     #[cfg(not(target_arch = "wasm32"))]
-    log::info!("save: {}", save::save_dir().join(save::FILE).display());
+    log::info!("save: {}", save::save_dir().join(save::file()).display());
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(m) = save::lock() {
         debug.say(m);

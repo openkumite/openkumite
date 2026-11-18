@@ -2,11 +2,11 @@
 // one thread, with the functions it imports: the picked files (FileReaderSync on slices, 1 MB read ahead), the packs in
 // the site's storage (OPFS, through sync access handles: store 2k the pack, 2k + 1 its index, for the base, Tekken 2,
 // Counter-Strike and the extras; store 8 the scratch file an archive is unpacked into while a job converts; stores 9
-// and 10 the arcade stages' pack) and the log. Messages: {job: 'state' | 'convert' | 'remove' | 'install', part?,
+// and 10 the arcade stages' pack; 11 and 12 Tekken Tag Tournament's) and the log. Messages: {job: 'state' | 'convert' | 'remove' | 'install', part?,
 // files?: [[path, File]] (a disc image's files by name, the Half-Life folder's by path), now?}; replies {log} as it
 // goes, then {done: state} or {error, quota}.
 const ready = import('./pkg/kumite_convert_web.js').then(async (m) => { await m.default(); return m; });
-const STORES = ['assets.pack', 'assets.idx', 't2.pack', 't2.idx', 'cs.pack', 'cs.idx', 'extras.pack', 'extras.idx', 'unpacked.tmp', 'arcade.pack', 'arcade.idx'];
+const STORES = ['assets.pack', 'assets.idx', 't2.pack', 't2.idx', 'cs.pack', 'cs.idx', 'extras.pack', 'extras.idx', 'unpacked.tmp', 'arcade.pack', 'arcade.idx', 'ttt.pack', 'ttt.idx'];
 // a part's pack's name (Tekken 3's is the base; the arcade stages' is a pack of its own, not installed)
 const PACK = { t3: 'assets', t3arcade: 'arcade' };
 
