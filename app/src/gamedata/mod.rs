@@ -716,8 +716,8 @@ impl Screen {
                         Row { text: part_title(p).into(), on: !status.loading, act: Act::Part(p), right: Some(right) }
                     })
                     .collect();
-                // (a choice once there are both games)
-                if [Part::T3, Part::Ttt].iter().all(|&p| status.parts[part_index(p)].converted) {
+                // (a choice once Tekken Tag is converted: its owner may have no Tekken 3)
+                if status.parts[part_index(Part::Ttt)].converted {
                     v.push(row(&format!("MAIN GAME: {}", part_title(status.main)), !busy && !status.loading, Act::MainGame));
                 }
                 if let Some(label) = status.can.import {
@@ -1175,7 +1175,7 @@ mod tests {
         assert_eq!(s.page, Page::Game(Part::Cs));
     }
 
-    /// MAIN GAME only with both games converted; it asks for the other one.
+    /// MAIN GAME once Tekken Tag is converted, with or without Tekken 3; it asks for the other one.
     #[test]
     fn the_main_game_row_switches_to_the_other_game() {
         let mut s = Screen::new();
@@ -1189,6 +1189,8 @@ mod tests {
         s.focus = k;
         s.key(&PhysicalKey::Code(KeyCode::Enter));
         assert_eq!(run(&mut s, &st), vec![Command::MainGame(Part::Ttt)]);
+        st.parts[0].converted = false;
+        assert!(s.rows(&st).iter().any(|r| r.act == Act::MainGame), "Tekken Tag alone: the row");
     }
 
     #[test]
