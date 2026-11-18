@@ -98,10 +98,8 @@ impl Audio {
         self.music = Some(m);
     }
 
-    /// Start a one-shot sound.
-    // shortcut: the speed is not applied (a page's audio element keeps the pitch at another rate); Tekken Tag, whose
-    // sounds have one, is not in the browser build yet
-    pub fn sfx(&mut self, path: &Path, volume: f32, _speed: f32) {
+    /// Start a one-shot sound at a speed (1: its own rate; its pitch goes with it).
+    pub fn sfx(&mut self, path: &Path, volume: f32, speed: f32) {
         if self.muted || !allowed() {
             return;
         }
@@ -123,6 +121,10 @@ impl Audio {
             },
         };
         s.set_volume((volume * self.sfx_volume).clamp(0.0, 1.0) as f64);
+        // (an element keeps the pitch at another rate unless told; a new source resets the rate to the default)
+        let _ = js_sys::Reflect::set(&s, &"preservesPitch".into(), &false.into());
+        s.set_default_playback_rate(speed as f64);
+        s.set_playback_rate(speed as f64);
         quiet(s.play());
     }
 

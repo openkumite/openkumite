@@ -225,8 +225,7 @@ pub fn missing_note(manifest: &serde_json::Value) -> Option<String> {
     Some(format!("Without {what}: the disc image did not hold them. Convert again from a full image (.cue with its .bin files, .chd, ...) to add them."))
 }
 
-/// Tekken Tag Tournament the main game, converted, where it does not play (the browser; natively a pack without its
-/// assets/): what the game says.
+/// Tekken Tag Tournament the main game, converted, but not playable (a pack without its assets/): what the game says.
 pub const NOT_YET: &str = "Tekken Tag Tournament is converted; it is not playable in this version yet";
 
 pub fn gb(bytes: u64) -> String {

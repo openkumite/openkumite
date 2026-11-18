@@ -223,7 +223,7 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync), cancel: &AtomicB
                 Part::Ttt => {
                     let disc = Disc::open_path_in(from, root, log)?;
                     log(&disc.summary());
-                    ok_tekken_tag_converter::pack::convert(&ctx, disc.data()?).inspect_err(|_| drop(remove(&dir(Part::Ttt, root))))?;
+                    ok_tekken_tag_converter::pack::convert(&ctx, disc.data()?, false).inspect_err(|_| drop(remove(&dir(Part::Ttt, root))))?;
                 }
             }
         }
@@ -329,6 +329,10 @@ mod tests {
         let state = State::of(&root, Game::Ttt);
         assert!(state.get(Part::Ttt).is_some() && state.get(Part::T3).is_none() && state.playable() == state.ttt_assets && !root.join(EXTRAS).exists());
         assert!(dir(Part::Ttt, &root).join("manifest.json").is_file());
+        // what the game plays alone, not the converter's research outputs
+        let mut names: Vec<_> = std::fs::read_dir(dir(Part::Ttt, &root)).unwrap().map(|e| e.unwrap().file_name()).collect();
+        names.sort();
+        assert_eq!(names, ["assets", "manifest.json"]);
         run(&root, &Job::Remove(Part::Ttt), &|_| {}, &AtomicBool::new(false)).unwrap();
         assert!(State::of(&root, Game::Ttt).get(Part::Ttt).is_none());
         std::fs::remove_dir_all(&root).unwrap();
