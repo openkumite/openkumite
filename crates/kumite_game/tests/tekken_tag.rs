@@ -402,27 +402,40 @@ struct CpuRun {
     guards: [u32; 2],
     hits: [u32; 2],
     wins: [u32; 2],
+    /// Per side: attack moves started (a new move with active frames); fight steps; side 1 turned away (back to
+    /// side 0).
+    starts: [u32; 2],
+    fight: u32,
+    turned: u32,
     /// Side 0's CPU: string follow-ups, canned throws, delayed inputs.
     stats: [u32; 3],
 }
 
 fn cpu_run(a: &Assets, cpu: [Option<(usize, usize)>; 2], frames: usize) -> CpuRun {
-    cpu_run_of(a, [PAUL, LEI], cpu, frames)
+    cpu_run_of(a, [PAUL, LEI], cpu, frames, 2)
 }
 
-fn cpu_run_of(a: &Assets, models: [usize; 2], cpu: [Option<(usize, usize)>; 2], frames: usize) -> CpuRun {
-    let mut b = Bout::new(Game::load(a, models).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
+/// `rounds` to win the match: more fighting time for rare behaviour (the round flow takes its own frames).
+fn cpu_run_of(a: &Assets, models: [usize; 2], cpu: [Option<(usize, usize)>; 2], frames: usize, rounds: u32) -> CpuRun {
+    let mut b = Bout::new(Game::load(a, models).unwrap(), kumite_game::ai_data(a).unwrap(), rounds, false);
     for (k, c) in cpu.into_iter().enumerate() {
         b.set_cpu(k, c);
     }
     let mut r = CpuRun::default();
+    let mut last = [0; 2];
     for _ in 0..frames {
         b.step([Pad::default(); 2]);
         r.hashes.push(b.game.state_hash());
         if b.phase != Phase::Fight {
             continue;
         }
+        r.fight += 1;
+        r.turned += u32::from(b.game.fight.fighters[1].angles().turn > 0x4000);
         for (k, f) in b.game.fight.fighters.iter().enumerate() {
+            if f.alias != last[k] && f.current_move(&b.game.fight.data).active[0] != 0 {
+                r.starts[k] += 1;
+            }
+            last[k] = f.alias;
             r.walks[k] += u32::from(f.input.dir == 6 && f.input.held == 0);
             r.attacks[k] += u32::from(f.input.pressed != 0);
             r.guards[k] += u32::from(f.posture(&b.game.fight.data) & kumite_sim::posture::GUARDS != 0);
@@ -451,16 +464,23 @@ fn normal_cpus_walk_attack_guard_and_hit() {
     assert_eq!(r.hashes, cpu_run(&a, [Some((1, 0)); 2], 2400).hashes, "the same match twice");
 }
 
-/// ULTRA HARD's top level beats a fighter who stands still (and so guards highs and mids); EASY's first level
-/// lands fewer clean hits.
+/// ULTRA HARD's top level beats a fighter who stands still, and attacks more often than EASY's first level (its
+/// cooldowns average 63 frames against 350, FIGHT_DATA.md 21.5) and goes on into strings (P3A 1 at level 0).
+/// Clean hits are no measure: an idle fighter turned round by a hit stays turned (no input), so whoever turns him
+/// first hits his back for the rest of the round, and EASY's 221-frame rule (any entry after 220 frames in a move,
+/// 0x385C80) keeps its attack rate far above what its cooldowns alone give.
 #[test]
 fn the_top_cpu_beats_a_standing_dummy() {
     let Some(a) = assets() else { return };
-    let top = cpu_run(&a, [Some((4, 7)), None], 9000);
-    let easy = cpu_run(&a, [Some((0, 0)), None], 9000);
-    eprintln!("top {:?}, easy {:?}", (top.attacks, top.hits, top.wins), (easy.attacks, easy.hits, easy.wins));
+    let top = cpu_run(&a, [Some((4, 7)), None], 15000);
+    let easy = cpu_run(&a, [Some((0, 0)), None], 15000);
+    for (n, r) in [("top", &top), ("easy", &easy)] {
+        eprintln!("{n}: presses {:?} starts {:?} hits {:?} wins {:?} fight {} turned {}", r.attacks, r.starts, r.hits, r.wins, r.fight, r.turned);
+    }
     assert_eq!(top.wins[0], 2, "the top CPU wins the match");
-    assert!(easy.hits[0] < top.hits[0], "EASY hits less: {} against {}", easy.hits[0], top.hits[0]);
+    // (per fight step: the matches run different lengths)
+    assert!(easy.starts[0] * top.fight < top.starts[0] * easy.fight, "EASY starts fewer attacks a step");
+    assert!(easy.stats[0] == 0 && top.stats[0] > 0, "strings: EASY none, the top level {}", top.stats[0]);
 }
 
 /// In a tag battle the CPUs tag (the tag button of their cancel entries with command bit 14, 0x381278).
@@ -489,14 +509,16 @@ fn strings_go_on_from_normal_level_4() {
     assert!(l4.stats[0] > 0, "level 4: follow-ups");
 }
 
-/// King's handler (0x38BC00): his canned throws (P1A) against a fighter standing still; the delayed input (step
-/// 0x15, P74 1228) at HARD level 7, none at level 0 (P74 0).
+/// King's handler (0x38BC00): his canned throws (P1A) against a fighter standing still. The delayed input (step 0x15)
+/// holds back a buffered entry the neutral pick takes: at level 0 list D never inputs (P3A 1), so the neutral pick
+/// goes on into the strings, and ULTRA HARD level 0 delays them (P74 2048), HARD level 0 never (P74 0). (From
+/// level 4 list D, earlier in the chain, takes the string follow-ups first: delays are rare there.)
 #[test]
 fn king_throws_canned_and_delays_inputs() {
     let Some(a) = assets() else { return };
-    let (normal, hard, l0) =
-        (cpu_run_of(&a, [KING, LEI], [Some((1, 7)), None], 9000), cpu_run_of(&a, [KING, LEI], [Some((2, 7)), None], 9000), cpu_run_of(&a, [KING, LEI], [Some((2, 0)), None], 9000));
-    eprintln!("King NORMAL L7 {:?}, HARD L7 {:?}, HARD L0 {:?}", normal.stats, hard.stats, l0.stats);
+    let (normal, ultra, hard) =
+        (cpu_run_of(&a, [KING, LEI], [Some((1, 7)), None], 9000, 2), cpu_run_of(&a, [KING, LEI], [Some((4, 0)), None], 40000, 5), cpu_run_of(&a, [KING, LEI], [Some((2, 0)), None], 15000, 2));
+    eprintln!("King NORMAL L7 {:?}, ULTRA HARD L0 {:?}, HARD L0 {:?}", normal.stats, ultra.stats, hard.stats);
     assert!(normal.stats[1] > 0, "a canned throw");
-    assert!(hard.stats[2] > 0 && l0.stats[2] == 0, "delayed inputs at level 7 only");
+    assert!(ultra.stats[2] > 0 && hard.stats[2] == 0, "delayed inputs with P74 only");
 }
