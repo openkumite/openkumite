@@ -272,6 +272,8 @@ pub struct SkinnedModel {
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     count: u32,
+    /// The indices from here to `count` are drawn blended, after every model's others.
+    blend_from: u32,
     bones: wgpu::Buffer,
     bones_group: wgpu::BindGroup,
     texture: Arc<Texture>,
@@ -303,7 +305,7 @@ impl StaticMesh {
     }
 }
 
-pub const MAX_BONES: usize = 64;
+pub const MAX_BONES: usize = 128;
 
 /// The final pass: the scene's target stretched over the window (a full-screen triangle).
 const BLIT_WGSL: &str = "
@@ -352,6 +354,7 @@ pub struct Renderer {
     settings: RenderSettings,
     scene: Option<SceneTarget>,
     skinned_pipeline: wgpu::RenderPipeline,
+    skinned_blend_pipeline: wgpu::RenderPipeline,
     /// The fighters' shadows.
     shadow_pipeline: wgpu::RenderPipeline,
     /// Force's blob shadows: the floor darkened (the original hardware's subtraction).
@@ -601,6 +604,8 @@ impl Renderer {
         let line_layout = layout(&[Some(&globals_layout)]);
         let tri = wgpu::PrimitiveTopology::TriangleList;
         let skinned_pipeline = make("skinned", &skinned_layout, "vs_skinned", "fs_lit", &skin_vb, true, true, tri, None);
+        // a character's blended primitive (Tekken Tag's): over what is drawn by its texture's alpha, depth not written
+        let skinned_blend_pipeline = make("skinned blend", &skinned_layout, "vs_skinned", "fs_lit_blend", &skin_vb, false, true, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
         let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, true, tri, None);
         let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, false, tri, None);
         let sky_depth_pipeline = make("sky depth", &static_layout, "vs_sky", "fs_unlit", &static_vb, true, true, tri, None);
@@ -643,6 +648,7 @@ impl Renderer {
             settings: RenderSettings::default(),
             scene: None,
             skinned_pipeline,
+            skinned_blend_pipeline,
             shadow_pipeline,
             blob_pipeline,
             blobs: Vec::new(),
@@ -907,7 +913,8 @@ impl Renderer {
         );
     }
 
-    pub fn skinned(&self, vertices: &[SkinVertex], indices: &[u32], texture: Arc<Texture>) -> SkinnedModel {
+    /// A character's GPU model: `indices` from `blend_from` on are its blended primitives'.
+    pub fn skinned(&self, vertices: &[SkinVertex], indices: &[u32], blend_from: usize, texture: Arc<Texture>) -> SkinnedModel {
         let vbuf = self.buffer(bytemuck::cast_slice(vertices), wgpu::BufferUsages::VERTEX);
         let ibuf = self.buffer(bytemuck::cast_slice(indices), wgpu::BufferUsages::INDEX);
         let bones = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -921,7 +928,8 @@ impl Renderer {
             layout: &self.bones_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: bones.as_entire_binding() }],
         });
-        SkinnedModel { vbuf, ibuf, count: indices.len() as u32, bones, bones_group, texture, shadow: None }
+        let count = indices.len() as u32;
+        SkinnedModel { vbuf, ibuf, count, blend_from: (blend_from as u32).min(count), bones, bones_group, texture, shadow: None }
     }
 
     /// Give a model its shadow mesh (skinned to the model's joints).
@@ -1242,9 +1250,18 @@ impl Renderer {
                 pass.set_bind_group(2, &m.bones_group, &[]);
                 pass.set_vertex_buffer(0, m.vbuf.slice(..));
                 pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..m.count, 0, 0..1);
+                pass.draw_indexed(0..m.blend_from, 0, 0..1);
                 stats.draw_calls += 1;
                 stats.triangles += m.count / 3;
+            }
+            pass.set_pipeline(&self.skinned_blend_pipeline);
+            for m in models.iter().filter(|m| m.blend_from < m.count) {
+                pass.set_bind_group(1, m.texture.group(smooth), &[]);
+                pass.set_bind_group(2, &m.bones_group, &[]);
+                pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(m.blend_from..m.count, 0, 0..1);
+                stats.draw_calls += 1;
             }
             if let (false, Some(white)) = (flat_bufs.is_empty(), self.white.as_ref()) {
                 pass.set_bind_group(1, &white.bind_group, &[]);

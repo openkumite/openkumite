@@ -154,6 +154,9 @@ pub struct Character {
     pub inverse_bind: Vec<Mat4>,
     pub vertices: Vec<SkinVertex>,
     pub indices: Vec<u32>,
+    /// The indices from here on are the blended primitives' (material `BLEND`: Tekken Tag's), drawn after the others
+    /// with their texture's alpha; `indices.len()` when there are none.
+    pub blend_from: usize,
     pub texture: Image,
     pub clips: Vec<Clip>,
     clip_index: HashMap<String, usize>,
@@ -167,10 +170,22 @@ impl Character {
 
     /// From a glb's bytes (any bytes: a bad file is an error, never a panic).
     pub fn from_glb(bytes: &[u8]) -> Result<Self> {
-        unpanic(|| Self::parse_glb(bytes))
+        unpanic(|| Self::parse_glb(bytes, false))
     }
 
-    fn parse_glb(bytes: &[u8]) -> Result<Self> {
+    /// Add the clips of a motion file (a glb of named joints and their animations, no mesh: Tekken Tag's
+    /// `motions/motion_NNNN.glb`), each track on the node of its name as [`Character::with_clips_of`] takes them.
+    pub fn add_motions(&mut self, bytes: &[u8]) -> Result<()> {
+        let donor = unpanic(|| Self::parse_glb(bytes, true))?;
+        for clip in self.clips_of(&donor) {
+            self.clip_index.insert(clip.name.clone(), self.clips.len());
+            self.clips.push(clip);
+        }
+        Ok(())
+    }
+
+    /// `motions_only`: a motion file, its nodes and clips without a skin, mesh or texture.
+    fn parse_glb(bytes: &[u8], motions_only: bool) -> Result<Self> {
         let (doc, buffers, images) = import_glb(bytes)?;
         let get = |b: gltf::Buffer| Some(&buffers.get(b.index())?.0[..]);
         let nodes: Vec<Node> = doc
@@ -186,16 +201,19 @@ impl Character {
                 nodes[c.index()].parent = Some(n.index());
             }
         }
-        let skin = doc.skins().next().context("no skin")?;
-        let joints: Vec<usize> = skin.joints().map(|j| j.index()).collect();
-        let inverse_bind: Vec<Mat4> = skin.reader(get).read_inverse_bind_matrices().context("no inverse bind matrices")?.map(|m| Mat4::from_cols_array_2d(&m)).collect();
+        let skin = if motions_only { None } else { Some(doc.skins().next().context("no skin")?) };
+        let joints: Vec<usize> = skin.iter().flat_map(|s| s.joints().map(|j| j.index())).collect();
+        let inverse_bind: Vec<Mat4> = match &skin {
+            Some(s) => s.reader(get).read_inverse_bind_matrices().context("no inverse bind matrices")?.map(|m| Mat4::from_cols_array_2d(&m)).collect(),
+            None => Vec::new(),
+        };
         if inverse_bind.len() != joints.len() {
             bail!("a skin's inverse bind matrices are not one a joint");
         }
         let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        let mesh = doc.meshes().next().context("no mesh")?;
-        for prim in mesh.primitives() {
+        let (mut indices, mut blended) = (Vec::new(), Vec::new());
+        let mesh = if motions_only { None } else { Some(doc.meshes().next().context("no mesh")?) };
+        for prim in mesh.iter().flat_map(|m| m.primitives()) {
             let r = prim.reader(get);
             let base = vertices.len() as u32;
             let pos: Vec<[f32; 3]> = r.read_positions().context("positions")?.collect();
@@ -213,9 +231,12 @@ impl Character {
             if prim_indices.iter().any(|&i| i as usize >= pos.len()) {
                 bail!("an index past the vertices");
             }
-            indices.extend(prim_indices.into_iter().map(|i| i + base));
+            let to = if prim.material().alpha_mode() == gltf::material::AlphaMode::Blend { &mut blended } else { &mut indices };
+            to.extend(prim_indices.into_iter().map(|i| i + base));
         }
-        let texture = to_image(images.first().context("no texture")?)?;
+        let blend_from = indices.len();
+        indices.append(&mut blended);
+        let texture = if motions_only { Image { width: 0, height: 0, rgba: Vec::new() } } else { to_image(images.first().context("no texture")?)? };
         let mut clips = Vec::new();
         for a in doc.animations() {
             let mut clip = Clip { name: a.name().unwrap_or_default().to_string(), frames: 0, rotations: vec![None; nodes.len()], translations: vec![None; nodes.len()] };
@@ -255,7 +276,7 @@ impl Character {
             }
         }
         let name = doc.scenes().next().and_then(|s| s.name().map(str::to_string)).unwrap_or_default();
-        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, texture, clips, clip_index })
+        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, texture, clips, clip_index })
     }
 
     /// A shadow mesh skinned to this skeleton: each vertex in the bind pose, wholly on its joint; the quads split
@@ -336,10 +357,27 @@ impl Character {
     /// accessory bones (`bone_*`: a stick, hair, wings) keep their rest pose. The root's track is the donor's at
     /// this body's size (a model's size, 90 % to 106 %, is in its bones and its root motion: by the legs' lengths).
     pub fn with_clips_of(&self, donor: &Character) -> Character {
+        Character {
+            name: self.name.clone(),
+            nodes: self.nodes.clone(),
+            order: self.order.clone(),
+            joints: self.joints.clone(),
+            inverse_bind: self.inverse_bind.clone(),
+            vertices: self.vertices.clone(),
+            indices: self.indices.clone(),
+            blend_from: self.blend_from,
+            texture: self.texture.clone(),
+            clips: self.clips_of(donor),
+            clip_index: donor.clip_index.clone(),
+        }
+    }
+
+    /// `donor`'s clips on this skeleton, as [`Character::with_clips_of`] takes them.
+    fn clips_of(&self, donor: &Character) -> Vec<Clip> {
         let from: Vec<Option<usize>> = self.nodes.iter().map(|n| donor.nodes.iter().position(|o| o.name == n.name).filter(|_| !n.name.starts_with("bone_"))).collect();
         let leg = |c: &Character| c.nodes.iter().filter(|n| n.name == "shin_A" || n.name == "foot_A").map(|n| n.translation.length()).sum::<f32>();
         let size = if leg(donor) > 0.0 && leg(self) > 0.0 { leg(self) / leg(donor) } else { 1.0 };
-        let clips = donor
+        donor
             .clips
             .iter()
             .map(|c| Clip {
@@ -353,19 +391,7 @@ impl Character {
                     .map(|(n, j)| Some(j.filter(|_| n.parent.is_none()).and_then(|j| c.translations.get(j)?.as_ref())?.iter().map(|t| *t * size).collect()))
                     .collect(),
             })
-            .collect();
-        Character {
-            name: self.name.clone(),
-            nodes: self.nodes.clone(),
-            order: self.order.clone(),
-            joints: self.joints.clone(),
-            inverse_bind: self.inverse_bind.clone(),
-            vertices: self.vertices.clone(),
-            indices: self.indices.clone(),
-            texture: self.texture.clone(),
-            clips,
-            clip_index: donor.clip_index.clone(),
-        }
+            .collect()
     }
 
     /// Skinning matrices (joint world × inverse bind) for a node pose, with a placement transform applied.

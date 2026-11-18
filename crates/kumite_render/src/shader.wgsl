@@ -33,7 +33,7 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
-@group(2) @binding(0) var<uniform> bones: array<mat4x4<f32>, 64>;
+@group(2) @binding(0) var<uniform> bones: array<mat4x4<f32>, 128>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -210,6 +210,17 @@ fn floor_light(p: vec3<f32>) -> f32 {
 fn fs_lit(i: VsOut) -> @location(0) vec4<f32> {
     let t = textureSample(tex, samp, i.uv);
     if (t.a < 0.5) { discard; }
+    return vec4(lit(i, t.rgb), 1.0);
+}
+
+// A character's blended primitive (Tekken Tag's): lit the same, over the picture by the texture's alpha.
+@fragment
+fn fs_lit_blend(i: VsOut) -> @location(0) vec4<f32> {
+    let t = textureSample(tex, samp, i.uv);
+    return vec4(lit(i, t.rgb), t.a);
+}
+
+fn lit(i: VsOut, t: vec3<f32>) -> vec3<f32> {
     let flat = normalize(cross(dpdx(i.world), dpdy(i.world)));
     // the hit light: a second light at the hit, in the attacker's colour, fading over 48 frames
     let to_hit = normalize(g.hit_pos.xyz - i.world + vec3(0.0, 0.0001, 0.0));
@@ -222,11 +233,11 @@ fn fs_lit(i: VsOut) -> @location(0) vec4<f32> {
         }
         let lum = g.ambient.rgb + g.key_color.rgb * max(0.0, dot(n, g.light_dir.xyz)) + 0.5 * g.key_color.rgb * max(0.0, n.y);
         let hit = g.hit_colour.rgb * max(0.0, dot(n, to_hit));
-        return vec4(min(t.rgb * (g.material.rgb * lum + hit), vec3(1.0)), 1.0);
+        return min(t * (g.material.rgb * lum + hit), vec3(1.0));
     }
     let l = abs(dot(flat, g.light_dir.xyz));
     let h = abs(dot(flat, to_hit));
-    return vec4(t.rgb * (0.55 + 0.6 * l + g.hit_colour.rgb * h), 1.0);
+    return t * (0.55 + 0.6 * l + g.hit_colour.rgb * h);
 }
 
 // Debug lines (hit volumes, skeleton, attack paths): world-space, vertex colour, drawn on top.

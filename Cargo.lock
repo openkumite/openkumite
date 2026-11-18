@@ -2850,8 +2850,11 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "glam",
+ "kumite_assets",
  "log",
+ "png",
  "pollster",
+ "serde_json",
  "wgpu",
 ]
 
