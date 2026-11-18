@@ -99,7 +99,9 @@ impl Audio {
     }
 
     /// Start a one-shot sound.
-    pub fn sfx(&mut self, path: &Path, volume: f32) {
+    // shortcut: the speed is not applied (a page's audio element keeps the pitch at another rate); Tekken Tag, whose
+    // sounds have one, is not in the browser build yet
+    pub fn sfx(&mut self, path: &Path, volume: f32, _speed: f32) {
         if self.muted || !allowed() {
             return;
         }

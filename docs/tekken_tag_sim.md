@@ -69,14 +69,14 @@ Tekken 3's data never goes through it. The whole move and cancel tables are the 
 ## Missing
 
 - `special_8003` (Unknown's moveset change), the solo Unknown's recovery; tag throws and tag combos beyond the partner
-  gates (none found in code); the round's poses as a pair (the partner joining the winner's pose).
+  gates (none found in code).
 - Conditions 0x26 / 0x27 (unused) and 0x48-0x5B, 0x5D-0x5F (camera-relative, screen sides, round decided: the tag-out
   runs' variants and one entry): never true. The prefilter is not used (the full test decides).
 - The counter hit caused by victim +0x12E.
 - Other property ops (hand poses, sounds' numbers, camera scripts); air recovery and the missing-move fallback
   alias are unknown.
 - Ogre's bone 0x13 and projectile bones 0x18 / 0x19 give no strike segment.
-- The AI (no ai.json: a CPU does little), the round-start moves (the fighters stand), the losers' end motions.
+- The AI (no ai.json: a CPU does little), the losers' end motions, the team-lose shot (arcade).
 
 ## The game
 
@@ -90,4 +90,25 @@ Lei and Jin: the third and fourth are the partners), the HUD with each side's pa
 kumite_game --test tekken_tag`.
 
 Provisional: the camera (`CameraData::provisional`, Tekken 3's constants; no camera.json), two rounds to win, the heads
-do not turn to the opponent. Not there: sounds and music, hit sparks, shadows, menus, the browser build.
+do not turn to the opponent. Not there: hit sparks, shadows, menus, the browser build.
+
+## Round flow and sound
+
+Round flow (`bout::RoundRules`, rounds.json; FIGHT_DATA.md section 13): the start motions (aliases 4 / 6 by □ △ / × ○
+held else a coin flip, later rounds 5 from frame 1), the fight on the call's frame 151 / 91, the K.O. replay from frame
+16 played twice, a time up done on frame 160, the win pose 4770-4773 (held button else the frame parity) for 300
+frames (START from frame 2), a tag battle's winner's partner posing the same alias in the loser's place
+(`Game::pose_partner`, x 0x400 z -0xC00 taken as right of and behind the winner), the 60 s clock shown in seconds of 70
+frames, the plain HUD's ROUND n / READY! / K.O. / TIME UP / PERFECT / GREAT. Guessed: which pad bits are which
+buttons (Tekken 3's order), FIGHT! shown 40 frames. Not done: the replay's speed (Tekken 3's half), frames 17-135
+after the replay, the time-up winner's motion, the arcade's team-lose shot.
+
+Sound (`sound::Tag`, sound.json's dialect; section 14): ids through the 62 groups, voices from the character file's
+bank and row, played at pitch x 48000 / 4096; voices (types 2 / 3, the row's cooldown), the K.O. voice, hit sounds on
+the connecting frame (guard 0x10, the generic ids by damage band and end bone, the four bodies' arm table, the K.O.'s
+0x0A / 0x0D), timed scripts (kinds 0-2; 0x13 a footstep pair 4 frames apart on the arena's floor), the jump and the
+arena's landing; the announcer (ids 0x48-0x5C as the round code plays them, which the samples' names confirm: count1-8,
+time_up, great, perfect, ko1, round, fight; 0x5C, played as FINAL ROUND, is named TagBattle); the arena's BGM, looped
+from the start. Not done: type 9 and script kind 3 (0x376578), the Jacks' and Mokujin's own hit handlers, the samples'
+volume byte, the music's loop point, YOU WIN / LOSE. Tests: `kumite_game --test tekken_tag`. A video: `--fight
+--models ... --export-video fight --frames N --out F.mp4`.

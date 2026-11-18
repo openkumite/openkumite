@@ -6,6 +6,7 @@
 
 use kumite_assets::Assets;
 use kumite_game::bout::{Bout, Phase};
+use kumite_game::sound::{SoundData, SoundState};
 use kumite_game::{parse_script, Game};
 use kumite_sim::input::Pad;
 
@@ -208,7 +209,7 @@ fn a_team_loses_when_its_member_falls() {
     assert_eq!(b.game.fight.teams.as_ref().unwrap()[0].active, 1);
     b.game.fight.fighters[0].health = kumite_sim::ONE;
     lei_jabs(&mut b);
-    assert!(matches!(b.phase, Phase::RoundOver { winner: Some(1) }), "Lei and Jin win the round: {:?}", b.phase);
+    assert!(matches!(b.phase, Phase::RoundOver { winner: Some(1) } | Phase::Replay { winner: Some(1) }), "Lei and Jin win the round: {:?}", b.phase);
     // round 2 starts with Paul again, his body back, everyone at full health
     while !(b.round == 2 && b.phase == Phase::Fight) {
         b.step([Pad::default(); 2]);
@@ -249,4 +250,140 @@ fn tekken_tags_camera() {
     let d = g.camera.data();
     assert_eq!((d.h, d.h_range, d.distance, d.intro_blend, d.fit_px), (615, [500, 900], 4564, 13, 392));
     assert_eq!(g.camera.view.h, 442);
+}
+
+/// What the sound tables make a step play: the files under audio/sfx.
+fn heard(a: &Assets, s: &SoundData, b: &Bout, st: &mut SoundState) -> Vec<String> {
+    let mut out: Vec<_> = s.step(b, st, ["", ""], [0, 0]);
+    out.extend(b.events.iter().filter_map(|&e| s.announce(e, [true; 2])));
+    out.iter().map(|x| x.file.strip_prefix(a.root.join("audio/sfx")).unwrap().to_string_lossy().into_owned()).collect()
+}
+
+/// Paul walks in jabbing (Lei walks in, unguarded) until a jab lands or the round ends; the sounds of each step.
+fn paul_jabs(a: &Assets, s: &SoundData, b: &mut Bout, st: &mut SoundState) -> Vec<Vec<String>> {
+    let (walk, jab, toward) = (parse_script("f").unwrap()[0], parse_script("1").unwrap()[0], parse_script("b").unwrap()[0]);
+    let before = b.game.fight.fighters[1].health;
+    let mut seen = Vec::new();
+    for k in 0..400 {
+        if b.game.fight.fighters[1].health != before || b.phase != Phase::Fight {
+            break;
+        }
+        b.step([if k % 20 == 0 { jab } else { walk }, toward]);
+        seen.push(heard(a, s, b, st));
+    }
+    seen
+}
+
+/// The round call (rounds.json, 0x36E198): the fight starts on the call's frame 151 in round 1, 91 later, after
+/// "Round" (0x5A), the number (0x48 + round - 1) and "Fight" (0x5B) on Tekken 3's frames; the start motions are
+/// aliases 4 / 6, then 5. The arena's music is its BGM (arena 0: id 9, file 22).
+#[test]
+fn the_round_call_starts_the_fight_on_frame_151_then_91() {
+    let Some(a) = assets() else { return };
+    let s = SoundData::load(&a).unwrap();
+    let mut b = Bout::new(Game::load(&a, [PAUL, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    let mut st = SoundState::default();
+    for (round, starts, motions, calls) in
+        [(1, 151, [4, 6], [(61, "001/090.wav"), (100, "001/072.wav"), (150, "001/091.wav")]), (2, 91, [5, 5], [(1, "001/090.wav"), (40, "001/073.wav"), (90, "001/091.wav")])]
+    {
+        assert_eq!(b.round, round);
+        let (mut k, mut said, mut start) = (0, Vec::new(), [0; 2]);
+        while b.phase == Phase::Call {
+            b.step([Pad::default(); 2]);
+            k += 1;
+            if k == 1 {
+                start = [0, 1].map(|i| b.game.fight.fighters[i].alias);
+            }
+            said.extend(heard(&a, &s, &b, &mut st).into_iter().filter(|f| f.starts_with("001/0")).map(|f| (k, f)));
+        }
+        // the fight's first step is the call's frame `starts` (inputs on)
+        assert_eq!((k + 1, b.phase), (starts, Phase::Fight), "round {round}");
+        assert!(start.iter().all(|x| motions.contains(x)), "round {round}'s start motions: {start:?}");
+        assert_eq!(said, calls.map(|(k, f)| (k, f.to_string())), "round {round}'s call");
+        b.resume_match(1, [0, 0]);
+    }
+    let (music, looped) = s.arena_music(0).unwrap();
+    assert!(music.ends_with("audio/music/22.flac") && looped, "{}", music.display());
+}
+
+/// Paul's kick, a voiced move, a guarded jab and a K.O. by a jab: the samples sound.json names.
+#[test]
+fn hits_and_voices_play_their_samples() {
+    let Some(a) = assets() else { return };
+    let s = SoundData::load(&a).unwrap();
+    let mut b = tag_bout(&a, LAW);
+    let mut st = SoundState::default();
+    // walked in, Paul's d/f+4 (alias 416: 15 damage, end bone 14 a leg, the generic 0x7007): band 1's leg, id 0x0C
+    let (walk, toward) = (parse_script("f").unwrap()[0], parse_script("b").unwrap()[0]);
+    for _ in 0..40 {
+        b.step([walk, toward]);
+        heard(&a, &s, &b, &mut st);
+    }
+    let strike = |b: &mut Bout, st: &mut SoundState, input: &str, p2: Pad| {
+        let p1 = parse_script(input).unwrap();
+        (0..120).find_map(|k| {
+            b.step([p1.get(k).copied().unwrap_or_default(), p2]);
+            let s = heard(&a, &s, b, st);
+            (!b.game.fight.hits.is_empty()).then_some(s)
+        })
+    };
+    let sounds = strike(&mut b, &mut st, "d/f+4", toward).expect("the kick lands");
+    assert!(b.game.fight.hits.iter().all(|h| !h.blocked) && sounds.contains(&"001/012.wav".to_string()), "{sounds:?}");
+    // a jab on Lei standing (guarding): 0x10
+    for _ in 0..60 {
+        b.step([Pad::default(); 2]);
+    }
+    let sounds = strike(&mut b, &mut st, "f*20,1,f*20,1,f*20,1,f*20,1,f*20,1", Pad::default()).expect("the jab is guarded");
+    assert!(b.game.fight.hits.iter().all(|h| h.blocked) && sounds.contains(&"001/016.wav".to_string()), "{sounds:?}");
+    // a move with a voice (alias 367: type 2, voice 7, Paul's id 0xDA, sample 8 of his bank 344) on its first frame
+    for _ in 0..60 {
+        b.step([Pad::default(); 2]);
+    }
+    b.game.fight.fighters[0].play_alias(367);
+    assert_eq!(heard(&a, &s, &b, &mut st), ["344/008.wav"]);
+    // the K.O. by a jab (end bone 10, an arm): 0x0A; Lei's K.O. voice from his own bank (371)
+    b.game.fight.fighters[1].health = kumite_sim::ONE;
+    let ko = paul_jabs(&a, &s, &mut b, &mut st).pop().unwrap();
+    assert!(ko.contains(&"001/010.wav".to_string()) && ko.iter().any(|f| f.starts_with("371/")), "{ko:?}");
+}
+
+/// After the K.O. the replay from frame 16, played twice; then a win pose 4770-4773 for 300 frames, the winner's
+/// partner posing the same in the loser's place; round 2 with the loser back.
+#[test]
+fn the_winner_poses_with_its_partner() {
+    let Some(a) = assets() else { return };
+    let s = SoundData::load(&a).unwrap();
+    for partner in [false, true] {
+        let mut b = if partner {
+            tag_bout(&a, LAW)
+        } else {
+            let mut b = Bout::new(Game::load(&a, [PAUL, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+            while b.phase != Phase::Fight {
+                b.step([Pad::default(); 2]);
+            }
+            b
+        };
+        let lei = b.game.fight.fighters[1].moveset.moveset_id;
+        b.game.fight.fighters[1].health = kumite_sim::ONE;
+        paul_jabs(&a, &s, &mut b, &mut SoundState::default());
+        assert_eq!(b.phase, Phase::RoundOver { winner: Some(0) });
+        let mut phases = Vec::new();
+        while b.round == 1 {
+            phases.push((b.phase, b.phase_frame, b.game.fight.fighters.each_ref().map(|f| f.alias), b.game.bodies[1].model_record, b.game.visible));
+            b.step([Pad::default(); 2]);
+        }
+        let replay = phases.iter().position(|p| matches!(p.0, Phase::Replay { .. })).expect("the replay");
+        assert_eq!(phases[replay - 1].1, 15, "the replay from the K.O.'s frame 16");
+        let pose: Vec<_> = phases.iter().filter(|p| matches!(p.0, Phase::Result { .. })).collect();
+        assert_eq!(pose.len(), 300, "the pose stage");
+        let alias = pose[0].2[0];
+        assert!((4770..=4773).contains(&alias), "the win pose {alias}");
+        if partner {
+            // Law in Lei's place, posing the same alias
+            assert_eq!((pose[0].2[1], pose[0].3, pose[0].4), (alias, LAW, [true; 2]));
+        } else {
+            assert_eq!((pose[0].3, pose[0].4), (LEI, [true, false]));
+        }
+        assert_eq!((b.game.bodies[1].model_record, b.game.fight.fighters[1].moveset.moveset_id), (LEI, lei), "Lei back for round 2");
+    }
 }

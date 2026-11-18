@@ -80,7 +80,8 @@ pub static TTT: Dialect = Dialect {
     flag_bits: &[(0, 8), (2, 10), (3, 11), (4, 12), (5, 13), (6, 14), (9, 16), (11, 18), (19, 28), (20, 29), (22, 30)],
     ops: &[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10), (0x0C, 0x0B), (0x0D, 0x0C)],
     reaction_none: 0x592,
-    fixed: Aliases { neutral: 58, crouch: 80, ko_collapse: 4769, missing: usize::MAX, air_late: usize::MAX, air_side: [usize::MAX; 2], air_recovery: usize::MAX, round_start: [usize::MAX; 3] },
+    // the round's start motions (0x368398, rounds.json `start_motions`): round 1 aliases 4 / 6, later rounds 5
+    fixed: Aliases { neutral: 58, crouch: 80, ko_collapse: 4769, missing: usize::MAX, air_late: usize::MAX, air_side: [usize::MAX; 2], air_recovery: usize::MAX, round_start: [4, 6, 5] },
 };
 
 fn range(t: &[(u32, u32, u32)], x: u32) -> Option<u32> {

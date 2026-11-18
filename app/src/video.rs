@@ -352,11 +352,26 @@ pub fn mix(events: &[(u64, Event)], steps: u64, music_volume: f32) -> Vec<f32> {
         }
     }
     for (step, e) in events {
-        let Event::Sfx(path, volume) = e else { continue };
+        let Event::Sfx(path, volume, speed) = e else { continue };
         let Some(s) = clip(path) else { continue };
         let at = sample_of(*step);
-        for (o, x) in out.iter_mut().skip(at).zip(&s) {
-            *o += x * volume;
+        if *speed == 1.0 {
+            for (o, x) in out.iter_mut().skip(at).zip(&s) {
+                *o += x * volume;
+            }
+            continue;
+        }
+        // (at another speed: linear between the two nearest)
+        let frames = s.len() / 2;
+        for k in 0..(frames as f32 / speed.max(0.01)) as usize {
+            let pos = k as f32 * speed;
+            let (i, t) = (pos as usize, pos.fract());
+            for c in 0..2 {
+                let x = s.get(i * 2 + c).copied().unwrap_or(0.0) * (1.0 - t) + s.get((i + 1) * 2 + c).copied().unwrap_or(0.0) * t;
+                if let Some(o) = out.get_mut(at + k * 2 + c) {
+                    *o += x * volume;
+                }
+            }
         }
     }
     // (a soft knee over 0.7 to at most 0.85: Opus overshoots peaks a little, as measured, and stays under full scale)
@@ -403,7 +418,7 @@ mod tests {
     #[test]
     fn the_mix_places_each_sound_at_its_step() {
         // (no files: an unreadable sound is left out, the rest is silence of the right length)
-        let events = vec![(0, Event::Sfx("/nonexistent.wav".into(), 1.0))];
+        let events = vec![(0, Event::Sfx("/nonexistent.wav".into(), 1.0, 1.0))];
         let out = mix(&events, 120, 0.5);
         assert_eq!(out.len(), 2 * RATE * 2);
         assert!(out.iter().all(|s| *s == 0.0));
