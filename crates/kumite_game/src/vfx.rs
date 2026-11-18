@@ -464,7 +464,7 @@ impl Vfx {
             let pos = h.point / UNITS;
             let strike = Vec3::new(h.strike.x, h.strike.y, h.strike.z);
             // (Tekken Tag's bursts turn with the strike; Tekken 3's guard and zero sparks stand still)
-            let turn = Some(strike).filter(|_| !data.bursts.is_empty());
+            let turn = (!data.bursts.is_empty()).then_some(strike);
             if h.blocked {
                 self.effect("block", &data.block, pos, turn, Blend::Add, eye);
             } else if h.base_damage == 0 {
