@@ -404,8 +404,9 @@ pub struct Mesh {
 /// A stage mesh's motion, by frames of 1/60 s.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Motion {
-    /// It turns about the line through `pivot` (m) along `axis`, `rate` radians a frame (extras `spin`).
-    Spin { pivot: Vec3, axis: Vec3, rate: f32 },
+    /// It turns about the line through `pivot` (m) along `axis`, `rate` radians a frame (extras `spin`); after
+    /// `period` frames, where it has one, it is back where it began (a carousel whose model is its near half).
+    Spin { pivot: Vec3, axis: Vec3, rate: f32, period: Option<u32> },
     /// Its texture and the `frames - 1` after it follow one another, each shown for `step` frames (extras `frames`,
     /// `step`).
     Frames { frames: usize, step: u32 },
@@ -521,7 +522,10 @@ impl Stage {
                         let vec = |a: &serde_json::Value| Some(Vec3::new(a[0].as_f64()? as f32, a[1].as_f64()? as f32, a[2].as_f64()? as f32));
                         let spin = &v["spin"];
                         match (vec(&spin["pivot"]), vec(&spin["axis"]).and_then(Vec3::try_normalize), spin["rate"].as_f64(), v["frames"].as_u64(), v["step"].as_u64()) {
-                            (Some(pivot), Some(axis), Some(rate), ..) => Some(Motion::Spin { pivot: xf.transform_point3(pivot), axis: xf.transform_vector3(axis), rate: rate as f32 }),
+                            (Some(pivot), Some(axis), Some(rate), ..) => {
+                                let period = spin["period"].as_u64().and_then(|p| u32::try_from(p).ok()).filter(|p| *p > 0);
+                                Some(Motion::Spin { pivot: xf.transform_point3(pivot), axis: xf.transform_vector3(axis), rate: rate as f32, period })
+                            }
                             // (the frames are images of the glb)
                             (.., Some(frames), Some(step)) if (1..=64).contains(&frames) && texture + frames as usize <= images.len() => {
                                 Some(Motion::Frames { frames: frames as usize, step: (step as u32).max(1) })
