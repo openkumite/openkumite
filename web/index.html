@@ -571,12 +571,26 @@
   const mainGame = () => { try { return localStorage.getItem('openkumite_game'); } catch { return null; } };
   // the conversion this browser keeps: the Tekken 3 pack (assets), and over it, once installed (convert_worker.js),
   // the Tekken 2 pack's assets/ and the extras (the packs installed: what they add to or change in it, and the whole's
-  // manifest.json); with Tekken Tag Tournament the main game, its pack's assets/ alone; its files and size, or null
+  // manifest.json); with Tekken Tag Tournament the main game, its pack's assets/ under the arcade pack's assets/ under
+  // its pack's extras/ (installed on the games' data as they are now: app/src/packs.rs ttt_layers); its files and
+  // size, or null
   const stored = async () => {
     if (mainGame() === 'ttt') {
       const ttt = await pack('ttt');
-      const files = new Map([...(ttt?.files ?? [])].filter(([p]) => p.startsWith('assets/')).map(([p, b]) => [p.slice(7), b]));
-      return files.has('manifest.json') ? { files, size: ttt.size } : null;
+      const under = (p, dir) => [...(p?.files ?? [])].filter(([f]) => f.startsWith(dir)).map(([f, b]) => [f.slice(dir.length), b]);
+      const files = new Map(under(ttt, 'assets/'));
+      if (!files.has('manifest.json')) return null;
+      let size = ttt.size;
+      const arcade = await pack('arcade');
+      if (arcade?.files.has('manifest.json')) for (const [p, b] of under(arcade, 'assets/')) files.set(p, b);
+      size += arcade?.size ?? 0;
+      const json = async (b) => { try { return JSON.parse(await b.text()); } catch { return null; } };
+      const extras = new Map(under(ttt, 'extras/'));
+      const installed = extras.has('manifest.json') && (await json(extras.get('manifest.json')))?.installed;
+      const t3 = (await pack('assets'))?.files.get('manifest.json');
+      const t3fp = t3 ? ((await json(t3))?.fingerprint ?? null) : null;
+      if (installed?.ttt === (await json(files.get('manifest.json')))?.fingerprint && (installed?.t3 ?? null) === t3fp) for (const [p, b] of extras) files.set(p, b);
+      return { files, size };
     }
     const base = await pack('assets');
     if (!base?.files.has('manifest.json')) return null;

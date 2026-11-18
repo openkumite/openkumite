@@ -4,7 +4,8 @@
 //! manifest.json. The game reads the extras over the packs' `assets/` over the base. The Tekken 3 arcade pack is
 //! not installed: its stages are files of its own (`assets/arcade/`), outside what the fingerprint covers, so the
 //! game data is the same for online play with it or without. The Tekken Tag Tournament pack is a game of its own
-//! (its `assets/` its game root, [`Game::Ttt`]), never installed over Tekken 3.
+//! (its `assets/` its game root, [`Game::Ttt`]), never installed over Tekken 3; what Tekken 3 brings to it is
+//! installed into its own extras ([`install_ttt`]).
 
 use anyhow::{Context, Result};
 use ok_converter_common::io::{Ctx, Layered, Sub, Vfs};
@@ -185,6 +186,33 @@ pub fn install(base: &dyn Vfs, packs: &[(Part, &dyn Vfs)], extras: &dyn Vfs, log
     manifest.insert("installed".into(), m.stamp());
     log("[install] the fingerprint");
     manifest.insert("fingerprint".into(), json!(ok_tekken3_converter::convert_all::fingerprint(&view)?));
+    extras.write("manifest.json", serde_json::to_string_pretty(&Value::Object(manifest))?.as_bytes())?;
+    Ok(())
+}
+
+/// What Tekken Tag Tournament's extras are made of (its game root's fingerprint and the Tekken 3 pack's): when it
+/// changes they are installed again.
+pub fn ttt_stamp(game: &dyn Vfs, base: &dyn Vfs) -> Value {
+    let game: Option<Value> = game.read("manifest.json").ok().and_then(|b| serde_json::from_slice(&b).ok());
+    json!({"ttt": game.map(|m| m["fingerprint"].clone()), "t3": Part::T3.manifest(base).map(|m| m["fingerprint"].clone())})
+}
+
+/// The extras (their manifest.json) are Tekken Tag Tournament's installed on these games' data.
+pub fn ttt_installed(game: &dyn Vfs, base: &dyn Vfs, extras: &dyn Vfs) -> bool {
+    let m: Option<Value> = extras.read("manifest.json").ok().and_then(|b| serde_json::from_slice(&b).ok());
+    m.is_some_and(|m| m["installed"] == ttt_stamp(game, base))
+}
+
+/// Installs Tekken Tag Tournament's extras (read over its game root `game`) into `extras`, emptied first: what the
+/// Tekken 3 pack (`base`) brings to it, and the whole's manifest.json (the game root's, with what it was installed
+/// from). Nothing without Tekken Tag's game root.
+// shortcut: no Tekken 3 slice yet (Gon, Doctor B., Force, Ball): the extras are the manifest alone, so the
+// fingerprint stays Tekken Tag's own; take the view's (as `install` does) once they hold files
+pub fn install_ttt(game: &dyn Vfs, base: &dyn Vfs, extras: &dyn Vfs, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
+    extras.remove_all("")?;
+    let Some(Value::Object(mut manifest)) = game.read("manifest.json").ok().and_then(|b| serde_json::from_slice(&b).ok()) else { return Ok(()) };
+    log(&format!("[install] {}", Part::Ttt.name()));
+    manifest.insert("installed".into(), ttt_stamp(game, base));
     extras.write("manifest.json", serde_json::to_string_pretty(&Value::Object(manifest))?.as_bytes())?;
     Ok(())
 }

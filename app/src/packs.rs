@@ -10,6 +10,7 @@
 //! ROOT/extras/         the packs installed: the files they add to or change in the Tekken 3 pack, and manifest.json
 //! ROOT/packs/ttt/      the Tekken Tag Tournament pack (ok_tekken_tag_converter: its disc alone); not installed, a
 //!                      game of its own: its `assets/` the game root when it is the main game ([`game`])
+//! ROOT/packs/ttt/extras/ what the Tekken 3 pack brings to Tekken Tag Tournament ([`install_ttt`]), and manifest.json
 //! ```
 //!
 //! The game reads the layers ([`activate`]: kumite_fs): a file of ROOT from `extras/`, else a pack's `assets/` (the
@@ -17,7 +18,8 @@
 //! 3 pack's, with the packs and the fingerprint of the whole (online play compares it), and what it was installed
 //! from (`installed`: the Tekken 3 pack's fingerprint and the packs' sources); when that changes, the packs are
 //! installed again. The fingerprint covers characters/, stages/ and gamedata/ only, so packs/ and extras/ are no
-//! part of the Tekken 3 pack's own.
+//! part of the Tekken 3 pack's own. With Tekken Tag Tournament the main game, its game root's layers are its extras,
+//! then the arcade pack's `assets/` ([`ttt_layers`]).
 
 use anyhow::{bail, Context, Result};
 pub use kumite_packs::{Game, Part};
@@ -109,11 +111,25 @@ fn layers(root: &Path, state: &State) -> Vec<PathBuf> {
     out
 }
 
-/// The game reads ROOT's layers from now on (none while the packs are not installed: Tekken 3 alone; none for
-/// Tekken Tag Tournament).
+/// Tekken Tag Tournament's layers over its game root, the first first: its extras (installed on the games' data as
+/// they are now), then the arcade pack's own files.
+fn ttt_layers(root: &Path, state: &State) -> Vec<PathBuf> {
+    let extras = dir(Part::Ttt, root).join(EXTRAS);
+    let arcade = dir(Part::Arcade, root).join(kumite_packs::ASSETS);
+    let installed = kumite_packs::ttt_installed(&StdFs(game_root(root, Game::Ttt)), &StdFs(root.to_path_buf()), &StdFs(extras.clone()));
+    let arcade_there = state.get(Part::Arcade).is_some() && arcade.is_dir();
+    [(extras, installed), (arcade, arcade_there)].into_iter().filter_map(|(p, there)| there.then_some(p)).collect()
+}
+
+/// The game reads the main game's layers from now on (Tekken 3: none while the packs are not installed).
 pub fn activate(root: &Path) -> State {
     let state = State::of(root, game());
-    kumite_fs::set_layers(root, if state.installed && state.game == Game::T3 { layers(root, &state) } else { Vec::new() });
+    let layers = match state.game {
+        Game::T3 if state.installed => layers(root, &state),
+        Game::T3 => Vec::new(),
+        Game::Ttt => ttt_layers(root, &state),
+    };
+    kumite_fs::set_layers(&game_root(root, state.game), layers);
     state
 }
 
@@ -236,6 +252,10 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync), cancel: &AtomicB
         Job::Remove(part) => remove(&dir(*part, root))?,
         Job::Install => {}
     }
+    // (Tekken Tag Tournament's extras follow either game's pack)
+    if matches!(job, Job::Convert(Part::T3 | Part::Ttt, _) | Job::Remove(Part::T3 | Part::Ttt) | Job::Install) {
+        install_ttt(root, log, cancel)?;
+    }
     // (the arcade and Tekken Tag Tournament packs are not installed: nothing of the extras changes with them)
     if matches!(job, Job::Convert(Part::Arcade | Part::Ttt, _) | Job::Remove(Part::Arcade | Part::Ttt)) {
         return Ok(());
@@ -250,6 +270,13 @@ pub fn install(root: &Path, log: &(dyn Fn(&str) + Sync), cancel: &AtomicBool) ->
     let packs: Vec<(Part, &dyn Vfs)> = packs.iter().map(|(p, fs)| (*p, fs as &dyn Vfs)).collect();
     let extras = StdFs(root.join(EXTRAS));
     kumite_packs::install(&StdFs(root.to_path_buf()), &packs, &Cancellable { inner: &extras, cancel }, log)
+}
+
+/// Installs Tekken Tag Tournament's extras (made anew): what the Tekken 3 pack brings to it, with the whole's
+/// manifest; nothing without its game root.
+pub fn install_ttt(root: &Path, log: &(dyn Fn(&str) + Sync), cancel: &AtomicBool) -> Result<()> {
+    let extras = StdFs(dir(Part::Ttt, root).join(EXTRAS));
+    kumite_packs::install_ttt(&StdFs(game_root(root, Game::Ttt)), &StdFs(root.to_path_buf()), &Cancellable { inner: &extras, cancel }, log)
 }
 
 fn remove(path: &Path) -> Result<()> {
@@ -300,6 +327,19 @@ mod tests {
         assert!(State::of(&root, Game::Ttt).playable());
         assert_eq!(game_root(&root, Game::T3), root);
         assert_eq!(game_root(&root, Game::Ttt), root.join("packs/ttt/assets"));
+        // Tekken Tag's extras with no Tekken 3 slice: the manifest alone, its fingerprint Tekken Tag's; a layer until
+        // the Tekken 3 pack changes; Tekken 3's layers as they were
+        let extras = dir(Part::Ttt, &root).join(EXTRAS);
+        assert!(ttt_layers(&root, &State::of(&root, Game::Ttt)).is_empty());
+        std::fs::write(game_root(&root, Game::Ttt).join("manifest.json"), r#"{"game": "ttt", "format": 8, "fingerprint": "t"}"#).unwrap();
+        run(&root, &Job::Install, &|_| {}, &AtomicBool::new(false)).unwrap();
+        let names: Vec<_> = std::fs::read_dir(&extras).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["manifest.json"]);
+        assert_eq!(kumite_assets::Assets::new(&extras).unwrap().fingerprint(), "t");
+        assert_eq!(ttt_layers(&root, &State::of(&root, Game::Ttt)), vec![extras.clone()]);
+        assert!(layers(&root, &State::of(&root, Game::T3)).is_empty() && !root.join(EXTRAS).exists());
+        std::fs::write(root.join("manifest.json"), format!("{{\"format\": {}, \"fingerprint\": \"y\"}}", kumite_assets::FORMAT)).unwrap();
+        assert!(ttt_layers(&root, &State::of(&root, Game::Ttt)).is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -329,10 +369,12 @@ mod tests {
         let state = State::of(&root, Game::Ttt);
         assert!(state.get(Part::Ttt).is_some() && state.get(Part::T3).is_none() && state.playable() == state.ttt_assets && !root.join(EXTRAS).exists());
         assert!(dir(Part::Ttt, &root).join("manifest.json").is_file());
-        // what the game plays alone, not the converter's research outputs
+        // what the game plays alone, not the converter's research outputs; its extras (no Tekken 3 pack: the manifest)
         let mut names: Vec<_> = std::fs::read_dir(dir(Part::Ttt, &root)).unwrap().map(|e| e.unwrap().file_name()).collect();
         names.sort();
-        assert_eq!(names, ["assets", "manifest.json"]);
+        assert_eq!(names, ["assets", "extras", "manifest.json"]);
+        let manifest = |p: PathBuf| serde_json::from_slice::<Value>(&std::fs::read(p.join("manifest.json")).unwrap()).unwrap()["fingerprint"].clone();
+        assert_eq!(manifest(dir(Part::Ttt, &root).join(EXTRAS)), manifest(game_root(&root, Game::Ttt)));
         run(&root, &Job::Remove(Part::Ttt), &|_| {}, &AtomicBool::new(false)).unwrap();
         assert!(State::of(&root, Game::Ttt).get(Part::Ttt).is_none());
         std::fs::remove_dir_all(&root).unwrap();
@@ -351,6 +393,8 @@ mod tests {
         let state = State::of(&root, Game::T3);
         assert!(state.get(Part::Arcade).is_some() && !state.has_packs() && state.installed && !root.join(EXTRAS).exists());
         assert_eq!(layers(&root, &state), vec![dir(Part::Arcade, &root).join(kumite_packs::ASSETS)]);
+        // (Tekken Tag Tournament the main game: its stages too)
+        assert_eq!(ttt_layers(&root, &State::of(&root, Game::Ttt)), vec![dir(Part::Arcade, &root).join(kumite_packs::ASSETS)]);
         let hidden = kumite_assets::Stage::load(&dir(Part::Arcade, &root).join("assets/arcade/hidden.glb")).unwrap();
         assert!(hidden.sky_model && !hidden.meshes.is_empty() && hidden.sky_picture.is_none(), "the hidden arena");
         for n in 0..13 {
