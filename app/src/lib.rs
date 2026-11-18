@@ -5644,7 +5644,13 @@ fn stage_lights(gd: &Path) -> std::collections::HashMap<usize, (Option<kumite_re
                 let toward = glam::Vec3::new(f(&t[0]), f(&t[1]), f(&t[2])).normalize_or_zero();
                 // (Tekken Tag's: the floor darkened by its `alpha`)
                 let alpha = sh["alpha"].as_f64().map(|a| a.clamp(0.0, 1.0) as f32);
-                return Some((id, (None, Some(kumite_render::Shadow { toward, floor: 0.0, colour: rgb(&sh["colour"]), alpha }), None)));
+                // (Tekken Tag's `lights`: towards each of three, their colours and the ambient, 128 = 1)
+                let ls = &s["lights"];
+                let v = |a: &serde_json::Value| glam::Vec3::new(f(&a[0]), f(&a[1]), f(&a[2]));
+                let lit = |k: usize| (v(&ls["colour"][k]) / 128.0, v(&ls["toward"][k]));
+                let light =
+                    ls.is_object().then(|| kumite_render::StageLight { ambient: v(&ls["ambient"]) / 128.0, key: lit(0).0, toward: lit(0).1, material: glam::Vec3::ONE, more: Some([lit(1), lit(2)]) });
+                return Some((id, (light, Some(kumite_render::Shadow { toward, floor: 0.0, colour: rgb(&sh["colour"]), alpha }), None)));
             };
             let amb = (l["ambient"].as_u64()? >> 4) as f32 / 256.0;
             let key = &l["key_color_rgb"];
@@ -5656,6 +5662,7 @@ fn stage_lights(gd: &Path) -> std::collections::HashMap<usize, (Option<kumite_re
                 key: glam::Vec3::new(f(&key[0]), f(&key[1]), f(&key[2])) / 256.0,
                 toward,
                 material: glam::Vec3::new(f(&mat[0]), f(&mat[1]), f(&mat[2])) / 128.0,
+                more: None,
             };
             let sa = &l["shadow_angles"];
             let turn = |v: f32| v * std::f32::consts::TAU / 4096.0;

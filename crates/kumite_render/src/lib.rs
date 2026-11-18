@@ -101,6 +101,8 @@ pub struct StageLight {
     pub key: Vec3,
     pub toward: Vec3,
     pub material: Vec3,
+    /// Tekken Tag's: its two other lights (colour, towards each), and no fill from above.
+    pub more: Option<[(Vec3, Vec3); 2]>,
 }
 
 /// Vertex of a static (stage) mesh: world position, atlas UV, RGBA modulation colour.
@@ -231,6 +233,8 @@ struct Globals {
     shadow_colour: [f32; 4],
     // Tekken Tag's shadow picture: its centre's x, z (metres), 1 / its half size, the darkening (0: none)
     shadow_map: [f32; 4],
+    // Tekken Tag's two other lights: towards each, its colour
+    lights: [[f32; 4]; 4],
 }
 
 /// RGBA texture with its bind group.
@@ -1129,7 +1133,7 @@ impl Renderer {
             cutaway: cam.cutaway.map_or([0.0; 4], |(p, m)| [p[0].x, p[0].y, p[0].z, m]),
             cutaway2: cam.cutaway.map_or([0.0; 4], |(p, _)| [p[1].x, p[1].y, p[1].z, f32::from(u8::from(cam.cutaway_all))]),
             near_cut: cam.near_cut.map_or([0.0; 4], |z| [z, 1.0, 0.0, 0.0]),
-            key_color: cam.light.map_or([0.0; 4], |l| [l.key.x, l.key.y, l.key.z, 1.0]),
+            key_color: cam.light.map_or([0.0; 4], |l| [l.key.x, l.key.y, l.key.z, if l.more.is_some() { 2.0 } else { 1.0 }]),
             ambient: cam.light.map_or([0.0; 4], |l| l.ambient.extend(0.0).to_array()),
             material: cam.light.map_or([0.0; 4], |l| l.material.extend(0.0).to_array()),
             shadow: cam.shadow.filter(|s| s.toward.y > 0.05).map_or([0.0; 4], |s| [s.toward.x / s.toward.y, s.toward.z / s.toward.y, s.floor, 1.0]),
@@ -1138,6 +1142,9 @@ impl Renderer {
                 // sRGB to the frame's linear colour
                 let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
                 [lin(s.colour.x), lin(s.colour.y), lin(s.colour.z), 1.0]
+            }),
+            lights: cam.light.and_then(|l| l.more).map_or([[0.0; 4]; 4], |[(c1, l1), (c2, l2)]| {
+                [l1.normalize_or_zero().extend(0.0).to_array(), c1.extend(0.0).to_array(), l2.normalize_or_zero().extend(0.0).to_array(), c2.extend(0.0).to_array()]
             }),
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
