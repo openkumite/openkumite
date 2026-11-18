@@ -208,6 +208,18 @@ struct EndingRun {
     back: ttt::Page,
 }
 
+/// Tekken Bowl running: its scene, the bowlers' GPU models, the ball's and each pin's meshes (indices into the stage's
+/// `sky`) with their vertices as made, START pressed since the last step.
+struct BowlRun {
+    scene: kumite_game::bowl::BowlScene,
+    models: Vec<SkinnedModel>,
+    ball: Vec<(usize, Vec<StaticVertex>)>,
+    pins: Vec<Vec<(usize, Vec<StaticVertex>)>>,
+    start: bool,
+    /// Each player's model record (its voices).
+    records: Vec<usize>,
+}
+
 /// The attract loop's state: its step (0x80097F3E), the embu variant last shown (0x80097F20), the demo list
 /// index (0x80097F13).
 #[derive(Default)]
@@ -483,6 +495,8 @@ struct App {
     embu: Option<EmbuRun>,
     /// Tekken Tag's ending playing.
     ttt_ending: Option<EndingRun>,
+    /// Tekken Bowl, while it plays.
+    bowl: Option<BowlRun>,
     attract_demo_list: Vec<usize>,
     /// The attract demo's CPU level (attract.json `demo_fight.ai_level`).
     attract_demo_level: usize,
@@ -1345,7 +1359,8 @@ impl App {
         let coop = self.fight.as_ref().is_some_and(|f| f.partner.is_some());
         // (online: two players at this computer split the keyboard too)
         let two_here = self.room.as_ref().is_some_and(|r| r.mine().len() > 1);
-        let versus = coop || two_here || self.fight.as_ref().and_then(|f| f.setup.as_ref()).is_some_and(|s| s.mode == Mode::Versus);
+        let two_bowl = self.bowl.as_ref().is_some_and(|b| b.scene.bowl.players.len() > 1);
+        let versus = coop || two_here || two_bowl || self.fight.as_ref().and_then(|f| f.setup.as_ref()).is_some_and(|s| s.mode == Mode::Versus);
         let kb = self.keyboard_pads(versus);
         let pads = self.gamepads.as_mut().map_or([None; 4], |g| g.pads4(&self.records.controls));
         std::array::from_fn(|i| {
@@ -1575,6 +1590,10 @@ impl App {
         if self.ttt_ending.is_some() {
             self.tapped.clear();
             self.step_ttt_ending();
+            return;
+        }
+        if self.bowl.is_some() {
+            self.step_bowl();
             return;
         }
         if self.fight.as_ref().is_some_and(|f| f.bout.phase == Phase::Interlude) {
@@ -2998,6 +3017,7 @@ impl App {
             a.music(None);
         }
         (self.fight, self.tag, self.force, self.run, self.scene, self.embu, self.screen) = (None, None, None, None, None, None, None);
+        self.bowl = None;
         // the AI's seats (`random`: a style from the game's seed, as the menus draw)
         for k in 0..4 {
             self.ai_seats[k] = spec.ai[k].then(|| {
@@ -3196,6 +3216,11 @@ impl App {
                 self.room_events(out);
             }
             Outcome::Fight(setup, ladder) => self.start_fight(setup, ladder),
+            Outcome::TttFight(run) if run.mode == ttt::BOWL => {
+                if let Err(e) = self.start_bowl(&run.teams) {
+                    self.load_failed("Tekken Bowl", &e);
+                }
+            }
             Outcome::TttFight(run) => {
                 let setup = run.setup();
                 self.ttt_run = Some(*run);
@@ -3488,6 +3513,87 @@ impl App {
                 self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: run.back, frame: 0 })));
             }
         }
+    }
+
+    /// Tekken Bowl (mode 8, 0x3F0C00): the bowling hall, each player's bowler, the ball and the ten pins
+    /// (`stages/bowl_*.glb`, moved with the hall's model), the pin deck's machinery, its music.
+    fn start_bowl(&mut self, teams: &[ttt::Team]) -> Result<()> {
+        let players: Vec<(usize, usize)> = (teams.iter().filter_map(|t| t.first()))
+            .filter_map(|&(i, costume)| {
+                let c = self.roster.characters.get(i)?;
+                Some((*c.costumes.get(costume).or(c.costumes.first())?, c.id))
+            })
+            .collect();
+        let r = self.renderer.take().context("no renderer")?;
+        let result = (|| -> Result<()> {
+            let scene = kumite_game::bowl::BowlScene::new(&self.assets, &players, self.seed)?;
+            let mut stage = self.stage_scene(&r, kumite_game::bowl::ARENA);
+            stage.models.clear();
+            let models = scene.characters.iter().zip(&players).map(|(ch, p)| skinned_character(&r, ch, p.0)).collect();
+            // a model's meshes join the hall's (each its texture), with their vertices as made
+            let add = |file: &str, stage: &mut Scene| -> Result<Vec<(usize, Vec<StaticVertex>)>> {
+                let st = kumite_assets::Stage::load(&self.assets.root.join(file))?;
+                let tex: Vec<_> = st.textures.iter().map(|t| r.texture(t.width, t.height, &t.rgba)).collect();
+                let meshes = st.sky.iter().filter_map(|m| {
+                    let v: Vec<StaticVertex> = m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color }).collect();
+                    stage.sky.push(r.sorted_mesh(&v, &m.indices, tex.get(m.texture)?.clone()));
+                    Some((stage.sky.len() - 1, v))
+                });
+                Ok(meshes.collect())
+            };
+            let ball = add(&scene.ball_model, &mut stage)?;
+            let pins = (0..10).map(|_| add(&scene.pin_model, &mut stage)).collect::<Result<_>>()?;
+            // the pin deck's machinery, where the arena's object table puts it (an older pack has none)
+            let _ = add(&scene.deck_model, &mut stage);
+            if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
+                audio.music(sound.arena_music(kumite_game::bowl::ARENA));
+            }
+            log::info!("Tekken Bowl: {} player(s)", players.len());
+            self.scene = Some(stage);
+            self.bowl = Some(BowlRun { scene, models, ball, pins, start: false, records: players.iter().map(|p| p.0).collect() });
+            self.screen = None;
+            self.fight = None;
+            Ok(())
+        })();
+        self.renderer = Some(r);
+        result
+    }
+
+    /// One Tekken Bowl frame with the pad of the player bowling, and its sounds.
+    fn step_bowl(&mut self) {
+        let pads = self.pads();
+        self.tapped.clear();
+        let Some(run) = self.bowl.as_mut() else { return };
+        let who = run.scene.bowl.current;
+        let start = std::mem::take(&mut run.start);
+        run.scene.step(Pad { start, ..pads[who.min(1)] });
+        let Some(audio) = self.audio.as_mut() else { return };
+        for e in &run.scene.bowl.events {
+            let (code, player) = match *e {
+                kumite_sim::bowl::Event::Sound(code) => (code, who),
+                kumite_sim::bowl::Event::Voice { player, id } => (id, player),
+            };
+            let record = run.records.get(player).copied().unwrap_or(0);
+            if let Some(s) = self.sound.as_ref().and_then(|d| d.tag_entry(code, record, kumite_game::bowl::ARENA)) {
+                audio.sfx(&s.file, s.volume, s.speed);
+            }
+        }
+    }
+
+    /// Tekken Bowl over or left: the totals (and who won), then the main menu.
+    fn end_bowl(&mut self) {
+        let Some(run) = self.bowl.take() else { return };
+        self.scene = None;
+        if let Some(a) = self.audio.as_mut() {
+            a.music(None);
+        }
+        let b = &run.scene.bowl;
+        let mut lines = vec!["TEKKEN BOWL".to_string()];
+        lines.extend(b.cards.iter().enumerate().map(|(k, c)| format!("{}P  {}", k + 1, c.total())));
+        if b.cards.len() > 1 && b.phase == kumite_sim::bowl::Phase::Over {
+            lines.push(b.winner().map_or("DRAW".into(), |w| format!("{}P WINS", w + 1)));
+        }
+        self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, title: false }, frame: 0 })));
     }
 
     /// The attract demo fight (battle type 6, 0x800D2E3C): P1 the next of the demo list (unlocked only), P2 picked
@@ -4309,6 +4415,15 @@ impl App {
             run.skip |= key == Key::Start;
             return true;
         }
+        // Tekken Bowl: START skips a strike's pose and ends a finished game; BACK leaves it for the main menu
+        if let Some(b) = self.bowl.as_mut() {
+            if key == Key::Back || (key == Key::Start && b.scene.bowl.phase == kumite_sim::bowl::Phase::Over) {
+                self.end_bowl();
+            } else if key == Key::Start {
+                b.start = true;
+            }
+            return true;
+        }
         // START during the embu: the main menu (no sound), and the attract loop moves on a step
         if self.embu.is_some() {
             if key == Key::Start {
@@ -4538,6 +4653,20 @@ impl App {
         if let Some(s) = self.scene.as_mut() {
             s.animate(r);
         }
+        // Tekken Bowl: the ball and the pins where they are (gone: folded away under the floor)
+        if let (Some(b), Some(s)) = (self.bowl.as_ref(), self.scene.as_mut()) {
+            let pins = b.scene.pins();
+            let placed = std::iter::once((b.scene.ball(), &b.ball)).chain(b.pins.iter().enumerate().map(|(k, m)| (pins.get(k).copied().flatten(), m)));
+            for (at, meshes) in placed {
+                let (base, rot) = at.unwrap_or((glam::Vec3::new(0.0, -10.0, 0.0), glam::Mat3::ZERO));
+                for (i, v) in meshes {
+                    let moved: Vec<StaticVertex> = v.iter().map(|v| StaticVertex { pos: (base + rot * glam::Vec3::from(v.pos)).to_array(), ..*v }).collect();
+                    if let Some(m) = s.sky.get_mut(*i) {
+                        r.move_mesh(m, &moved);
+                    }
+                }
+            }
+        }
         let (cam, lines) = match (self.fight.as_ref(), self.scene.as_ref()) {
             (Some(fight), Some(scene)) => {
                 let cutscene = fight.cutscene.as_ref();
@@ -4687,6 +4816,26 @@ impl App {
                 scene_lighting(&mut cam, scene);
                 (cam, Vec::new())
             }
+            // Tekken Bowl: its bowler, the hall's model as it stands (not following anyone), its camera
+            (None, Some(scene)) if self.bowl.is_some() => {
+                let Some(run) = self.bowl.as_ref() else { return };
+                if let (Some((ch, pose, place)), Some(model)) = (run.scene.pose(), run.models.get(run.scene.bowl.current)) {
+                    r.update_bones(model, &ch.skin_matrices(&pose, place));
+                }
+                let fov_y = kumite_game::view_camera(&kumite_sim::camera::View { h: 500, ..Default::default() }).2;
+                let (e, t) = run.scene.camera();
+                // (or the debug orbit camera about its target)
+                let mut cam = match self.debug.free_cam {
+                    Some(fc) => {
+                        let dir = glam::Vec3::new(fc.yaw.sin() * fc.pitch.cos(), fc.pitch.sin(), fc.yaw.cos() * fc.pitch.cos());
+                        Camera::new(t + fc.pan + dir * fc.distance, t + fc.pan, fov_y)
+                    }
+                    None => Camera::new(e, t, fov_y),
+                };
+                (cam.sky_y_scale, cam.sky_cull, cam.sky_depth, cam.background) = (1.0, false, true, Some(scene.background));
+                scene_lighting(&mut cam, scene);
+                (cam, Vec::new())
+            }
             // the records screen: the stage alone, the eye circling its centre
             (None, Some(scene)) if matches!(self.screen, Some(Screen::Records(_))) => {
                 let Some(Screen::Records(rs)) = self.screen.as_ref() else { unreachable!() };
@@ -4712,6 +4861,10 @@ impl App {
                 let Some((run, scene)) = self.ttt_ending.as_ref().and_then(|e| Some((e, e.scene.as_ref()?))) else { return };
                 let shown = (0..2).filter_map(|k| scene.pose(k)).filter_map(|p| run.models.get(p.0)).collect();
                 (s.sky.iter().collect(), s.statics.iter().collect(), shown)
+            }
+            (Some(s), None) if self.bowl.is_some() => {
+                let Some(run) = self.bowl.as_ref() else { return };
+                (s.sky.iter().collect(), s.statics.iter().collect(), run.models.get(run.scene.bowl.current).into_iter().collect())
             }
             (Some(s), None) if self.embu.is_some() => {
                 let Some(run) = self.embu.as_ref() else { return };
@@ -4800,6 +4953,7 @@ impl App {
                 let (paused, speed) = (debug.paused, debug.speed);
                 let force = self.force.as_ref().filter(|_| fight.is_some_and(|f| f.setup.as_ref().is_some_and(|s| s.mode == Mode::Force)));
                 let tag = self.tag.as_ref();
+                let bowl = self.bowl.as_ref();
                 let embu_white = self.embu.as_ref().map_or(0, |e| e.scene.white);
                 // Tekken Tag's ending: the staff roll, the fades (black until the scene, and after it)
                 let ending = self.ttt_ending.as_ref().map(|e| (e.roll, e.scene.as_ref().filter(|s| !s.done).map_or((255, 0), |s| s.fades())));
@@ -4849,6 +5003,10 @@ impl App {
                             let full = [0.0, 0.0, art::SCREEN_W, art::SCREEN_H];
                             Art::shade(&painter, &view, full, [art::additive(egui::Color32::from_gray(cs.scene.white)); 4]);
                         }
+                    } else if let (Some(b), Some(d)) = (bowl, roster.ttt.as_deref()) {
+                        let view = art::Screen::fit(ctx.content_rect());
+                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("bowl_hud")));
+                        ttt::bowl_hud(&painter, &view, art, d, roster, &b.scene, frames);
                     } else if let Some(t) = tag {
                         if replay_view.as_ref().is_none_or(|v| v.hud) {
                             t.hud.draw(ctx, art, &hud.data, &t.game, &t.info);
@@ -6357,6 +6515,7 @@ impl App {
         }
         (self.net, self.fight, self.tag, self.scene, self.force, self.run, self.embu, self.waiting) = (None, None, None, None, None, None, None, None);
         self.ttt_ending = None;
+        self.bowl = None;
         // (a lingering session too: its poll may be what panicked, and it belongs to the room just dropped)
         self.net_linger = None;
         self.online_mode = None;
@@ -6726,6 +6885,39 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             let seen = std::env::args().skip_while(|a| a != "--variant").nth(1).and_then(|v| v.parse().ok()).unwrap_or(u64::MAX);
             ttt::set_progress(ttt::Progress { seen, ..ttt::progress() });
             app.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Theater { cursor: [0, 0] }, frame: 0 })));
+        }
+        Some("bowl") => {
+            // Tekken Bowl (`--variant 2`: two players, the previews' player and the next character), each throw
+            // scripted: steps until the hand is a little right of the middle, a small turn left, CROSS for the spin
+            // and near the power meter's top; N frames in
+            let two = std::env::args().skip_while(|a| a != "--variant").nth(1).as_deref() == Some("2");
+            let next = (previewed + 1) % app.roster.characters.len().max(1);
+            let teams: Vec<ttt::Team> = if two { vec![vec![(previewed, 0)], vec![(next, 0)]] } else { vec![vec![(previewed, 0)]] };
+            app.renderer = Some(r);
+            app.start_bowl(&teams)?;
+            for f in 0..frames {
+                let Some(b) = app.bowl.as_mut() else { break };
+                let g = &b.scene.bowl;
+                let press = |go: bool| if go && f % 2 == 0 { kumite_sim::bowl::CROSS } else { 0 };
+                let spot = 100.0 - g.players.get(g.current).map_or(0.0, |p| p.hand.x);
+                let pad = match g.phase {
+                    kumite_sim::bowl::Phase::Position => Pad { left: g.x > spot, buttons: press(g.x <= spot), ..Pad::default() },
+                    kumite_sim::bowl::Phase::Aim => Pad { left: g.angle > -0x20, buttons: press(g.angle <= -0x20), ..Pad::default() },
+                    kumite_sim::bowl::Phase::Power => Pad { buttons: press(g.power >= 90.0), ..Pad::default() },
+                    _ => Pad::default(),
+                };
+                b.scene.step(pad);
+            }
+            for _ in 0..13 {
+                app.draw();
+            }
+            let r = app.renderer.take().context("renderer")?;
+            write_png(Path::new(path), &r.capture()?)?;
+            if let Some(b) = &app.bowl {
+                let g = &b.scene.bowl;
+                log::info!("bowl frame {}: {:?}, player {}, ball {:?}, standing {}, cards {:?}", g.frame, g.phase, g.current, g.ball.pos, g.standing(), g.cards);
+            }
+            return Ok(());
         }
         Some("embu") => {
             // the attract embu (`--variant N`), N frames in
@@ -7247,6 +7439,7 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         embu_data: kumite_game::embu::EmbuData::load(&assets).map(Arc::new).map_err(|e| log::warn!("no attract.json embu: {e:#}")).ok(),
         embu: None,
         ttt_ending: None,
+        bowl: None,
         attract_demo_list: attract["demo_fight"]["p1_list"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as usize).collect()).unwrap_or_default(),
         attract_demo_level: attract["demo_fight"]["ai_level"].as_u64().unwrap_or(0) as usize,
         attract_steps: attract["cycle"]["steps"].as_array().cloned().unwrap_or_default(),

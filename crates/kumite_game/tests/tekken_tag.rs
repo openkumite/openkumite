@@ -553,3 +553,41 @@ fn an_ending_plays_to_its_end() {
     assert_eq!(d.pick(&[(7, 4), (0, 2)], 1 << 10 | 1 << 1), Some((10, 4)));
     assert_eq!(d.pick(&[(7, 0)], 1 << 9), Some((9, 0)));
 }
+
+/// Tekken Bowl from the pack: Paul's throw (its hand's release point from his motion, ahead of him, above the lane,
+/// on his right), the ball rolled down the middle and counted, Paul and Lei taking turns; two runs give the same
+/// states.
+#[test]
+fn tekken_bowl_from_the_pack() {
+    use kumite_game::bowl::BowlScene;
+    use kumite_sim::bowl::{Phase as Bowl, CROSS};
+    let Some(a) = assets() else { return };
+    let play = || {
+        let mut s = BowlScene::new(&a, &[(PAUL, 0), (LEI, 2)], 7).unwrap();
+        let hand = s.bowl.players[0].hand;
+        assert!(hand.y < -150.0 && hand.z > 3000.0 && hand.x > 0.0, "Paul's release point {hand}");
+        assert_eq!(s.bowl.players[0].charge.len(), 175);
+        let mut hashes = vec![];
+        for f in 0..2000u32 {
+            let b = &s.bowl;
+            let press = |go: bool| if go && f % 2 == 0 { CROSS } else { 0 };
+            // the ball down the middle: the bowler steps left until the hand is over the centre
+            let centre = -b.players[b.current].hand.x;
+            let pad = match b.phase {
+                Bowl::Position => Pad { left: b.x > centre, buttons: press(b.x <= centre), ..Pad::default() },
+                Bowl::Aim => Pad { buttons: press(true), ..Pad::default() },
+                Bowl::Power => Pad { buttons: press(b.power >= 90.0), ..Pad::default() },
+                _ => Pad::default(),
+            };
+            s.step(pad);
+            assert!(s.pose().is_some());
+            hashes.push(s.bowl.hash());
+        }
+        (hashes, s.bowl.cards.clone())
+    };
+    let (hashes, cards) = play();
+    // both bowled: a frame each at least, most pins down on Paul's first ball from the middle
+    assert!(cards.iter().all(|c| !c.rolls.is_empty()), "{cards:?}");
+    assert!(cards[0].rolls[0] >= 5, "{cards:?}");
+    assert_eq!(hashes, play().0);
+}

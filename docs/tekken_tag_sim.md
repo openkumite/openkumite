@@ -118,7 +118,8 @@ volume byte, the music's loop point, YOU WIN / LOSE. Tests: `kumite_game --test 
 With a pack whose roster.json has `front_end` (converter format 8; `app/src/ttt.rs`), Tekken Tag gets its own front
 end in place of the `--fight` sandbox; an older pack keeps the plain one. Title (`134_003`, PRESS P1 START), the main
 menu 0x51EFE0 (ARCADE, VS BATTLE, TEAM BATTLE, TIME ATTACK, SURVIVAL, 1 ON 1, 1 ON 1 VS, PRACTICE, OPTIONS; THEATER
-once an ending was seen; the locked TEKKEN BOWL and GALLERY not shown), the select grid 0x440A68 (faces at (x, y + 52), locked faces by the unlock
+once an ending was seen; TEKKEN BOWL once the unlock stage reaches the schedule's kind 5, 10; the locked GALLERY not
+shown), the select grid 0x440A68 (faces at (x, y + 52), locked faces by the unlock
 stage, RANDOM; tag modes pick two, 1 ON 1 one, Team Battle up to eight with START ending, 2P's START joins), a VS
 screen, the fight with the HUD from the art (the six strips, angry strips, name plates on their streaks, round lamps,
 the timer's digits, STAGE n / FINAL, the partner's bar), CONTINUE? 9..0 (898 frames, a button skips 100), GAME OVER,
@@ -143,8 +144,35 @@ MOVIE and EMBU (shown, not playable), MUSIC PLAYER (0x455D80's BGM list), EXIT.
 OpenKumite's (not decoded): the menus' and the select's layout below the grid (portraits of files 143-181, the backdrop
 of file 182 / 141), the VS screen, which button gives which costume (1-4, START the fifth), which strip is which,
 the partner bar's place, the banners in the chrome font `003_001`, a play point a match, the Mokujin / Unknown slots
-shown once unlocked, Theater's layout, the staff roll's fonts (egui's) and its logo cards. Not done: Tekken Bowl,
+shown once unlocked, Theater's layout, the staff roll's fonts (egui's) and its logo cards. Not done:
 Gallery, the records, the select timer, the help lines, Practice's own menus (a free fight), replays of a tag battle;
 in the endings, the effect ops (sparks, objects, show / hide), the face and hand tracks, the arenas' background
 characters, BGM 7's start 134.87 s into its stream (the Theater's ending music starts at the stream's start); the
 movies (MPEG-2, not converted) and the EMBU exhibition.
+
+## Tekken Bowl
+
+Converter format 11 (`gamedata/bowl.json`, `motions/bowl_NNN.glb`, `stages/bowl_ball.glb` / `bowl_pin.glb`; its
+docs/BOWL_ENDINGS.md sections 1-6). `kumite_sim::bowl` is the game, deterministic (f32 with reproducible operations,
+the trigonometry through `detmath`, the game's random draws from a seed; `Bowl::hash`): the state machine 0x3F0008,
+the throw's phases (position +-8 to +-1000, aim +-0x10 to +-0x800 with the spin meter swinging within the hand's
+bounds, the power meter wrapping at 100, CROSS on the wrap frame OVER CHARGED with probability S / 2000), the run-up
+(steering 1280 / S), the release at the throw motion's frame 106 (speed S (power + 100) / 200, the meters off by their
+own speeds), the ball (fall, bounce, hook rescaled to its speed, the deck walls), the 25 spectators (a K.O. within 300),
+the end of a roll, the count, ten-pin scoring with STRIKE / SPARE / MISS / FOUL / SPLIT, the callouts (DOUBLE!!,
+TURKEY!!!, !!GREAT!!, PUNCH OUT, PERFECT, NICE COVER) and their announcer, the pin clatter, OVER CHARGED's charge (the
+runner's body against the pins, a FOUL). `kumite_game::bowl::BowlScene` puts the characters on it: the bowl motions by
+hand (stand, steps, throw, the charges by style, the strike reaction), the hand's release point at frame 106 and the
+charge's travel from the motions, the camera. The app (`App::start_bowl`): TEKKEN BOWL's select (P1 picks; 2P's START
+joins; Mokujin and Unknown bowl with a random character's stats), the hall (arena 20), the ball, the pins and the pin
+deck drawn with the hall's model (the arena objects the roll's draw 0x3EEF00 names, placed by its object table), the HUD (`ttt::bowl_hud`), the results, back to the menu. Keys: left / right, CROSS (button 3),
+CIRCLE (button 4) back to the position, START skips a strike's pose; BACK leaves. Picture: `--screen bowl [--variant
+2]` plays scripted throws. Tests: `kumite_sim` `bowl::tests` (scoring, the tenth frame, 300, a straight throw, the
+hook by hand, OVER CHARGED's FOUL, a K.O., determinism); `kumite_game --test tekken_tag tekken_bowl_from_the_pack`.
+
+OpenKumite's (not decoded): the pins' collision response (three spheres and a base each, impulses with friction;
+the original's 0x3EDC90 / 0x3EDF88), the HUD's layout and gauges (plain boxes, the front end's fonts), the cameras'
+offsets from their decoded bases, the strike pose's length (150 frames), the count's callout time. Not done: the
+spectators drawn (their K.O. is tested, not shown), the floor between the pins and the deck (the hall has a hole
+there: what the original draws in it is not found), the ball's and pins' shadows (objects 2, 3), the strike win poses 4770-4773 and the partner's, the replay, the BOWL STYLE / SWITCH HANDS menu, the pause
+menu, the records (THE KING OF IRONBOWL) and the 200 / 300 unlocks, the aiming guide.
