@@ -3960,13 +3960,14 @@ dependencies = [
 [[package]]
 name = "ok_tekken_tag_converter"
 version = "0.1.0"
-source = "git+https://github.com/openkumite/ok_tekken_tag_converter?branch=main#a85996cadab9c3f855b88b4388cef9893e6ce602"
+source = "git+https://github.com/openkumite/ok_tekken_tag_converter?branch=main#00609a8fdb5dacbfd2c0518396c1cffa8a68665b"
 dependencies = [
  "anyhow",
  "libm",
  "ok_converter_common",
  "png",
  "serde_json",
+ "sha2 0.11.1",
 ]
 
 [[package]]
