@@ -112,3 +112,24 @@ time_up, great, perfect, ko1, round, fight; 0x5C, played as FINAL ROUND, is name
 from the start. Not done: type 9 and script kind 3 (0x376578), the Jacks' and Mokujin's own hit handlers, the samples'
 volume byte, the music's loop point, YOU WIN / LOSE. Tests: `kumite_game --test tekken_tag`. A video: `--fight
 --models ... --export-video fight --frames N --out F.mp4`.
+
+## Front end
+
+With a pack whose roster.json has `front_end` (converter format 8; `app/src/ttt.rs`), Tekken Tag gets its own front
+end in place of the `--fight` sandbox; an older pack keeps the plain one. Title (`134_003`, PRESS P1 START), the main
+menu 0x51EFE0 (ARCADE, VS BATTLE, TEAM BATTLE, TIME ATTACK, SURVIVAL, 1 ON 1, 1 ON 1 VS, PRACTICE, OPTIONS; the locked
+TEKKEN BOWL, THEATER and GALLERY not shown), the select grid 0x440A68 (faces at (x, y + 52), locked faces by the unlock
+stage, RANDOM; tag modes pick two, 1 ON 1 one, Team Battle up to eight with START ending, 2P's START joins), a VS
+screen, the fight with the HUD from the art (the six strips, angry strips, name plates on their streaks, round lamps,
+the timer's digits, STAGE n / FINAL, the partner's bar), CONTINUE? 9..0 (898 frames, a button skips 100), GAME OVER,
+OPTIONS (DIFFICULTY LEVEL, FIGHT COUNT, ROUND TIME: kept in the save). Arcade, Time Attack and 1 ON 1: eight fights,
+1-6 from the CPU pool (one a pair of 0x5207F0), 7 the rival team in Ogre's arena, 8 Unknown alone, one round, in hers.
+Team Battle: one match a member, the winner stays with 15 % back. Survival: one round a fight, the health carried.
+The save (`openkumite_save_ttt.json`, `ttt`): the unlock stage (0x440818: a new front character's clear or 50 matches
+advance it), points, endings, options.
+
+OpenKumite's (not decoded): the menus' and the select's layout below the grid (portraits of files 143-181, the backdrop
+of file 182 / 141), the VS screen, which button gives which costume (1-4, START the fifth), which strip is which,
+the partner bar's place, the banners in the chrome font `003_001`, a play point a match, an ending a character, the
+Mokujin / Unknown slots shown once unlocked. Not done: Tekken Bowl, Theater, Gallery, the endings, the records, the
+select timer, the help lines, Practice's own menus (a free fight), replays of a tag battle.

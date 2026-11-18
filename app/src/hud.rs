@@ -39,6 +39,8 @@ pub struct HudInfo {
     pub no_result: bool,
     /// A tag battle: the partners' names (members 1; `names` are members 0).
     pub partners: Option<[String; 2]>,
+    /// Tekken Tag's front end: its HUD drawn from its pictures (else the plain one).
+    pub ttt: Option<std::sync::Arc<crate::ttt::Data>>,
 }
 
 /// An under-bar text kind (0x8004EB54).
@@ -369,6 +371,11 @@ impl Hud {
         Self { data, state: HudState::default(), view_proj: None }
     }
 
+    /// The run's fighting time so far (frames).
+    pub fn run_frames(&self) -> u32 {
+        self.state.run_frames
+    }
+
     /// A new fight; the arcade run's time starts again at stage 1 (Time Attack: from its run's time).
     pub fn reset(&mut self, info: &HudInfo) {
         if let Some(base) = info.time_base {
@@ -493,6 +500,14 @@ impl Hud {
             }
         }
         let fight = &bout.game.fight;
+        // Tekken Tag (no Tekken 3 bar tables): the damage trail closes max/800 a frame (0x3C1F08's +0x18)
+        if self.data.bar_w == 0 {
+            for (i, f) in fight.fighters.iter().enumerate() {
+                let hp = f.health.max(0);
+                self.state.trail[i] = if self.state.trail[i] <= hp { hp } else { (self.state.trail[i] - (f.max_health * kumite_sim::ONE / 800).max(1)).max(hp) };
+            }
+            return;
+        }
         for i in 0..2 {
             // the bar is its width in px of the fighter's own full health (the VS handicap changes it)
             let bar_w = self.data.bar_w as i64;
@@ -511,6 +526,10 @@ impl Hud {
         let painter = painter.with_clip_rect(v.rect);
         let d = &self.data;
         if d.bar_w == 0 {
+            if let Some(t) = &info.ttt {
+                let time = info.time_base.map(|_| self.state.run_frames);
+                return crate::ttt::hud(&painter, &v, art, t, bout, info, self.state.trail, self.state.ko, self.state.frame, time);
+            }
             return plain(&painter, &v, bout, info, self.state.ko);
         }
         let src: &[&str] = &["exe"];
@@ -752,10 +771,20 @@ fn plain(painter: &egui::Painter, v: &View, bout: &Bout, info: &HudInfo, result:
     // (Tekken Tag: (t * 6 / 7 - 1) / 60, 0x36D640)
     let secs = rounds.map_or(clock.div_ceil(60), |_| (clock * 6 / 7).saturating_sub(1) / 60).min(99);
     text(crate::art::CENTRE, y - 6.0, Align2::CENTER_TOP, &secs.to_string(), 1.6);
+    if let Some(call) = call(bout, info, result) {
+        text(crate::art::CENTRE, 200.0, Align2::CENTER_CENTER, &call, 2.0);
+    }
+}
+
+/// The round's call or end as text (Tekken Tag's round machine, rounds.json: the ROUND banner and READY! on its
+/// frames), None between them.
+pub fn call(bout: &Bout, info: &HudInfo, result: Option<Announcement>) -> Option<String> {
+    let rounds = bout.game.rounds.as_ref();
+    let clock = bout.game.fight.clock;
     let later = usize::from(bout.round > 1);
     let (f, banner) = (bout.phase_frame, rounds.map(|r| r.banner[later]));
-    let call = match bout.phase {
-        Phase::Call if banner.is_some_and(|[a, b]| f < a || f > b) && rounds.is_some_and(|r| f < r.ready_from[later]) => return,
+    Some(match bout.phase {
+        Phase::Call if banner.is_some_and(|[a, b]| f < a || f > b) && rounds.is_some_and(|r| f < r.ready_from[later]) => return None,
         Phase::Call if rounds.is_some_and(|r| f >= r.ready_from[later]) => "READY!".into(),
         Phase::Call if bout.is_final_round() => "FINAL ROUND".to_string(),
         Phase::Call => format!("ROUND {}", bout.round),
@@ -767,9 +796,8 @@ fn plain(painter: &egui::Painter, v: &View, bout: &Bout, info: &HudInfo, result:
         Phase::RoundOver { .. } if clock == 0 => "TIME UP".into(),
         Phase::RoundOver { .. } => "K.O.".into(),
         Phase::Result { winner: Some(w) } | Phase::MatchOver { winner: Some(w) } => format!("{} WINS", info.names[w].to_uppercase()),
-        _ => return,
-    };
-    text(crate::art::CENTRE, 200.0, Align2::CENTER_CENTER, &call, 2.0);
+        _ => return None,
+    })
 }
 
 /// A health bar at `xy` (0x8004E274): fill, trail and empty strips (a 1-texel column stretched; side 0 fills

@@ -92,6 +92,7 @@ mod rumble_mac;
 mod save;
 mod tagrun;
 mod theater;
+mod ttt;
 // (its layout's tests run everywhere)
 #[cfg(any(target_os = "android", test))]
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -380,6 +381,8 @@ struct App {
     models: [usize; 2],
     /// The sandbox's tag partners (`--models A,B,C,D`: a tag battle, Tekken Tag's).
     tag_models: Option<[usize; 2]>,
+    /// Tekken Tag's front end: the run whose fight this is.
+    ttt_run: Option<ttt::Run>,
     stage: usize,
     /// Round-start camera fly-in variant for the sandbox, or None to skip it.
     intro: Option<usize>,
@@ -647,6 +650,20 @@ impl App {
                 game.start_tag([kumite_game::Actor::load(&self.assets, p[0])?, kumite_game::Actor::load(&self.assets, p[1])?]);
             }
         }
+        // Tekken Tag's front end: the run's tag partners, its rules (OPTIONS' FIGHT COUNT and ROUND TIME), the health
+        // carried (Team Battle, Survival)
+        let ttt = self.ttt_run.clone().filter(|_| setup.is_some());
+        let mut ttt_rounds = None;
+        if let (Some(run), Some(d)) = (&ttt, self.roster.ttt.as_ref()) {
+            let model = |(c, k): (usize, usize)| self.roster.characters.get(c).and_then(|ch| ch.costumes.get(k).or(ch.costumes.first())).copied().unwrap_or(0);
+            if let Some(b) = run.bench() {
+                game.start_tag([kumite_game::Actor::load(&self.assets, model(b[0]))?, kumite_game::Actor::load(&self.assets, model(b[1]))?]);
+            }
+            let (r, clock) = run.rules(&d.round_frames);
+            game.round_frames = clock.unwrap_or(u32::MAX / 2);
+            game.start_health = run.health;
+            ttt_rounds = Some(r);
+        }
         // Mokujin at home (the second side's fighter is the host): the arcade ROM set's hidden arena, which the
         // arcade game gives no one. Only what is drawn: the fight's stage stays his.
         // shortcut: the second side's fighter is taken as the host, so Team Battle and the demo (the first side's
@@ -673,7 +690,7 @@ impl App {
             },
         });
         // the run's rules: rounds, clock, full health, the health carried over (0x800516CC, rec10 0x800DA910)
-        let mut rounds = self.roster.modes.rounds_to_win;
+        let mut rounds = ttt_rounds.unwrap_or(self.roster.modes.rounds_to_win);
         let run = self.run.as_ref().filter(|r| setup.as_ref().is_some_and(|s| s.mode == r.mode()));
         if let Some(run) = run {
             let (r, clock, max) = run.rules(&self.roster.modes);
@@ -777,6 +794,12 @@ impl App {
                 bout = bout.free_fight();
             }
         }
+        // Tekken Tag: the CPU plays the sides no player picked for
+        if let (Some(run), Some(s)) = (&ttt, setup.as_ref()) {
+            for k in 0..2 {
+                bout.set_cpu(k, run.cpu(k).then_some((s.difficulty, s.level)));
+            }
+        }
         if let (Some(p), Some(s)) = (replaying, setup.as_ref()) {
             for (k, &cpu) in p.cpu.iter().enumerate() {
                 bout.set_cpu(k, cpu.then_some((s.difficulty, s.level)));
@@ -798,7 +821,9 @@ impl App {
             }
         }
         // every match of a mode with rounds is recorded (its inputs on the bout's tape), saved as a replay at its end
-        let recordable = matches!(setup.as_ref().map(|s| s.mode), Some(Mode::Arcade | Mode::Versus | Mode::TeamBattle | Mode::TimeAttack | Mode::Survival | Mode::Ball | Mode::ExtraLevels));
+        // (shortcut: not a Tekken Tag tag battle: a replay does not keep the partners; upgrade: replays keep them)
+        let recordable = matches!(setup.as_ref().map(|s| s.mode), Some(Mode::Arcade | Mode::Versus | Mode::TeamBattle | Mode::TimeAttack | Mode::Survival | Mode::Ball | Mode::ExtraLevels))
+            && ttt.as_ref().is_none_or(|r| r.bench().is_none());
         self.replay_rec = None;
         if let (None, true, Some(s)) = (replaying, recordable, setup.as_ref()) {
             bout.tape = Some(Default::default());
@@ -848,6 +873,12 @@ impl App {
             ..Default::default()
         };
         let mut info = info;
+        info.ttt = self.roster.ttt.clone();
+        if let Some(run) = &ttt {
+            info.stage = run.stage_number();
+            info.time_base = run.timed().then_some(run.frames);
+            info.partners = run.bench().map(|b| b.map(|p| self.roster.characters.get(p.0).map_or_else(String::new, |c| c.name.clone())));
+        }
         if let Some(run) = self.run.as_ref().filter(|r| mode == Some(r.mode())) {
             self.mode_hud(&mut info, run);
         }
@@ -862,7 +893,8 @@ impl App {
             };
         }
         self.hud.reset(&info);
-        let practice = (mode == Some(Mode::Practice)).then(|| practice::Practice::new(practice::PracticeData::load(&self.roster.screens)));
+        // (Tekken Tag's practice: a free fight, its menus not done)
+        let practice = (mode == Some(Mode::Practice) && self.roster.ttt.is_none()).then(|| practice::Practice::new(practice::PracticeData::load(&self.roster.screens)));
         // the copying character (its voice row: sound.json's) picked with down held as the fight loads is wooden
         // (0x8002AA3C: pad bit 0x4000)
         let copy_row = self.sound.as_ref().and_then(|s| s.copy_row());
@@ -1240,6 +1272,7 @@ impl App {
             _ => 1,
         };
         log::info!("soft reset: the main menu");
+        self.ttt_run = None;
         // (a session without a room, `--net-local`: over too)
         self.net = None;
         if let Some(a) = self.audio.as_mut() {
@@ -2599,6 +2632,22 @@ impl App {
             self.fight = Some(fight); // sandbox: keep going
             return;
         };
+        // Tekken Tag's front end: its run decides (the next fight, CONTINUE?, the results); the unlocks are saved
+        if let (Some(run), Some(d)) = (self.ttt_run.take(), self.roster.ttt.clone()) {
+            self.scene = None;
+            let f = &fight.bout.game.fight;
+            let (health, max) = (f.fighters.each_ref().map(|x| x.health), f.fighters.each_ref().map(|x| x.max_health * kumite_sim::ONE));
+            let mut progress = ttt::progress();
+            let next = run.after(&d, &self.roster, &mut progress, winner, health, max, self.hud.run_frames(), &mut self.seed);
+            ttt::set_progress(progress.clone());
+            self.records.ttt = progress;
+            self.records.save();
+            match next {
+                ttt::Next::Fight(r) => self.outcome(Outcome::TttFight(r)),
+                ttt::Next::Screen(page) => self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page, frame: 0 }))),
+            }
+            return;
+        }
         // a lost arcade match keeps its scene: CONTINUE? shows over the loser shot
         let continues = matches!(setup.mode, Mode::Arcade | Mode::TimeAttack) && winner != Some(0);
         if !continues {
@@ -3125,6 +3174,15 @@ impl App {
                 self.room_events(out);
             }
             Outcome::Fight(setup, ladder) => self.start_fight(setup, ladder),
+            Outcome::TttFight(run) => {
+                let setup = run.setup();
+                self.ttt_run = Some(*run);
+                self.start_fight(setup, Vec::new());
+            }
+            Outcome::TttSaved => {
+                self.records.ttt = ttt::progress();
+                self.records.save();
+            }
             Outcome::StartTag(setup) => self.start_tag(setup),
             Outcome::StartOnline(setup) => self.start_online(*setup),
             Outcome::CancelOnline => {
@@ -3383,7 +3441,8 @@ impl App {
             _ => None,
         };
         let force = (setup.mode == Mode::Force).then(|| self.force.as_ref().map(|r| r.card())).flatten();
-        let extra = Box::new(menu::VsExtra { humans, teams, force });
+        let bench = self.ttt_run.as_ref().and_then(|r| r.bench());
+        let extra = Box::new(menu::VsExtra { humans, teams, force, bench });
         self.screen = Some(Screen::Versus { setup, ladder, frame: 0, number, extra });
     }
 
@@ -5414,6 +5473,12 @@ fn draw_pause(ctx: &egui::Context, art: &Art, items: &[String], cursor: usize, p
     Art::shade(&painter, &v, [147.0, 98.0, 74.0, 9.0 + 20.0 * n], [egui::Color32::from_gray(0xE0); 4]);
     Art::shade(&painter, &v, [148.0, 100.0, 72.0, 5.0 + 20.0 * n], [egui::Color32::from_rgb(0, 0x10, 0x30); 4]);
     for (k, item) in shown.iter().enumerate() {
+        // (a game without the fonts' tables, Tekken Tag: OpenKumite's words in egui's font)
+        if art.fonts.is_empty() {
+            let c = if k == cursor { egui::Color32::from_rgb(255, 80, 60) } else { egui::Color32::WHITE };
+            painter.text(v.pos(crate::art::CENTRE, 104.0 + 20.0 * k as f32), egui::Align2::CENTER_TOP, ["CONTINUE", "QUIT", "RULES"][k.min(2)], egui::FontId::proportional(v.rect.height() / 30.0), c);
+            continue;
+        }
         let colour = if k == cursor { 2 } else { 6 };
         art.text(&painter, &v, 0, colour, crate::art::CENTRE - (9 * item.len() / 2) as f32, 104.0 + 20.0 * k as f32, item, egui::Color32::WHITE);
     }
@@ -6257,7 +6322,10 @@ fn record_video(app: &mut App, total: u64, out: &Path, width: u32, height: u32, 
 #[cfg(not(target_arch = "wasm32"))]
 fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&str>) -> Result<()> {
     #[allow(unused_mut)]
-    let mut r = Renderer::headless(960, 720)?;
+    // (`--size WxH`: another size than 960 x 720)
+    let size = std::env::args().skip_while(|a| a != "--size").nth(1).and_then(|s| s.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))));
+    let (w, h) = size.unwrap_or((960, 720));
+    let mut r = Renderer::headless(w, h)?;
     r.set_settings(app.graphics.render());
     app.egui = Some(EguiLayer::new(r.device(), r.overlay_format(), None));
     app.debug.show_ui = ui;
@@ -6458,7 +6526,7 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
                 ladder: Vec::new(),
                 frame: 0,
                 number: 1,
-                extra: Box::new(menu::VsExtra { humans: 1, teams: None, force: None }),
+                extra: Box::new(menu::VsExtra { humans: 1, ..Default::default() }),
             });
         }
         Some("winpose") => {
@@ -6803,6 +6871,7 @@ Headless (no window; the save is not written):
                                practice, versus, hud, tag, grid, force (--tally), force-results, presents, ending,
                                staff-roll, movie, embu, ...
   --ui                         ... with the debug panel
+  --size WxH                   ... of this size (default 960x720)
   --variant N, --coop, --chicken, --boss
                                ... the screen's variant (some screens)
 
@@ -6994,6 +7063,7 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
     }
     let records = save::Records::load(&roster.modes.ta_defaults, &roster.modes.survival_defaults);
     menu::set_difficulty(records.difficulty);
+    ttt::set_progress(records.ttt.clone());
     let graphics = records.graphics.clone().with_args(|n| arg(n), |n| flag(n))?;
     let graphics_preset = arg("--graphics").map(|p| graphics::Preset::parse(&p)).transpose()?;
     let mut app = App {
@@ -7042,6 +7112,7 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         assets,
         models,
         tag_models,
+        ttt_run: None,
         stage,
         intro: if flag("--no-intro") { None } else { Some(arg("--intro").and_then(|v| v.parse().ok()).unwrap_or(0)) },
         sandbox,

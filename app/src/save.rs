@@ -100,6 +100,9 @@ pub struct Records {
     /// The unlocking name typed as a record name (unlocks its character, 0x800561B0).
     #[serde(default)]
     pub name_unlock: bool,
+    /// Tekken Tag: its unlock stage, play points, endings seen and options.
+    #[serde(default)]
+    pub ttt: crate::ttt::Progress,
     #[serde(skip)]
     pub new: Vec<NewRecord>,
 }
