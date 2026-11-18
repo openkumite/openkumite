@@ -234,3 +234,19 @@ fn a_partner_move_needs_its_partner() {
     assert!(with(LAW), "with Law");
     assert!(!with(JIN), "not with Jin");
 }
+
+/// Tekken Tag's own camera (camera.json, FIGHT_DATA.md section 18): H 615 on arena 0 with the depth 615 x 1900 / 256,
+/// drawn as H 442 on Tekken 3's 368-pixel screen; arena 5's clamp starts at 500.
+#[test]
+fn tekken_tags_camera() {
+    let Some(root) = std::env::var_os("OK_TTT_ASSETS") else { return };
+    let a = Assets::new(std::path::Path::new(&root)).unwrap();
+    let mut g = Game::load(&a, [PAUL, LEI]).unwrap();
+    if !a.root.join("gamedata/camera.json").exists() {
+        return; // a pack from before its camera
+    }
+    g.set_arena(5);
+    let d = g.camera.data();
+    assert_eq!((d.h, d.h_range, d.distance, d.intro_blend, d.fit_px), (615, [500, 900], 4564, 13, 392));
+    assert_eq!(g.camera.view.h, 442);
+}
