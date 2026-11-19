@@ -874,6 +874,30 @@ fn an_ending_plays_to_its_end() {
     assert_eq!(d.pick(&[(7, 0)], 1 << 9), Some((9, 0)));
 }
 
+/// The 2D objects ending scripts lay over the picture: ending 2's negative (op 24 kind 0, frames 753-850) and iris
+/// (op 22 from frame 899: radius 640 to 0 over 120 frames, then held), ending 22's oval (op 23, 136 frames from 120).
+#[test]
+fn an_endings_overlays() {
+    use kumite_game::ending::{EndingScene, Overlay};
+    let Some(a) = assets() else { return };
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    let at = |e: usize, frames: &[i32]| -> Vec<Vec<Overlay>> {
+        let mut s = EndingScene::new(&a, &d, e, 0).unwrap();
+        let mut out = vec![];
+        while !s.done {
+            s.step();
+            if frames.contains(&s.frame()) {
+                out.push(s.overlays());
+            }
+        }
+        out
+    };
+    let negative = Overlay::Negative([255; 3]);
+    let iris = |r: f32| Overlay::Iris { x: 320.0, y: 224.0, r };
+    assert_eq!(at(2, &[752, 753, 850, 851, 899, 959, 989]), vec![vec![], vec![negative], vec![negative], vec![], vec![iris(640.0)], vec![iris(320.0)], vec![iris(160.0)]]);
+    assert_eq!(at(22, &[119, 120, 255, 256]), vec![vec![], vec![Overlay::Oval], vec![Overlay::Oval], vec![]]);
+}
+
 /// Tekken Bowl from the pack: Paul's throw (its hand's release point from his motion, ahead of him, above the lane,
 /// on his right), the ball rolled down the middle and counted, Paul and Lei taking turns; two runs give the same
 /// states.

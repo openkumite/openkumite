@@ -407,6 +407,9 @@ pub struct Renderer {
     /// in the original's 4:3 picture's own space (x and y -1..1 across it, y up; a wider window shows more of x),
     /// each with its texture.
     pub backdrop: Vec<(Arc<Texture>, Vec<StaticVertex>)>,
+    /// A colour the picture is taken from, over the scene (Tekken Tag's ending op 24: ALPHA (Cs - Cd) x Ad).
+    pub negative: Option<[f32; 3]>,
+    negative_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     particle_alpha: wgpu::RenderPipeline,
     particle_add: wgpu::RenderPipeline,
@@ -651,6 +654,8 @@ impl Renderer {
         let keep = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
         let static_depth_pipeline = make("static depth", &static_layout, "vs_static", "fs_static", &static_vb, true, true, tri, Some(wgpu::BlendState { color: keep, alpha: keep }));
         let backdrop_pipeline = make("backdrop", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, false, tri, None);
+        let sub = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Subtract };
+        let negative_pipeline = make("negative", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, false, tri, Some(wgpu::BlendState { color: sub, alpha: keep }));
         let line_pipeline = make("lines", &line_layout, "vs_line", "fs_line", &line_vb, false, false, wgpu::PrimitiveTopology::LineList, None);
         // particles: depth-tested against the scene, never written
         let particle_alpha = make("particles alpha", &static_layout, "vs_static", "fs_particle_alpha", &static_vb, false, true, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
@@ -756,6 +761,8 @@ impl Renderer {
             stage_blends,
             backdrop_pipeline,
             backdrop: Vec::new(),
+            negative: None,
+            negative_pipeline,
             line_pipeline,
             particle_alpha,
             particle_add,
@@ -1446,6 +1453,15 @@ impl Renderer {
                     stats.draw_calls += 1;
                     stats.triangles += n / 3;
                 }
+            }
+            if let (Some(c), Some(white)) = (self.negative, self.white.as_ref()) {
+                let v = |x: f32, y: f32| StaticVertex { pos: [x, y, 0.0], uv: [0.0; 2], color: [c[0], c[1], c[2], 1.0] };
+                let vbuf = self.buffer(bytemuck::cast_slice(&[v(-1.0, -1.0), v(3.0, -1.0), v(-1.0, 3.0)]), wgpu::BufferUsages::VERTEX);
+                pass.set_pipeline(&self.negative_pipeline);
+                pass.set_bind_group(1, &white.bind_group, &[]);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.draw(0..3, 0..1);
+                stats.draw_calls += 1;
             }
             if let Some(buf) = &line_buf {
                 pass.set_pipeline(&self.line_pipeline);

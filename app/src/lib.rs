@@ -5427,6 +5427,13 @@ impl App {
             let proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, r.aspect(), 0.05, 400.0);
             f.quads(proj * cam.view(), r.aspect(), cam.eye, &blockers)
         });
+        // Tekken Tag's ending: op 24's negative over the scene
+        r.negative = self
+            .ttt_ending
+            .as_ref()
+            .and_then(|e| e.scene.as_ref())
+            .filter(|s| !s.done)
+            .and_then(|s| s.overlays().into_iter().find_map(|o| if let kumite_game::ending::Overlay::Negative(c) = o { Some(c.map(|v| v as f32 / 255.0)) } else { None }));
         // an arcade stage's sky, behind everything
         r.backdrop = self.scene.as_ref().filter(|_| !sky.is_empty()).map_or_else(Vec::new, |s| sky_backdrop(&cam, s));
         // effect sprites, as quads facing the camera
@@ -5512,7 +5519,10 @@ impl App {
                 let bowl = self.bowl.as_ref();
                 let embu_white = self.embu.as_ref().map_or(0, |e| e.scene.white);
                 // Tekken Tag's ending: the staff roll, the fades (black until the scene, and after it)
-                let ending = self.ttt_ending.as_ref().map(|e| (e.roll, e.scene.as_ref().filter(|s| !s.done).map_or((255, 0), |s| s.fades())));
+                let ending = self
+                    .ttt_ending
+                    .as_ref()
+                    .map(|e| (e.roll, e.scene.as_ref().filter(|s| !s.done).map_or((255, 0), |s| s.fades()), e.scene.as_ref().filter(|s| !s.done).map_or_else(Vec::new, |s| s.overlays())));
                 let adapter = r.adapter_name().to_string();
                 let video = self.graphics.stats.then(|| {
                     let g = &self.graphics;
@@ -5557,10 +5567,10 @@ impl App {
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("embu_fade")));
                         Art::shade(&painter, &view, [0.0, 0.0, art::SCREEN_W, art::SCREEN_H], [art::additive(egui::Color32::from_gray(embu_white)); 4]);
                     }
-                    if let (Some((roll, (black, white))), Some(d)) = (ending, roster.ttt.as_deref()) {
+                    if let (Some((roll, (black, white), overlays)), Some(d)) = (&ending, roster.ttt.as_deref()) {
                         let view = art::Screen::fit(ctx.content_rect());
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("ttt_ending")));
-                        ttt::draw_ending(&painter, &view, art, d, roll, black, white);
+                        ttt::draw_ending(&painter, &view, art, d, *roll, *black, *white, overlays);
                     }
                     if let Some(screen) = screen {
                         if let Some(f) = fight.filter(|_| screen.ttt_over_fight()) {
