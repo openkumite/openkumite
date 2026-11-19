@@ -5,11 +5,11 @@
 //! (`gamedata/endings.json`: the arcade clear's staff roll and ending, Theater), the fight HUD and Tekken Bowl's, drawn
 //! from its 2D pictures (`pictures/FFF_NNN.png`) on its 640 x 448 screen. The title, main menu and select move, light
 //! and sound as the PS2's (FRONTEND.md 9: the title out of white, the menu's sliding rows and band, the select's
-//! lightning, frame, pulsing cursors, RANDOM's roll, timer and plates), in frames.
+//! lightning, frame, pulsing cursors, RANDOM's roll, timer and plates, its 3D characters standing and posing), in frames.
 //!
-//! Not decoded, OpenKumite's own: the VS screen's code (laid out as the PS2 shows it), the select's 3D models (the
-//! portraits stand in), which button gives which costume, the banners (in the chrome font), the option and Theater
-//! screens' layout, the staff roll's fonts, and which of the six health-bar strips is which.
+//! Not decoded, OpenKumite's own: the VS screen's code (laid out as the PS2 shows it), which button gives which
+//! costume, the banners (in the chrome font), the option and Theater screens' layout, the staff roll's fonts, and
+//! which of the six health-bar strips is which.
 
 use crate::art::{additive, Art, Screen as View, SCREEN_H, SCREEN_W};
 use crate::menu::{lcg, sfx, FightSetup, Key, Mode, Outcome, Roster};
@@ -44,8 +44,8 @@ const OPTION_ROWS: [usize; 3] = [0, 1, 2];
 const LAST_STAGE: u32 = 14;
 /// Frames the result and message screens stay (START skips).
 const MESSAGE_FRAMES: u32 = 360;
-/// The VS screen's frames (OpenKumite's: the original's is not decoded).
-pub const VS_FRAMES: u32 = 120;
+/// The VS screen's frames: the PS2 holds it while the fight loads (0x3C45B0's states 4-6), about 4 s in PCSX2.
+pub const VS_FRAMES: u32 = 240;
 /// The arcade pack's arenas (OpenKumite's ids, apart from Tekken Tag's 0-22): its stage_NN.glb is 100 + NN, its
 /// hidden arena 199.
 const ARCADE_ARENA: usize = 100;
@@ -660,6 +660,36 @@ impl Select {
         free.get(at % free.len().max(1)).copied()
     }
 
+    /// Side `k`'s characters shown: its picks (roster index, costume), then the one under its cursor (costume None).
+    fn shown(&self, d: &Data, roster: &Roster, p: &Progress, k: usize) -> Vec<(usize, Option<usize>)> {
+        let Some(side) = self.sides.get(k) else { return vec![] };
+        let hover = (!side.done)
+            .then(|| d.slots.get(side.cursor))
+            .flatten()
+            .and_then(|sl| match sl.character {
+                Some(c) => Some(c).filter(|&c| d.selectable(p.stage, c)),
+                None => self.roll(d, roster, p, k),
+            })
+            .and_then(|c| roster.index_of(c))
+            .filter(|i| !side.picks.iter().any(|q| q.0 == *i));
+        side.picks.iter().map(|q| (q.0, Some(q.1))).chain(hover.map(|i| (i, None))).collect()
+    }
+
+    /// The 3D characters standing now (FRONTEND.md 9): per side its last two of [`Select::shown`], as (slot = side + 2
+    /// * member, model record, picked).
+    pub fn posers(&self, d: &Data, roster: &Roster, p: &Progress) -> Vec<(usize, usize, bool)> {
+        let mut out = vec![];
+        for k in (0..2).filter(|&k| self.sides[k].player.is_some()) {
+            let list = self.shown(d, roster, p, k);
+            for (j, &(i, costume)) in list.iter().skip(list.len().saturating_sub(2)).enumerate() {
+                if let Some(&record) = roster.characters.get(i).and_then(|c| c.costumes.get(costume.unwrap_or(0)).or(c.costumes.first())) {
+                    out.push((k + 2 * j, record, costume.is_some()));
+                }
+            }
+        }
+        out
+    }
+
     fn key(&mut self, player: usize, key: Key, d: &Data, roster: &Roster, progress: &Progress) -> Option<Page> {
         // Team Battle, Tekken Bowl, Tekken Ball: 2P's START joins
         if matches!(self.mode, TEAM | BOWL | BALL) && player == 1 && key == Key::Start && self.sides[1].player.is_none() {
@@ -1031,13 +1061,18 @@ impl Front {
                 image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], Color32::WHITE);
                 let from_white = num(&t["from_white"]);
                 if self.frame as f32 >= from_white {
+                    // (the small font from `press_x` / `copyright_x`, the y its foot; an older pack's: centred)
+                    let foot = num(&d.raw["fonts"]["small"]["glyph"][1]) + 2.0;
+                    let line = |text: &str, x: &Value, y: f32, colour: &Value, c: Color32| match x.as_f64() {
+                        Some(x) => small_in(painter, v, art, d, colour.as_u64().map(|c| c as usize), text, x as f32, y - foot, Color32::WHITE),
+                        None => small(painter, v, art, d, text, W / 2.0, y - 6.0, c),
+                    };
                     if self.frame & int(&t["blink_mask"]) as u32 != 0 {
-                        // (in the small font, 216 wide: shortcut: egui's, in the green the PS2's small texts show)
-                        small(painter, v, &d.picture(&["title", "press_start"]), W / 2.0, num(&t["press_y"]) - 6.0, Color32::from_rgb(140, 240, 120));
+                        line(&d.picture(&["title", "press_start"]), &t["press_x"], num(&t["press_y"]), &t["press_colour"], Color32::from_rgb(140, 240, 120));
                     }
                     sprite(painter, v, art, t["namco"]["picture"].as_str().unwrap_or_default(), num(&t["namco"]["x"]), num(&t["namco"]["y"]), Color32::WHITE);
-                    for (k, line) in t["copyright"].as_array().into_iter().flatten().enumerate() {
-                        small(painter, v, line.as_str().unwrap_or_default(), W / 2.0, num(&t["copyright_y"][k]), Color32::from_gray(200));
+                    for (k, text) in t["copyright"].as_array().into_iter().flatten().enumerate() {
+                        line(text.as_str().unwrap_or_default(), &t["copyright_x"][k], num(&t["copyright_y"][k]), &t["copyright_colour"], Color32::from_gray(200));
                     }
                 } else {
                     let a = (255.0 * (1.0 - self.frame as f32 / from_white)) as u8;
@@ -1080,7 +1115,7 @@ impl Front {
                     let c = if k == *cursor { Color32::WHITE } else { Color32::from_gray(150) };
                     font(painter, v, art, d, name, 280.0, y, 0.32, c);
                     if id.is_some_and(|id| arcade_file(id).is_some()) {
-                        small(painter, v, "TEKKEN 3 ARCADE", 545.0, y + 5.0, Color32::from_gray(170));
+                        small(painter, v, art, d, "TEKKEN 3 ARCADE", 545.0, y + 5.0, Color32::from_gray(170));
                     }
                 }
             }
@@ -1116,11 +1151,11 @@ impl Front {
                             _ if k == *r && j == *c => Color32::WHITE,
                             _ => Color32::from_gray(170),
                         };
-                        small(painter, v, label, x, y, colour);
+                        small(painter, v, art, d, label, x, y, colour);
                     }
                 }
                 if let Some((_, Cell::None)) = rows.get(*r).and_then(|row| row.get(*c)) {
-                    small(painter, v, "NOT AVAILABLE: THE MOVIES AND THE EMBU ARE NOT CONVERTED", W / 2.0, 430.0, Color32::from_gray(200));
+                    small(painter, v, art, d, "NOT AVAILABLE: THE MOVIES AND THE EMBU ARE NOT CONVERTED", W / 2.0, 430.0, Color32::from_gray(200));
                 }
             }
             Page::Music { cursor, playing } => {
@@ -1131,7 +1166,7 @@ impl Front {
                     let y = 70.0 + 16.0 * k as f32;
                     let colour = if k == *cursor { Color32::WHITE } else { Color32::from_gray(150) };
                     let mark = if bgm.is_some() && bgm == *playing { "> " } else { "" };
-                    small(painter, v, &format!("{mark}{name}"), W / 2.0, y, colour);
+                    small(painter, v, art, d, &format!("{mark}{name}"), W / 2.0, y, colour);
                 }
             }
         }
@@ -1365,48 +1400,63 @@ fn font_in(painter: &egui::Painter, v: &View, art: &Art, d: &Data, colour: Optio
     }
 }
 
-/// A small text (egui's font: the game's small fonts' glyph order is not read), centred on `x`.
-fn small(painter: &egui::Painter, v: &View, text: &str, x: f32, y: f32, c: Color32) {
+/// A small text centred on `x`, its top at `y`: in the game's small font tinted `c` (egui's font with a pack that has
+/// none).
+#[allow(clippy::too_many_arguments)]
+fn small(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, c: Color32) {
+    if d.raw["fonts"]["small"].is_object() {
+        small_in(painter, v, art, d, None, text, x - small_width(d, text) / 2.0, y, c);
+        return;
+    }
     let [px, py, _, h] = sv([x, y, 0.0, 12.0]);
     painter.text(v.pos(px, py), egui::Align2::CENTER_TOP, text, egui::FontId::proportional(h * v.rect.height() / SCREEN_H), c);
+}
+
+/// A text's width in the small font (`fonts.small.advance` a glyph, whatever its ink).
+fn small_width(d: &Data, text: &str) -> f32 {
+    num(&d.raw["fonts"]["small"]["advance"]) * text.chars().count() as f32
+}
+
+/// A text in the small font (`fonts.small`: its glyphs' size and rows) from `x`, its top at `y`, in text colour
+/// `colour` (the printf's `%c`: `fonts.small.colours`), else its own tinted `tint`.
+#[allow(clippy::too_many_arguments)]
+fn small_in(painter: &egui::Painter, v: &View, art: &Art, d: &Data, colour: Option<usize>, text: &str, x: f32, y: f32, tint: Color32) {
+    let f = &d.raw["fonts"]["small"];
+    let rows: Vec<&str> = f["rows"].as_array().into_iter().flatten().filter_map(|r| r.as_str()).collect();
+    let picture = colour.and_then(|c| f["colours"][c].as_str()).or(f["picture"].as_str()).unwrap_or_default();
+    let Some((tex, [tw, th])) = art.pic(picture) else { return };
+    let (gw, gh) = (num(&f["glyph"][0]).max(1.0), num(&f["glyph"][1]).max(1.0));
+    let mut at = x;
+    // (the font's @ is drawn as ©)
+    for c in text.to_uppercase().replace('©', "@").chars() {
+        if let Some((r, k)) = rows.iter().enumerate().find_map(|(r, row)| row.chars().position(|g| g == c).map(|k| (r, k))) {
+            let (u, vv) = (k as f32 * gw / tw as f32, r as f32 * gh / th as f32);
+            let uv = Rect::from_min_max(Pos2::new(u, vv), Pos2::new(u + gw / tw as f32, vv + gh / th as f32));
+            let [rx, ry, rw, rh] = sv([at, y, gw, gh]);
+            painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, tint);
+        }
+        at += num(&f["advance"]);
+    }
 }
 
 /// The select screen as the PS2 draws it with QUICK SELECT off (0x3CCCB8): the lightning `select.lightning`, a picture a
 /// frame, under the frame and its mirror; the faces (0x3CC6C8: brighter under a cursor, dark under the cursor of the
 /// side that took them, RANDOM's showing its roll); each side's name plates (0x3CC3E0) and "1ST"; the timer
 /// (0x3CC190, blinking in its last seconds); the cursors, pulsing (0x3CC9E0), with their tags; the screen darkening
-/// to the fight.
-// shortcut: the PS2 stands each side's character there as its 3D model, posing once picked (0x3AEC58); here its
-// portrait (files 143-181) until the select draws fighters
+/// to the fight. Each side's 3D characters ([`Posers`]) stand between the lightning and the rest.
 fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &Roster, p: &Progress, s: &Select) {
     let sel = &d.raw["select"];
     let l = &sel["lightning"];
     let pics: Vec<&str> = l["pictures"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
-    if let Some(file) = pics.get(s.frame as usize % pics.len().max(1)) {
-        lit(painter, v, art, file, [0, 1, 2, 3].map(|k| num(&l["rect"][k])), num(&l["level"]));
+    // (stretched twice with the GS's bilinear filter, as the PS2 shows it)
+    if let Some((tex, _)) = pics.get(s.frame as usize % pics.len().max(1)).and_then(|file| art.pic_linear(file)) {
+        let [x, y, w, h] = sv([0, 1, 2, 3].map(|k| num(&l["rect"][k])));
+        painter.image(tex.id(), Rect::from_min_max(v.pos(x, y), v.pos(x + w, y + h)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), ps2(num(&l["level"])).0);
     }
-    // each side's characters: its picks, then the one under its cursor
-    let shown = |k: usize| -> Vec<usize> {
-        let side = &s.sides[k];
-        let hover = (!side.done)
-            .then(|| d.slots.get(side.cursor))
-            .flatten()
-            .and_then(|sl| match sl.character {
-                Some(c) => Some(c).filter(|&c| d.selectable(p.stage, c)),
-                None => s.roll(d, roster, p, k),
-            })
-            .and_then(|c| roster.index_of(c))
-            .filter(|i| !side.picks.iter().any(|q| q.0 == *i));
-        side.picks.iter().map(|q| q.0).chain(hover).collect()
-    };
+    let shown = |k: usize| -> Vec<usize> { s.shown(d, roster, p, k).into_iter().map(|q| q.0).collect() };
     let body = |i: usize| roster.characters.get(i).map_or(0, |c| c.id);
-    for k in (0..2).filter(|&k| s.sides[k].player.is_some()) {
-        if let Some(&i) = shown(k).last() {
-            // (where and about as big as the PS2 shows the model: head at y 320, centred on x 220 of its side)
-            let x = if k == 0 { 173.0 } else { W - 173.0 };
-            image(painter, v, art, &d.picture(&["select", "portraits", &body(i).to_string()]), [x, 320.0, if k == 0 { 94.0 } else { -94.0 }, 128.0], Color32::WHITE);
-        }
-    }
+    // (the 3D characters stand in front of the lightning, behind the rest)
+    crate::debug::mark_under(painter);
     let frame = sel["frame"]["picture"].as_str().unwrap_or_default();
     let [fw, fh] = [num(&sel["frame"]["size"][0]), num(&sel["frame"]["size"][1])];
     image(painter, v, art, frame, [0.0, 0.0, fw, fh], Color32::WHITE);
@@ -1452,9 +1502,10 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
                 3 => "RD",
                 _ => "TH",
             };
-            let (x, y) = (num(&sel["ordinal"]["x"][k]), num(&sel["ordinal"]["y"]) - 17.0);
-            font(painter, v, art, d, &n.to_string(), x + 27.0, y, 0.8, Color32::WHITE);
-            font(painter, v, art, d, suffix, x + 62.0, y + 17.0, 0.4, Color32::WHITE);
+            // (sized and placed as the PS2 shows them: both on one foot, about y 371)
+            let (x, y) = (num(&sel["ordinal"]["x"][k]), num(&sel["ordinal"]["y"]));
+            font(painter, v, art, d, &n.to_string(), x + 27.0, y - 24.0, 1.15, Color32::WHITE);
+            font(painter, v, art, d, suffix, x + 63.0, y - 2.0, 0.57, Color32::WHITE);
         }
     }
     // the timer: its seconds as (t + 59) / 60 - 1, off `off` frames every `period` in the last `below`
@@ -1483,12 +1534,19 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
         let tag = if player == k { d.picture(&["select", "tags", &k.to_string()]) } else { d.picture(&["select", "tags", "6"]) };
         sprite(painter, v, art, &tag, x + num(&sel["tag_dx"][k]), y + num(&sel["tag_dy"]), Color32::WHITE);
     }
+    // the side nobody plays: INSERT COIN, or the credits, while the frame has `show_mask`'s bits (`select.insert`, from
+    // its left at x minus `measure` a letter halved)
+    let ins = &sel["insert"];
+    let f = s.frame;
     for (k, side) in s.sides.iter().enumerate() {
-        if side.player.is_none() && k == 1 && s.mode == TEAM && (s.frame / 30).is_multiple_of(2) {
-            small(painter, v, "PRESS P2 START", 520.0, 300.0, Color32::WHITE);
+        if side.player.is_none() && f & int(&ins["show_mask"]) as u32 != 0 {
+            let text = ins["texts"][usize::from(f & int(&ins["second_mask"]) as u32 != 0)].as_str().unwrap_or_default();
+            let x = num(&ins["x"][k]) - num(&ins["measure"]) * text.chars().count() as f32 / 2.0;
+            let top = num(&ins["y"]) - num(&d.raw["fonts"]["small"]["glyph"][1]) - 2.0;
+            small_in(painter, v, art, d, Some(int(&ins["colour"])), text, x, top, Color32::WHITE);
         }
         if side.player.is_some() && s.mode == TEAM {
-            small(painter, v, &format!("{}P  {} / 8", k + 1, side.picks.len()), if k == 0 { 120.0 } else { 520.0 }, 286.0, Color32::WHITE);
+            small(painter, v, art, d, &format!("{}P  {} / 8", k + 1, side.picks.len()), if k == 0 { 120.0 } else { 520.0 }, 286.0, Color32::WHITE);
         }
     }
     if let Some(t) = s.tally {
@@ -1514,31 +1572,172 @@ fn digits(painter: &egui::Painter, v: &View, art: &Art, t: &Value, n: u32, x: f3
     }
 }
 
-/// The VS screen, laid out as the PS2 shows it (FRONTEND.md 9; the code is not decoded): each team's leader high and
-/// its partner low in front, sliding in (OpenKumite's), VS at the foot; Force's: the player and the stage card (its
-/// number and name).
-// shortcut: the PS2's moving fire behind them (a stream, not converted) is the menus' blue flame here
+/// One 3D character standing on the select (`select.models`, FRONTEND.md 9): its slot (side + 2 * member), model
+/// record, whether it is a pick, its body with the clips of its aliases 0 and 3, and the frames since it came or was
+/// picked.
+pub struct Poser {
+    pub slot: usize,
+    pub record: usize,
+    picked: bool,
+    pub character: Arc<kumite_assets::Character>,
+    clips: [usize; 2],
+    frame: u32,
+}
+
+/// The select's 3D characters, and the bodies loaded so far (a model record's, with its two clips).
+#[derive(Default)]
+pub struct Posers {
+    pub shown: Vec<Poser>,
+    loaded: Vec<(usize, Arc<kumite_assets::Character>, [usize; 2])>,
+}
+
+impl Posers {
+    /// One frame of the select `s`: who stands where (a new one, or one just picked, from its first frame), then a frame
+    /// on.
+    pub fn step(&mut self, assets: &kumite_assets::Assets, d: &Data, roster: &Roster, s: &Select) {
+        let progress = &progress();
+        let wanted = if d.raw["select"]["models"].is_object() { s.posers(d, roster, progress) } else { vec![] };
+        self.shown.retain(|m| wanted.iter().any(|w| w.0 == m.slot && w.1 == m.record));
+        for (slot, record, picked) in wanted {
+            match self.shown.iter_mut().find(|m| m.slot == slot) {
+                Some(m) if m.picked != picked => (m.picked, m.frame) = (picked, 0),
+                Some(_) => {}
+                None => {
+                    let id = roster.characters.iter().find(|c| c.costumes.contains(&record)).map_or(0, |c| c.id);
+                    match self.load(assets, d, record, id) {
+                        Ok((character, clips)) => self.shown.push(Poser { slot, record, picked, character, clips, frame: 0 }),
+                        Err(e) => log::warn!("select model {record}: {e:#}"),
+                    }
+                }
+            }
+        }
+        for m in &mut self.shown {
+            m.frame += 1;
+        }
+    }
+
+    /// Model `record` (character `id`) with its select clips (`select.models.motions[id]`), loaded once.
+    fn load(&mut self, assets: &kumite_assets::Assets, d: &Data, record: usize, id: usize) -> anyhow::Result<(Arc<kumite_assets::Character>, [usize; 2])> {
+        if let Some(l) = self.loaded.iter().find(|l| l.0 == record) {
+            return Ok((l.1.clone(), l.2));
+        }
+        let names = &d.raw["select"]["models"]["motions"][id];
+        let mut ch = assets.character(record)?;
+        let mut clip = |k: usize| -> anyhow::Result<usize> {
+            let name = names[k].as_str().ok_or_else(|| anyhow::anyhow!("no select motions for character {id}"))?;
+            if ch.clip(name).is_none() {
+                // (a plain clip name only: one with a folder in it would read outside `motions/`)
+                anyhow::ensure!(std::path::Path::new(name).file_name() == Some(name.as_ref()), "a motion that is not a plain name: {name:?}");
+                ch.add_motions(&kumite_fs::read(&assets.root.join("motions").join(format!("{name}.glb")))?)?;
+            }
+            ch.clip(name).ok_or_else(|| anyhow::anyhow!("motions/{name}.glb holds no clip {name}"))
+        };
+        let clips = [clip(0)?, clip(1)?];
+        let ch = Arc::new(ch);
+        self.loaded.push((record, ch.clone(), clips));
+        Ok((ch, clips))
+    }
+
+    /// Each one's node matrices and placement (metres): a pick's pose (alias 3) once, then alias 0 over and over, at
+    /// its slot's place (`select.models.places`, 1 ON 1's in its mode).
+    pub fn poses(&self, d: &Data, mode: u32) -> Vec<(Vec<glam::Mat4>, glam::Mat4)> {
+        let m = &d.raw["select"]["models"];
+        let places = if mode == int(&m["one_on_one_mode"]) as u32 { &m["places_one_on_one"] } else { &m["places"] };
+        self.shown
+            .iter()
+            .map(|p| {
+                let n = |c: usize| p.character.clips.get(c).map_or(1, |c| c.frames.max(1)) as u32;
+                let f = p.frame.saturating_sub(1);
+                let (clip, f) = if p.picked && f < n(p.clips[1]) { (p.clips[1], f) } else { (p.clips[0], (f - if p.picked { n(p.clips[1]) } else { 0 }) % n(p.clips[0])) };
+                let at = &places[p.slot];
+                // (the game's x, z as the picture's x, -z, on the floor (the game sets y from the pose: the table's is not
+                // kept); its 65536ths of a turn, the picture facing -z)
+                let place = kumite_game::placement(glam::Vec3::new(num(&at[0]), 0.0, -num(&at[2])), std::f32::consts::PI - num(&at[3]) * std::f32::consts::TAU / 65536.0);
+                (p.character.pose(clip, f as usize, false), place)
+            })
+            .collect()
+    }
+}
+
+/// The select's camera (`select.models.camera`, 0x3AE6E0): eye, look direction and field of view, as a fight view's;
+/// and the arena whose light table lights the characters (`select.models.light`).
+pub fn select_camera(d: &Data) -> (glam::Vec3, glam::Vec3, f32, Option<usize>) {
+    let c = &d.raw["select"]["models"]["camera"];
+    let i = |v: &Value| v.as_i64().unwrap_or(0);
+    // (H on Tekken Tag's 512-pixel-wide screen; the view's is on the 368-pixel one the renderer draws)
+    let view = kumite_sim::camera::View { eye: [0, 1, 2].map(|k| i(&c["eye"][k])), pitch: i(&c["pitch"]), yaw: i(&c["yaw"]), h: i(&c["h"]) * 368 / 512, roll: 0 };
+    let (eye, forward, fov_y) = kumite_game::view_camera(&view);
+    (eye, forward, fov_y, d.raw["select"]["models"]["light"].as_u64().map(|a| a as usize))
+}
+
+/// The VS screen as the PS2 draws it (`vs`, 0x3C3FB8): the fire over the screen, each team's leader high and its
+/// partner low in front, sliding `steps` frames in from the sides with their edges faded (2P's mirrored), "VS" at the
+/// foot; Force's: the player and the stage card (its number and name). An older pack's: the menus' flame, OpenKumite's
+/// places.
+// shortcut: the arcade's STAGE n / FINAL texts and the special portraits (0x3C3948's bodies 0x32 and 0x7B, over the
+// blue flame) are not drawn: "VS" for every mode, as before; TEAM BATTLE's `team_dy` is not applied
 pub fn draw_vs(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, setup: &FightSetup, extra: &crate::menu::VsExtra, frame: u32) {
     let Some(d) = roster.ttt.as_deref() else { return };
-    backdrop(painter, v, art);
-    let (slide, bench) = ((1.0 - frame as f32 / 12.0).max(0.0) * 200.0, extra.bench);
+    let vs = &d.raw["vs"];
+    match vs["background"].as_str() {
+        Some(bg) => image(painter, v, art, bg, [0.0, 0.0, W, H], Color32::WHITE),
+        None => backdrop(painter, v, art),
+    }
+    let step = frame.min(int(&vs["steps"]) as u32) as f32;
     if let Some((number, name, _)) = &extra.force {
         font(painter, v, art, d, &number.map_or("FINAL STAGE".into(), |n| format!("STAGE {}", n + 1)), W * 0.68, 150.0, 0.9, Color32::WHITE);
         font(painter, v, art, d, &name.join(" ").split_whitespace().collect::<Vec<_>>().join(" "), W * 0.68, 210.0, 0.55, Color32::WHITE);
     }
+    let [pw, ph] = [num(&vs["portrait"][0]), num(&vs["portrait"][1])];
     for k in 0..if extra.force.is_some() { 1 } else { 2 } {
-        let team: Vec<(usize, usize)> = [Some(setup.players[k]), bench.map(|b| b[k])].into_iter().flatten().collect();
+        let team: Vec<(usize, usize)> = [Some(setup.players[k]), extra.bench.map(|b| b[k])].into_iter().flatten().collect();
         for (j, m) in team.iter().enumerate() {
             let id = roster.characters.get(m.0).map_or(0, |c| c.id);
-            // (the leader's left edge at x 120, y 40; the partner's at x 10, y 190)
+            let file = d.picture(&["select", "portraits", &id.to_string()]);
+            let at = &vs["places"][k][j];
+            if at.is_array() {
+                let (x, y) = (num(&at[0]) + num(&at[1]) * step, num(&at[2]) + num(&at[3]) * step);
+                feathered(painter, v, art, &file, [x, y, pw, ph], num(&vs["feather"]), k == 1);
+                continue;
+            }
+            // (an older pack: the leader's left edge at x 120, y 40; the partner's at x 10, y 190)
+            let slide = (1.0 - frame as f32 / 12.0).max(0.0) * 200.0;
             let (off, y) = if j == 0 { (120.0 - slide, 40.0) } else { (10.0 - slide, 190.0) };
             let x = if k == 0 { off } else { W - off };
-            image(painter, v, art, &d.picture(&["select", "portraits", &id.to_string()]), [x, y, if k == 0 { 188.0 } else { -188.0 }, 256.0], Color32::WHITE);
+            image(painter, v, art, &file, [x, y, if k == 0 { 188.0 } else { -188.0 }, 256.0], Color32::WHITE);
         }
     }
     if extra.force.is_none() {
-        font(painter, v, art, d, "VS", W / 2.0, 330.0, 1.2, Color32::WHITE);
+        match vs["logo"].as_str().and_then(|l| art.pic(l).map(|p| (l, p.1))) {
+            Some((logo, [w, _])) => sprite(painter, v, art, logo, (W - w as f32) / 2.0, num(&vs["logo_y"]), Color32::WHITE),
+            None => font(painter, v, art, d, "VS", W / 2.0, 330.0, 1.2, Color32::WHITE),
+        }
     }
+}
+
+/// A picture at [x, y, w, h] with its edges faded out over `edge` (0x3C3370: nine pieces, gouraud alpha 0x80 inside,
+/// 0 at the border), mirrored when `flip`.
+#[allow(clippy::too_many_arguments)]
+fn feathered(painter: &egui::Painter, v: &View, art: &Art, file: &str, [x, y, w, h]: [f32; 4], edge: f32, flip: bool) {
+    let Some((tex, _)) = art.pic(file) else { return };
+    let (xs, ys) = ([0.0, edge, w - edge, w], [0.0, edge, h - edge, h]);
+    let mut mesh = egui::Mesh::with_texture(tex.id());
+    for (r, &dy) in ys.iter().enumerate() {
+        for (c, &dx) in xs.iter().enumerate() {
+            let [px, py, _, _] = sv([x + dx, y + dy, 0.0, 0.0]);
+            let u = dx / w;
+            let inner = (1..3).contains(&r) && (1..3).contains(&c);
+            let tint = if inner { Color32::WHITE } else { Color32::TRANSPARENT };
+            mesh.vertices.push(egui::epaint::Vertex { pos: v.pos(px, py), uv: Pos2::new(if flip { 1.0 - u } else { u }, dy / h), color: tint });
+        }
+    }
+    for r in 0..3u32 {
+        for c in 0..3u32 {
+            let i = r * 4 + c;
+            mesh.indices.extend([i, i + 1, i + 4, i + 1, i + 5, i + 4]);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// The fight HUD (0x3C1F08, 0x3C23F0; FRONTEND.md 4): per side the health bar of the member in front (its six strips:
@@ -1621,7 +1820,7 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
             font(painter, v, art, d, &text, W / 2.0, 70.0, 0.3, Color32::WHITE);
         }
         if let Some(t) = time {
-            small(painter, v, &clock(t), W / 2.0, 86.0, Color32::WHITE);
+            small(painter, v, art, d, &clock(t), W / 2.0, 86.0, Color32::WHITE);
         }
     }
     // (Force: FIGHT! and K.O. only; its stage card instead of the round, STAGE CLEAR!! instead of the result)
@@ -1659,11 +1858,11 @@ pub fn force_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, run: &c
         }
     }
     let texts = &run.data.hud;
-    small(painter, v, &crate::art::printf(&texts.score, &[st.score]), bx[0] + bw / 2.0, by + 46.0, Color32::WHITE);
-    small(painter, v, &crate::art::printf(&texts.hi_score, &[st.hiscore]), bx[1] + bw / 2.0, by + 46.0, Color32::WHITE);
+    small(painter, v, art, d, &crate::art::printf(&texts.score, &[st.score]), bx[0] + bw / 2.0, by + 46.0, Color32::WHITE);
+    small(painter, v, art, d, &crate::art::printf(&texts.hi_score, &[st.hiscore]), bx[1] + bw / 2.0, by + 46.0, Color32::WHITE);
     font(painter, v, art, d, &format!("{}", game.fight.clock / 60), W / 2.0, by - 6.0, 0.6, Color32::WHITE);
     if st.keys > 0 {
-        small(painter, v, &format!("KEYS {}", st.keys), W / 2.0, by + 40.0, Color32::from_rgb(255, 210, 90));
+        small(painter, v, art, d, &format!("KEYS {}", st.keys), W / 2.0, by + 40.0, Color32::from_rgb(255, 210, 90));
     }
     // (the 368 x 480 screen's place on the 640 x 448)
     let at = |(x, y): (f32, f32)| (x * W / SCREEN_W, y * H / SCREEN_H);
@@ -1764,7 +1963,7 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         let lit = k == b.current && b.phase != Phase::Over;
         box_(Color32::from_rgba_unmultiplied(0, 0, 0, 170), [12.0, y, 616.0, 42.0]);
         let name = b.players.get(k).and_then(|p| roster.by_id(p.character)).map_or(String::new(), |c| c.name.to_uppercase());
-        small(painter, v, &format!("{}P {name}", k + 1), 52.0, y + 15.0, if lit { Color32::YELLOW } else { Color32::from_gray(200) });
+        small(painter, v, art, d, &format!("{}P {name}", k + 1), 52.0, y + 15.0, if lit { Color32::YELLOW } else { Color32::from_gray(200) });
         let totals = card.totals();
         for (f, total) in totals.iter().enumerate() {
             let x = x0 + frame_w * f as f32;
@@ -1785,17 +1984,17 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
                 };
                 prev = pins;
                 let c = if mark == Mark::Split { Color32::from_rgb(255, 90, 90) } else { Color32::WHITE };
-                small(painter, v, &text, x + 9.0 + 15.0 * n as f32, y + 3.0, c);
+                small(painter, v, art, d, &text, x + 9.0 + 15.0 * n as f32, y + 3.0, c);
             }
             if let Some(t) = total {
-                small(painter, v, &t.to_string(), x + frame_w / 2.0, y + 22.0, Color32::WHITE);
+                small(painter, v, art, d, &t.to_string(), x + frame_w / 2.0, y + 22.0, Color32::WHITE);
             }
         }
-        small(painter, v, &card.total().to_string(), x0 + frame_w * 10.0 + 24.0, y + 15.0, Color32::WHITE);
+        small(painter, v, art, d, &card.total().to_string(), x0 + frame_w * 10.0 + 24.0, y + 15.0, Color32::WHITE);
     }
     // the throw's step: its prompt and meters
     let meter = |y: f32, label: &str, part: f32, mark: Option<f32>| {
-        small(painter, v, label, 70.0, y - 1.0, Color32::WHITE);
+        small(painter, v, art, d, label, 70.0, y - 1.0, Color32::WHITE);
         box_(Color32::from_rgba_unmultiplied(0, 0, 0, 170), [110.0, y, 200.0, 12.0]);
         match mark {
             Some(m) => {
@@ -1813,18 +2012,18 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         _ => None,
     };
     if let Some(p) = prompt {
-        small(painter, v, p, W / 2.0, 410.0, Color32::from_gray(230));
+        small(painter, v, art, d, p, W / 2.0, 410.0, Color32::from_gray(230));
         // the spin meter between -2 and 2 (the hand's bounds), the power meter 0-100
         meter(372.0, "SPIN", 0.0, Some((b.spin + 2.0) / 4.0));
         if b.phase == Phase::Power {
             meter(390.0, "POWER", b.power / 100.0, None);
         }
         let hand = if bowler.is_some_and(|p| p.left) { "LEFT-HANDED" } else { "RIGHT-HANDED" };
-        small(painter, v, hand, 560.0, 372.0, Color32::from_gray(200));
+        small(painter, v, art, d, hand, 560.0, 372.0, Color32::from_gray(200));
     }
     if b.rolled.is_some() && b.speed > 0.0 && !matches!(b.phase, Phase::Charge(_)) {
         let mph = b.mph();
-        small(painter, v, &format!("SPEED {:3}.{:02} MPH", mph / 100, mph % 100), 540.0, 410.0, Color32::WHITE);
+        small(painter, v, art, d, &format!("SPEED {:3}.{:02} MPH", mph / 100, mph % 100), 540.0, 410.0, Color32::WHITE);
     }
     if let Some(c) = b.callout.as_deref().filter(|c| !c.is_empty()) {
         // (a strike's callout pulses)
@@ -1839,7 +2038,7 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         };
         font(painter, v, art, d, &text, W / 2.0, 190.0, 0.8, Color32::WHITE);
         if (frame / 30).is_multiple_of(2) {
-            small(painter, v, "PRESS START", W / 2.0, 410.0, Color32::WHITE);
+            small(painter, v, art, d, "PRESS START", W / 2.0, 410.0, Color32::WHITE);
         }
     }
 }
