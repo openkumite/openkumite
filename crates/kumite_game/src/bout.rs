@@ -43,6 +43,8 @@ pub struct RoundRules {
     pub skip_from: u32,
     /// The round clock: the 60 s option's frames (a displayed second is 70 frames).
     pub round_frames: u32,
+    /// The arcade lost (0x36E6C8): the losing pair's motion and its frames.
+    pub team_lose: (usize, u32),
 }
 
 impl RoundRules {
@@ -66,6 +68,7 @@ impl RoundRules {
             skip_from: at("/win_poses/start_skips_from")?,
             // (the default option is not written by any code found: the 60 s one, option 2)
             round_frames: at("/round_time/options_frames/2")?,
+            team_lose: (at("/team_lose/alias")? as usize, at("/team_lose/frames")?),
         })
     }
 }
@@ -213,6 +216,8 @@ enum ResultKind {
     Loser,
     /// No winner: 75 frames.
     Draw,
+    /// Tekken Tag's arcade lost: the losing pair's motion, its frames.
+    TeamLose(u32),
 }
 
 #[derive(Clone)]
@@ -252,6 +257,8 @@ pub struct Bout {
     /// Stop for the boss-change scene once the human has won a round (0x80051204): set by the app at the arcade's
     /// last stage against its boss.
     pub interlude_check: bool,
+    /// Tekken Tag's arcade (settings +0x1F): a match the CPU won ends on the losing pair's motion, not its pose.
+    pub team_lose: bool,
     /// Force: the other soldier's CPU, and no replay or result after the K.O. (the app takes over).
     pub extra_cpu: Option<Ai>,
     pub force: bool,
@@ -299,6 +306,7 @@ impl Bout {
             counters: COUNTERS.map(|c| c.load(Ordering::Relaxed)),
             frames: 0,
             interlude_check: false,
+            team_lose: false,
             extra_cpu: None,
             force: false,
             partner_pad: Pad::default(),
@@ -644,6 +652,7 @@ impl Bout {
                     // Ball's loser shot lasts 240 frames
                     ResultKind::Loser => self.phase_frame >= if self.game.ball.is_some() { 240 } else { loser_frames },
                     ResultKind::Draw => self.phase_frame >= draw_frames,
+                    ResultKind::TeamLose(frames) => self.phase_frame >= frames,
                 };
                 if done || self.skip || self.phase_frame >= cap {
                     self.skip = false;
@@ -762,6 +771,22 @@ impl Bout {
         self.phase_frame = 0;
         let tag = self.game.rounds.clone();
         match winner {
+            // Tekken Tag's arcade lost (0x36E6C8): the loser and its partner, in the winner's place, play the team's
+            // loss on the loser's camera
+            Some(w) if decided && self.team_lose && self.cpu[w].is_some() && self.cpu[1 - w].is_none() && tag.is_some() => {
+                let (alias, frames) = tag.as_ref().map_or((0, 0), |r| r.team_lose);
+                let l = 1 - w;
+                self.game.fight.fighters[l].play_alias(alias);
+                let p = self.game.subject(l);
+                let mut rnd = |n: i64| self.random(n);
+                let cam = EndCam::winner(&data, &p, true, &mut rnd);
+                self.game.camera_mode = CameraMode::End { cam, who: l };
+                self.game.visible = [l == 0, l == 1];
+                if self.game.pose_partner(l) {
+                    self.game.visible = [true; 2];
+                }
+                self.result = ResultKind::TeamLose(frames);
+            }
             // (Tekken Tag has no loser shot outside the arcade)
             Some(w) if !decided || self.cpu[w].is_none() || tag.is_some() => {
                 // the win motion: the frame counter's parity, or a held button (□ △ × ○ -> 0xD67..0xD6A)

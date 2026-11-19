@@ -383,6 +383,11 @@ impl Run {
         (self.mode, self.fight as u32 + 1)
     }
 
+    /// A ladder that offers CONTINUE? when lost (and loses as a team, settings +0x1F).
+    pub fn continues(&self) -> bool {
+        matches!(self.mode, ARCADE | TIME_ATTACK | ONE_ARCADE)
+    }
+
     /// Time Attack: its clock runs over the whole run.
     pub fn timed(&self) -> bool {
         self.mode == TIME_ATTACK
@@ -432,7 +437,7 @@ impl Run {
                 self.fight += 1;
                 Next::Fight(Box::new(self))
             }
-            ARCADE | TIME_ATTACK | ONE_ARCADE => {
+            _ if self.continues() => {
                 progress.played(d, None);
                 Next::Screen(Page::Continue { run: Box::new(self), countdown: CONTINUE })
             }
@@ -587,10 +592,15 @@ pub enum Page {
         run: Box<Run>,
         cursor: usize,
     },
-    /// The arcade ladder lost: CONTINUE? 9..0, then GAME OVER.
+    /// The arcade ladder lost: CONTINUE? 9..0, then GAME OVER, over the fight's scene and HUD.
     Continue {
         run: Box<Run>,
         countdown: u32,
+    },
+    /// GAME OVER (0x35B0E4) over the fight's scene, then the title. shortcut: the CHARACTER USAGE ranking the PS2 shows
+    /// between them (screen 7) is not done.
+    GameOver {
+        frame: u32,
     },
     /// A run's end (or GAME OVER): its lines, then the title or the main menu.
     Message {
@@ -991,6 +1001,7 @@ impl Front {
                 Key::Start | Key::Button(_) => Some(if *title { Page::Title } else { Page::Menu { cursor: 0, scroll: 0, idle: 0 } }),
                 _ => None,
             },
+            Page::GameOver { .. } => None,
             Page::Theater { cursor } => {
                 let rows = theater(&d, progress.seen);
                 let [r, c] = cursor;
@@ -1086,7 +1097,14 @@ impl Front {
                     sfx::play(0x1047 + (*countdown as u16 + 100) / 100);
                 }
                 if *countdown == 0 {
-                    self.page = Page::Message { lines: vec!["GAME OVER".into()], frame: 0, title: true };
+                    sfx::play(int(&d.raw["arcade"]["continue"]["game_over"]["voice"]) as u16);
+                    self.page = Page::GameOver { frame: 0 };
+                }
+            }
+            Page::GameOver { frame } => {
+                *frame += 1;
+                if *frame >= int(&d.raw["arcade"]["continue"]["game_over"]["frames"]) as u32 {
+                    self.page = Page::Title;
                 }
             }
             Page::Message { frame, title, .. } => {
@@ -1170,9 +1188,13 @@ impl Front {
                 }
             }
             Page::Select(s) => draw_select(painter, v, art, d, roster, progress, s),
+            // (0x3BA560: the chrome font's own colour)
             Page::Continue { countdown, .. } => {
-                font(painter, v, art, d, &format!("CONTINUE? {}", ((countdown + 2) / 100).min(9)), W / 2.0, 180.0, 0.8, Color32::WHITE);
+                let c = &d.raw["arcade"]["continue"];
+                let text = crate::art::printf(c["text"].as_str().unwrap_or_default(), &[((countdown + 2) / 100).min(9)]);
+                chrome(painter, v, art, d, &text, num(&c["x"]), num(&c["y"]), None, 10.0);
             }
+            Page::GameOver { .. } => banner_at(painter, v, art, d, &d.raw["arcade"]["continue"]["game_over"], 0),
             Page::Message { lines, .. } => {
                 backdrop(painter, v, art);
                 for (k, l) in lines.iter().enumerate() {
@@ -1875,10 +1897,10 @@ impl TagHud {
 /// printf size `size` (10 the glyphs' own), each glyph `fonts.big.advance` on (an A `kern_a` further left), in text
 /// colour `colour`.
 #[allow(clippy::too_many_arguments)]
-fn chrome(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, colour: usize, size: f32) {
+fn chrome(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, colour: Option<usize>, size: f32) {
     let f = &d.raw["fonts"]["big"];
     let rows: Vec<&str> = f["rows"].as_array().into_iter().flatten().filter_map(|r| r.as_str()).collect();
-    let Some((tex, [tw, th])) = art.pic(f["colours"][colour].as_str().or(f["picture"].as_str()).unwrap_or_default()) else { return };
+    let Some((tex, [tw, th])) = art.pic(colour.and_then(|c| f["colours"][c].as_str()).or(f["picture"].as_str()).unwrap_or_default()) else { return };
     let (gw, gh, s) = (num(&f["glyph"][0]).max(1.0), num(&f["glyph"][1]).max(1.0), size / 10.0);
     let (per_row, top) = (rows.first().map_or(1, |r| r.chars().count()), y + num(&f["foot_dy"]));
     let mut at = x;
@@ -1900,9 +1922,13 @@ fn chrome(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x:
 
 /// A round text of `hud.banners` (its format with `n`).
 fn banner(painter: &egui::Painter, v: &View, art: &Art, d: &Data, key: &str, n: u32) {
-    let b = &d.raw["hud"]["banners"][key];
+    banner_at(painter, v, art, d, &d.raw["hud"]["banners"][key], n);
+}
+
+/// A chrome text `{text, x, y, colour, size}` (its format with `n`; size 10 when not given).
+fn banner_at(painter: &egui::Painter, v: &View, art: &Art, d: &Data, b: &Value, n: u32) {
     let text = crate::art::printf(b["text"].as_str().unwrap_or_default(), &[n]);
-    chrome(painter, v, art, d, &text, num(&b["x"]), num(&b["y"]), int(&b["colour"]), num(&b["size"]).max(1.0));
+    chrome(painter, v, art, d, &text, num(&b["x"]), num(&b["y"]), Some(int(&b["colour"])), b["size"].as_f64().map_or(10.0, |s| s as f32));
 }
 
 /// The fight HUD (0x3C2F40, 0x3C23F0, 0x3C1F08, 0x3BC540; FRONTEND.md 4): per side the bar of the member in back
@@ -1999,18 +2025,27 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
         if let (Some(stage), Some(me)) = (info.stage, (0..2).find(|&i| info.humans[i] && !info.humans[1 - i])) {
             let (y, small_h) = (num(&top["y"]), num(&d.raw["fonts"]["small"]["glyph"][1]));
             let text_at = |text: &str, x: f32, colour: &str| small_in(painter, v, art, d, Some(int(&top[colour])), text, x, y - small_h - 2.0, Color32::WHITE);
-            let last = stage >= int(&d.raw["arcade"]["fights"]) as u32;
-            let label = if last && frame & 0x20 == 0 { top["final"].as_str().unwrap_or_default().to_string() } else { crate::art::printf(top["stage"].as_str().unwrap_or_default(), &[stage]) };
-            text_at(&label, num(&top["stage_x"][me]), "stage_colour");
-            text_at(&clock(run), num(&top["stage_x"][me]) + num(&top["time_dx"]), "time_colour");
-            let other = 1 - me;
-            if info.time_base.is_some() {
-                text_at(top["time_attack"].as_str().unwrap_or_default(), num(&top["label_x"][other]), "label_colour");
-            } else {
-                let ins = &d.raw["select"]["insert"];
+            let ins = &d.raw["select"]["insert"];
+            // (INSERT COIN's blinking and alternation, centred on x)
+            let blink = |texts: [&str; 2], x: f32| {
                 if frame & int(&ins["show_mask"]) as u32 != 0 {
-                    let text = ins["texts"][usize::from(frame & int(&ins["second_mask"]) as u32 != 0)].as_str().unwrap_or_default();
-                    text_at(text, num(&top["insert_x"][other]) - num(&ins["measure"]) * text.chars().count() as f32 / 2.0, "insert_colour");
+                    let text = texts[usize::from(frame & int(&ins["second_mask"]) as u32 != 0)];
+                    text_at(text, x - num(&ins["measure"]) * text.chars().count() as f32 / 2.0, "insert_colour");
+                }
+            };
+            let (other, s) = (1 - me, |v: &Value| v.as_str().unwrap_or_default().to_string());
+            if info.under[me] == crate::hud::Under::Push {
+                // under CONTINUE?: PRESS Pn START and the credits on the player's side, nothing on the other
+                blink([&s(&top["press"][me]), &s(&top["free_play"])], num(&top["insert_x"][me]));
+            } else {
+                let last = stage >= int(&d.raw["arcade"]["fights"]) as u32;
+                let label = if last && frame & 0x20 == 0 { s(&top["final"]) } else { crate::art::printf(&s(&top["stage"]), &[stage]) };
+                text_at(&label, num(&top["stage_x"][me]), "stage_colour");
+                text_at(&clock(run), num(&top["stage_x"][me]) + num(&top["time_dx"]), "time_colour");
+                if info.time_base.is_some() {
+                    text_at(&s(&top["time_attack"]), num(&top["label_x"][other]), "label_colour");
+                } else {
+                    blink([&s(&ins["texts"][0]), &s(&ins["texts"][1])], num(&top["insert_x"][other]));
                 }
             }
         }
