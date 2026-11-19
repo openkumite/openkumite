@@ -782,6 +782,7 @@ impl App {
             let (r, clock) = run.rules(&d.round_frames);
             game.round_frames = clock.unwrap_or(u32::MAX / 2);
             game.start_health = run.health;
+            (game.guard_damage, game.fight.guard_damage) = (run.guard_damage, run.guard_damage);
             ttt_rounds = Some(r);
         }
         // Mokujin at home (the second side's fighter is the host): the arcade ROM set's hidden arena, which the
@@ -1619,6 +1620,10 @@ impl App {
             (None, Some(d)) => format!("recording: {} steps", d.len()),
             (None, None) => "demo: not recording".into(),
         };
+        // Tekken Tag's BGM / SE VOLUME and SPEAKER OUT on OpenKumite's levels
+        if let (Some((bgm, se, mono)), Some(audio)) = (self.roster.ttt.as_deref().and_then(|d| ttt::volumes(d, &ttt::progress())), self.audio.as_mut()) {
+            (audio.music_volume, audio.sfx_volume, audio.mono) = (0.55 * bgm, 0.9 * se, mono);
+        }
         // the menus' sounds queued since the last step
         for code in menu::sfx::take() {
             if let (Some(sound), Some(audio)) = (self.sound.as_ref(), self.audio.as_mut()) {

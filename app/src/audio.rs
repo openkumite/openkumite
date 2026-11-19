@@ -5,7 +5,7 @@
 //! ([`Audio::capture`]), and mixed afterwards.
 
 use kumite_game::sound::Track;
-use rodio::source::{Buffered, Source};
+use rodio::source::{Buffered, ChannelVolume, Source};
 use rodio::{Decoder, MixerDeviceSink, Player};
 use std::collections::HashMap;
 use std::fs::File;
@@ -45,6 +45,8 @@ pub struct Audio {
     pub muted: bool,
     pub music_volume: f32,
     pub sfx_volume: f32,
+    /// Both speakers the same (Tekken Tag's SPEAKER OUT: MONO), from the next sound or track on.
+    pub mono: bool,
 }
 
 impl Audio {
@@ -53,7 +55,7 @@ impl Audio {
         match rodio::DeviceSinkBuilder::open_default_sink() {
             Ok(mut sink) => {
                 sink.log_on_drop(false);
-                Some(Self { sink: Some(sink), capture: None, music: None, current: None, cache: HashMap::new(), muted: false, music_volume: 0.55, sfx_volume: 0.9 })
+                Some(Self { sink: Some(sink), capture: None, music: None, current: None, cache: HashMap::new(), muted: false, music_volume: 0.55, sfx_volume: 0.9, mono: false })
             }
             Err(e) => {
                 log::warn!("no audio output: {e}");
@@ -64,7 +66,7 @@ impl Audio {
 
     /// No device: what the game asks to play is noted ([`Capture`]).
     pub fn capture() -> Self {
-        Self { sink: None, capture: Some(Capture::default()), music: None, current: None, cache: HashMap::new(), muted: false, music_volume: 0.55, sfx_volume: 0.9 }
+        Self { sink: None, capture: Some(Capture::default()), music: None, current: None, cache: HashMap::new(), muted: false, music_volume: 0.55, sfx_volume: 0.9, mono: false }
     }
 
     /// Play a track from its start, looped from its loop point or once, at its level (nothing changes when it is
@@ -88,9 +90,14 @@ impl Audio {
                 player.set_volume(self.level(false));
                 let at = |s: f64| std::time::Duration::from_secs_f64(s.max(0.0));
                 let src = src.buffered();
-                player.append(src.clone().skip_duration(at(t.start)));
-                if t.looped {
-                    player.append(src.skip_duration(at(t.loop_at)).repeat_infinite());
+                let start = src.clone().skip_duration(at(t.start));
+                let looped = t.looped.then(|| src.skip_duration(at(t.loop_at)).repeat_infinite());
+                if self.mono {
+                    player.append(ChannelVolume::new(start, vec![1.0; 2]));
+                    looped.into_iter().for_each(|l| player.append(ChannelVolume::new(l, vec![1.0; 2])));
+                } else {
+                    player.append(start);
+                    looped.into_iter().for_each(|l| player.append(l));
                 }
                 self.music = Some(player);
             }
@@ -132,7 +139,12 @@ impl Audio {
                 }
             },
         };
-        sink.mixer().add(clip.amplify(volume * self.sfx_volume).speed(speed));
+        let clip = clip.amplify(volume * self.sfx_volume).speed(speed);
+        if self.mono {
+            sink.mixer().add(ChannelVolume::new(clip, vec![1.0; 2]));
+        } else {
+            sink.mixer().add(clip);
+        }
     }
 
     pub fn toggle_mute(&mut self) -> bool {

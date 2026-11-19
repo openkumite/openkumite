@@ -560,6 +560,7 @@ mod tests {
             frames: 0,
             stage: 3,
             options: [1, 2, 3],
+            guard_damage: false,
         };
         let Match::Fight { ttt, .. } = &mut f.game else { unreachable!() };
         *ttt = Some(run);

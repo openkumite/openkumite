@@ -32,6 +32,9 @@ pub struct Audio {
     pub muted: bool,
     pub music_volume: f32,
     pub sfx_volume: f32,
+    /// shortcut: kept but not played by (the page's elements play their channels as they are); upgrade: a Web Audio
+    /// graph with a mono down-mix
+    pub mono: bool,
 }
 
 fn url(path: &Path) -> String {
@@ -52,7 +55,7 @@ fn allowed() -> bool {
 
 impl Audio {
     pub fn new() -> Option<Self> {
-        Some(Self { music: None, looper: None, pool: Vec::new(), next: 0, current: None, started: false, muted: false, music_volume: 0.55, sfx_volume: 0.9 })
+        Some(Self { music: None, looper: None, pool: Vec::new(), next: 0, current: None, started: false, muted: false, music_volume: 0.55, sfx_volume: 0.9, mono: false })
     }
 
     /// Play a track from its start, looped from its loop point or once, at its level; None stops the music.
