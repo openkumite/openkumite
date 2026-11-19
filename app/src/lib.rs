@@ -4004,6 +4004,8 @@ impl App {
         let Some(run) = self.bowl.as_mut().filter(|r| r.pause.is_none() && r.page.is_none()) else { return };
         let who = run.scene.bowl.current;
         let (start, select) = (std::mem::take(&mut run.start), std::mem::take(&mut run.select));
+        // (BOWLING OPTIONS' SPECIAL EFFECTS, as set now)
+        run.scene.bowl.effects = !ttt::progress().bowl_off[1];
         let pad = pads[who.min(1)];
         run.scene.step(Pad { start, buttons: pad.buttons | if select { kumite_sim::bowl::SELECT } else { 0 }, ..pad });
         run.place();
