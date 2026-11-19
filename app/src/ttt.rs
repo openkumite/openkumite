@@ -1079,6 +1079,10 @@ impl Front {
             }
             Page::Continue { countdown, .. } => {
                 *countdown = countdown.saturating_sub(1);
+                // the announcer counts each digit below 9 as it comes (0x3BA6F4: sound 0x1047 + digit)
+                if *countdown % 100 == 99 && *countdown < 900 {
+                    sfx::play(0x1047 + (*countdown as u16 + 100) / 100);
+                }
                 if *countdown == 0 {
                     self.page = Page::Message { lines: vec!["GAME OVER".into()], frame: 0, title: true };
                 }
@@ -2352,6 +2356,15 @@ mod tests {
             s.frame = 18;
         }
         assert_eq!((f.music(Some(&d)), f.music(None)), (Some(0), None));
+        // CONTINUE?'s announcer: 8 as the 8 comes
+        let mut r2 = roster();
+        r2.ttt = Some(d.clone());
+        let run = Run::new(&d, &r2, &p, ARCADE, [vec![(0, 0)], vec![]], &mut seed);
+        let mut f = Front { page: Page::Continue { run: Box::new(run), countdown: 800 }, frame: 0 };
+        sfx::take();
+        f.tick(&r2, &mut seed);
+        f.tick(&r2, &mut seed);
+        assert_eq!(sfx::take(), vec![0x1047 + 8]);
         // 2400 frames: both picks on one frame, the cursor's character then RANDOM's (the cursor's is taken)
         let mut s = Select::new(ARCADE, &d, None);
         assert!((1..2400).all(|_| s.tick(&d, &r, &p, &mut seed).is_none()) && s.sides[0].picks.is_empty());
