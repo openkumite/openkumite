@@ -2836,14 +2836,20 @@ impl Fight {
         }
     }
 
-    /// Body collision (EXE push spheres, actor+0x324): every pair of push spheres that overlaps horizontally
+    /// Body collision: Tekken Tag's push in its two-fighter fights, else Tekken 3's (Force under Tekken Tag too).
+    fn separate(&mut self, bodies: [&BodyVolumes; 2]) {
+        if self.data.tag_push && self.extra.is_none() {
+            self.separate_tag(bodies)
+        } else {
+            self.push_apart(bodies)
+        }
+    }
+
+    /// Tekken 3's body push (EXE push spheres, actor+0x324): every pair of push spheres that overlaps horizontally
     /// (and in height) pushes the two actors apart along the line between them, half each. The actor
     /// positions (not the animation's root lean) are moved; their roots never come closer than
     /// [`PUSH_DISTANCE`].
-    fn separate(&mut self, bodies: [&BodyVolumes; 2]) {
-        if self.data.tag_push {
-            return self.separate_tag(bodies);
-        }
+    pub(crate) fn push_apart(&mut self, bodies: [&BodyVolumes; 2]) {
         // (between the drawn roots; the push moves the origins)
         let (a, b) = (self.fighters[0].root(), self.fighters[1].root());
         let d = glam::Vec2::new(b.x - a.x, b.z - a.z);
