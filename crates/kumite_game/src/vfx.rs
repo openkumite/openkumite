@@ -34,6 +34,8 @@ pub enum Blend {
     Add,
     /// Half of the sprite over half of the picture (mode 0): the dust.
     Half,
+    /// Over the picture at the texture's alpha (Tekken Tag's dust, 0x345A00: ALPHA (Cs - Cd) x As + Cd).
+    Alpha,
 }
 
 /// One animation of the atlas: its cells, one per frame.
@@ -62,7 +64,7 @@ pub struct BurstSet {
 }
 
 /// A burst playing: where it started, the set, the path each particle follows, its age in frames, its turn about y
-/// (sin, cos) and colour (1 = as drawn).
+/// (sin, cos), growing by `spin` radians a frame (0x3A2758's f12 into +0x84), and colour (1 = as drawn).
 #[derive(Clone, Debug)]
 pub struct Burst {
     pub origin: Vec3,
@@ -71,6 +73,7 @@ pub struct Burst {
     pub paths: Vec<usize>,
     pub age: usize,
     pub turn: [f32; 2],
+    pub spin: f32,
     pub colour: [f32; 3],
 }
 
@@ -331,6 +334,7 @@ impl Vfx {
         let Some(mut set) = self.data.as_ref().and_then(|d| d.bursts.get(name)).cloned() else {
             return self.sprite(strip, pos, dir, blend, eye);
         };
+        let blend = if blend == Blend::Half { Blend::Alpha } else { blend };
         let (n, mut count, mut colour) = (set.paths.len(), set.paths.len(), [1.0; 3]);
         if let Some(d) = self.dust.filter(|_| name == "dust") {
             (count, colour, set.size) = (d.count, d.colour, set.size * d.scale);
@@ -339,7 +343,7 @@ impl Vfx {
         // (heading atan2(dx, dz) of the strike, 0x3A2758 -> +0x74)
         let flat = dir.map_or(glam::Vec2::ZERO, |d| glam::Vec2::new(d.x, d.z)).normalize_or_zero();
         let turn = if flat == glam::Vec2::ZERO { [0.0, 1.0] } else { [flat.x, flat.y] };
-        self.bursts.push(Burst { origin: pos, set, blend, paths, age: 0, turn, colour });
+        self.bursts.push(Burst { origin: pos, set, blend, paths, age: 0, turn, spin: 0.0, colour });
     }
 
     /// A ground impact at a root (x, z): 6 dust puffs 250 mm up (Tekken Tag's: the dust burst at the feet).
@@ -371,6 +375,28 @@ impl Vfx {
             8 => self.effect("spark", &data.spark, pos, None, Blend::Add, eye),
             9 => self.effect("zero", &data.zero, pos, None, Blend::Add, eye),
             _ => self.effect("dust", &data.dust, pos, None, Blend::Half, eye),
+        }
+    }
+
+    /// A burst of 0x3A2758's kind (0 the hit spark, 1 set 3's, 2 the guard's, 3 the dust) outside a fight (the
+    /// endings' ops 17 / 18), turned along `dir`, spinning `spin` radians a frame; dust more than 500 mm up (`high`)
+    /// is 3 particles at the set's own size and colour, not the arena's.
+    pub fn burst_at(&mut self, kind: usize, pos: Vec3, dir: Option<Vec3>, high: bool, spin: f32) {
+        let Some(d) = self.data.clone() else { return };
+        let (name, strip, blend) = match kind {
+            0 => ("spark", &d.spark, Blend::Add),
+            1 => ("zero", &d.zero, Blend::Add),
+            2 => ("block", &d.block, Blend::Add),
+            _ => ("dust", &d.dust, Blend::Half),
+        };
+        let (arena, n) = (self.dust, self.bursts.len());
+        if high {
+            self.dust = Some(Dust { count: 3, scale: 1.0, colour: [1.0; 3] });
+        }
+        self.effect(name, strip, pos, dir, blend, Vec3::ZERO);
+        self.dust = arena;
+        if let Some(b) = self.bursts.get_mut(n) {
+            b.spin = spin;
         }
     }
 
@@ -591,8 +617,13 @@ impl Vfx {
                 let a = 1.0 - f[4];
                 let k = b.set.level * a;
                 let [r, g, bl] = b.colour;
-                let color = if b.blend == Blend::Half { [r, g, bl, 0.5 * a] } else { [k * r, k * g, k * bl, 1.0] };
-                let [s, c] = b.turn;
+                let color = if b.blend == Blend::Alpha { [r, g, bl, a] } else { [k * r, k * g, k * bl, 1.0] };
+                let [s, c] = if b.spin == 0.0 {
+                    b.turn
+                } else {
+                    let a = b.turn[0].datan2(b.turn[1]) + b.spin * b.age as f32;
+                    [a.dsin(), a.dcos()]
+                };
                 let at = Vec3::new(f[0] * c + f[2] * s, f[1], f[2] * c - f[0] * s);
                 out.push(Sprite { pos: b.origin + at, size: b.set.size * f[3], cell: b.set.cell, color, blend: b.blend, mirror: false, nearer: 0.0 });
             }
@@ -656,5 +687,13 @@ mod tests {
         v.advance();
         let s = v.sprites();
         assert!(!s.is_empty() && s.iter().all(|s| (s.size - 0.1).abs() < 1e-6 && s.color[0] == 0.5));
+        // an ending's dust high up: 3 particles at the set's size and colour, the arena's kept; a spin turns it
+        v.bursts.clear();
+        v.burst_at(3, Vec3::Y, None, true, std::f32::consts::FRAC_PI_2);
+        assert_eq!(v.dust.map(|d| d.count), Some(3));
+        v.advance();
+        let s = v.sprites();
+        assert!(!s.is_empty() && s.iter().all(|s| (s.size - 0.05).abs() < 1e-6 && s.color[0] == 1.0));
+        assert!(s.iter().all(|s| (s.pos - Vec3::new(0.3, 1.2, -0.1)).length() < 1e-5), "{:?}", s[0].pos);
     }
 }
