@@ -2986,11 +2986,9 @@ impl Practice {
         self.values.get(self.mode)?.get(k).copied()
     }
 
-    /// FREESTYLE's TRAINING DUMMY (0 STAND elsewhere), by its value's name.
-    pub fn dummy<'a>(&self, d: &'a Data) -> &'a str {
-        let k = self.value(d, "TRAINING DUMMY").unwrap_or(0);
-        let row = self.rows(d).iter().find(|r| r["label"] == "TRAINING DUMMY");
-        row.and_then(|r| r["values"][k].as_str()).unwrap_or("STAND")
+    /// FREESTYLE's TRAINING DUMMY value (0 STAND elsewhere; 5 AUTO GUARD, 11 CONTROLLER).
+    pub fn dummy(&self, d: &Data) -> usize {
+        self.value(d, "TRAINING DUMMY").unwrap_or(0)
     }
 
     /// VS CPU: the CPU's difficulty (CPU LEVEL).
@@ -3058,17 +3056,40 @@ impl Practice {
     }
 }
 
-/// The practice dummy's pad by TRAINING DUMMY: standing, crouching, guarding (back), GUARD ALL / AUTO GUARD low
-/// against a low attack. shortcut: the recovery rolls, QUICK TAG OUT and SPRING FORWARD stand; upgrade: decode the
-/// dummy's code (0x506528's users).
-pub fn practice_pad(dummy: &str, facing_right: bool, low: bool) -> kumite_sim::input::Pad {
-    use kumite_sim::input::Pad;
-    let back = |p: Pad| if facing_right { Pad { left: true, ..p } } else { Pad { right: true, ..p } };
+/// The practice dummy's pad by TRAINING DUMMY (`dummy`: its value; 0x37DC98 writes the dummy's pad +0x430): lying,
+/// it holds up to get up (0x37DDE0); else STAND GUARD holds back while the player's move hits high or mid and is not
+/// past its last active frame (0x37E010), CROUCH holds down (0x37DFF0), CROUCH GUARD down and down-back against a
+/// low (0x37E180), GUARD ALL down-back against a low and back against a high or mid (0x37E090). AUTO GUARD stands
+/// guarding without the input (+0x12C: the caller's guard input flag). The recoveries (QUICK ROLL 3+4 into the
+/// foreground, 1+2 into the background, QUICK TAG OUT the tag button, SPRING FORWARD forward, QUICK ROLL BACK back)
+/// in a juggle reaction (the move's posture class 9 / 10, 0x37E0E8) press theirs on a frame it is taken (0x37E1D8).
+/// shortcut: "juggled" is the posture class alone (the PS2 also needs +0xF7, set by the hit; not tracked here).
+pub fn practice_pad(dummy: usize, f: &kumite_sim::Fight, me: usize) -> kumite_sim::input::Pad {
+    use kumite_sim::input::{Pad, TAG};
+    let (gd, d, p) = (&f.data, &f.fighters[me], &f.fighters[1 - me]);
+    let right = f.facing_right(me);
+    let dir = |fwd: bool, down: bool| Pad { down, right: fwd == right, left: fwd != right, ..Pad::default() };
+    if (6..=10).contains(&dummy) && matches!((d.current_move(gd).posture.raw >> 11) & 0x1F, 9 | 10) {
+        let pad = match dummy {
+            6 => Pad { buttons: 0xC, ..Pad::default() },
+            7 => Pad { buttons: 0x3, ..Pad::default() },
+            8 => Pad { buttons: TAG, ..Pad::default() },
+            9 => dir(true, false),
+            _ => dir(false, false),
+        };
+        return if d.accepts(gd, pad, right) { pad } else { Pad::default() };
+    }
+    if d.current_move(gd).posture.raw & 0x204 != 0 {
+        return Pad { up: true, ..Pad::default() };
+    }
+    // (the player's attack guarded standing (mask 0x10) or crouching (0x08), not past its last active frame)
+    let pm = p.current_move(gd);
+    let hits = |bit: u32| pm.attack_mask.mask & bit != 0 && p.frame <= pm.active[1];
     match dummy {
-        "CROUCH" => Pad { down: true, ..Pad::default() },
-        "STAND GUARD" => back(Pad::default()),
-        "CROUCH GUARD" => back(Pad { down: true, ..Pad::default() }),
-        "GUARD ALL" | "AUTO GUARD" => back(Pad { down: low, ..Pad::default() }),
+        1 if hits(0x10) => dir(false, false),
+        3 | 4 if hits(0x08) => dir(false, true),
+        2 | 3 => Pad { down: true, ..Pad::default() },
+        4 if hits(0x10) => dir(false, false),
         _ => Pad::default(),
     }
 }
@@ -4521,13 +4542,12 @@ mod tests {
         for k in [Key::Down, Key::Down, Key::Right] {
             assert_eq!(p.key(&d, k), PracticeAction::None);
         }
-        assert_eq!(p.dummy(&d), "STAND GUARD");
+        assert_eq!(p.dummy(&d), 1);
         p.cursor = 0;
         p.key(&d, Key::Left);
         assert_eq!((p.mode, p.cpu(&d)), (1, Some(1)));
         assert_eq!(p.key(&d, Key::Up), PracticeAction::None);
         assert!(p.key(&d, Key::Button(0)) == PracticeAction::Reset && !p.open);
-        assert_eq!(practice_pad("CROUCH GUARD", true, false), kumite_sim::input::Pad { left: true, down: true, ..Default::default() });
     }
 
     /// The main menu's rows slide a row's height in 4 a frame; no move while they slide (0x3BD2E0).

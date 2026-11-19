@@ -1997,12 +1997,16 @@ impl App {
         }
         // Tekken Tag's practice dummy: its TRAINING DUMMY, the second pad (CONTROLLER), or VS CPU's CPU
         if let (Some(p), Some(d), None) = (fight.ttt_practice.as_ref(), self.roster.ttt.as_deref(), p2_script) {
+            let dummy = p.dummy(d);
+            // (AUTO GUARD and CONTROLLER guard without the input, 0x37AF30's +0x12C; VS CPU's CPU as set_cpu has it)
+            if p.mode != 1 {
+                fight.bout.game.fight.fighters[1].guard_input = matches!(dummy, 5 | 11);
+            }
             let f = &fight.bout.game.fight;
-            let low = f.fighters[0].current_move(&f.data).attack_mask.mask == 0x10F;
-            pads[1] = match p.dummy(d) {
+            pads[1] = match dummy {
                 _ if p.mode == 1 => Pad::default(),
-                "CONTROLLER" => kb2,
-                dummy => ttt::practice_pad(dummy, f.facing_right(1), low),
+                11 => kb2,
+                dummy => ttt::practice_pad(dummy, f, 1),
             };
         }
         // the practice dummy: its TRAINING DUMMY action, the second pad (CONTROLLER) or the CPU (VS CPU)

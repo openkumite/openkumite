@@ -235,3 +235,29 @@ fn paul_against_jin() {
     let again = run(&gd, &dir, 4 * CYCLE);
     assert_eq!(r.hashes, again.hashes, "the same pads, the same fight");
 }
+
+/// Practice's QUICK ROLL dummy (0x37E0E8 / 0x37E1D8): Jin, launched, presses 3+4 only on a frame his juggle
+/// reaction (posture class 9 / 10) would take it, and leaves the fall for the roll that frame.
+#[test]
+fn a_juggled_dummy_rolls_when_taken() {
+    let Some((gd, dir)) = data() else { return };
+    let mut fight = new_fight(&gd, &dir);
+    reset(&mut fight);
+    let p = Pad::default();
+    let roll = Pad { buttons: 0xC, ..p };
+    let mut pressed = None;
+    for s in 0..120 {
+        let p1 = if (3..=5).contains(&s) { Pad { down: true, right: true, buttons: if s == 5 { 2 } else { 0 }, ..p } } else { p };
+        let jin = &fight.fighters[1];
+        let class = (jin.current_move(&gd).posture.raw >> 11) & 0x1F;
+        let p2 = if pressed.is_none() && matches!(class, 9 | 10) && jin.accepts(&gd, roll, fight.facing_right(1)) { roll } else { p };
+        let before = jin.alias;
+        advance(&mut fight, [p1, p2]);
+        if p2 == roll {
+            pressed = Some((s, before, fight.fighters[1].queued()));
+        }
+    }
+    let (s, before, queued) = pressed.expect("the roll was never taken");
+    eprintln!("roll at step {s}: alias {before}, queued {queued:?}");
+    assert!(queued.is_some());
+}
