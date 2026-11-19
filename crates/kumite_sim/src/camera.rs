@@ -23,6 +23,8 @@ struct Json {
     gsqrt: Option<JsonValues>,
     end: Option<EndData>,
     arena_projection: Option<JsonArenas>,
+    team_intro: Option<TeamIntro>,
+    replay_shots: Option<ReplayShots>,
 }
 #[derive(Deserialize)]
 struct JsonArenas {
@@ -164,6 +166,63 @@ pub struct EndMotions {
     pub lose_time_up: usize,
 }
 
+/// Tekken Tag's team intro before a match's first round (camera.json `team_intro`, 0x3B5328): each team on the stage,
+/// a shot each.
+#[derive(Deserialize, Clone, Debug)]
+pub struct TeamIntro {
+    pub frames: i64,
+    pub place: TeamPlace,
+    shots: Vec<TeamShot>,
+    pair_scale: i64,
+    /// The pairs with their own places and motions (0x43A180).
+    pub pairs: Vec<[PairMember; 2]>,
+}
+#[derive(Deserialize, Clone, Copy, Debug)]
+pub struct TeamPlace {
+    pub x: i64,
+    pub z: i64,
+}
+#[derive(Deserialize, Clone, Debug)]
+struct TeamShot {
+    turn_from: [i64; 3],
+    turn_to: [i64; 3],
+    target_from: [i64; 3],
+    target_to: [i64; 3],
+    eye_from: [i64; 3],
+    eye_to: [i64; 3],
+}
+/// A pair member's place (game units, facing 65536 a turn) and motion; costume -1: any.
+#[derive(Deserialize, Clone, Copy, Debug)]
+pub struct PairMember {
+    pub character: i64,
+    pub costume: i64,
+    pub alias: usize,
+    pub x: i64,
+    pub z: i64,
+    pub facing: i64,
+}
+
+/// Tekken Tag's K.O. replay shots (camera.json `replay_shots`, 0x3D0748).
+#[derive(Deserialize, Clone, Debug)]
+pub struct ReplayShots {
+    pub sequences: Vec<[i8; 4]>,
+    shots: Vec<ReplayShot>,
+    eye_y: i64,
+    target_y: i64,
+    pitch_max: i64,
+    follow_easing: [i64; 2],
+    distance_per_h: i64,
+}
+#[derive(Deserialize, Clone, Debug)]
+struct ReplayShot {
+    target: i64,
+    follow: i64,
+    turn: [i64; 3],
+    turn_range: [i64; 3],
+    distance: i64,
+    distance_range: i64,
+}
+
 /// Camera constants and tables from camera.json.
 #[derive(Clone)]
 pub struct CameraData {
@@ -193,6 +252,8 @@ pub struct CameraData {
     /// Per arena: H, its clamp; the depth H * n / d.
     arenas: Vec<[i64; 3]>,
     distance_per_h: Option<[i64; 2]>,
+    pub team_intro: Option<TeamIntro>,
+    pub replay_shots: Option<ReplayShots>,
 }
 
 impl CameraData {
@@ -281,6 +342,8 @@ impl CameraData {
             move_caps,
             arenas: j.arena_projection.map_or_else(Vec::new, |a| a.rows.iter().map(|r| [r.h, r.h_min, r.h_max]).collect()),
             distance_per_h: f.distance_per_h,
+            team_intro: j.team_intro,
+            replay_shots: j.replay_shots,
         })
     }
 
@@ -938,9 +1001,12 @@ impl FightCamera {
     fn intro_key(&mut self) -> i64 {
         let base = self.intro_base;
         let t = self.intro_t.unwrap_or(0);
-        // Tekken Tag eases over the last 90 frames only (0x3954E8): round 1 holds the offset for its first 30
-        let ease = self.data.intro_ease.unwrap_or(self.intro_len);
-        let f = self.data.sin[((0xC00 + tdiv(t.min(ease) << 10, ease)) & 0xFFF) as usize] + 0x1000;
+        // Tekken Tag eases over the first 90 frames only (0x3954E8: max(t - T + 90, 1)): round 1 then holds the base
+        let (k, ease) = match self.data.intro_ease {
+            Some(e) => ((t - self.intro_len + e).max(1), e),
+            None => (t, self.intro_len),
+        };
+        let f = self.data.sin[((0xC00 + tdiv(k << 10, ease)) & 0xFFF) as usize] + 0x1000;
         let o = self.data.intro_offsets[self.intro_var];
         let eye = [base.x + sra_tz(o[0] * f, 12), base.y + sra_tz(o[1] * f, 12), base.z + sra_tz(o[2] * f, 12)];
         self.keys[2] = self.lookat(eye, [base.x, base.y, 0], base.h);
@@ -1139,5 +1205,115 @@ impl EndCam {
                 View { eye: *eye, pitch: sra_tz(pt, 6), yaw: sra_tz(y, 6), h: d.h, roll: 0 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------- Tekken Tag's scripted shots
+
+/// A shot of Tekken Tag's: the team intro's (eye and target moving from one place to another, 0x3D2818) or the K.O.
+/// replay's (the eye still, the target easing after a fighter, 0x3D0A38). Game space, y down.
+#[derive(Clone, Debug)]
+pub struct Shot {
+    eye: [[i64; 3]; 2],
+    target: [[i64; 3]; 2],
+    /// The team intro's frames and the frame now; None: the replay's.
+    frames: Option<(i64, i64)>,
+}
+
+impl CameraData {
+    /// 0x39BA60 then 0x39B310: `v` turned by Ry * Rx * Rz of `a` (4096 a turn), each product's terms truncated.
+    pub fn turn(&self, a: [i64; 3], v: [i64; 3]) -> [i64; 3] {
+        let (sx, cx, sy, cy, sz, cz) = (self.sin(a[0]), self.cos(a[0]), self.sin(a[1]), self.cos(a[1]), self.sin(a[2]), self.cos(a[2]));
+        let rx = [[0x1000, 0, 0], [0, cx, -sx], [0, sx, cx]];
+        let ry = [[cy, 0, sy], [0, 0x1000, 0], [-sy, 0, cy]];
+        let rz = [[cz, -sz, 0], [sz, cz, 0], [0, 0, 0x1000]];
+        let mul = |a: [[i64; 3]; 3], b: [[i64; 3]; 3]| -> [[i64; 3]; 3] { std::array::from_fn(|i| std::array::from_fn(|j| s16((0..3).map(|k| tdiv(a[i][k] * b[k][j], 0x1000)).sum()))) };
+        let m = mul(mul(ry, rx), rz);
+        std::array::from_fn(|i| (0..3).map(|j| tdiv(m[i][j] * v[j], 0x1000)).sum::<i64>() as i32 as i64)
+    }
+
+    /// A view looking from `eye` at `target` (0x35B690) on this arena's H, the pitch at most `pitch_max`.
+    fn look(&self, eye: [i64; 3], target: [i64; 3], pitch_max: i64) -> View {
+        let (p, y) = self.lookat6(eye, target);
+        View { eye, pitch: sra_tz(p, 6).min(pitch_max), yaw: sra_tz(y, 6), h: tdiv(self.h * 368, self.screen_width), roll: 0 }
+    }
+}
+
+impl Shot {
+    /// The team intro's shot `k` (0x3D2330) on `base` (a chest, or a pair's chests' midpoint); `pair`: a pair's (its
+    /// target's from y and its eyes' z scaled). None without the data.
+    pub fn team(d: &CameraData, base: [i64; 3], k: usize, pair: bool) -> Option<Self> {
+        let t = d.team_intro.as_ref()?;
+        let s = t.shots.get(k)?;
+        let scale = |v: [i64; 3], axis: Option<usize>| -> [i64; 3] {
+            std::array::from_fn(|i| {
+                let v = tdiv(v[i] * d.h, 600);
+                if pair && axis == Some(i) {
+                    tdiv(v * t.pair_scale, 0x1000)
+                } else {
+                    v
+                }
+            })
+        };
+        // (kept in 16 bits, as the game stores them)
+        let at = |turn: [i64; 3], v: [i64; 3]| -> [i64; 3] {
+            let r = d.turn(turn, v);
+            std::array::from_fn(|i| s16(base[i] + r[i]))
+        };
+        Some(Self {
+            target: [at(s.turn_from, scale(s.target_from, Some(1))), at(s.turn_to, scale(s.target_to, None))],
+            eye: [at(s.turn_from, scale(s.eye_from, Some(2))), at(s.turn_to, scale(s.eye_to, Some(2)))],
+            frames: Some((t.frames.max(1), 0)),
+        })
+    }
+
+    /// The replay's shot `k` (0x3D0748) on `target` (game space), its yaw turned by `facing` (the winner's, the
+    /// loser's after a throw; 4096 a turn, the game's +0x3C / 16). `random(n)`: 0..n (the AI's, 0x3800D8). The eye at
+    /// least `eye_y` up, the target at most `target_y`. None without the data or the shot.
+    pub fn replay(d: &CameraData, k: usize, target: [i64; 3], facing: i64, random: &mut dyn FnMut(i64) -> i64) -> Option<Self> {
+        let r = d.replay_shots.as_ref()?;
+        let s = r.shots.get(k)?;
+        let [pr, yr, rr] = s.turn_range;
+        let pitch = s.turn[0] + pr - random(2 * pr);
+        let yaw = s.turn[1] + facing + yr - random(2 * yr);
+        let roll = s.turn[2] + rr - random(2 * rr);
+        let dist = tdiv((s.distance + s.distance_range - random(2 * s.distance_range)) * d.h, r.distance_per_h);
+        let v = d.turn([pitch, yaw, roll], [0, 0, dist]);
+        let mut eye: [i64; 3] = std::array::from_fn(|i| target[i] + v[i]);
+        eye[1] = eye[1].min(r.eye_y);
+        let target = [target[0], target[1].max(r.target_y), target[2]];
+        Some(Self { eye: [eye; 2], target: [target; 2], frames: None })
+    }
+
+    /// What the replay's shot `k` looks at and its target then follows: 0 the winner's root (+0x51C), 1 the loser's,
+    /// 2 (looks at) the loser's point kept at the K.O. (+0x39C), 3 (follows) none.
+    pub fn replay_roles(d: &CameraData, k: usize) -> (i64, i64) {
+        d.replay_shots.as_ref().and_then(|r| r.shots.get(k)).map_or((1, 1), |s| (s.target, s.follow))
+    }
+
+    /// The replay's shot for pass `pass` of sequence `sequence` (0x520F88).
+    pub fn replay_sequence(d: &CameraData, sequence: usize, pass: usize) -> Option<usize> {
+        let s = d.replay_shots.as_ref()?.sequences.get(sequence)?.get(pass)?;
+        usize::try_from(*s).ok()
+    }
+
+    /// One frame: the team intro's eased move (0x3D2818), or the replay's target easing 6/128 of the way to `follow`
+    /// (0x3D0A38).
+    pub fn step(&mut self, d: &CameraData, follow: Option<[i64; 3]>) -> View {
+        if let Some((n, t)) = self.frames.as_mut() {
+            *t = (*t + 1).min(*n);
+            let w = d.sin(tdiv(*t << 10, *n));
+            let lerp = |p: [[i64; 3]; 2]| -> [i64; 3] { std::array::from_fn(|i| p[0][i] + tdiv((p[1][i] - p[0][i]) * w, 0x1000)) };
+            return d.look(lerp(self.eye), lerp(self.target), i64::MAX);
+        }
+        let (target_y, pitch_max, [m, sh]) = d.replay_shots.as_ref().map_or((i64::MIN, i64::MAX, [0, 1]), |r| (r.target_y, r.pitch_max, r.follow_easing));
+        let t = &mut self.target[0];
+        if let Some(p) = follow {
+            for i in 0..3 {
+                t[i] += tdiv((p[i] - t[i]) * m, sh);
+            }
+        }
+        t[1] = t[1].max(target_y);
+        d.look(self.eye[0], self.target[0], pitch_max)
     }
 }

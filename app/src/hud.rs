@@ -537,6 +537,10 @@ impl Hud {
         let d = &self.data;
         if d.bar_w == 0 {
             if let Some(t) = &info.ttt {
+                // (no HUD over the team intro)
+                if matches!(bout.phase, Phase::TeamIntro { .. }) {
+                    return;
+                }
                 // (Force's pickups behind the HUD)
                 under(&painter, &v);
                 crate::ttt::hud(&painter, &v, art, t, bout, info, &self.state.tag, self.state.ko, self.state.frame, self.state.run_frames);

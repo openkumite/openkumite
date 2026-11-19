@@ -872,6 +872,7 @@ impl App {
         let (counters, round_frames, max_health, start_health, copy_seed) = (kumite_game::bout::counters(), game.round_frames, game.max_health, game.start_health, game.copy_seed);
         let mut bout = Bout::new(game, self.ai.clone(), rounds, setup.is_some());
         bout.team_lose = ttt.as_ref().is_some_and(|r| r.continues());
+        bout.team_intro = self.roster.ttt.is_some();
         match setup.as_ref().map(|s| s.mode) {
             // a game without its menus yet (Tekken Tag: no screens.json) plays its fight as a match
             None if self.roster.screens.is_null() => {}

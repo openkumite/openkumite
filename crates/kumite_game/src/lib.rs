@@ -21,7 +21,7 @@ pub mod sound;
 pub mod tag;
 pub mod vfx;
 
-use kumite_sim::camera::{CameraData, EndCam, FightCamera, Sample, Subject, View};
+use kumite_sim::camera::{CameraData, EndCam, FightCamera, Sample, Shot, Subject, View};
 use kumite_sim::{Animations, BodyVolumes, Fight, GameData, Sphere};
 use std::collections::VecDeque;
 
@@ -179,6 +179,9 @@ pub enum CameraMode {
     End { cam: EndCam, who: usize },
     /// The view stays where it is (after a double K.O.'s replay).
     Frozen,
+    /// A scripted shot of Tekken Tag's (the team intro, a K.O. replay pass), its target following fighter `follow`'s
+    /// root.
+    Shot { shot: Shot, follow: Option<usize> },
 }
 
 /// A fight between two characters, loaded from the asset folder.
@@ -257,6 +260,8 @@ pub struct Game {
     pub rounds: Option<bout::RoundRules>,
     /// A tag battle's win pose: the side whose benched partner poses in the loser's place (0x3B5DB0).
     pub posing_partner: Option<usize>,
+    /// Each model record's costume number (roster.json selections; Tekken Tag's team intro pairs).
+    costume_of: Arc<[(usize, i64)]>,
 }
 
 /// A character's body and move set by model record.
@@ -492,6 +497,7 @@ impl Game {
             tag_bench: None,
             rounds,
             posing_partner: None,
+            costume_of: roster["selections"]["entries"].as_array().into_iter().flatten().filter_map(|e| Some((e["model_record"].as_u64()? as usize, e["costume"].as_i64()?))).collect(),
         };
         for (f, c) in game.fight.fighters.iter_mut().zip(characters) {
             f.character = c;
@@ -550,6 +556,78 @@ impl Game {
         f.character = m.character;
         f.play_alias(alias);
         self.fight.fighters[1 - w] = f;
+        true
+    }
+
+    /// Tekken Tag's team intro before a match's first round (0x3B5328): team `t` on the stage, its fighter in its
+    /// slot and its benched partner in the other's, each in its round-1 intro alias of `pick` (0 / 1: alias 4 / 6),
+    /// on the team shot. A pair of the table (0x3B4F88) stands at its own places in its own motions. False without a
+    /// partner or the data.
+    pub fn team_intro(&mut self, t: usize, pick: [usize; 2]) -> bool {
+        // (the round's health, a carried one too, is set again after: the round restarts)
+        let health = self.fight.fighters.each_ref().map(|f| Some(f.health));
+        self.restart(None);
+        self.start_health = health;
+        let data = self.camera.data().clone();
+        let (Some(ti), Some(teams), Some(_)) = (data.team_intro.as_ref(), self.fight.teams.as_deref(), self.tag_bench.as_ref()) else { return false };
+        let m = teams[t].partner().clone();
+        self.partner_trade(t);
+        self.posing_partner = Some(t);
+        let o = 1 - t;
+        let f = &self.fight.fighters[o];
+        let mut p = kumite_sim::Fighter::new(m.moveset, m.max_health, f.position, f.yaw, f.side);
+        p.character = m.character;
+        self.fight.fighters[o] = p;
+        // the pair's row: its first member in player 0's slot or in player 1's (0x3B4F40 compares the costume unless -1)
+        let costume = |i: usize| self.costume_of.iter().find(|c| c.0 == self.bodies[i].model_record).map_or(-1, |c| c.1);
+        let is = |m: &kumite_sim::camera::PairMember, i: usize| Some(m.character) == self.characters[i] && (m.costume == -1 || m.costume == costume(i));
+        let pair = ti.pairs.iter().find_map(|[a, b]| match () {
+            _ if is(a, 0) && is(b, 1) => Some([*a, *b]),
+            _ if is(a, 1) && is(b, 0) => Some([*b, *a]),
+            _ => None,
+        });
+        let gd = self.fight.data.clone();
+        for (i, f) in self.fight.fighters.iter_mut().enumerate() {
+            let alias = match pair {
+                Some(r) => {
+                    // (facing 65536 a turn, 0 toward the fight camera)
+                    f.position = Vec3::new(r[i].x as f32, 0.0, -r[i].z as f32);
+                    f.yaw = -(r[i].facing as f32) * std::f32::consts::TAU / 65536.0;
+                    r[i].alias
+                }
+                None => {
+                    // (0x3B5150: both facing 0, toward the fight camera)
+                    f.position = Vec3::new([-1.0, 1.0][i] * ti.place.x as f32, 0.0, 0.0);
+                    f.yaw = 0.0;
+                    f.moveset.fixed.round_start[pick[i].min(1)]
+                }
+            };
+            if f.play_alias(alias) {
+                let len = f.current_move(&gd).frames;
+                f.frame = if len >= 151 { len - 149 } else { 1 };
+            }
+        }
+        if pair.is_none() {
+            // player 0 moved (game z, into the screen)
+            self.fight.fighters[0].position.z -= if t == 0 { ti.place.z } else { -ti.place.z } as f32;
+        }
+        self.visible = [true; 2];
+        // the chest points as 0x3B4DC0 sets them (the place, 1425 up); the shot on the team's fighter's (as the PS2
+        // frames show it), a pair's midpoint. shortcut: a pair's points set the same way (0x3B4E10 not read)
+        let chest = |i: usize| {
+            let p = self.fight.fighters[i].position;
+            [p.x.round() as i64, -1425, -(p.z.round() as i64)]
+        };
+        let base = match pair {
+            Some(_) => {
+                let [a, b] = [chest(0), chest(1)];
+                std::array::from_fn(|k| kumite_sim::camera::tdiv(a[k] + b[k], 2))
+            }
+            None => chest(t),
+        };
+        let Some(shot) = Shot::team(&data, base, t, pair.is_some()) else { return false };
+        self.camera_mode = CameraMode::Shot { shot, follow: None };
+        self.step_camera();
         true
     }
 
@@ -761,6 +839,14 @@ impl Game {
                 return self.camera.view;
             }
             CameraMode::Frozen => return self.camera.view,
+            CameraMode::Shot { follow, .. } => {
+                let p = follow.map(|i| self.subject(i).root);
+                let data = self.camera.data().clone();
+                if let CameraMode::Shot { shot, .. } = &mut self.camera_mode {
+                    self.camera.view = shot.step(&data, p);
+                }
+                return self.camera.view;
+            }
         }
         let gd = self.fight.data.clone();
         self.camera.ball = self.fight.ball.as_ref().map(|b| b.pos.map(|v| v as i64));

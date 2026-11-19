@@ -292,6 +292,69 @@ fn tekken_tags_camera() {
     assert_eq!(g.camera.view.h, 442);
 }
 
+/// Against the CPU, round 1 starts with the CPU's team alone on its shot for 92 frames (0x3B5328), the call after;
+/// the same frames each time.
+#[test]
+fn the_cpu_team_shows_before_round_1() {
+    let Some(a) = assets() else { return };
+    if !a.root.join("gamedata/camera.json").exists() {
+        return;
+    }
+    let run = || {
+        let mut g = Game::load(&a, [PAUL, LEI]).unwrap();
+        g.start_tag([kumite_game::Actor::load(&a, LAW).unwrap(), kumite_game::Actor::load(&a, JIN).unwrap()]);
+        let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+        b.team_intro = true;
+        b.set_cpu(1, Some((1, 0)));
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            b.step([Pad::default(); 2]);
+            seen.push((b.phase, b.game.camera.view.eye));
+        }
+        seen
+    };
+    let seen = run();
+    let shown = seen.iter().take_while(|s| s.0 == Phase::TeamIntro { team: 1 }).count();
+    assert_eq!((shown, seen[shown].0), (92, Phase::Call), "{:?}", &seen[..3]);
+    assert_ne!(seen[0].1, seen[60].1, "the shot moves");
+    assert_eq!(seen, run());
+}
+
+/// The K.O. replay runs on Tekken Tag's own shots (0x3D0748): a still eye per pass, a new one each pass; the same
+/// each time.
+#[test]
+fn the_ko_replay_has_its_own_shots() {
+    let Some(a) = assets() else { return };
+    if !a.root.join("gamedata/camera.json").exists() {
+        return;
+    }
+    let run = || {
+        let mut b = tag_bout(&a, LAW);
+        b.game.fight.fighters[0].health = kumite_sim::ONE;
+        let (walk, jab) = (parse_script("f").unwrap()[0], parse_script("1").unwrap()[0]);
+        for k in 0..400 {
+            if b.phase != Phase::Fight {
+                break;
+            }
+            b.step([walk, if k % 20 == 0 { jab } else { Pad::default() }]);
+        }
+        let mut eyes = Vec::new();
+        while !matches!(b.phase, Phase::Result { .. }) && eyes.len() < 400 {
+            if matches!(b.phase, Phase::Replay { .. }) {
+                assert!(matches!(b.game.camera_mode, kumite_game::CameraMode::Shot { .. }));
+                eyes.push(b.game.camera.view.eye);
+            }
+            b.step([Pad::default(); 2]);
+        }
+        eyes
+    };
+    let eyes = run();
+    let mut shots = eyes.clone();
+    shots.dedup();
+    assert!((2..=4).contains(&shots.len()), "a still eye a pass: {shots:?} of {}", eyes.len());
+    assert_eq!(eyes, run());
+}
+
 /// What the sound tables make a step play: the files under audio/sfx.
 fn heard(a: &Assets, s: &SoundData, b: &Bout, st: &mut SoundState) -> Vec<String> {
     let mut out: Vec<_> = s.step(b, st, ["", ""], [0, 0]);
