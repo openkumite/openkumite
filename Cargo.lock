@@ -1762,6 +1762,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-mpeg2v"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e014fdc8f78eff0f4280a829b78f04a561f0ea5caf4a9d3506adb4b00c7819e"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3962,9 +3971,11 @@ dependencies = [
 [[package]]
 name = "ok_tekken_tag_converter"
 version = "0.1.0"
-source = "git+https://github.com/openkumite/ok_tekken_tag_converter?branch=main#59284129592f6a7fd721c0b3d3eb605b93192451"
+source = "git+https://github.com/openkumite/ok_tekken_tag_converter?branch=main#3c8c1a7c90848bb297541f3e96295e9b14630419"
 dependencies = [
  "anyhow",
+ "filmcraft-mpeg2v",
+ "image",
  "libm",
  "ok_converter_common",
  "png",
