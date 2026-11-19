@@ -403,7 +403,7 @@ mod tests {
             // (its sky's panorama: the seventh stage has none)
             assert_eq!(stage.sky_picture.is_some(), n != 6, "stage {n}");
             // what moves: the carousel, the helicopter's rotors, the torches' flame (16 pictures)
-            let moving = |spin: bool| stage.sky.iter().filter(|m| m.motion.is_some_and(|k| matches!(k, kumite_assets::Motion::Spin { .. }) == spin)).count();
+            let moving = |spin: bool| stage.sky.iter().filter(|m| m.motion.as_ref().is_some_and(|k| matches!(k, kumite_assets::Motion::Spin { .. }) == spin)).count();
             let expected = match n {
                 3 => (1, 0),
                 11 => (2, 0),
@@ -412,7 +412,7 @@ mod tests {
             };
             assert_eq!((moving(true), moving(false)), expected, "stage {n}");
             // (the carousel is set back every 136 frames; the rotors turn on)
-            let periods: Vec<_> = stage.sky.iter().filter_map(|m| if let Some(kumite_assets::Motion::Spin { period, .. }) = m.motion { Some(period) } else { None }).collect();
+            let periods: Vec<_> = stage.sky.iter().filter_map(|m| if let Some(kumite_assets::Motion::Spin { period, .. }) = &m.motion { Some(*period) } else { None }).collect();
             assert_eq!(periods, if n == 3 { vec![Some(136)] } else { vec![None; moving(true)] }, "stage {n}");
         }
         run(&root, &Job::Remove(Part::Arcade), &|_| {}, &AtomicBool::new(false)).unwrap();

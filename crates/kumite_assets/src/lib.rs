@@ -425,10 +425,13 @@ pub struct Mesh {
     pub indices: Vec<u32>,
     /// How it moves (the primitive's extras: the arcade stages' carousel, helicopter rotors and flames).
     pub motion: Option<Motion>,
+    /// 1 added to what is behind it, 2 multiplying it (its material named `additive` or `shade`: Tekken Tag's
+    /// lights and gloss, its painted shadows); 0 drawn over it.
+    pub blend: u8,
 }
 
 /// A stage mesh's motion, by frames of 1/60 s.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Motion {
     /// It turns about the line through `pivot` (m) along `axis`, `rate` radians a frame (extras `spin`); after
     /// `period` frames, where it has one, it is back where it began (a carousel whose model is its near half).
@@ -436,6 +439,34 @@ pub enum Motion {
     /// Its texture and the `frames - 1` after it follow one another, each shown for `step` frames (extras `frames`,
     /// `step`).
     Frames { frames: usize, step: u32 },
+    /// Its vertices are in the axes of the last of these nodes, each placed in the one before (the first in the
+    /// stage's): a Tekken Tag arena's object (scene node `objects`) as its arena's code moves it.
+    Track(Vec<Joint>),
+}
+
+/// A stage node: its place in its parent (translation, rotation, scale) and its animation, a key a frame (glTF
+/// channels; the converter writes one a frame): after the last key the first comes again, so the last one is only
+/// where the motion goes on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Joint {
+    pub rest: (Vec3, Quat, Vec3),
+    pub translations: Vec<Vec3>,
+    pub rotations: Vec<Quat>,
+}
+
+impl Joint {
+    /// Its place in its parent at `frame`.
+    pub fn at(&self, frame: u64) -> Mat4 {
+        let key = |n: usize| (n > 1).then(|| (frame % (n as u64 - 1)) as usize);
+        let t = key(self.translations.len()).and_then(|k| self.translations.get(k)).copied().unwrap_or(self.rest.0);
+        let r = key(self.rotations.len()).and_then(|k| self.rotations.get(k)).copied().unwrap_or(self.rest.1);
+        Mat4::from_scale_rotation_translation(self.rest.2, r, t)
+    }
+
+    /// A chain's place (the first joint's in the stage) at `frame`.
+    pub fn chain(chain: &[Joint], frame: u64) -> Mat4 {
+        chain.iter().fold(Mat4::IDENTITY, |m, j| m * j.at(frame))
+    }
 }
 
 /// A Force placement (glTF node extras written by export_stages).
@@ -564,7 +595,12 @@ impl Stage {
                     }
                     None => None,
                 };
-                out.push(Mesh { texture, vertices, indices, motion });
+                let blend = match prim.material().name() {
+                    Some("additive") => 1,
+                    Some("shade") => 2,
+                    _ => 0,
+                };
+                out.push(Mesh { texture, vertices, indices, motion, blend });
             }
             Ok(out)
         };
@@ -663,10 +699,35 @@ impl Stage {
                 st.floor_light = Some((fl["mode"].as_u64().unwrap_or(0) as u32, fl["shade"].as_f64().unwrap_or(0.0) as f32, table));
             }
         }
-        let mut stack: Vec<(gltf::Node, Mat4)> = scene.nodes().map(|n| (n, Mat4::IDENTITY)).collect();
-        while let Some((n, parent)) = stack.pop() {
+        // the objects' animations: each node's keys
+        let mut keys: HashMap<usize, (Vec<Vec3>, Vec<Quat>)> = HashMap::new();
+        for ch in doc.animations().flat_map(|a| a.channels()) {
+            let k = keys.entry(ch.target().node().index()).or_default();
+            match ch.reader(get).read_outputs().context("animation outputs")? {
+                gltf::animation::util::ReadOutputs::Translations(t) => k.0 = t.map(Vec3::from).collect(),
+                gltf::animation::util::ReadOutputs::Rotations(q) => k.1 = q.into_f32().map(|q| Quat::from_array(q).normalize()).collect(),
+                _ => {}
+            }
+        }
+        // (a node under `objects` carries its chain of joints)
+        let mut stack: Vec<(gltf::Node, Mat4, Option<Vec<Joint>>)> = scene.nodes().map(|n| (n, Mat4::IDENTITY, None)).collect();
+        while let Some((n, parent, chain)) = stack.pop() {
             let xf = parent * Mat4::from_cols_array_2d(&n.transform().matrix());
             let name = n.name().unwrap_or_default();
+            if let Some(mut chain) = chain {
+                let (t, r, s) = n.transform().decomposed();
+                let (translations, rotations) = keys.remove(&n.index()).unwrap_or_default();
+                chain.push(Joint { rest: (Vec3::from(t), Quat::from_array(r).normalize(), Vec3::from(s)), translations, rotations });
+                if let Some(m) = n.mesh() {
+                    st.sky.extend(mesh_data(m, Mat4::IDENTITY)?.into_iter().map(|mesh| Mesh { motion: Some(Motion::Track(chain.clone())), ..mesh }));
+                }
+                stack.extend(n.children().map(|c| (c, xf, Some(chain.clone()))));
+                continue;
+            }
+            if name == "objects" {
+                stack.extend(n.children().map(|c| (c, xf, Some(vec![]))));
+                continue;
+            }
             if let Some(extras) = n.extras() {
                 let v: serde_json::Value = serde_json::from_str(extras.get())?;
                 st.placements.push(Placement { name: name.to_string(), position: xf.w_axis.truncate(), extras: v });
@@ -687,7 +748,7 @@ impl Stage {
                     st.meshes.extend(mesh_data(m, xf)?);
                 }
             }
-            stack.extend(n.children().map(|c| (c, xf)));
+            stack.extend(n.children().map(|c| (c, xf, None)));
         }
         Ok(st)
     }

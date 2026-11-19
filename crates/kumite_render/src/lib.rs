@@ -309,9 +309,17 @@ pub struct StaticMesh {
     /// Drawn without depth, sorted far to near each frame as the original hardware's ordering table does (the backdrop
     /// drum): its positions and triangles.
     sorted: Option<(Vec<Vec3>, Vec<[u32; 3]>)>,
+    /// 0 drawn over what is behind it; 1 added to it, 2 multiplying it (Tekken Tag's lights and gloss, its painted
+    /// shadows: drawn after the stage, depth-tested, never written).
+    blend: u8,
 }
 
 impl StaticMesh {
+    /// The mesh as one added to (1) or multiplying (2) what is behind it.
+    pub fn blended(self, blend: u8) -> Self {
+        Self { blend, ..self }
+    }
+
     /// Another texture on the mesh (a stage's flame: its next picture).
     pub fn set_texture(&mut self, texture: Arc<Texture>) {
         self.texture = texture;
@@ -388,6 +396,8 @@ pub struct Renderer {
     /// The drum with depth (`Camera::sky_depth`), and the stage meshes' depth alone (no colour written).
     sky_depth_pipeline: wgpu::RenderPipeline,
     static_depth_pipeline: wgpu::RenderPipeline,
+    /// The stage's added and multiplying strips: on the floor (vs_static) and on the model (vs_sky), each kind.
+    stage_blends: Vec<wgpu::RenderPipeline>,
     backdrop_pipeline: wgpu::RenderPipeline,
     /// 2D pictures behind everything in the next frames, drawn first in this order (an arcade stage's sky): triangles
     /// in the original's 4:3 picture's own space (x and y -1..1 across it, y up; a wider window shows more of x),
@@ -642,6 +652,14 @@ impl Renderer {
         let particle_add = make("particles add", &static_layout, "vs_static", "fs_particle_add", &static_vb, false, true, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
         // shadows: opaque, depth-tested against the stage (the original sorts them behind what stands nearer), never
         // written
+        let shade = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::SrcAlpha, operation: wgpu::BlendOperation::Add };
+        let stage_blends = ["vs_static", "vs_sky"]
+            .into_iter()
+            .flat_map(|vs| {
+                [("fs_stage_add", add), ("fs_stage_shade", shade)]
+                    .map(|(fs, c)| make("stage strips", &static_layout, vs, fs, &static_vb, false, true, tri, Some(wgpu::BlendState { color: c, alpha: keep })))
+            })
+            .collect();
         let shadow_pipeline = make("shadows", &skinned_layout, "vs_shadow", "fs_shadow", &skin_vb, false, true, tri, None);
         // Tekken Tag's: a fighter a channel (its triangles cover it once, however they overlap), no depth
         let shadow_map = device.create_texture(&wgpu::TextureDescriptor {
@@ -727,6 +745,7 @@ impl Renderer {
             sky_pipeline,
             sky_depth_pipeline,
             static_depth_pipeline,
+            stage_blends,
             backdrop_pipeline,
             backdrop: Vec::new(),
             line_pipeline,
@@ -1029,6 +1048,7 @@ impl Renderer {
             count: indices.len() as u32,
             texture,
             sorted: None,
+            blend: 0,
         }
     }
 
@@ -1043,6 +1063,7 @@ impl Renderer {
             count: indices.len() as u32,
             texture,
             sorted: Some((positions, tris)),
+            blend: 0,
         }
     }
 
@@ -1261,7 +1282,7 @@ impl Renderer {
             let order = if cam.sky_first { [(&self.sky_pipeline, sky), (&self.static_pipeline, statics)] } else { [(&self.static_pipeline, statics), (&self.sky_pipeline, sky)] };
             for (pipeline, meshes) in order.into_iter().filter(|o| !(sky_depth && std::ptr::eq(o.0, &self.sky_pipeline))) {
                 pass.set_pipeline(pipeline);
-                for m in meshes {
+                for m in meshes.iter().filter(|m| m.blend == 0) {
                     pass.set_bind_group(1, m.texture.group(smooth), &[]);
                     pass.set_vertex_buffer(0, m.vbuf.slice(..));
                     pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -1280,7 +1301,7 @@ impl Renderer {
                 let mut pass = begin(&mut enc, (label, wgpu::LoadOp::Load, depth));
                 pass.set_bind_group(0, &self.globals_group, &[]);
                 pass.set_pipeline(pipeline);
-                for m in meshes {
+                for m in meshes.iter().filter(|m| m.blend == 0) {
                     pass.set_bind_group(1, m.texture.group(smooth), &[]);
                     pass.set_vertex_buffer(0, m.vbuf.slice(..));
                     pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -1291,6 +1312,22 @@ impl Renderer {
                         stats.triangles += m.count / 3;
                     }
                 }
+            }
+        }
+        // the stage's added and multiplying strips (Tekken Tag's), over the stage it lights or shades
+        let strips: Vec<(usize, &StaticMesh)> = statics.iter().map(|m| (0, *m)).chain(sky.iter().map(|m| (2, *m))).filter(|(_, m)| m.blend > 0).collect();
+        if !strips.is_empty() {
+            let mut pass = begin(&mut enc, ("stage strips", wgpu::LoadOp::Load, wgpu::LoadOp::Load));
+            pass.set_bind_group(0, &self.globals_group, &[]);
+            for (base, m) in strips {
+                let Some(pipeline) = self.stage_blends.get(base + usize::from(m.blend) - 1) else { continue };
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(1, m.texture.group(smooth), &[]);
+                pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..m.count, 0, 0..1);
+                stats.draw_calls += 1;
+                stats.triangles += m.count / 3;
             }
         }
         // the 2D drawn behind the fighters, then the fighters over it
