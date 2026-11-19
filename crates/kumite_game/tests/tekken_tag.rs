@@ -320,6 +320,46 @@ fn the_cpu_team_shows_before_round_1() {
     assert_eq!(seen, run());
 }
 
+/// The win pose's camera (0x35BB58): one eye H * 5200 / 955 + 1440 from the winner, closing 8 a frame.
+#[test]
+fn the_win_pose_camera_stands_by_h() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [PAUL, LEI]).unwrap();
+    g.set_arena(5);
+    let d = g.camera.data().clone();
+    if d.win.is_none() {
+        return; // a pack from before it
+    }
+    let p = g.subject(0);
+    let v = kumite_sim::camera::EndCam::winner(&d, &p, true, &mut |_| 0).step(&d, &p);
+    let (dx, dz) = ((v.eye[0] - p.root[0]) as f64, (v.eye[2] - p.root[2]) as f64);
+    let r = (615 * 5200 / 955 + 1440 - 8) as f64;
+    assert!(((dx * dx + dz * dz).sqrt() - r).abs() < 600.0, "{v:?} from {:?}", p.root);
+}
+
+/// A throw starts its move's camera (0x38C1E8): Paul's throw from up close goes to a situation (2-5) or a camera
+/// motion (6) and back to the fight camera; the same each run.
+#[test]
+fn a_throw_has_its_camera() {
+    let Some(a) = assets() else { return };
+    let run = || {
+        let mut g = Game::load(&a, [PAUL, LEI]).unwrap();
+        g.camera.data().director.as_ref()?; // (none in a pack from before it)
+        let p1 = parse_script("f*40,n*2,1+3,n*200").unwrap();
+        let mut seen = Vec::new();
+        for pad in p1 {
+            g.step([pad, Pad::default()]);
+            seen.push((g.camera.special(), g.camera.view));
+        }
+        Some(seen)
+    };
+    let Some(seen) = run() else { return };
+    let states: Vec<u8> = seen.iter().map(|s| s.0).collect();
+    assert!(states.iter().any(|&s| s != 1), "no special camera: {states:?}");
+    assert_eq!(states.last(), Some(&1), "{states:?}");
+    assert_eq!(Some(seen), run());
+}
+
 /// The K.O. replay runs on Tekken Tag's own shots (0x3D0748): a still eye per pass, a new one each pass; the same
 /// each time.
 #[test]
