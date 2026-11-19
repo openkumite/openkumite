@@ -1389,6 +1389,27 @@ mod tests {
         b
     }
 
+    /// SELECT in the position step switches Lei's hand (its release point, charge and spin bounds), and back; Paul's
+    /// stays (0x3EAE28).
+    #[test]
+    fn select_switches_the_hand_of_those_who_can() {
+        let d = data();
+        let other = (Vec3::new(-150.0, -500.0, 4200.0), vec![1.0]);
+        let mut lei = Bowler::new(&d, 2, 2);
+        lei.other_hand = Some(other.clone());
+        let mut b = Bowl::new(&d, vec![lei], 1);
+        let select = In { buttons: SELECT, ..In::default() };
+        b.step(select);
+        let p = &b.players[0];
+        assert!(p.left && p.hand == other.0 && p.charge == other.1 && b.style == STYLE_FRAMES && b.phase == Phase::Position);
+        b.step(In::default());
+        b.step(select);
+        assert!(!b.players[0].left && b.players[0].hand.x > 0.0);
+        let mut paul = Bowl::new(&d, vec![Bowler { other_hand: Some(other), ..Bowler::new(&d, 0, 0) }], 1);
+        paul.step(select);
+        assert!(!paul.players[0].left && paul.style == 0);
+    }
+
     #[test]
     fn a_full_power_throw_down_the_middle_knocks_most_pins_down() {
         let b = throw(0, 0.0, 0, 0.0, 100.0, 1);

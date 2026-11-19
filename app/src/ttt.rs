@@ -3653,12 +3653,14 @@ pub fn draw_bowl_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
     for (k, (key, label)) in [("help_messages", "HELP MESSAGES:"), ("special_effects", "SPECIAL EFFECTS:")].iter().enumerate() {
         let y = 200.0 + 20.0 * k as f32;
         let on = !off[k];
-        let label = scene.text(key, label);
+        // (the label before its value's printf codes)
+        let text = scene.text(key, label);
+        let label = text.split('%').next().unwrap_or_default();
         if cursor == k {
             bar([291.0, 322.0][k], y);
             sprite(painter, v, art, arrow, [450.0, 483.0][k], y - ah, Color32::WHITE);
         }
-        let end = chrome(painter, v, art, d, &label, 155.0, y, Some(if cursor == k { 11 } else { 5 }), 4.0);
+        let end = chrome(painter, v, art, d, label, 155.0, y, Some(if cursor == k { 11 } else { 5 }), 4.0);
         chrome(painter, v, art, d, if on { "ON" } else { "OFF" }, end, y, Some(if on { 16 } else { 12 }), 4.0);
     }
     chrome(painter, v, art, d, &scene.text("bonus", "BONUS AT 200 PTS"), 155.0, 240.0, Some(17), 4.0);
