@@ -58,8 +58,12 @@ const OPT_MEMORY_CARD: usize = 4;
 const ARCADE_ROW: usize = usize::MAX;
 /// GAME OPTIONS' CHARACTER CHANGE AT CONTINUE row.
 const CHANGE_ROW: usize = 3;
-/// GAME OPTIONS' HELP MESSAGES row.
+/// GAME OPTIONS' GUARD DAMAGE, HELP MESSAGES, SPEAKER OUT, BGM / SE VOLUME rows.
+const GUARD_ROW: usize = 4;
 const HELP_ROW: usize = 8;
+const SPEAKER_ROW: usize = 9;
+const BGM_ROW: usize = 10;
+const SE_ROW: usize = 11;
 /// The last unlock stage (FRONTEND.md 7).
 const LAST_STAGE: u32 = 14;
 /// Frames the result and message screens stay (START skips).
@@ -339,19 +343,36 @@ impl Progress {
 
     /// Where `r` would stand among SURVIVAL's (`survival`: most wins first) or TIME ATTACK's records (fastest first);
     /// None: not among them.
-    pub fn rank(&self, survival: bool, r: &Record) -> Option<usize> {
-        let list = if survival { &self.survivors } else { &self.times };
+    pub fn rank(&self, d: &Data, survival: bool, r: &Record) -> Option<usize> {
+        let list = self.list(d, survival);
         let at = list.iter().position(|o| if survival { r.score > o.score } else { r.score < o.score }).unwrap_or(list.len());
         (at < RECORDS && (r.score > 0 || !survival)).then_some(at)
     }
 
     /// Keep `r` among the records.
-    pub fn record(&mut self, survival: bool, r: Record) {
-        if let Some(at) = self.rank(survival, &r) {
-            let list = if survival { &mut self.survivors } else { &mut self.times };
+    pub fn record(&mut self, d: &Data, survival: bool, r: Record) {
+        if let Some(at) = self.rank(d, survival, &r) {
+            let mut list = self.list(d, survival);
             list.insert(at, r);
             list.truncate(RECORDS);
+            *if survival { &mut self.survivors } else { &mut self.times } = list;
         }
+    }
+
+    /// SURVIVAL's (`survival`) or TIME ATTACK's records: the save's, else those a new save starts with
+    /// (`records.defaults`, 0x3C88A0).
+    fn list(&self, d: &Data, survival: bool) -> Vec<Record> {
+        let kept = if survival { &self.survivors } else { &self.times };
+        if !kept.is_empty() {
+            return kept.clone();
+        }
+        let key = if survival { "survivors" } else { "times" };
+        d.raw["records"]["defaults"][key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|r| Record { score: int(&r["score"]) as u32, members: ints(&r["members"]), name: r["name"].as_str().unwrap_or_default().to_string() })
+            .collect()
     }
 
     /// GAME OPTIONS row `row`'s value as set, else its default.
@@ -385,6 +406,17 @@ impl Progress {
     }
 }
 
+/// GAME OPTIONS' sound: the music's level (BGM VOLUME by `volumes.bgm`, of 128), the effects' (SE VOLUME / `volumes.se`),
+/// SPEAKER OUT MONO; None with a pack without `volumes`.
+pub fn volumes(d: &Data, p: &Progress) -> Option<(f32, f32, bool)> {
+    let v = &d.raw["volumes"];
+    let bgm = v["bgm"].get(p.setting(d, BGM_ROW))?.as_f64()? as f32 / 128.0;
+    Some((bgm, p.setting(d, SE_ROW) as f32 / v["se"].as_f64()?.max(1.0) as f32, p.setting(d, SPEAKER_ROW) == 0))
+}
+
+/// A tag battle's members at its end by side, in their run order: (health, recoverable cap, full health), 16.16.
+pub type Members = [[(i32, i32, i32); 2]; 2];
+
 /// One side's fighters: (roster index, costume).
 pub type Team = Vec<(usize, usize)>;
 
@@ -406,10 +438,17 @@ pub struct Run {
     pub frames: u32,
     pub stage: usize,
     pub options: [usize; 3],
+    /// GUARD DAMAGE ON (settings +0xC, 0x43B804): a guarded hit takes a tenth of its damage.
+    #[serde(default)]
+    pub guard_damage: bool,
+    /// SURVIVAL: the team's members carried (Game::tag_carry).
+    #[serde(default)]
+    pub carry: [Option<[(i32, i32); 2]>; 2],
 }
 
+/// A tag battle's mode (SURVIVAL too: its records keep two members, 0x3C1620 refills both).
 fn tag(mode: u32) -> bool {
-    matches!(mode, ARCADE | VS | TIME_ATTACK)
+    matches!(mode, ARCADE | VS | TIME_ATTACK | SURVIVAL)
 }
 fn ladder_mode(mode: u32) -> bool {
     matches!(mode, ARCADE | TIME_ATTACK | ONE_ARCADE)
@@ -431,6 +470,8 @@ impl Run {
             frames: 0,
             stage: pick(&d.pool(progress), seed).unwrap_or(0),
             options: progress.options(d),
+            guard_damage: progress.setting(d, GUARD_ROW) == 1,
+            carry: [None; 2],
         };
         if ladder_mode(mode) {
             run.ladder = ladder(d, roster, progress.stage, &d.pool(progress), &run.teams[0], tag(mode), seed);
@@ -439,8 +480,8 @@ impl Run {
             run.stage = d.ball.unwrap_or(run.stage);
         }
         if run.teams[1].is_empty() && mode != BOWL {
-            // Team Battle against the CPU: as many as the player's; Survival: the first opponent
-            let n = if mode == TEAM { run.teams[0].len() } else { 1 };
+            // Team Battle against the CPU: as many as the player's; Survival: the first opponents
+            let n = if mode == TEAM { run.teams[0].len() } else { 1 + usize::from(tag(mode)) };
             run.teams[1] = cpu_team(d, roster, progress.stage, &run.teams[0], n, false, seed);
         }
         run
@@ -519,7 +560,7 @@ impl Run {
 
     /// The match is over (`winner`: side; `health`, `max`: the fighters' at the end, 16.16): what comes next.
     #[allow(clippy::too_many_arguments)]
-    pub fn after(mut self, d: &Data, roster: &Roster, progress: &mut Progress, winner: Option<usize>, health: [i32; 2], max: [i32; 2], frames: u32, seed: &mut u32) -> Next {
+    pub fn after(mut self, d: &Data, roster: &Roster, progress: &mut Progress, winner: Option<usize>, health: [i32; 2], max: [i32; 2], tag: Option<Members>, frames: u32, seed: &mut u32) -> Next {
         self.frames = frames;
         let won = winner == Some(0);
         match self.mode {
@@ -538,7 +579,7 @@ impl Run {
                 }
                 let mut page = Page::Message { lines, frame: 0, title: true };
                 let record = Record { score: self.frames, members: self.members(roster), name: String::new() };
-                if self.mode == TIME_ATTACK && progress.rank(false, &record).is_some() {
+                if self.mode == TIME_ATTACK && progress.rank(d, false, &record).is_some() {
                     page = Page::NameEntry { survival: false, record, letter: 0, then: Box::new(page) };
                 }
                 match ending {
@@ -556,11 +597,19 @@ impl Run {
                 Next::Screen(Page::Continue { run: Box::new(self), countdown: CONTINUE })
             }
             SURVIVAL if won => {
-                // the player's 15 % of its full health back, as Team Battle's winner (0x3C1620, mode 4)
+                // each of the player's members 15 % of its full health back, to its health and its recoverable cap
+                // (0x3C1620, mode 4); the first member leads again
                 self.wins[0] += 1;
                 let refill = d.raw["team_battle"]["refill_percent"].as_i64().unwrap_or(15) as i32;
-                self.health[0] = Some((health[0] + max[0] / 100 * refill).min(max[0]));
-                self.teams[1] = cpu_team(d, roster, progress.stage, &self.teams[0], 1, false, seed);
+                let up = |(h, cap, m): (i32, i32, i32)| ((h + m / 100 * refill).min(m), (cap + m / 100 * refill).min(m));
+                match tag {
+                    Some([t, _]) => {
+                        let carry = t.map(up);
+                        (self.health[0], self.carry[0]) = (Some(carry[0].0), Some(carry));
+                    }
+                    None => self.health[0] = Some(up((health[0], 0, max[0])).0),
+                }
+                self.teams[1] = cpu_team(d, roster, progress.stage, &self.teams[0], 1 + usize::from(tag.is_some()), false, seed);
                 self.stage = pick(&d.pool(progress), seed).unwrap_or(self.stage);
                 Next::Fight(Box::new(self))
             }
@@ -568,7 +617,7 @@ impl Run {
                 progress.played(d, None);
                 let page = Page::Message { lines: vec!["SURVIVAL".into(), format!("WINS {}", self.wins[0])], frame: 0, title: false };
                 let record = Record { score: self.wins[0], members: self.members(roster), name: String::new() };
-                if progress.rank(true, &record).is_some() {
+                if progress.rank(d, true, &record).is_some() {
                     return Next::Screen(Page::NameEntry { survival: true, record, letter: 0, then: Box::new(page) });
                 }
                 Next::Screen(page)
@@ -688,6 +737,9 @@ fn ladder(d: &Data, roster: &Roster, stage: u32, pool: &[usize], players: &Team,
     out.push((vec![(boss, lcg(seed, 2).min(roster.characters.get(boss).map_or(1, |c| c.costumes.len()) - 1))], int(&a["boss_arena"])));
     out
 }
+
+/// The ranking after GAME OVER (screen 7) until the title: 14.8 s in PCSX2.
+const RANKING_FRAMES: u32 = 880;
 
 /// CONTINUE?'s frames (0x3BA560: 9 down to 0, 100 frames a digit).
 const CONTINUE: u32 = 898;
@@ -1258,7 +1310,7 @@ impl Front {
                     None
                 }
                 Key::Up | Key::Down => {
-                    let max = record_rows(progress, *page).len().saturating_sub(RECORD_ROWS);
+                    let max = record_rows(&d, progress, *page).len().saturating_sub(RECORD_ROWS);
                     let next = if key == Key::Up { scroll.saturating_sub(1) } else { (*scroll + 1).min(max) };
                     if next != *scroll {
                         sfx::play(sound(&d, "cursor"));
@@ -1271,34 +1323,36 @@ impl Front {
                     Some(Page::Options { cursor: OPT_RECORDS })
                 }
             },
-            // (0x3D0450: the letters go round; a button takes the one under the cursor, "<" takes the last back,
-            // "=" or the last letter ends; START ends)
+            // (0x3D0350: right / down the next letter, left / up the one before, round, sound 3; a face button takes
+            // the one under the cursor, "<" takes the last back, "=" or the third letter ends, sound 4)
             Page::NameEntry { survival, record, letter, then } => {
                 let letters: Vec<char> = d.raw["records"]["letters"].as_str().unwrap_or_default().chars().collect();
                 let n = letters.len().max(1);
-                let mut done = key == Key::Start;
+                let mut done = false;
                 match (key, letters.get(*letter)) {
                     (Key::Left | Key::Right | Key::Up | Key::Down, _) => {
                         sfx::play(sound(&d, "cursor"));
-                        *letter = (*letter + if matches!(key, Key::Left | Key::Down) { n - 1 } else { 1 }) % n;
+                        *letter = (*letter + if matches!(key, Key::Left | Key::Up) { n - 1 } else { 1 }) % n;
                     }
-                    (Key::Button(_) | Key::Back, Some('<')) | (Key::Back, _) => {
-                        sfx::play(sound(&d, "cancel"));
+                    (Key::Button(_), Some('<')) => {
+                        sfx::play(sound(&d, "pick"));
                         record.name.pop();
                     }
                     (Key::Button(_), Some('=')) => done = true,
                     (Key::Button(_), Some(&c)) => {
-                        sfx::play(sound(&d, "pick"));
                         record.name.push(c);
                         done = record.name.chars().count() >= int(&d.raw["records"]["name_len"]).max(1);
+                        if !done {
+                            sfx::play(sound(&d, "pick"));
+                        }
                     }
                     _ => {}
                 }
                 if !done {
                     return Outcome::None;
                 }
-                sfx::play(sound(&d, "decide"));
-                progress.record(*survival, record.clone());
+                sfx::play(sound(&d, "pick"));
+                progress.record(&d, *survival, record.clone());
                 set_progress(progress.clone());
                 self.page = std::mem::replace(then.as_mut(), Page::Title);
                 self.frame = 0;
@@ -1428,7 +1482,16 @@ impl Front {
                     self.frame = 0;
                 }
             }
-            Page::Records { attract: true, .. } if self.frame >= MESSAGE_FRAMES => {
+            // (0x3C9124: the time to name it out, the name is taken as it is)
+            Page::NameEntry { survival, record, then, .. } if self.frame >= int(&d.raw["ranking"]["frames"]).max(1) as u32 && d.raw["ranking"].is_object() => {
+                let mut p = progress.clone();
+                p.record(&d, *survival, record.clone());
+                set_progress(p);
+                self.page = std::mem::replace(then.as_mut(), Page::Title);
+                self.frame = 0;
+                return Outcome::TttSaved;
+            }
+            Page::Records { attract: true, .. } if self.frame >= RANKING_FRAMES => {
                 self.page = Page::Title;
                 self.frame = 0;
             }
@@ -1485,11 +1548,11 @@ impl Front {
             Page::Options { cursor } => {
                 let m = &d.raw["menu"];
                 let level = (128.0 - num(&m["logo_step"]) * self.frame as f32).max(num(&m["dim"]));
-                image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(level).0);
+                options_backdrop(painter, v, art, d, level);
                 draw_options(painter, v, art, d, progress, *cursor);
             }
             Page::GameOptions { cursor, values, arcade, reset } => {
-                image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(num(&d.raw["menu"]["dim"])).0);
+                options_backdrop(painter, v, art, d, num(&d.raw["menu"]["dim"]));
                 draw_game_options(painter, v, art, d, *cursor, values, *arcade, *reset);
             }
             Page::Stage { cursor, .. } => {
@@ -1519,23 +1582,36 @@ impl Front {
             }
             Page::GameOver { .. } => banner_at(painter, v, art, d, &d.raw["arcade"]["continue"]["game_over"], 0),
             Page::Records { page, scroll, attract } => {
-                let level = if *attract { 128.0 } else { num(&d.raw["menu"]["dim"]) };
-                image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(level).0);
+                if *attract && d.raw["ranking"]["usage"].is_object() {
+                    // (after GAME OVER the ranking, screen 7: CHARACTER USAGE rising from its last rows to its first;
+                    // shortcut: evenly from frame 30 to 630, the PS2's pace and the arena behind not decoded)
+                    let rows: Vec<Record> = record_rows(d, progress, 0).into_iter().map(|(members, score, name)| Record { score, members, name }).collect();
+                    let r = &d.raw["ranking"]["rows"][2];
+                    let span = num(&r["dy"]) * rows.len().saturating_sub(int(&r["shown"])) as f32;
+                    let rise = span * (1.0 - self.frame.saturating_sub(30) as f32 / 600.0).max(0.0);
+                    draw_ranking(painter, v, art, d, 2, &rows, (usize::MAX, 0), rise, self.frame);
+                    return;
+                } else if *attract {
+                    image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], Color32::WHITE);
+                } else {
+                    options_backdrop(painter, v, art, d, num(&d.raw["menu"]["dim"]));
+                }
                 draw_records(painter, v, art, d, roster, progress, *page, *scroll, self.frame, !*attract);
             }
-            Page::NameEntry { record, letter, .. } => {
-                backdrop(painter, v, art);
+            // (the ranking, screen 7: the records with the new one in its place, its name so far and the letter under
+            // the cursor in its place, as 0x3D0350 writes it each frame)
+            Page::NameEntry { survival, record, letter, .. } => {
                 let r = &d.raw["records"];
-                let text = r["new_record"].as_str().unwrap_or_default();
-                let w = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, text, 0.0, 0.0, None, 10.0);
-                chrome(painter, v, art, d, text, (W - w) / 2.0, 150.0, Some(int(&r["pages"][2]["colour"])), 10.0);
-                // (OpenKumite's layout: the letters so far, then the cursor's blinking)
-                let letters: Vec<char> = r["letters"].as_str().unwrap_or_default().chars().collect();
-                let mut name = record.name.clone();
-                if self.frame & 0x10 == 0 {
-                    name.push(letters.get(*letter).copied().unwrap_or(' '));
+                let mut list = progress.list(d, *survival);
+                let at = progress.rank(d, *survival, record).unwrap_or(list.len()).min(list.len());
+                let typed = record.name.chars().count();
+                let mut shown = record.clone();
+                if typed < int(&r["name_len"]) {
+                    shown.name.extend(r["letters"].as_str().unwrap_or_default().chars().nth(*letter));
                 }
-                chrome(painter, v, art, d, &name, W / 2.0 - 60.0, 260.0, Some(11), 10.0);
+                list.insert(at, shown);
+                list.truncate(RECORDS);
+                draw_ranking(painter, v, art, d, usize::from(*survival), &list, (at, typed), 0.0, self.frame);
             }
             Page::Message { lines, .. } => {
                 backdrop(painter, v, art);
@@ -1761,6 +1837,18 @@ fn title(painter: &egui::Painter, v: &View, art: &Art, d: &Data, t: &Value) {
     chrome(painter, v, art, d, t["title"].as_str().unwrap_or_default(), num(&t["title_xy"][0]), num(&t["title_xy"][1]), Some(int(&m["title_colour"])), size);
 }
 
+/// The options screens' logo dimmed to `dim`, under `options_menu.backdrop` (0x3BF2F8): black at the sides to its
+/// colour in the middle, at its alpha.
+fn options_backdrop(painter: &egui::Painter, v: &View, art: &Art, d: &Data, dim: f32) {
+    image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(dim).0);
+    let b = &d.raw["options_menu"]["backdrop"];
+    if b.is_array() {
+        let (c, edge) = (rgba(b), Color32::from_rgba_unmultiplied(0, 0, 0, rgba(b).a()));
+        Art::shade(painter, v, sv([0.0, 0.0, W / 2.0, H]), [edge, c, edge, c]);
+        Art::shade(painter, v, sv([W / 2.0, 0.0, W / 2.0, H]), [c, edge, c, edge]);
+    }
+}
+
 /// OPTIONS (0x3B19B0, `options_menu`): the title, the entries `item_dy` apart, each over its `line` (the cursor's
 /// white, over the green `band`), in their colours (MEMORY CARD(PS2) in the unavailable one: OpenKumite saves by
 /// itself), the cursor entry's help line.
@@ -1794,18 +1882,18 @@ fn draw_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Prog
 /// RECORDS' rows shown at once.
 const RECORD_ROWS: usize = 6;
 
-/// A RECORDS page's rows: CHARACTER USAGE (each character picked: its id, its per-mille of the picks), GREATEST
-/// SURVIVORS, TIME ATTACK.
-fn record_rows(p: &Progress, page: usize) -> Vec<(Vec<usize>, u32, String)> {
+/// A RECORDS page's rows: CHARACTER USAGE (each selectable character: its id, its per-mille of the picks; most picked
+/// first, by id among equals: 0x3C84B8), GREATEST SURVIVORS, TIME ATTACK.
+fn record_rows(d: &Data, p: &Progress, page: usize) -> Vec<(Vec<usize>, u32, String)> {
     match page {
         0 => {
             let total: u32 = p.usage.iter().sum();
-            let mut rows: Vec<(Vec<usize>, u32, String)> = p.usage.iter().enumerate().filter(|u| *u.1 > 0).map(|(c, &n)| (vec![c], n * 1000 / total.max(1), String::new())).collect();
+            let mut rows: Vec<(Vec<usize>, u32, String)> =
+                (0..34).filter(|&c| d.selectable(p.stage, c)).map(|c| (vec![c], p.usage.get(c).copied().unwrap_or(0) * 1000 / total.max(1), String::new())).collect();
             rows.sort_by_key(|a| std::cmp::Reverse(a.1));
             rows
         }
-        1 => p.survivors.iter().map(|r| (r.members.clone(), r.score, r.name.clone())).collect(),
-        _ => p.times.iter().map(|r| (r.members.clone(), r.score, r.name.clone())).collect(),
+        _ => p.list(d, page == 1).into_iter().map(|r| (r.members, r.score, r.name)).collect(),
     }
 }
 
@@ -1826,11 +1914,22 @@ fn draw_records(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         let h = art.pic(pic).map_or(0.0, |p| p.1[1] as f32);
         sprite(painter, v, art, pic, x, y - h, Color32::WHITE);
     };
+    let rows = record_rows(d, p, page);
     if frame / int(&r["arrows_blink"]).max(1) as u32 % 2 == 1 {
         arrow(0, num(&r["arrows_x"][0]), py);
         arrow(1, num(&r["arrows_x"][1]), py);
+        // (rows above, rows below: `more`'s up and down at their feet)
+        let m = &r["more"];
+        let (tex, n) = (art.pic(m["picture"].as_str().unwrap_or_default()), num(&m["cell"]));
+        for (k, more) in [scroll > 0, scroll + RECORD_ROWS < rows.len()].into_iter().enumerate() {
+            if let (true, Some((tex, [tw, th]))) = (more, tex.as_ref().map(|(t, s)| (t, *s))) {
+                let u = num(&m["cells"][k]) * n / tw as f32;
+                let [x, y, w, h] = sv([num(&m["x"]), num(&m["y"][k]) - n, n, n]);
+                let c = |i: usize| int(&m["tint"][i]).min(255) as u8;
+                painter.image(tex.id(), v.rect(x, y, w, h), Rect::from_min_max(Pos2::new(u, 0.0), Pos2::new(u + n / tw as f32, n / th as f32)), Color32::from_rgb(c(0), c(1), c(2)));
+            }
+        }
     }
-    let rows = record_rows(p, page);
     let col = |k: usize, key: &str| num(&pg["columns"][k][key]);
     let colour = |k: usize| Some(int(&pg["columns"][k]["colour"]));
     let (y0, dy, bar_w) = (num(&r["row_y"]), num(&r["row_dy"]), num(&r["bar_w"]));
@@ -1876,6 +1975,116 @@ fn draw_records(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
     }
 }
 
+/// The ranking (screen 7, `ranking`) of TIME ATTACK (`kind` 0) or SURVIVAL (1) where a new record is named: the banner,
+/// `shown` rows about the entry's (0x3C9034), each over its separator: the rank, the members' faces and name plates, the
+/// time or the wins, the name; the entry's row over its band, the place being named underlined (red to white), the
+/// seconds left. shortcut: the rows' slide and the arena behind are not done; upgrade: decode 0x3C8A88's steps.
+#[allow(clippy::too_many_arguments)]
+fn draw_ranking(painter: &egui::Painter, v: &View, art: &Art, d: &Data, kind: usize, list: &[Record], (entry, typed): (usize, usize), rise: f32, frame: u32) {
+    let rk = &d.raw["ranking"];
+    let p = |v: &Value| [num(&v[0]), num(&v[1])];
+    let [bx, by] = p(&rk["banner_xy"]);
+    sprite(painter, v, art, rk["banners"][kind].as_str().unwrap_or_default(), bx, by, Color32::WHITE);
+    let [c0, c1] = p(&rk["clip"]);
+    let [_, top, _, h] = sv([0.0, c0, 0.0, c1 - c0]);
+    let clip = painter.with_clip_rect(Rect::from_min_max(v.pos(0.0, top), v.pos(SCREEN_W, top + h)));
+    let rows = &rk["rows"][kind];
+    let (dy, y0, n) = (num(&rows["dy"]), num(&rows["first"]), int(&rows["shown"]).max(1));
+    // (a list without an entry: every row,  up)
+    let (first, n) = if entry >= list.len() {
+        (0, list.len())
+    } else if entry < 2 {
+        (0, n)
+    } else {
+        ((entry - 2).min(list.len().saturating_sub(n)), n)
+    };
+    let colour = |k: &str| Some(int(&rk["colours"][k]));
+    let measure = |text: &str, size: f32| chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, text, 0.0, 0.0, None, size);
+    for (k, r) in list.iter().enumerate().skip(first).take(n) {
+        let y = y0 + dy * (k - first) as f32 - rise;
+        if y < c0 || y - dy > c1 {
+            continue;
+        }
+        let on = k == entry;
+        let c = if on {
+            colour("entry")
+        } else if kind == 2 {
+            Some(int(&rk["usage"]["rank_colour"]))
+        } else {
+            colour("row")
+        };
+        if on {
+            let b = &rk["band"];
+            Art::shade(&clip, v, sv([0.0, y - num(&b["h"]), W, num(&b["h"])]), [rgba(&b["colour"]); 4]);
+        }
+        sprite(&clip, v, art, rk["separator"].as_str().unwrap_or_default(), 0.0, y, Color32::WHITE);
+        let rank = &rk["rank"];
+        let end = chrome(&clip, v, art, d, &format!("{:2}", k + 1), num(&rank["x"]), y + num(&rank["dy"]), c, 10.0);
+        let suffix = match (k + 1) % 10 {
+            1 if k + 1 != 11 => 0,
+            2 if k + 1 != 12 => 1,
+            3 if k + 1 != 13 => 2,
+            _ => 3,
+        };
+        chrome(&clip, v, art, d, d.raw["records"]["suffixes"][suffix].as_str().unwrap_or_default(), end, y + num(&rank["suffix_dy"]), c, num(&rank["suffix_size"]));
+        // (the second member's face first, the first's over it; then their name plates; CHARACTER USAGE one of each)
+        let (fs, u) = (num(&rk["face_size"]), &rk["usage"]);
+        let place = |key: &str, one: &str, m: usize| if kind == 2 { p(&u[one]) } else { p(&rk[key][m]) };
+        for (m, body) in [1, 0].into_iter().filter_map(|m| Some((m, *r.members.get(m)?))) {
+            let [fx, fy] = place("faces", "face", m);
+            sprite(&clip, v, art, rk["face_frame"].as_str().unwrap_or_default(), fx - 2.0, y + fy - 2.0, Color32::WHITE);
+            image(&clip, v, art, &d.picture(&["select", "faces", &body.to_string()]), [fx, y + fy, fs, fs], Color32::WHITE);
+        }
+        for (m, &body) in r.members.iter().enumerate().take(2) {
+            let [px, py] = place("plates", "plate", m);
+            // (0x3CF1E8: less the plate's own x)
+            let plate = &d.raw["hud"]["plates"][body];
+            sprite(&clip, v, art, plate["picture"].as_str().unwrap_or_default(), px - num(&plate["x"]), y + py, Color32::WHITE);
+        }
+        if kind == 2 {
+            // (0x3C7530: the bar in the character's two colours; 0x3C74A8: the share, its tenth smaller)
+            let (b, s) = (&u["bar"], &u["share"]);
+            let w = num(&b["w"]) * r.score.min(1000) as f32 / 1000.0;
+            let cs = &b["colours"][r.members.first().copied().unwrap_or(0)];
+            let rgb = |o: usize| Color32::from_rgb(int(&cs[o]) as u8, int(&cs[o + 1]) as u8, int(&cs[o + 2]) as u8);
+            if w > 0.0 {
+                Art::shade(&clip, v, sv([num(&b["x"]), y + num(&b["dy"]), w, num(&b["h"])]), [rgb(0), rgb(3), rgb(0), rgb(3)]);
+            }
+            let sc = Some(int(&s["colour"]));
+            let (whole, small) = if r.score >= 1000 { ("100".to_string(), "%".to_string()) } else { (format!("{:2}", r.score / 10), format!(".{}%", r.score % 10)) };
+            let end = chrome(&clip, v, art, d, &whole, num(&s["x"]), y + num(&s["dy"]), sc, 10.0);
+            chrome(&clip, v, art, d, &small, end, y + num(&s["small_dy"]), sc, num(&s["small_size"]));
+            continue;
+        }
+        if kind == 0 {
+            let t = &rk["time"];
+            chrome(&clip, v, art, d, &clock(r.score), num(&t["x"]), y + num(&t["dy"]), if on { c } else { colour("time") }, num(&t["size"]));
+        } else {
+            // (0x3C7428: "WINS" then the number, a space between below 100)
+            let w = &rk["wins"];
+            let label = if r.score < 100 { "WINS " } else { "WINS" };
+            let end = chrome(&clip, v, art, d, label, num(&w["x"]), y + num(&w["dy"]), if on { c } else { colour("wins") }, num(&w["size"]));
+            chrome(&clip, v, art, d, &r.score.min(999).to_string(), end, y + num(&w["number_dy"]), if on { c } else { colour("wins") }, num(&w["number_size"]));
+        }
+        let nm = &rk["name"];
+        chrome(&clip, v, art, d, &r.name, num(&nm["x"]), y + num(&nm["dy"]), c, 10.0);
+        if on && typed < int(&d.raw["records"]["name_len"]) {
+            // (the place being named: (255, 2t + 1, 2t + 1), t from `low` to `high` and back by `step` a frame)
+            let cu = &rk["cursor"];
+            let (lo, hi, st) = (num(&cu["low"]), num(&cu["high"]), num(&cu["step"]).max(1.0));
+            let span = ((hi - lo) / st).max(1.0) as u32;
+            let i = frame % (2 * span);
+            let t = lo + st * if i < span { i } else { 2 * span - i } as f32;
+            let g = (2.0 * t + 1.0).min(255.0) as u8;
+            let x = num(&nm["x"]) + measure(&r.name.chars().take(typed).collect::<String>(), 10.0);
+            Art::shade(&clip, v, sv([x, y + num(&cu["dy"]), num(&cu["w"]), num(&cu["h"])]), [Color32::from_rgb(255, g, g); 4]);
+            let n = &rk["counter"];
+            let left = int(&rk["frames"]).saturating_sub(frame as usize).div_ceil(60);
+            chrome(&clip, v, art, d, &left.to_string(), num(&n["x"]), y + num(&n["dy"]), Some(int(&n["colour"])), num(&n["size"]));
+        }
+    }
+}
+
 /// The cursor's bar (0x3B15F8; the pause's `bar` colour): from `x0` (nothing) to `x1` (its colour) to `x2` (nothing),
 /// `bar.y` about the foot `y`.
 fn bar(painter: &egui::Painter, v: &View, d: &Data, [x0, x1, x2]: [f32; 3], y: f32) {
@@ -1902,6 +2111,24 @@ fn draw_game_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data, cur
         let h = art.pic(pic).map_or(0.0, |p| p.1[1] as f32);
         sprite(painter, v, art, pic, ax, y - h, Color32::WHITE);
     };
+    // the cursor's option's modes (0x3B3F88): the main menu's ARCADE..TEKKEN BOWL (once open) right-aligned over their
+    // box, in their colours where it applies, else `off`
+    if let Some(&row) = game_rows(d).get(cursor).filter(|&&r| r != ARCADE_ROW) {
+        let (m, mask) = (&g["modes"], int(&d.raw["options"][row]["modes"]));
+        let open = d.bowl_open(progress().stage);
+        let items: Vec<&Value> = d.raw["menu"]["items"].as_array().into_iter().flatten().filter(|i| int(&i["mode"]) < BOWL as usize || (int(&i["mode"]) == BOWL as usize && open)).collect();
+        let (top, dy, size) = (num(&m["y"]), num(&m["dy"]), num(&m["size"]));
+        let [b0, b1] = [num(&m["box"]["x"][0]), num(&m["box"]["x"][1])];
+        let bottom = top + dy * items.len() as f32 + num(&m["box"]["below"]);
+        let by = num(&m["box"]["y"]);
+        Art::shade(painter, v, sv([b0, by, b1 - b0, bottom - by]), [Color32::TRANSPARENT, Color32::BLACK, Color32::TRANSPARENT, Color32::BLACK]);
+        for (k, i) in items.iter().enumerate() {
+            let label = i["label"].as_str().unwrap_or_default();
+            let w = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, label, 0.0, 0.0, None, size);
+            let c = if mask >> int(&i["mode"]) & 1 == 1 { int(&i["colour"]) } else { int(&m["off"]) };
+            chrome(painter, v, art, d, label, num(&m["right"]) - w, top + dy * k as f32, Some(c), size);
+        }
+    }
     for (k, &row) in game_rows(d).iter().enumerate() {
         let y = y0 + dy * k as f32;
         let o = &d.raw["options"][row];
@@ -3137,6 +3364,10 @@ mod tests {
             "unlocks": {"schedule": [{"stage": 0, "kind": 0, "character": 2}, {"stage": 1, "kind": 1, "character": 2}, {"stage": 1, "kind": 0, "character": 3}], "points_per_stage": 50},
             "arcade": {"fights": 8, "rivals": [[2, 3, null], [0, null, null]], "fallback": [3], "pairs": [[1, 2]], "rival_arena": 6, "boss": 3, "boss_arena": 14, "early_fights": 3, "early_excluded": []},
             "team_battle": {"refill_percent": 15},
+            "records": {"defaults": {"survivors": [{"members": [0, 1], "score": 5, "name": "PAU"}, {"members": [2, 3], "score": 1, "name": "KIN"}]},
+                "letters": "ABC<=", "name_len": 3},
+            "ranking": {"frames": 10},
+            "volumes": {"bgm": [0, 32, 40, 48, 56, 64, 72, 80, 96, 112, 128], "se": 10},
             "options": [{"default": 1, "values": ["EASY", "NORMAL"]}, {"default": 1, "values": ["1", "2", "3"]}, {"default": 2, "values": ["30", "40", "60"]}],
         }});
         // (each character's ending: its id)
@@ -3195,9 +3426,9 @@ mod tests {
         assert_eq!(last.bench(), None);
         // a lost fight: CONTINUE?; a won one: the next fight; the eighth won: the clear, the unlock
         let mut p = Progress::default();
-        assert!(matches!(run.clone().after(&d, &r, &mut p, Some(1), [0; 2], [1; 2], 0, &mut seed), Next::Screen(Page::Continue { .. })));
-        assert!(matches!(run.clone().after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], 0, &mut seed), Next::Fight(f) if f.fight == 1));
-        assert!(matches!(last.after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], 0, &mut seed), Next::Ending(0, 0, Page::Message { title: true, .. })));
+        assert!(matches!(run.clone().after(&d, &r, &mut p, Some(1), [0; 2], [1; 2], None, 0, &mut seed), Next::Screen(Page::Continue { .. })));
+        assert!(matches!(run.clone().after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], None, 0, &mut seed), Next::Fight(f) if f.fight == 1));
+        assert!(matches!(last.after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], None, 0, &mut seed), Next::Ending(0, 0, Page::Message { title: true, .. })));
         assert_eq!((p.stage, p.seen), (1, 1));
     }
 
@@ -3211,9 +3442,24 @@ mod tests {
         assert!(!run.cpu(1));
         assert_eq!(run.teams[1].len(), 2);
         let max = 140 * kumite_sim::ONE;
-        let Next::Fight(next) = run.after(&d, &r, &mut Progress::default(), Some(0), [max / 2, 0], [max; 2], 0, &mut seed) else { panic!() };
+        let Next::Fight(next) = run.after(&d, &r, &mut Progress::default(), Some(0), [max / 2, 0], [max; 2], None, 0, &mut seed) else { panic!() };
         assert_eq!((next.health[0], next.member), (Some(max / 2 + max / 100 * 15), [0, 1]));
-        assert!(matches!(next.after(&d, &r, &mut Progress::default(), Some(0), [max, 0], [max; 2], 0, &mut seed), Next::Screen(Page::Message { .. })));
+        assert!(matches!(next.after(&d, &r, &mut Progress::default(), Some(0), [max, 0], [max; 2], None, 0, &mut seed), Next::Screen(Page::Message { .. })));
+    }
+
+    /// SURVIVAL is a tag battle: a won match gives each of the player's members 15 % of its full health back, to its
+    /// health and its recoverable cap (0x3C1620), carried into the next.
+    #[test]
+    fn survival_refills_both_members() {
+        let (d, r) = (data(), roster());
+        let mut seed = 1;
+        let run = Run::new(&d, &r, &Progress::default(), SURVIVAL, [vec![(0, 0), (1, 0)], vec![]], &mut seed);
+        assert!(tag(SURVIVAL));
+        let max = 140 * kumite_sim::ONE;
+        let (q, add) = (max / 4, max / 100 * 15);
+        let members = [[(q, 2 * q, max), (max, max, max)], [(0, 0, max); 2]];
+        let Next::Fight(next) = run.after(&d, &r, &mut Progress::default(), Some(0), [q, 0], [max; 2], Some(members), 0, &mut seed) else { panic!() };
+        assert_eq!((next.wins[0], next.health[0], next.carry[0]), (1, Some(q + add), Some([(q + add, 2 * q + add), (max, max)])));
     }
 
     #[test]
@@ -3462,17 +3708,42 @@ mod tests {
     /// Records: TIME ATTACK fastest first, SURVIVAL most wins first (none for 0 wins), ten of each.
     #[test]
     fn records_keep_the_best_ten() {
+        let d = data();
         let mut p = Progress::default();
         let r = |score: u32| Record { score, members: vec![7], name: "ABC".into() };
         for t in [500, 300, 400] {
-            p.record(false, r(t));
+            p.record(&d, false, r(t));
         }
         assert_eq!(p.times.iter().map(|t| t.score).collect::<Vec<_>>(), [300, 400, 500]);
-        assert_eq!(p.rank(true, &r(0)), None);
+        assert_eq!(p.rank(&d, true, &r(0)), None);
+        // a new save's SURVIVAL records are the PS2's (`records.defaults`); CHARACTER USAGE lists the selectable at 0.0 %
+        assert_eq!(p.rank(&d, true, &r(3)), Some(1));
+        assert_eq!(record_rows(&d, &p, 0), [(vec![0], 0, String::new()), (vec![1], 0, String::new())]);
+        // BGM VOLUME 5 of the table, SE VOLUME 10, STEREO
+        assert_eq!(volumes(&d, &Progress { settings: vec![1, 0, 0, 0, 1, 1, 1, 5, 10], ..p.clone() }), Some((0.5, 1.0, false)));
         for w in 1..=12 {
-            p.record(true, r(w));
+            p.record(&d, true, r(w));
         }
-        assert_eq!((p.survivors.len(), p.survivors[0].score, p.rank(true, &r(2))), (RECORDS, 12, None));
+        assert_eq!((p.survivors.len(), p.survivors[0].score, p.rank(&d, true, &r(2))), (RECORDS, 12, None));
+    }
+
+    /// The name entry (0x3D0350): right / down the next letter, left / up the one before, round; a face button takes
+    /// the letter; the time out (0x3C9124) takes the name as it is.
+    #[test]
+    fn name_entry_keys_and_time_out() {
+        let mut r = roster();
+        r.ttt = Some(data());
+        let mut seed = 0;
+        let record = Record { score: 900, members: vec![0, 1], name: String::new() };
+        let mut f = Front { page: Page::NameEntry { survival: true, record, letter: 0, then: Box::new(Page::Title) }, frame: 0 };
+        for k in [Key::Up, Key::Down, Key::Right, Key::Button(2), Key::Left] {
+            f.key(0, k, &r, &mut seed);
+        }
+        assert!(matches!(&f.page, Page::NameEntry { record, letter: 0, .. } if record.name == "B"));
+        while matches!(f.page, Page::NameEntry { .. }) && f.frame < 20 {
+            f.tick(&r, &mut seed);
+        }
+        assert!(matches!(f.page, Page::Title) && progress().survivors.first().is_some_and(|s| s.name == "B" && s.score == 900));
     }
 
     /// The main menu's rows slide a row's height in 4 a frame; no move while they slide (0x3BD2E0).

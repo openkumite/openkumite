@@ -1302,6 +1302,11 @@ impl Screen {
         matches!(self, Screen::Ttt(f) if matches!(f.page, crate::ttt::Page::Continue { .. } | crate::ttt::Page::GameOver { .. }))
     }
 
+    /// A Tekken Tag screen over the last fight's arena, its HUD not drawn: the rankings (screen 7).
+    pub fn ttt_over_arena(&self) -> bool {
+        matches!(self, Screen::Ttt(f) if matches!(f.page, crate::ttt::Page::NameEntry { .. } | crate::ttt::Page::Records { attract: true, .. }))
+    }
+
     /// the extra levels' list with the cursor on a stage.
     pub fn extra_levels(roster: &Roster, stage: usize, difficulty: usize) -> Self {
         Screen::ExtraLevels { frame: 0, cursor: roster.extra_levels.iter().position(|l| l.0 == stage).unwrap_or(0), difficulty }

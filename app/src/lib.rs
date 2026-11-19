@@ -777,11 +777,13 @@ impl App {
         if let (Some(run), Some(d)) = (&ttt, self.roster.ttt.as_ref()) {
             let model = |(c, k): (usize, usize)| self.roster.characters.get(c).and_then(|ch| ch.costumes.get(k).or(ch.costumes.first())).copied().unwrap_or(0);
             if let Some(b) = run.bench() {
+                game.tag_carry = run.carry;
                 game.start_tag([kumite_game::Actor::load(&self.assets, model(b[0]))?, kumite_game::Actor::load(&self.assets, model(b[1]))?]);
             }
             let (r, clock) = run.rules(&d.round_frames);
             game.round_frames = clock.unwrap_or(u32::MAX / 2);
             game.start_health = run.health;
+            (game.guard_damage, game.fight.guard_damage) = (run.guard_damage, run.guard_damage);
             ttt_rounds = Some(r);
         }
         // Mokujin at home (the second side's fighter is the host): the arcade ROM set's hidden arena, which the
@@ -1619,6 +1621,10 @@ impl App {
             (None, Some(d)) => format!("recording: {} steps", d.len()),
             (None, None) => "demo: not recording".into(),
         };
+        // Tekken Tag's BGM / SE VOLUME and SPEAKER OUT on OpenKumite's levels
+        if let (Some((bgm, se, mono)), Some(audio)) = (self.roster.ttt.as_deref().and_then(|d| ttt::volumes(d, &ttt::progress())), self.audio.as_mut()) {
+            (audio.music_volume, audio.sfx_volume, audio.mono) = (0.55 * bgm, 0.9 * se, mono);
+        }
         // the menus' sounds queued since the last step
         for code in menu::sfx::take() {
             if let (Some(sound), Some(audio)) = (self.sound.as_ref(), self.audio.as_mut()) {
@@ -1746,7 +1752,7 @@ impl App {
                 self.vs_record = g.record;
             }
             // CONTINUE? and GAME OVER show over the loser shot, which keeps running; other screens end the fight
-            if matches!(screen, Screen::Continue { .. } | Screen::GameOver { .. }) || screen.ttt_over_fight() {
+            if matches!(screen, Screen::Continue { .. } | Screen::GameOver { .. }) || screen.ttt_over_fight() || screen.ttt_over_arena() {
                 if let Some(f) = self.fight.as_mut() {
                     f.bout.step([Pad::default(); 2]);
                 }
@@ -2885,13 +2891,22 @@ impl App {
         if let (Some(run), Some(d)) = (self.ttt_run.take(), self.roster.ttt.clone()) {
             let f = &fight.bout.game.fight;
             let (health, max) = (f.fighters.each_ref().map(|x| x.health), f.fighters.each_ref().map(|x| x.max_health * kumite_sim::ONE));
+            // (a tag battle's members in their run order, the fighting one's health its fighter's)
+            let tag = f.teams.as_deref().map(|t| {
+                std::array::from_fn(|k| {
+                    std::array::from_fn(|m| {
+                        let x = &t[k].members[m];
+                        (if m == t[k].active { f.fighters[k].health } else { x.health }, x.cap, x.max_health * kumite_sim::ONE)
+                    })
+                })
+            });
             let mut progress = ttt::progress();
-            let next = run.after(&d, &self.roster, &mut progress, winner, health, max, self.hud.run_frames(), &mut self.seed);
+            let next = run.after(&d, &self.roster, &mut progress, winner, health, max, tag, self.hud.run_frames(), &mut self.seed);
             ttt::set_progress(progress.clone());
             self.records.ttt = progress;
             self.records.save();
             // (CONTINUE? over the fight's scene and HUD, which keep running)
-            let over_fight = matches!(next, ttt::Next::Screen(ttt::Page::Continue { .. }));
+            let over_fight = matches!(next, ttt::Next::Screen(ttt::Page::Continue { .. } | ttt::Page::NameEntry { .. }));
             if over_fight {
                 self.fight = Some(fight);
             } else {
@@ -7398,6 +7413,20 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
                 log::info!("ending {:?} frame {}: camera {:?}, slots {:?}", s.ending, s.frame(), s.camera(), (0..2).map(|k| s.pose(k).map(|p| (p.0, p.1[0].w_axis))).collect::<Vec<_>>());
             }
             return Ok(());
+        }
+        // Tekken Tag's ranking naming a new record (--variant 1: SURVIVAL's, 4 wins; 2: GAME OVER's CHARACTER USAGE,
+        // Xiaoyu 3 picks and Eddy 1; else TIME ATTACK's, 6'00"00)
+        Some("ttt-name") => {
+            let variant = std::env::args().skip_while(|a| a != "--variant").nth(1);
+            let survival = variant.as_deref() == Some("1");
+            let record = ttt::Record { score: if survival { 4 } else { 21600 }, members: vec![7, 4], name: String::new() };
+            let page = if variant.as_deref() == Some("2") {
+                ttt::set_progress(ttt::Progress { usage: vec![0, 0, 0, 0, 0, 0, 0, 3, 1], ..ttt::progress() });
+                ttt::Page::Records { page: 0, scroll: 0, attract: true }
+            } else {
+                ttt::Page::NameEntry { survival, record, letter: 0, then: Box::new(ttt::Page::Title) }
+            };
+            app.screen = Some(Screen::Ttt(Box::new(ttt::Front { page, frame: 0 })));
         }
         // Tekken Tag's THEATER (--variant: the endings seen, a bit each)
         Some("ttt-theater") => {
