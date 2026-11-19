@@ -783,7 +783,7 @@ fn ranking_pace(d: &Data, kind: usize, n: usize, frame: u32) -> Option<(f32, f32
         return Some(((base - n as i32 * dy) as f32, black(f + 1)));
     }
     f -= steps + 1;
-    let mut first = n.saturating_sub(if n % per == 0 { per } else { n % per }) as i32;
+    let mut first = n.saturating_sub(if n.is_multiple_of(per) { per } else { n % per }) as i32;
     let mut top = base - n as i32 * dy;
     loop {
         // (down to the page's place, then held)
