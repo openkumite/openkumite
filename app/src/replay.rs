@@ -563,6 +563,7 @@ mod tests {
             guard_damage: false,
             carry: [None; 2],
             ball: 0,
+            doubles: false,
         };
         let Match::Fight { ttt, .. } = &mut f.game else { unreachable!() };
         *ttt = Some(run);
