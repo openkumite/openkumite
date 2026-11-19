@@ -3,11 +3,13 @@
 //! not here yet; Theater once an ending was seen, Tekken Bowl once unlocked), the character select with the tag
 //! partner, OPTIONS, the arcade ladder with CONTINUE, the modes' runs, the unlock schedule, the endings
 //! (`gamedata/endings.json`: the arcade clear's staff roll and ending, Theater), the fight HUD and Tekken Bowl's, drawn
-//! from its 2D pictures (`pictures/FFF_NNN.png`) on its 640 x 448 screen.
+//! from its 2D pictures (`pictures/FFF_NNN.png`) on its 640 x 448 screen. The title, main menu and select move, light
+//! and sound as the PS2's (FRONTEND.md 9: the title out of white, the menu's sliding rows and band, the select's
+//! lightning, frame, pulsing cursors, RANDOM's roll, timer and plates), in frames.
 //!
-//! Not decoded, OpenKumite's own: the VS screen, the select screen's layout below the grid and its timer (none),
-//! which button gives which costume, the banners (in the chrome font), the menu, option and Theater screens' layout,
-//! the staff roll's fonts, and which of the six health-bar strips is which.
+//! Not decoded, OpenKumite's own: the VS screen's code (laid out as the PS2 shows it), the select's 3D models (the
+//! portraits stand in), which button gives which costume, the banners (in the chrome font), the option and Theater
+//! screens' layout, the staff roll's fonts, and which of the six health-bar strips is which.
 
 use crate::art::{additive, Art, Screen as View, SCREEN_H, SCREEN_W};
 use crate::menu::{lcg, sfx, FightSetup, Key, Mode, Outcome, Roster};
@@ -42,8 +44,6 @@ const OPTION_ROWS: [usize; 3] = [0, 1, 2];
 const LAST_STAGE: u32 = 14;
 /// Frames the result and message screens stay (START skips).
 const MESSAGE_FRAMES: u32 = 360;
-/// Frames between every side's last pick and the fight.
-const SELECT_DONE: u32 = 40;
 /// The VS screen's frames (OpenKumite's: the original's is not decoded).
 pub const VS_FRAMES: u32 = 120;
 /// The arcade pack's arenas (OpenKumite's ids, apart from Tekken Tag's 0-22): its stage_NN.glb is 100 + NN, its
@@ -174,6 +174,11 @@ impl Data {
             .unwrap_or_default()
             .to_string()
     }
+}
+
+/// The sound id the front end plays for `role` (roster.json `front_end.sounds`: FRONTEND.md 9).
+fn sound(d: &Data, role: &str) -> u16 {
+    int(&d.raw["sounds"][role]) as u16
 }
 
 /// An arena of `pool` drawn at random.
@@ -555,8 +560,11 @@ const CONTINUE: u32 = 898;
 /// A screen of the front end.
 pub enum Page {
     Title,
+    /// The main menu: the cursor, the rows' scroll (0x3BD2E0: a row's height towards 0), the frames since a key.
     Menu {
         cursor: usize,
+        scroll: i32,
+        idle: u32,
     },
     Options {
         cursor: usize,
@@ -625,14 +633,14 @@ impl Select {
             m if tag(m) => 2,
             _ => 1,
         };
-        // (the cursors start on the two RANDOM slots' neighbours: Paul's and Jin's rows, OpenKumite's)
-        let first = |c: usize| d.slots.iter().position(|s| s.character == Some(c)).unwrap_or(0);
+        // (the cursors start on `start_slots`: 1P's on Xiaoyu's, as the PS2 shows)
+        let first = |k: usize| int(&d.raw["select"]["start_slots"][k]).min(d.slots.len().saturating_sub(1));
         let p2 = matches!(mode, VS | ONE_VS);
-        let side = |player: Option<usize>, c: usize| Side { player, cursor: first(c), picks: vec![], need, done: false };
-        let mut sides = [side(Some(0), 0), side(p2.then_some(1), 9)];
+        let side = |player: Option<usize>, k: usize| Side { player, cursor: first(k), picks: vec![], need, done: false };
+        let mut sides = [side(Some(0), 0), side(p2.then_some(1), 1)];
         // practice: P1 picks the dummy too
         if mode == PRACTICE {
-            sides[1] = Side { player: Some(0), need: 1, ..side(Some(0), 9) };
+            sides[1] = Side { player: Some(0), need: 1, ..side(Some(0), 1) };
         }
         Self { mode, sides, frame: 0, done: 0, tally }
     }
@@ -642,10 +650,20 @@ impl Select {
         (0..2).find(|&s| self.sides[s].player == Some(player) && !self.sides[s].done)
     }
 
-    fn key(&mut self, player: usize, key: Key, d: &Data, roster: &Roster, progress: &Progress, seed: &mut u32) -> Option<Page> {
+    /// The character RANDOM shows and picks for `side` now (0x3C99C8: the next selectable character every `random_roll`
+    /// frames, in id order, not one the side picked).
+    fn roll(&self, d: &Data, roster: &Roster, progress: &Progress, side: usize) -> Option<usize> {
+        let taken: Vec<usize> = self.sides.get(side).map_or(vec![], |s| s.picks.iter().map(|p| p.0).collect());
+        let mut free: Vec<usize> = roster.characters.iter().map(|c| c.id).filter(|&c| d.selectable(progress.stage, c) && roster.index_of(c).is_some_and(|i| !taken.contains(&i))).collect();
+        free.sort_unstable();
+        let at = self.frame as usize / int(&d.raw["select"]["random_roll"]).max(1);
+        free.get(at % free.len().max(1)).copied()
+    }
+
+    fn key(&mut self, player: usize, key: Key, d: &Data, roster: &Roster, progress: &Progress) -> Option<Page> {
         // Team Battle, Tekken Bowl, Tekken Ball: 2P's START joins
         if matches!(self.mode, TEAM | BOWL | BALL) && player == 1 && key == Key::Start && self.sides[1].player.is_none() {
-            sfx::play(sfx::join());
+            sfx::play(sound(d, "start"));
             self.sides[1].player = Some(1);
             return None;
         }
@@ -678,12 +696,12 @@ impl Select {
                     }
                 }
                 if visible(at) && at != side.cursor {
-                    sfx::play(sfx::select_cursor());
+                    sfx::play(sound(d, "cursor"));
                     side.cursor = at;
                 }
             }
             Key::Start if self.mode == TEAM && !side.picks.is_empty() => {
-                sfx::play(sfx::pick());
+                sfx::play(sound(d, "last_pick"));
                 side.done = true;
             }
             Key::Button(_) | Key::Start => {
@@ -691,11 +709,9 @@ impl Select {
                 let taken: Vec<usize> = side.picks.iter().map(|p| p.0).collect();
                 let id = match slot.character {
                     Some(c) => Some(c).filter(|&c| d.selectable(progress.stage, c)),
-                    None => {
-                        let free: Vec<usize> = roster.characters.iter().map(|c| c.id).filter(|&c| d.selectable(progress.stage, c) && roster.index_of(c).is_some_and(|i| !taken.contains(&i))).collect();
-                        free.get(lcg(seed, free.len())).copied()
-                    }
+                    None => self.roll(d, roster, progress, s),
                 };
+                let side = &mut self.sides[s];
                 let i = id.and_then(|c| roster.index_of(c)).filter(|i| !taken.contains(i))?;
                 // shortcut: buttons 1-4 give costumes 1-4, START the fifth (which pad bit gives which costume is not
                 // decoded), a costume the character lacks its first
@@ -704,14 +720,15 @@ impl Select {
                     Key::Button(b) => b,
                     _ => 4,
                 };
-                sfx::play(sfx::pick());
                 side.picks.push((i, if costume < n { costume } else { 0 }));
                 side.done = side.picks.len() >= side.need;
+                // (0x3CA3BC: select 1 for a pick before the last, select 2 for the last)
+                sfx::play(sound(d, if side.done { "last_pick" } else { "pick" }));
             }
             Key::Back => {
                 if side.picks.pop().is_none() && s == 0 {
-                    sfx::play(sfx::back());
-                    return Some(Page::Menu { cursor: 0 });
+                    sfx::play(sound(d, "cancel"));
+                    return Some(Page::Menu { cursor: 0, scroll: 0, idle: 0 });
                 }
             }
         }
@@ -720,13 +737,28 @@ impl Select {
 
     fn tick(&mut self, d: &Data, roster: &Roster, progress: &Progress, seed: &mut u32) -> Option<Run> {
         self.frame += 1;
+        // the timer out (`select.timer`, 0x3C9888): each side still picking takes what its cursor is on, else RANDOM's
+        // character (shortcut: what the original does then is not decoded)
+        if d.raw["select"]["timer"]["frames"].as_u64().is_some_and(|t| u64::from(self.frame) >= t) {
+            let random = d.slots.iter().position(|s| s.character.is_none()).unwrap_or(0);
+            for k in 0..2 {
+                let Some(player) = self.sides[k].player.filter(|_| !self.sides[k].done) else { continue };
+                let n = self.sides[k].picks.len();
+                let _ = self.key(player, Key::Button(0), d, roster, progress);
+                if self.sides[k].picks.len() == n {
+                    self.sides[k].cursor = random;
+                    let _ = self.key(player, Key::Button(0), d, roster, progress);
+                }
+                self.sides[k].done |= self.mode == TEAM && !self.sides[k].picks.is_empty();
+            }
+        }
         let ready = self.sides.iter().all(|s| s.player.is_none() || s.done);
         if !ready {
             self.done = 0;
             return None;
         }
         self.done += 1;
-        if self.done < SELECT_DONE {
+        if self.done < int(&d.raw["select"]["done"]).max(1) as u32 {
             return None;
         }
         let teams = [self.sides[0].picks.clone(), if self.sides[1].player.is_some() { self.sides[1].picks.clone() } else { vec![] }];
@@ -750,7 +782,7 @@ impl Front {
     }
 
     pub fn menu() -> Self {
-        Self { page: Page::Menu { cursor: 0 }, frame: 0 }
+        Self { page: Page::Menu { cursor: 0, scroll: 0, idle: 0 }, frame: 0 }
     }
 
     /// The main menu's entries: of the locked ones, THEATER once an ending was seen (0x3BFED8), TEKKEN BOWL once the
@@ -782,22 +814,25 @@ impl Front {
         let next = match &mut self.page {
             Page::Title => match key {
                 Key::Start => {
-                    sfx::play(sfx::start());
-                    Some(Page::Menu { cursor: 0 })
+                    sfx::play(sound(&d, "start"));
+                    Some(Page::Menu { cursor: 0, scroll: 0, idle: 0 })
                 }
                 Key::Back => return Outcome::Quit,
                 _ => None,
             },
-            Page::Menu { cursor } => {
+            Page::Menu { cursor, scroll, idle } => {
                 let items = Self::items(&d, progress);
+                *idle = 0;
                 match key {
-                    Key::Up | Key::Down => {
-                        sfx::play(sfx::cursor());
+                    // (0x3BD2E0: a move once the rows stand still; they slide a row's height into place)
+                    Key::Up | Key::Down if *scroll == 0 => {
+                        sfx::play(sound(&d, "cursor"));
                         *cursor = (*cursor + if key == Key::Up { items.len() - 1 } else { 1 }) % items.len().max(1);
+                        *scroll = int(&d.raw["menu"]["row_h"]) as i32 * if key == Key::Up { -1 } else { 1 };
                         None
                     }
                     Key::Start | Key::Button(_) => {
-                        sfx::play(sfx::confirm());
+                        sfx::play(sound(&d, "decide"));
                         match items.get(*cursor).map(|i| i.0) {
                             Some(u32::MAX) => return Outcome::Exit,
                             Some(OPTIONS) => Some(Page::Options { cursor: 0, values: progress.options(&d), arcade: !progress.arcade_off }),
@@ -812,53 +847,53 @@ impl Front {
             }
             Page::Options { cursor, values, arcade } => match key {
                 Key::Up | Key::Down => {
-                    sfx::play(sfx::cursor());
+                    sfx::play(sound(&d, "cursor"));
                     let rows = option_rows(&d);
                     *cursor = (*cursor + if key == Key::Up { rows } else { 1 }) % (rows + 1);
                     None
                 }
                 // ARCADE ARENAS (OpenKumite's, with the arcade pack): on or off
                 Key::Left | Key::Right if *cursor == OPTION_ROWS.len() && option_rows(&d) > OPTION_ROWS.len() => {
-                    sfx::play(sfx::cursor());
+                    sfx::play(sound(&d, "cursor"));
                     *arcade = !*arcade;
                     None
                 }
                 Key::Left | Key::Right if *cursor < OPTION_ROWS.len() => {
-                    sfx::play(sfx::cursor());
+                    sfx::play(sound(&d, "cursor"));
                     let n = d.option(OPTION_ROWS[*cursor]).1.len().max(1);
                     values[*cursor] = (values[*cursor] + if key == Key::Left { n - 1 } else { 1 }) % n;
                     None
                 }
                 // EXIT (or back): kept in the save
                 Key::Start | Key::Button(_) | Key::Back if key == Key::Back || *cursor == option_rows(&d) => {
-                    sfx::play(sfx::back());
+                    sfx::play(sound(&d, "cancel"));
                     progress.options = Some(*values);
                     progress.arcade_off = !*arcade;
                     set_progress(progress.clone());
                     let at = Self::items(&d, progress).iter().position(|i| i.0 == OPTIONS).unwrap_or(0);
-                    self.page = Page::Menu { cursor: at };
+                    self.page = Page::Menu { cursor: at, scroll: 0, idle: 0 };
                     return Outcome::TttSaved;
                 }
                 _ => None,
             },
-            Page::Select(s) => s.key(player, key, &d, roster, progress, seed),
+            Page::Select(s) => s.key(player, key, &d, roster, progress),
             Page::Stage { run, cursor } => {
                 let n = stage_list(&d).len().max(1);
                 match key {
                     Key::Up | Key::Down => {
-                        sfx::play(sfx::cursor());
+                        sfx::play(sound(&d, "cursor"));
                         *cursor = (*cursor + if key == Key::Up { n - 1 } else { 1 }) % n;
                         None
                     }
                     Key::Start | Key::Button(_) => {
-                        sfx::play(sfx::confirm());
+                        sfx::play(sound(&d, "decide"));
                         let mut run = run.clone();
                         // RANDOM: the arenas a fight is drawn on
                         run.stage = stage_list(&d).get(*cursor).and_then(|a| a.0).or_else(|| pick(&d.pool(progress), seed)).unwrap_or(run.stage);
                         return Outcome::TttFight(run);
                     }
                     Key::Back => {
-                        sfx::play(sfx::back());
+                        sfx::play(sound(&d, "cancel"));
                         Some(Page::Select(Box::new(Select::new(run.mode, &d, matches!(run.mode, VS | ONE_VS).then_some(run.wins).filter(|w| *w != [0; 2])))))
                     }
                     _ => None,
@@ -867,7 +902,7 @@ impl Front {
             Page::Continue { run, countdown } => match key {
                 // START continues the same fight; a face button skips 100 frames
                 Key::Start => {
-                    sfx::play(sfx::start());
+                    sfx::play(sound(&d, "start"));
                     return Outcome::TttFight(run.clone());
                 }
                 Key::Button(_) => {
@@ -877,7 +912,7 @@ impl Front {
                 _ => None,
             },
             Page::Message { title, .. } => match key {
-                Key::Start | Key::Button(_) => Some(if *title { Page::Title } else { Page::Menu { cursor: 0 } }),
+                Key::Start | Key::Button(_) => Some(if *title { Page::Title } else { Page::Menu { cursor: 0, scroll: 0, idle: 0 } }),
                 _ => None,
             },
             Page::Theater { cursor } => {
@@ -886,36 +921,36 @@ impl Front {
                 let len = |r: usize| rows.get(r).map_or(1, Vec::len).max(1);
                 match key {
                     Key::Up | Key::Down => {
-                        sfx::play(sfx::cursor());
+                        sfx::play(sound(&d, "cursor"));
                         *r = (*r + if key == Key::Up { rows.len() - 1 } else { 1 }) % rows.len();
                         *c = (*c).min(len(*r) - 1);
                         None
                     }
                     Key::Left | Key::Right => {
-                        sfx::play(sfx::cursor());
+                        sfx::play(sound(&d, "cursor"));
                         *c = (*c + if key == Key::Left { len(*r) - 1 } else { 1 }) % len(*r);
                         None
                     }
                     Key::Start | Key::Button(_) => match rows.get(*r).and_then(|row| row.get(*c)).map(|cell| cell.1) {
                         Some(Cell::Ending(e, costume)) => {
-                            sfx::play(sfx::confirm());
+                            sfx::play(sound(&d, "decide"));
                             return Outcome::TttEnding(e, costume, [*r, *c]);
                         }
                         Some(Cell::Music) => {
-                            sfx::play(sfx::confirm());
+                            sfx::play(sound(&d, "decide"));
                             Some(Page::Music { cursor: 0, playing: None })
                         }
-                        Some(Cell::Exit) => Some(Page::Menu { cursor: Self::items(&d, progress).iter().position(|i| i.0 == THEATER).unwrap_or(0) }),
+                        Some(Cell::Exit) => Some(Page::Menu { cursor: Self::items(&d, progress).iter().position(|i| i.0 == THEATER).unwrap_or(0), scroll: 0, idle: 0 }),
                         _ => None,
                     },
-                    Key::Back => Some(Page::Menu { cursor: 0 }),
+                    Key::Back => Some(Page::Menu { cursor: 0, scroll: 0, idle: 0 }),
                 }
             }
             Page::Music { cursor, playing } => {
                 let list = music(&d);
                 match key {
                     Key::Up | Key::Down => {
-                        sfx::play(sfx::cursor());
+                        sfx::play(sound(&d, "cursor"));
                         *cursor = (*cursor + if key == Key::Up { list.len() } else { 1 }) % (list.len() + 1);
                         None
                     }
@@ -924,7 +959,7 @@ impl Front {
                         None
                     }
                     Key::Start | Key::Button(_) | Key::Back => {
-                        sfx::play(sfx::back());
+                        sfx::play(sound(&d, "cancel"));
                         let rows = theater(&d, progress.seen);
                         let at = rows.iter().position(|r| r.first().is_some_and(|c| matches!(c.1, Cell::Music))).unwrap_or(0);
                         Some(Page::Theater { cursor: [at, 0] })
@@ -945,6 +980,16 @@ impl Front {
         self.frame += 1;
         let Some(d) = roster.ttt.clone() else { return Outcome::None };
         match &mut self.page {
+            // the rows slide `scroll` a frame; `idle` frames without a key: back to the title (the PS2's attract)
+            Page::Menu { scroll, idle, .. } => {
+                let step = int(&d.raw["menu"]["scroll"]) as i32;
+                *scroll = if scroll.abs() <= step { 0 } else { *scroll - step * scroll.signum() };
+                *idle += 1;
+                if *idle >= int(&d.raw["menu"]["idle"]).max(1) as u32 {
+                    self.page = Page::Title;
+                    self.frame = 0;
+                }
+            }
             Page::Select(s) => {
                 if let Some(run) = s.tick(&d, roster, progress, seed) {
                     if run.mode == FORCE {
@@ -967,7 +1012,7 @@ impl Front {
             Page::Message { frame, title, .. } => {
                 *frame += 1;
                 if *frame >= MESSAGE_FRAMES {
-                    self.page = if *title { Page::Title } else { Page::Menu { cursor: 0 } };
+                    self.page = if *title { Page::Title } else { Page::Menu { cursor: 0, scroll: 0, idle: 0 } };
                 }
             }
             _ => {}
@@ -978,31 +1023,33 @@ impl Front {
     pub fn draw(&self, painter: &egui::Painter, v: &View, art: &Art, roster: &Roster) {
         let progress = &progress();
         let Some(d) = roster.ttt.as_deref() else { return };
-        let blink = (self.frame / 30).is_multiple_of(2);
         match &self.page {
+            // (0x3BCC88: the logo out of white, then the line blinking by the frame's `blink_mask` bits, the namco logo
+            // and the copyright)
             Page::Title => {
+                let t = &d.raw["title"];
                 image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], Color32::WHITE);
-                if blink {
-                    font(painter, v, art, d, &d.picture(&["title", "press_start"]), W / 2.0, 330.0, 0.5, Color32::WHITE);
-                }
-                for (k, line) in d.raw["title"]["copyright"].as_array().into_iter().flatten().enumerate() {
-                    small(painter, v, line.as_str().unwrap_or_default(), W / 2.0, 396.0 + 16.0 * k as f32, Color32::from_gray(200));
-                }
-            }
-            Page::Menu { cursor } => {
-                backdrop(painter, v, art);
-                let items = Self::items(d, progress);
-                for (k, (_, label)) in items.iter().enumerate() {
-                    let y = 80.0 + 26.0 * k as f32;
-                    if k == *cursor {
-                        Art::shade(painter, v, sv([170.0, y - 3.0, 300.0, 25.0]), [Color32::from_rgba_unmultiplied(40, 80, 200, 150); 4]);
+                let from_white = num(&t["from_white"]);
+                if self.frame as f32 >= from_white {
+                    if self.frame & int(&t["blink_mask"]) as u32 != 0 {
+                        // (in the small font, 216 wide: shortcut: egui's, in the green the PS2's small texts show)
+                        small(painter, v, &d.picture(&["title", "press_start"]), W / 2.0, num(&t["press_y"]) - 6.0, Color32::from_rgb(140, 240, 120));
                     }
-                    let c = if k == *cursor { Color32::WHITE } else { Color32::from_gray(150) };
-                    font(painter, v, art, d, label, W / 2.0, y, 0.45, c);
+                    sprite(painter, v, art, t["namco"]["picture"].as_str().unwrap_or_default(), num(&t["namco"]["x"]), num(&t["namco"]["y"]), Color32::WHITE);
+                    for (k, line) in t["copyright"].as_array().into_iter().flatten().enumerate() {
+                        small(painter, v, line.as_str().unwrap_or_default(), W / 2.0, num(&t["copyright_y"][k]), Color32::from_gray(200));
+                    }
+                } else {
+                    let a = (255.0 * (1.0 - self.frame as f32 / from_white)) as u8;
+                    Art::shade(painter, v, sv([0.0, 0.0, W, H]), [Color32::from_rgba_unmultiplied(255, 255, 255, a); 4]);
                 }
             }
+            Page::Menu { cursor, scroll, .. } => draw_menu(painter, v, art, d, &Self::items(d, progress), *cursor, *scroll, self.frame),
             Page::Options { cursor, values, arcade } => {
-                backdrop(painter, v, art);
+                // the logo dimmed (0x3B4B20: 0x3C4868 a step a frame down to `dim`)
+                let m = &d.raw["menu"];
+                let level = (128.0 - num(&m["logo_step"]) * self.frame as f32).max(num(&m["dim"]));
+                image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(level).0);
                 font(painter, v, art, d, "OPTIONS", W / 2.0, 40.0, 0.6, Color32::WHITE);
                 let mut rows: Vec<(&str, &str)> = OPTION_ROWS
                     .iter()
@@ -1227,22 +1274,91 @@ fn backdrop(painter: &egui::Painter, v: &View, art: &Art) {
     image(painter, v, art, "182_001.png", [W, 0.0, -w, H], Color32::from_gray(140));
 }
 
+/// The menus' text size (the printf's size 5: 19 of the 640 x 448 screen high, as the PS2 shows it) as the chrome
+/// font's scale, and its height.
+const TEXT_SCALE: [f32; 2] = [0.67, 0.45];
+const TEXT_H: f32 = 42.0 * TEXT_SCALE[1];
+
+/// A PS2 colour level (0x80 = as drawn): the tint, and an additive tint for what goes past 0x80.
+fn ps2(level: f32) -> (Color32, Color32) {
+    let g = |l: f32| Color32::from_gray((l.clamp(0.0, 128.0) * 255.0 / 128.0) as u8);
+    (g(level), additive(g(level - 128.0)))
+}
+
+/// A picture at [x, y, w, h] at a PS2 colour level.
+fn lit(painter: &egui::Painter, v: &View, art: &Art, file: &str, r: [f32; 4], level: f32) {
+    let (tint, over) = ps2(level);
+    image(painter, v, art, file, r, tint);
+    if level > 128.0 {
+        image(painter, v, art, file, r, over);
+    }
+}
+
+/// The main menu (0x3BD2E0): the logo, `rows` rows about the cursor, `row_h` apart and `scroll` off, each in its text
+/// colour, clipped to `clip` under the black fades; the band behind the cursor's row, its alpha up `alpha_step` a
+/// frame; the arrows on its sides, blinking every `period` frames once the band is whole.
+#[allow(clippy::too_many_arguments)]
+fn draw_menu(painter: &egui::Painter, v: &View, art: &Art, d: &Data, items: &[(u32, String)], cursor: usize, scroll: i32, frame: u32) {
+    let m = &d.raw["menu"];
+    image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], Color32::WHITE);
+    let band = &m["band"];
+    let alpha = (num(&band["alpha_step"]) * frame as f32).min(128.0);
+    let a = (alpha * 255.0 / 128.0) as u8;
+    let [y0, y1] = [num(&band["y"][0]), num(&band["y"][1])];
+    let c = |k: usize| num(&band["colour"][k]) as u8;
+    let (black, blue) = (Color32::from_rgba_unmultiplied(0, 0, 0, a), Color32::from_rgba_unmultiplied(c(0), c(1), c(2), a));
+    Art::shade(painter, v, sv([0.0, y0, W / 2.0, y1 - y0]), [black, blue, black, blue]);
+    Art::shade(painter, v, sv([W / 2.0, y0, W / 2.0, y1 - y0]), [blue, black, blue, black]);
+    let [cy0, cy1] = [num(&m["clip"][0]), num(&m["clip"][1])];
+    let [_, top, _, bottom] = sv([0.0, cy0, 0.0, cy1 - cy0]);
+    let clip = painter.with_clip_rect(Rect::from_min_max(v.pos(0.0, top), v.pos(SCREEN_W, top + bottom)));
+    let rows = int(&m["rows"]);
+    let n = items.len().max(1);
+    let colour_of = |mode: u32| m["items"].as_array().into_iter().flatten().find(|i| int(&i["mode"]) as u32 == mode).map(|i| int(&i["colour"]));
+    for k in 0..rows {
+        let Some((mode, label)) = items.get((cursor + n * rows + k - rows / 2) % n) else { continue };
+        // (the row's y is the text's foot; OpenKumite's entries take OPTIONS' colour)
+        let y = num(&m["y"]) + num(&m["row_h"]) * k as f32 + scroll as f32 - TEXT_H;
+        let colour = colour_of(*mode).or_else(|| colour_of(OPTIONS));
+        font_in(&clip, v, art, d, colour, label, W / 2.0, y, TEXT_SCALE, Color32::WHITE);
+    }
+    for (k, f) in m["fades"].as_array().into_iter().flatten().enumerate() {
+        let [f0, f1] = [num(&f[0]), num(&f[1])];
+        let (o, t) = (Color32::BLACK, Color32::TRANSPARENT);
+        let cs = if k == 0 { [o, o, t, t] } else { [t, t, o, o] };
+        Art::shade(painter, v, sv([0.0, f0, W, f1 - f0]), cs);
+    }
+    let arrows = &m["arrows"];
+    if alpha >= 128.0 && (frame / int(&arrows["period"]).max(1) as u32) % 2 == 1 {
+        for k in 0..2 {
+            sprite(painter, v, art, arrows["pictures"][k].as_str().unwrap_or_default(), num(&arrows["x"][k]), num(&arrows["y"]), Color32::WHITE);
+        }
+    }
+}
+
 /// A text in the chrome font (`fonts.big`: its glyphs' size and rows), centred on `x`, at `scale`.
 #[allow(clippy::too_many_arguments)]
 fn font(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, scale: f32, tint: Color32) {
+    font_in(painter, v, art, d, None, text, x, y, [scale; 2], tint);
+}
+
+/// A text in the chrome font in text colour `colour` (the printf's `%c`: `fonts.big.colours`), else its own.
+#[allow(clippy::too_many_arguments)]
+fn font_in(painter: &egui::Painter, v: &View, art: &Art, d: &Data, colour: Option<usize>, text: &str, x: f32, y: f32, [sx, sy]: [f32; 2], tint: Color32) {
     let f = &d.raw["fonts"]["big"];
     let rows: Vec<&str> = f["rows"].as_array().into_iter().flatten().filter_map(|r| r.as_str()).collect();
-    let Some((tex, [tw, th])) = art.pic(f["picture"].as_str().unwrap_or_default()) else { return };
+    let picture = colour.and_then(|c| f["colours"][c].as_str()).or(f["picture"].as_str()).unwrap_or_default();
+    let Some((tex, [tw, th])) = art.pic(picture) else { return };
     let (gw, gh) = (num(&f["glyph"][0]).max(1.0), num(&f["glyph"][1]).max(1.0));
     // shortcut: the glyphs' widths are not read: the narrow ones and the space take less
-    let advance = |c: char| gw * scale * if "I1!.:'- ".contains(c) { 0.42 } else { 0.78 };
+    let advance = |c: char| gw * sx * if "I1!.:'- ".contains(c) { 0.42 } else { 0.78 };
     let text = text.to_uppercase().replace(['´', '`'], "'");
     let mut at = x - text.chars().map(advance).sum::<f32>() / 2.0;
     for c in text.chars() {
         if let Some((r, k)) = rows.iter().enumerate().find_map(|(r, row)| row.chars().position(|g| g == c).map(|k| (r, k))) {
             let (u, vv) = (k as f32 * gw / tw as f32, r as f32 * gh / th as f32);
             let uv = Rect::from_min_max(Pos2::new(u, vv), Pos2::new(u + gw / tw as f32, vv + gh / th as f32));
-            let [rx, ry, rw, rh] = sv([at - (gw * scale - advance(c)) / 2.0, y, gw * scale, gh * scale]);
+            let [rx, ry, rw, rh] = sv([at - (gw * sx - advance(c)) / 2.0, y, gw * sx, gh * sy]);
             painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, tint);
         }
         at += advance(c);
@@ -1255,73 +1371,153 @@ fn small(painter: &egui::Painter, v: &View, text: &str, x: f32, y: f32, c: Color
     painter.text(v.pos(px, py), egui::Align2::CENTER_TOP, text, egui::FontId::proportional(h * v.rect.height() / SCREEN_H), c);
 }
 
-/// The select screen: the grid (0x3CC6C8: each slot's face at (x, y + 52), the cursors' frames), each side's picks
-/// as their portraits (file 143-181) and name plates below.
+/// The select screen as the PS2 draws it with QUICK SELECT off (0x3CCCB8): the lightning `select.lightning`, a picture a
+/// frame, under the frame and its mirror; the faces (0x3CC6C8: brighter under a cursor, dark under the cursor of the
+/// side that took them, RANDOM's showing its roll); each side's name plates (0x3CC3E0) and "1ST"; the timer
+/// (0x3CC190, blinking in its last seconds); the cursors, pulsing (0x3CC9E0), with their tags; the screen darkening
+/// to the fight.
+// shortcut: the PS2 stands each side's character there as its 3D model, posing once picked (0x3AEC58); here its
+// portrait (files 143-181) until the select draws fighters
 fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &Roster, p: &Progress, s: &Select) {
-    image(painter, v, art, "141_000.png", [0.0, 0.0, W, H], Color32::from_gray(90));
-    let dy = num(&d.raw["select"]["face_dy"]);
-    let title = match s.mode {
-        BALL => "TEKKEN BALL",
-        FORCE => "TEKKEN FORCE",
-        m => d.raw["select"]["titles"][m as usize].as_str().unwrap_or_default(),
+    let sel = &d.raw["select"];
+    let l = &sel["lightning"];
+    let pics: Vec<&str> = l["pictures"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
+    if let Some(file) = pics.get(s.frame as usize % pics.len().max(1)) {
+        lit(painter, v, art, file, [0, 1, 2, 3].map(|k| num(&l["rect"][k])), num(&l["level"]));
+    }
+    // each side's characters: its picks, then the one under its cursor
+    let shown = |k: usize| -> Vec<usize> {
+        let side = &s.sides[k];
+        let hover = (!side.done)
+            .then(|| d.slots.get(side.cursor))
+            .flatten()
+            .and_then(|sl| match sl.character {
+                Some(c) => Some(c).filter(|&c| d.selectable(p.stage, c)),
+                None => s.roll(d, roster, p, k),
+            })
+            .and_then(|c| roster.index_of(c))
+            .filter(|i| !side.picks.iter().any(|q| q.0 == *i));
+        side.picks.iter().map(|q| q.0).chain(hover).collect()
     };
-    font(painter, v, art, d, title, W / 2.0, 14.0, 0.5, Color32::WHITE);
+    let body = |i: usize| roster.characters.get(i).map_or(0, |c| c.id);
+    for k in (0..2).filter(|&k| s.sides[k].player.is_some()) {
+        if let Some(&i) = shown(k).last() {
+            // (where and about as big as the PS2 shows the model: head at y 320, centred on x 220 of its side)
+            let x = if k == 0 { 173.0 } else { W - 173.0 };
+            image(painter, v, art, &d.picture(&["select", "portraits", &body(i).to_string()]), [x, 320.0, if k == 0 { 94.0 } else { -94.0 }, 128.0], Color32::WHITE);
+        }
+    }
+    let frame = sel["frame"]["picture"].as_str().unwrap_or_default();
+    let [fw, fh] = [num(&sel["frame"]["size"][0]), num(&sel["frame"]["size"][1])];
+    image(painter, v, art, frame, [0.0, 0.0, fw, fh], Color32::WHITE);
+    image(painter, v, art, frame, [W - 1.0, 0.0, -fw, fh], Color32::WHITE);
+    let dy = num(&sel["face_dy"]);
+    let size = num(&sel["face_size"]);
+    let level = |k: &str| num(&sel["face_level"][k]);
     for (k, slot) in d.slots.iter().enumerate() {
         if hidden(d, roster, p, k) {
             continue;
         }
-        let face = match slot.character {
+        let mut face = match slot.character {
             None => d.picture(&["select", "random_face"]),
             Some(c) if d.selectable(p.stage, c) && roster.by_id(c).is_some() => d.picture(&["select", "faces", &c.to_string()]),
             Some(_) => d.picture(&["select", "locked_face"]),
         };
-        sprite(painter, v, art, &face, slot.x, slot.y + dy, Color32::WHITE);
-    }
-    let colours = [Color32::from_rgb(255, 80, 60), Color32::from_rgb(80, 140, 255)];
-    for (k, side) in s.sides.iter().enumerate() {
-        let Some(player) = side.player else {
-            if k == 1 && s.mode == TEAM && (s.frame / 30).is_multiple_of(2) {
-                small(painter, v, "PRESS P2 START", 520.0, 300.0, Color32::WHITE);
+        let mut l = level("normal");
+        if let Some(j) = (0..2).find(|&j| s.sides[j].player.is_some() && !s.sides[j].done && s.sides[j].cursor == k) {
+            l = level("hover");
+            if slot.character.is_some_and(|c| roster.index_of(c).is_some_and(|i| s.sides[j].picks.iter().any(|q| q.0 == i))) {
+                l = level("picked");
             }
-            continue;
-        };
-        if let (false, Some(slot)) = (side.done, d.slots.get(side.cursor)) {
-            let pulse = Color32::from_gray(160 + (crate::menu::triangle(s.frame * 8) / 3) as u8);
-            image(painter, v, art, &d.picture(&["select", "cursor"]), [slot.x - 2.0, slot.y + dy - 2.0, 56.0, 57.0], additive(pulse));
-            let [rx, ry, rw, rh] = sv([slot.x - 1.0, slot.y + dy - 1.0, 54.0, 54.0]);
-            painter.rect_stroke(v.rect(rx, ry, rw, rh), 0.0, egui::Stroke::new(v.rect.height() / 240.0, colours[k]), egui::StrokeKind::Inside);
-            let tag = if player == k { d.picture(&["select", "tags", &k.to_string()]) } else { d.picture(&["select", "tags", "6"]) };
-            sprite(painter, v, art, &tag, slot.x + (if k == 0 { 2.0 } else { 26.0 }), slot.y + dy + 40.0, Color32::WHITE);
+            if let (None, Some(c)) = (slot.character, s.roll(d, roster, p, j)) {
+                face = d.picture(&["select", "faces", &c.to_string()]);
+            }
         }
-        // the picks and the one under the cursor, as portraits, P1's from the left, P2's from the right
-        let hover = (!side.done)
-            .then(|| d.slots.get(side.cursor).and_then(|sl| sl.character))
-            .flatten()
-            .filter(|&c| d.selectable(p.stage, c))
-            .and_then(|c| roster.index_of(c))
-            .filter(|i| !side.picks.iter().any(|q| q.0 == *i));
-        let shown: Vec<(usize, bool)> = side.picks.iter().map(|q| (q.0, true)).chain(hover.map(|h| (h, false))).collect();
-        let (pw, ph) = (188.0 * 0.6, 256.0 * 0.6);
-        for (j, &(i, picked)) in shown.iter().rev().take(4).rev().enumerate() {
-            let id = roster.characters.get(i).map_or(0, |c| c.id);
-            let file = d.picture(&["select", "portraits", &id.to_string()]);
-            let x = if k == 0 { 4.0 + 96.0 * j as f32 } else { W - 4.0 - 96.0 * j as f32 };
-            let tint = if picked { Color32::WHITE } else { Color32::from_gray(110) };
-            image(painter, v, art, &file, [x, H - ph - 18.0, if k == 0 { pw } else { -pw }, ph], tint);
-            let plate = d.picture(&["hud", "plates", &id.to_string(), "picture"]);
-            sprite(painter, v, art, &plate, if k == 0 { x } else { x - 128.0 }, H - 18.0, tint);
+        lit(painter, v, art, &face, [slot.x, slot.y + dy, size, size], l);
+    }
+    let all_done = s.sides.iter().all(|x| x.player.is_none() || x.done);
+    for k in (0..2).filter(|&k| s.sides[k].player.is_some()) {
+        let list = shown(k);
+        let plates = sel["plates"][k].as_array().map_or(0, Vec::len);
+        for (j, &i) in list.iter().skip(list.len().saturating_sub(plates)).enumerate() {
+            let at = &sel["plates"][k][j];
+            sprite(painter, v, art, &d.picture(&["hud", "plates", &body(i).to_string(), "picture"]), num(&at[0]), num(&at[1]), Color32::WHITE);
         }
-        if s.mode == TEAM {
-            small(painter, v, &format!("{}P  {} / 8", k + 1, side.picks.len()), if k == 0 { 120.0 } else { 520.0 }, 286.0, colours[k]);
+        // "1ST" (0x3CC660: the number big, its suffix small), the pick the side makes now
+        if !s.sides[k].done {
+            let n = s.sides[k].picks.len() + 1;
+            let suffix = match n {
+                1 => "ST",
+                2 => "ND",
+                3 => "RD",
+                _ => "TH",
+            };
+            let (x, y) = (num(&sel["ordinal"]["x"][k]), num(&sel["ordinal"]["y"]) - 17.0);
+            font(painter, v, art, d, &n.to_string(), x + 27.0, y, 0.8, Color32::WHITE);
+            font(painter, v, art, d, suffix, x + 62.0, y + 17.0, 0.4, Color32::WHITE);
+        }
+    }
+    // the timer: its seconds as (t + 59) / 60 - 1, off `off` frames every `period` in the last `below`
+    let t = &sel["timer"];
+    if let (Some(frames), false) = (t["frames"].as_u64(), all_done) {
+        let left = (frames as u32).saturating_sub(s.frame);
+        let secs = left.div_ceil(60).saturating_sub(1);
+        let b = &t["blink"];
+        let (below, period, blank) = (int(&b["below"]) as u32, int(&b["period"]).max(1) as u32, int(&b["off"]) as u32);
+        let off = secs < below && (left + blank) % period < blank;
+        if left > 0 && !off {
+            digits(painter, v, art, &d.raw["hud"]["timer"], secs, num(&t["x"]), num(&t["y"]));
+        }
+    }
+    // the cursors, 2P's under 1P's: a level between `low` and `high`, `step` a frame up and down
+    let pulse = &sel["cursor_pulse"];
+    let (low, high, step) = (num(&pulse["low"]), num(&pulse["high"]), num(&pulse["step"]).max(1.0));
+    let span = (high - low).max(1.0);
+    let at = (s.frame as f32 * step) % (2.0 * span);
+    let level = low + if at < span { at } else { 2.0 * span - at };
+    let r = &sel["cursor_rect"];
+    for (k, side) in s.sides.iter().enumerate().rev() {
+        let (Some(player), false, Some(slot)) = (side.player, side.done, d.slots.get(side.cursor)) else { continue };
+        let (x, y) = (slot.x, slot.y + dy);
+        lit(painter, v, art, sel["cursors"][k].as_str().unwrap_or_default(), [x + num(&r[0]), y + num(&r[1]), num(&r[2]), num(&r[3])], level);
+        let tag = if player == k { d.picture(&["select", "tags", &k.to_string()]) } else { d.picture(&["select", "tags", "6"]) };
+        sprite(painter, v, art, &tag, x + num(&sel["tag_dx"][k]), y + num(&sel["tag_dy"]), Color32::WHITE);
+    }
+    for (k, side) in s.sides.iter().enumerate() {
+        if side.player.is_none() && k == 1 && s.mode == TEAM && (s.frame / 30).is_multiple_of(2) {
+            small(painter, v, "PRESS P2 START", 520.0, 300.0, Color32::WHITE);
+        }
+        if side.player.is_some() && s.mode == TEAM {
+            small(painter, v, &format!("{}P  {} / 8", k + 1, side.picks.len()), if k == 0 { 120.0 } else { 520.0 }, 286.0, Color32::WHITE);
         }
     }
     if let Some(t) = s.tally {
         font(painter, v, art, d, &format!("{} - {}", t[0], t[1]), W / 2.0, 300.0, 0.5, Color32::WHITE);
     }
+    // the last 20 frames to the fight: to black (0x3CBC14: 20 frames of the screen's fade)
+    let left = int(&sel["done"]) as f32 - s.done as f32;
+    if s.done > 0 && left < 20.0 {
+        let a = (255.0 * (1.0 - left.max(0.0) / 20.0)) as u8;
+        Art::shade(painter, v, sv([0.0, 0.0, W, H]), [Color32::from_rgba_unmultiplied(0, 0, 0, a); 4]);
+    }
 }
 
-/// The VS screen (OpenKumite's: the original's file 136 layout is not decoded): the two teams' portraits face to
-/// face, VS between; Force's: the player and the stage card (its number and name).
+/// A number in the HUD timer's digits (`hud.timer`: `digits`, `digit_w`), two digits centred on `x`.
+fn digits(painter: &egui::Painter, v: &View, art: &Art, t: &Value, n: u32, x: f32, y: f32) {
+    let dw = num(&t["digit_w"]);
+    if let Some((tex, [tw, _])) = art.pic(t["digits"].as_str().unwrap_or_default()) {
+        for (k, digit) in [n.min(99) / 10, n.min(99) % 10].into_iter().enumerate() {
+            let u = digit as f32 * dw / tw as f32;
+            let [rx, ry, rw, rh] = sv([x - dw + dw * k as f32, y, dw, 47.0]);
+            painter.image(tex.id(), v.rect(rx, ry, rw, rh), Rect::from_min_max(Pos2::new(u, 0.0), Pos2::new(u + dw / tw as f32, 1.0)), Color32::WHITE);
+        }
+    }
+}
+
+/// The VS screen, laid out as the PS2 shows it (FRONTEND.md 9; the code is not decoded): each team's leader high and
+/// its partner low in front, sliding in (OpenKumite's), VS at the foot; Force's: the player and the stage card (its
+/// number and name).
+// shortcut: the PS2's moving fire behind them (a stream, not converted) is the menus' blue flame here
 pub fn draw_vs(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, setup: &FightSetup, extra: &crate::menu::VsExtra, frame: u32) {
     let Some(d) = roster.ttt.as_deref() else { return };
     backdrop(painter, v, art);
@@ -1332,19 +1528,16 @@ pub fn draw_vs(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, se
     }
     for k in 0..if extra.force.is_some() { 1 } else { 2 } {
         let team: Vec<(usize, usize)> = [Some(setup.players[k]), bench.map(|b| b[k])].into_iter().flatten().collect();
-        for (j, m) in team.iter().enumerate().rev() {
+        for (j, m) in team.iter().enumerate() {
             let id = roster.characters.get(m.0).map_or(0, |c| c.id);
-            let (pw, ph) = (188.0 * (1.2 - 0.2 * j as f32), 256.0 * (1.2 - 0.2 * j as f32));
-            let off = 30.0 + 110.0 * j as f32 + slide;
-            let x = if k == 0 { off - 20.0 } else { W - off + 20.0 };
-            let tint = if j == 0 { Color32::WHITE } else { Color32::from_gray(150) };
-            image(painter, v, art, &d.picture(&["select", "portraits", &id.to_string()]), [x, 360.0 - ph, if k == 0 { pw } else { -pw }, ph], tint);
-            let plate = d.picture(&["hud", "plates", &id.to_string(), "picture"]);
-            sprite(painter, v, art, &plate, if k == 0 { 40.0 } else { W - 168.0 }, 370.0 + 18.0 * j as f32, Color32::WHITE);
+            // (the leader's left edge at x 120, y 40; the partner's at x 10, y 190)
+            let (off, y) = if j == 0 { (120.0 - slide, 40.0) } else { (10.0 - slide, 190.0) };
+            let x = if k == 0 { off } else { W - off };
+            image(painter, v, art, &d.picture(&["select", "portraits", &id.to_string()]), [x, y, if k == 0 { 188.0 } else { -188.0 }, 256.0], Color32::WHITE);
         }
     }
     if extra.force.is_none() {
-        font(painter, v, art, d, "VS", W / 2.0, 170.0, 1.4, Color32::WHITE);
+        font(painter, v, art, d, "VS", W / 2.0, 330.0, 1.2, Color32::WHITE);
     }
 }
 
@@ -1418,15 +1611,7 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
         if bout.game.round_frames > 100 * 70 {
             sprite(painter, v, art, t["infinity"].as_str().unwrap_or_default(), W / 2.0 - 36.0, y, Color32::WHITE);
         } else {
-            let secs = (fight.clock * 6 / 7).saturating_sub(1) / 60;
-            let dw = num(&t["digit_w"]);
-            if let Some((tex, [tw, _])) = art.pic(t["digits"].as_str().unwrap_or_default()) {
-                for (k, digit) in [secs.min(99) / 10, secs.min(99) % 10].into_iter().enumerate() {
-                    let u = digit as f32 * dw / tw as f32;
-                    let [rx, ry, rw, rh] = sv([W / 2.0 - dw + dw * k as f32, y, dw, 47.0]);
-                    painter.image(tex.id(), v.rect(rx, ry, rw, rh), Rect::from_min_max(Pos2::new(u, 0.0), Pos2::new(u + dw / tw as f32, 1.0)), Color32::WHITE);
-                }
-            }
+            digits(painter, v, art, t, (fight.clock * 6 / 7).saturating_sub(1) / 60, W / 2.0, y);
         }
         // the arcade's STAGE n / FINAL (alternating every 32 frames on the last stage)
         if let Some(stage) = info.stage {
@@ -1668,7 +1853,10 @@ mod tests {
     fn data() -> Arc<Data> {
         let fe = serde_json::json!({"front_end": {
             "select": {"selectable": [0, 1], "slots": [{"x": 0, "y": 0, "character": 0, "right": 1}, {"x": 53, "y": 0, "character": 1, "right": 2},
-                {"x": 106, "y": 0, "character": 2, "right": 3}, {"x": 159, "y": 0, "character": null}], "hidden_slots": []},
+                {"x": 106, "y": 0, "character": 2, "right": 3}, {"x": 159, "y": 0, "character": null}], "hidden_slots": [],
+                "start_slots": [0, 3], "random_roll": 3, "timer": {"frames": 2400}, "done": 90},
+            "sounds": {"cursor": 3, "start": 4, "decide": 5, "cancel": 3, "pick": 4, "last_pick": 5},
+            "menu": {"items": [{"mode": 0, "label": "ARCADE"}, {"mode": 11, "label": "OPTIONS"}], "row_h": 26, "scroll": 4, "idle": 480},
             "unlocks": {"schedule": [{"stage": 0, "kind": 0, "character": 2}, {"stage": 1, "kind": 1, "character": 2}, {"stage": 1, "kind": 0, "character": 3}], "points_per_stage": 50},
             "arcade": {"fights": 8, "rivals": [[2, 3, null], [0, null, null]], "fallback": [3], "pairs": [[1, 2]], "rival_arena": 6, "boss": 3, "boss_arena": 14, "early_fights": 3, "early_excluded": []},
             "team_battle": {"refill_percent": 15},
@@ -1778,8 +1966,8 @@ mod tests {
         // its select: P1 picks one; 2P's START joins
         let mut s = Select::new(BOWL, &d, None);
         assert_eq!((s.sides[0].need, s.sides[1].player), (1, None));
-        let (mut seed, roster) = (1, roster());
-        s.key(1, Key::Start, &d, &roster, &Progress::default(), &mut seed);
+        let roster = roster();
+        s.key(1, Key::Start, &d, &roster, &Progress::default());
         assert_eq!(s.sides[1].player, Some(1));
     }
 
@@ -1840,7 +2028,7 @@ mod tests {
         s.sides[0].picks = vec![(0, 0), (1, 0)];
         s.sides[1].picks = vec![(2, 0), (3, 0)];
         s.sides.iter_mut().for_each(|x| x.done = true);
-        let run = (0..SELECT_DONE).find_map(|_| s.tick(&d, &r, &p, &mut seed)).unwrap();
+        let run = (0..90).find_map(|_| s.tick(&d, &r, &p, &mut seed)).unwrap();
         let mut front = Front { page: Page::Stage { run: Box::new(run), cursor: 21 }, frame: 0 };
         let mut r = r;
         r.ttt = Some(d.clone());
@@ -1855,17 +2043,71 @@ mod tests {
         assert_eq!(s.sides[0].cursor, 0);
         // the locked character's slot takes no pick; Paul's (0) and Law's (1) do
         s.sides[0].cursor = 2;
-        assert!(s.key(0, Key::Button(0), &d, &r, &p, &mut seed).is_none() && s.sides[0].picks.is_empty());
+        assert!(s.key(0, Key::Button(0), &d, &r, &p).is_none() && s.sides[0].picks.is_empty());
         s.sides[0].cursor = 0;
-        s.key(0, Key::Button(1), &d, &r, &p, &mut seed);
-        s.key(0, Key::Button(0), &d, &r, &p, &mut seed);
+        s.key(0, Key::Button(1), &d, &r, &p);
+        s.key(0, Key::Button(0), &d, &r, &p);
         assert_eq!(s.sides[0].picks, vec![(0, 1)]);
-        s.key(0, Key::Right, &d, &r, &p, &mut seed);
-        s.key(0, Key::Button(0), &d, &r, &p, &mut seed);
+        s.key(0, Key::Right, &d, &r, &p);
+        s.key(0, Key::Button(0), &d, &r, &p);
         assert!(s.sides[0].done && s.sides[0].picks == vec![(0, 1), (1, 0)]);
-        let run = (0..SELECT_DONE).find_map(|_| s.tick(&d, &r, &p, &mut seed)).unwrap();
+        // the fight 90 frames after the last pick (0x3C9888)
+        assert!((1..90).all(|_| s.tick(&d, &r, &p, &mut seed).is_none()));
+        let run = s.tick(&d, &r, &p, &mut seed).unwrap();
         assert_eq!((run.mode, run.ladder.len(), run.teams[0].len()), (ARCADE, 8, 2));
         p.stage = 1;
         assert!(d.selectable(p.stage, 2));
+    }
+
+    /// The select's sounds (group 0: 3 cursor, 4 select 1, 5 select 2), RANDOM's roll and the timer (FRONTEND.md 9).
+    #[test]
+    fn select_sounds_random_roll_and_timer() {
+        let (d, r, p, mut seed) = (data(), roster(), Progress::default(), 3);
+        let mut s = Select::new(ARCADE, &d, None);
+        // RANDOM rolls through the selectable characters, one every 3 frames, but the side's picks
+        assert_eq!(
+            [0, 3, 6].map(|f| {
+                s.frame = f;
+                s.roll(&d, &r, &p, 0)
+            }),
+            [Some(0), Some(1), Some(0)]
+        );
+        sfx::take();
+        s.key(0, Key::Right, &d, &r, &p);
+        s.key(0, Key::Button(0), &d, &r, &p);
+        s.sides[0].cursor = 3;
+        s.frame = 3;
+        assert_eq!(s.roll(&d, &r, &p, 0), Some(0), "Law is taken");
+        s.key(0, Key::Button(0), &d, &r, &p);
+        assert_eq!((sfx::take(), s.sides[0].picks.clone()), (vec![3, 4, 5], vec![(1, 0), (0, 0)]));
+        // 2400 frames: a pick a frame, the cursor's character then RANDOM's (the cursor's is taken)
+        let mut s = Select::new(ARCADE, &d, None);
+        assert!((1..2400).all(|_| s.tick(&d, &r, &p, &mut seed).is_none()) && s.sides[0].picks.is_empty());
+        s.tick(&d, &r, &p, &mut seed);
+        assert_eq!(s.sides[0].picks.len(), 1);
+        s.tick(&d, &r, &p, &mut seed);
+        assert!(s.sides[0].done && s.sides[0].picks.len() == 2);
+    }
+
+    /// The main menu's rows slide a row's height in 4 a frame; no move while they slide (0x3BD2E0).
+    #[test]
+    fn menu_rows_slide_into_place() {
+        let mut r = roster();
+        r.ttt = Some(data());
+        let mut seed = 0;
+        let mut f = Front::menu();
+        f.key(0, Key::Down, &r, &mut seed);
+        f.key(0, Key::Down, &r, &mut seed);
+        let scrolls: Vec<i32> = (0..8)
+            .map(|_| {
+                f.tick(&r, &mut seed);
+                match f.page {
+                    Page::Menu { scroll, .. } => scroll,
+                    _ => -1,
+                }
+            })
+            .collect();
+        assert_eq!(scrolls, [22, 18, 14, 10, 6, 2, 0, 0]);
+        assert!(matches!(f.page, Page::Menu { cursor: 1, .. }));
     }
 }
