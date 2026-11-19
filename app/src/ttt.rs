@@ -2953,6 +2953,9 @@ pub struct Practice {
     pub mode: usize,
     pub cursor: usize,
     values: Vec<Vec<usize>>,
+    /// The damage each side took, and the last hit's on the dummy (damage, base damage).
+    total: [i32; 2],
+    last: (i32, i32),
 }
 
 /// What a practice menu key asks of the app.
@@ -2993,6 +2996,18 @@ impl Practice {
     /// VS CPU: the CPU's difficulty (CPU LEVEL).
     pub fn cpu(&self, d: &Data) -> Option<usize> {
         self.value(d, "CPU LEVEL")
+    }
+
+    /// The hits of the last step: each side's total, the last hit on the dummy.
+    pub fn hits(&mut self, hits: &[kumite_sim::HitEvent]) {
+        for h in hits.iter().filter(|h| !h.blocked && h.damage > 0) {
+            if let Some(t) = self.total.get_mut(h.victim) {
+                *t += h.damage;
+            }
+            if h.victim == 1 {
+                self.last = (h.damage, h.base_damage);
+            }
+        }
     }
 
     pub fn open(&mut self, d: &Data) {
@@ -3056,6 +3071,27 @@ pub fn practice_pad(dummy: &str, facing_right: bool, low: bool) -> kumite_sim::i
         "GUARD ALL" | "AUTO GUARD" => back(Pad { down: low, ..Pad::default() }),
         _ => Pad::default(),
     }
+}
+
+/// Practice's fight (`practice.hud`): with ATTACK DATA on, each side's TOTAL DMG and the last hit's DMG on the dummy
+/// with its share of the move's damage; the mode's name.
+pub fn draw_practice_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Practice) {
+    let h = &d.raw["practice"]["hud"];
+    if !h.is_object() {
+        return;
+    }
+    let at = |t: &Value, text: &str| {
+        chrome(painter, v, art, d, text, num(&t["xy"][0]), num(&t["xy"][1]), Some(int(&t["colour"])), num(&t["size"]));
+    };
+    if p.value(d, "ATTACK DATA") == Some(1) {
+        let t = &h["total"];
+        for (k, total) in p.total.iter().enumerate() {
+            chrome(painter, v, art, d, &format!("TOTAL DMG:{total}"), num(&t["x"][k]), num(&t["y"]), Some(int(&t["colour"])), num(&t["size"]));
+        }
+        let (dmg, base) = p.last;
+        at(&h["damage"], &format!("DMG:{dmg} ({:03}%)", if base > 0 { dmg * 100 / base } else { 0 }));
+    }
+    at(&h["mode"], d.raw["practice"]["modes"][p.mode]["title"].as_str().unwrap_or_default());
 }
 
 /// Practice's menu (`practice`) in the pause's window: the mode's name, its rows in their colours (the cursor's over
