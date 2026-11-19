@@ -3,9 +3,10 @@
 //! into its pack, two files kept in the site's storage (OPFS, through sync access handles): the Tekken 3 pack
 //! (assets.pack, assets.idx: the base, as the page has always kept it), the Tekken 2 and Counter-Strike packs
 //! (t2.*, cs.*), the extras (extras.*: the packs installed, kumite_packs), the arcade stages' pack (arcade.*: not
-//! installed) and the Tekken Tag Tournament pack (ttt.*: a game of its own). The page reads the arcade pack's
-//! `assets/`, and the extras over the Tekken 2 pack's `assets/`, over the base (index.html's `stored`); with Tekken Tag
-//! Tournament the main game, its pack's `assets/` alone.
+//! installed) and the Tekken Tag Tournament pack (ttt.*: a game of its own, its `extras/` what the Tekken 3 pack
+//! brings to it). The page reads the arcade pack's `assets/`, and the extras over the Tekken 2 pack's `assets/`, over
+//! the base (index.html's `stored`); with Tekken Tag Tournament the main game, its pack's `extras/` over the arcade
+//! pack's `assets/` over its `assets/`.
 //!
 //! The stores, by number: 0, 1 the base's pack and index; 2, 3 Tekken 2's; 4, 5 Counter-Strike's; 6, 7 the extras';
 //! 8 the scratch file an archive (.zip, .7z, ...) is unpacked into while a job converts (emptied after it); 9, 10
@@ -14,7 +15,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use kumite_packs::Part;
 use ok_converter_common::disc::{main_image, Disc, Folder};
-use ok_converter_common::io::{list_paths, path_exists, Ctx, DiscFile, Entry, PackVfs, ReadSeek, Store, Vfs};
+use ok_converter_common::io::{list_paths, path_exists, Ctx, DiscFile, Entry, PackVfs, ReadSeek, Store, Sub, Vfs};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -180,8 +181,9 @@ pub fn run(options: &str) -> Result<String, String> {
     job(options).map_err(|e| format!("{e:#}"))
 }
 
-/// The game data's state, JSON: `{"t3": manifest | null, "t2": ..., "cs": ..., "t3arcade": ..., "ttt": ..., "installed": bool, "fingerprint":
-/// the game's (the extras' when installed, else the base's)}`.
+/// The game data's state, JSON: `{"t3": manifest | null, "t2": ..., "cs": ..., "t3arcade": ..., "ttt": ..., "installed": bool,
+/// "ttt_installed": bool (Tekken Tag Tournament's extras), "fingerprint": the game's (the extras' when installed, else the
+/// base's)}`.
 #[wasm_bindgen]
 pub fn state() -> Result<String, String> {
     state_json().map(|v| v.to_string()).map_err(|e| format!("{e:#}"))
@@ -197,7 +199,9 @@ fn state_json() -> Result<Value> {
     let extras = pack(None)?;
     let installed = m.installed(&extras);
     let manifest: Option<Value> = if m.has_packs() && installed { serde_json::from_slice(&extras.read("manifest.json")?).ok() } else { m.t3.clone() };
-    Ok(json!({"t3": m.t3, "t2": m.t2, "cs": m.cs, "t3arcade": m.arcade, "ttt": m.ttt, "installed": installed,
+    let ttt = pack(Some(Part::Ttt))?;
+    let ttt_installed = kumite_packs::ttt_installed(&Sub { inner: &ttt, prefix: "assets".into() }, &pack(Some(Part::T3))?, &Sub { inner: &ttt, prefix: "extras".into() });
+    Ok(json!({"t3": m.t3, "t2": m.t2, "cs": m.cs, "t3arcade": m.arcade, "ttt": m.ttt, "installed": installed, "ttt_installed": ttt_installed,
               "fingerprint": manifest.as_ref().and_then(|v| v["fingerprint"].as_str())}))
 }
 
@@ -277,6 +281,14 @@ fn job(options: &str) -> Result<String> {
         }
         "install" => {}
         other => bail!("no job {other:?}"),
+    }
+    // (Tekken Tag Tournament's extras follow either game's pack: its pack's extras/, what the Tekken 3 pack brings to
+    // it, as app/src/packs.rs install_ttt makes them)
+    if [Part::T3.kind(), Part::Ttt.kind()].contains(&o["part"].as_str().unwrap_or_default()) || o["job"] == "install" {
+        let ttt = pack(Some(Part::Ttt))?;
+        let (game, extras) = (Sub { inner: &ttt, prefix: "assets".into() }, Sub { inner: &ttt, prefix: "extras".into() });
+        kumite_packs::install_ttt(&game, &pack(Some(Part::T3))?, &extras, &log)?;
+        ttt.checkpoint(&[])?;
     }
     // (the arcade and Tekken Tag Tournament packs are not installed: nothing of the extras changes with them)
     if o["part"] == Part::Arcade.kind() || o["part"] == Part::Ttt.kind() {
