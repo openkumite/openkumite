@@ -99,18 +99,25 @@ fn xiaoyu_jab_reaches(a: &Assets, gap: f32) -> bool {
 }
 
 /// A strike is tested in the pose of its frame (the PS2's strike segments at the active frame end at the bones it
-/// shows then, PCSX2): Xiaoyu's jab, at full reach only on its active frame 8, reaches Lei from 1450 (the pose of
+/// shows then, PCSX2): Xiaoyu's jab, at full reach only on its active frame 8, reaches Lei from 1550 (the pose of
 /// frame 7, 1300).
 #[test]
 fn a_strike_reaches_in_the_pose_of_its_frame() {
     let Some(a) = assets() else { return };
     let reach = (24..32).map(|k| k as f32 * 50.0).take_while(|&g| xiaoyu_jab_reaches(&a, g)).last();
     eprintln!("Xiaoyu's jab reaches Lei from {reach:?}");
-    assert_eq!(reach, Some(1450.0), "the jab's full reach");
+    assert_eq!(reach, Some(1550.0), "the jab's full reach");
 }
 
 /// King's first model.
 const KING: usize = 390;
+
+/// The arcade cells' models (the 1P's partner, the CPU teams).
+const YOSHIMITSU: usize = 396;
+const NINA: usize = 408;
+const MICHELLE: usize = 615;
+const JULIA: usize = 480;
+const ARMOR_KING: usize = 639;
 
 /// Law's and Jin's first models: Paul and Law against Lei and Jin.
 const LAW: usize = 357;
@@ -557,15 +564,17 @@ fn king_throws_canned_and_delays_inputs() {
     assert!(ultra > 0 && hard.stats[2] == 0, "delayed inputs with P74 only");
 }
 
-/// Lei at arcade stage 1 (NORMAL level 0) against Xiaoyu over ten matches: (damage a fight minute, the fight steps
-/// of each match); side 0 stands (`hold`: off) or holds back. The match's seed starts each CPU on its own draws.
-fn stage_one(a: &Assets, hold: bool, seeds: impl Iterator<Item = u32>) -> (u32, Vec<Vec<u64>>) {
+/// The arcade CPU, team `cpu` at NORMAL `level`, against Xiaoyu and Yoshimitsu over the seeds' matches: (damage a
+/// fight minute, the fight steps of each match); side 0 stands (`hold`: off) or holds back. The match's seed starts
+/// each CPU on its own draws.
+fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: impl Iterator<Item = u32>) -> (u32, Vec<Vec<u64>>) {
     let (mut damage, mut steps, mut hashes) = (0, 0, Vec::new());
     for seed in seeds {
-        let mut g = Game::load(a, [XIAOYU, LEI]).unwrap();
+        let mut g = Game::load(a, [XIAOYU, cpu[0]]).unwrap();
+        g.start_tag([kumite_game::Actor::load(a, YOSHIMITSU).unwrap(), kumite_game::Actor::load(a, cpu[1]).unwrap()]);
         g.copy_seed = seed;
         let mut b = Bout::new(g, kumite_game::ai_data(a).unwrap(), 2, false);
-        b.set_cpu(1, Some((1, 0)));
+        b.set_cpu(1, Some((1, level)));
         let mut h = Vec::new();
         for _ in 0..4600 {
             let back = b.game.fight.facing_right(0);
@@ -581,19 +590,27 @@ fn stage_one(a: &Assets, hold: bool, seeds: impl Iterator<Item = u32>) -> (u32, 
     (damage * 3600 / steps.max(1), hashes)
 }
 
-/// The arcade's first CPU against a fighter who stands still, as measured on the PS2 (PCSX2, NORMAL level 0, Lei and
-/// Julia: about 195 damage a fight minute, a K.O. in 31-36 s; against one holding back 38). With each match on its
-/// own draws these ten land 136 (one fixed stream gave every match the same poor opening, 68; matches vary from about
-/// 100 to 230), more against a still fighter than one holding back, and a seed replays the same.
+/// The arcade's CPU against a fighter who stands still or holds back, damage a fight minute as measured on the PS2
+/// (PCSX2, the default NORMAL, single matches against Xiaoyu: stage 1 level 0 about 200 still, 30-40 holding back;
+/// stage 4 level 3 200-240 / 140-160; stage 8 level 7 (Unknown) 240 / 140), here a cell's eight matches each (stage
+/// 8 by Julia and Armor King); a seed replays the same.
 #[test]
-fn the_first_cpu_beats_a_still_fighter_as_the_ps2_does() {
+fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     let Some(a) = assets() else { return };
-    let ((idle, runs), (back, _)) = (stage_one(&a, false, (0..10).map(|k| k * 11)), stage_one(&a, true, (0..10).map(|k| k * 11)));
-    eprintln!("damage a minute: still {idle}, holding back {back}");
-    assert!((120..=300).contains(&idle), "against a still fighter {idle} (PS2 about 195)");
-    assert!(back < idle, "holding back takes less ({back})");
+    let seeds = || (0..8).map(|k| k * 11);
+    let cells = [([LEI, NINA], 0), ([MICHELLE, KING], 3), ([JULIA, ARMOR_KING], 7)].map(|(cpu, level)| {
+        let ((still, runs), (back, _)) = (arcade_cell(&a, cpu, level, false, seeds()), arcade_cell(&a, cpu, level, true, seeds()));
+        (still, back, runs)
+    });
+    let dmg: Vec<(u32, u32)> = cells.iter().map(|c| (c.0, c.1)).collect();
+    eprintln!("damage a minute, still / holding back: {dmg:?}");
+    for (k, (still, back)) in [((140, 260), (40, 120)), ((180, 300), (100, 200)), ((150, 300), (100, 200))].into_iter().enumerate() {
+        assert!((still.0..=still.1).contains(&dmg[k].0) && (back.0..=back.1).contains(&dmg[k].1), "cell {k}: {:?}", dmg[k]);
+        assert!(dmg[k].1 < dmg[k].0, "holding back takes less");
+    }
+    let runs = &cells[0].2;
     assert!(runs.windows(2).any(|w| w[0] != w[1]), "the matches differ");
-    assert_eq!(runs[3], stage_one(&a, false, [33].into_iter()).1[0], "a seed replays the same");
+    assert_eq!(runs[3], arcade_cell(&a, [LEI, NINA], 0, false, [33].into_iter()).1[0], "a seed replays the same");
 }
 
 /// Each frame of an ending: the scene frame, the camera, each slot's cast member and root, the fades.
