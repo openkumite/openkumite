@@ -350,8 +350,9 @@ fn hits_and_voices_play_their_samples() {
     assert!(ko.contains(&"001/010.wav".to_string()) && ko.iter().any(|f| f.starts_with("371/")), "{ko:?}");
 }
 
-/// After the K.O. the replay from frame 16, played twice; then a win pose 4770-4773 for 300 frames, the winner's
-/// partner posing the same in the loser's place; round 2 with the loser back.
+/// After the K.O. the replay from frame 16: three passes of the record's last 20 frames, then the fight on to the
+/// state's frame 135; then a win pose 4770-4773 until the first pose ends (Paul's all end before the 300 frames),
+/// the winner's partner posing the same in the loser's place; round 2 with the loser back.
 #[test]
 fn the_winner_poses_with_its_partner() {
     let Some(a) = assets() else { return };
@@ -378,7 +379,9 @@ fn the_winner_poses_with_its_partner() {
         let replay = phases.iter().position(|p| matches!(p.0, Phase::Replay { .. })).expect("the replay");
         assert_eq!(phases[replay - 1].1, 15, "the replay from the K.O.'s frame 16");
         let pose: Vec<_> = phases.iter().filter(|p| matches!(p.0, Phase::Result { .. })).collect();
-        assert_eq!(pose.len(), 300, "the pose stage");
+        let replayed = phases.iter().filter(|p| matches!(p.0, Phase::Replay { .. })).count();
+        assert_eq!(replayed, 1 + 3 * 19 + 118, "three passes, then the live frames");
+        assert!(pose.len() < 300, "the pose stage ends with the pose: {}", pose.len());
         let alias = pose[0].2[0];
         assert!((4770..=4773).contains(&alias), "the win pose {alias}");
         if partner {

@@ -2036,7 +2036,7 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
                 banner(painter, v, art, d, if bout.rounds_to_win == 1 && pairs { "tag_battle" } else { "round" }, bout.round);
             }
         }
-        Phase::RoundOver { .. } | Phase::Replay { .. } => {
+        Phase::RoundOver { .. } | Phase::Replay { .. } if bout.game.display.is_none() => {
             let key = match result {
                 Some(Announcement::TimeUp) => "time_up",
                 Some(Announcement::Perfect) => "perfect",
