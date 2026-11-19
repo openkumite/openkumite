@@ -10,6 +10,7 @@ use kumite_sim::input::Pad;
 use std::sync::Arc;
 pub mod bout;
 pub mod bowl;
+pub mod crowd;
 pub mod embu;
 pub mod ending;
 pub mod face;
@@ -20,6 +21,7 @@ pub mod scene;
 pub mod sound;
 pub mod tag;
 pub mod vfx;
+pub mod weather;
 
 use kumite_sim::camera::{CameraData, EndCam, FightCamera, Sample, Shot, Subject, View};
 use kumite_sim::{Animations, BodyVolumes, Fight, GameData, Sphere};
