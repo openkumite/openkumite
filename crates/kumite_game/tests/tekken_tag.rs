@@ -310,6 +310,18 @@ fn tekken_tags_camera() {
     assert_eq!(g.camera.view.h, 442);
 }
 
+/// Outside a tag battle the team intro does nothing: round 1's fly-in plays through the call (it starts 3700 nearer,
+/// 0x3954E8).
+#[test]
+fn a_single_match_keeps_its_fly_in() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [XIAOYU, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, true);
+    b.team_intro = true;
+    b.step([Pad::default(); 2]);
+    b.step([Pad::default(); 2]);
+    assert!(b.phase == Phase::Call && b.game.camera.in_intro(), "{:?}", b.phase);
+}
+
 /// Against the CPU, round 1 starts with the CPU's team alone on its shot for 92 frames (0x3B5328), the call after;
 /// the same frames each time.
 #[test]
