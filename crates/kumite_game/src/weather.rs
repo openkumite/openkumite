@@ -95,6 +95,60 @@ impl Wave {
     }
 }
 
+/// An arena's wind (0x3D3630): its Lorenz step and beta, and its waves.
+pub struct Wind {
+    dt: f32,
+    beta: f32,
+    waves: Vec<Wave>,
+}
+
+impl Wind {
+    /// stages.json's `wind` (`dt`, `beta`, `reach`, `waves`), made with its 1024 frames run.
+    pub fn new(w: &Value) -> Self {
+        let reach = f(&w["reach"]);
+        let waves = (w["waves"].as_array().into_iter().flatten())
+            .map(|wave| {
+                // (0x3D3988: the front line through a point `reach` out, across the wave)
+                let [x, z] = [f(&wave["toward"][0]), f(&wave["toward"][1])];
+                let fx = (reach * reach / (x * x / (z * z) + 1.0)).sqrt();
+                let fz = z / x * fx;
+                let speed = f(&wave["speed"]);
+                Wave {
+                    toward: [x, z],
+                    from: [if fx.is_finite() { fx } else { 0.0 }, if fz.is_finite() { fz } else { 0.0 }],
+                    slope: -1.0 / (z / x),
+                    slow: 1.0 / speed,
+                    strength: f(&wave["strength"]),
+                    step: wave["step"].as_i64().unwrap_or(1).clamp(-1000, 1000) as i32,
+                    lorenz: [1.0; 3],
+                    last: [1.0; 2],
+                    kept: vec![0.0; KEPT],
+                    at: 0,
+                    frames: 0,
+                }
+            })
+            .collect();
+        let mut me = Self { dt: f(&w["dt"]), beta: f(&w["beta"]), waves };
+        for _ in 0..KEPT {
+            me.step();
+        }
+        me
+    }
+
+    /// A frame on (0x3D37E0).
+    pub fn step(&mut self) {
+        let (dt, beta) = (self.dt, self.beta);
+        for w in &mut self.waves {
+            w.advance(dt, beta);
+        }
+    }
+
+    /// Its push at `p` (m; 0x3D3D08: its waves summed).
+    pub fn at(&self, p: Vec3) -> Vec3 {
+        self.waves.iter().map(|w| w.at(p)).sum()
+    }
+}
+
 struct Wisp {
     group: usize,
     angle: f32,
@@ -129,8 +183,7 @@ pub struct Weather {
     sets: Vec<Set>,
     streams: Vec<Stream>,
     particles: Vec<Particle>,
-    /// The wind's Lorenz step and beta, and its waves.
-    wind: (f32, f32, Vec<Wave>),
+    wind: Wind,
     groups: Vec<WispGroup>,
     wisps: Vec<Wisp>,
     beacons: Vec<Beacon>,
@@ -173,37 +226,7 @@ impl Weather {
                 prewarm: s["prewarm"].as_bool().unwrap_or(false),
             })
             .collect();
-        let w = &v["wind"];
-        let reach = f(&w["reach"]);
-        let waves = (w["waves"].as_array().into_iter().flatten())
-            .map(|wave| {
-                // (0x3D3988: the front line through a point `reach` out, across the wave)
-                let [x, z] = [f(&wave["toward"][0]), f(&wave["toward"][1])];
-                let fx = (reach * reach / (x * x / (z * z) + 1.0)).sqrt();
-                let fz = z / x * fx;
-                let speed = f(&wave["speed"]);
-                Wave {
-                    toward: [x, z],
-                    from: [if fx.is_finite() { fx } else { 0.0 }, if fz.is_finite() { fz } else { 0.0 }],
-                    slope: -1.0 / (z / x),
-                    slow: 1.0 / speed,
-                    strength: f(&wave["strength"]),
-                    step: wave["step"].as_i64().unwrap_or(1).clamp(-1000, 1000) as i32,
-                    lorenz: [1.0; 3],
-                    last: [1.0; 2],
-                    kept: vec![0.0; KEPT],
-                    at: 0,
-                    frames: 0,
-                }
-            })
-            .collect();
-        let mut wind: (f32, f32, Vec<Wave>) = (f(&w["dt"]), f(&w["beta"]), waves);
-        // (made with its 1024 frames run)
-        for wave in &mut wind.2 {
-            for _ in 0..KEPT {
-                wave.advance(wind.0, wind.1);
-            }
-        }
+        let wind = Wind::new(&v["wind"]);
         let groups: Vec<WispGroup> = list("wisps")
             .map(|g| WispGroup {
                 set: g["set"].as_u64().unwrap_or(0) as usize,
@@ -260,9 +283,8 @@ impl Weather {
         }
     }
 
-    /// The wind's push at `p` (0x3D3D08: its waves summed).
     fn wind_at(&self, p: Vec3) -> Vec3 {
-        self.wind.2.iter().map(|w| w.at(p)).sum()
+        self.wind.at(p)
     }
 
     /// Particle `p`'s place `age` frames along its path, with what its path says there (size, fade).
@@ -276,10 +298,7 @@ impl Weather {
 
     /// A frame on.
     pub fn step(&mut self) {
-        let (dt, beta) = (self.wind.0, self.wind.1);
-        for w in &mut self.wind.2 {
-            w.advance(dt, beta);
-        }
+        self.wind.step();
         self.count += 1;
         // the tasks: a stream starts its particles every so many frames from the second (the first prewarms)
         for k in 0..self.streams.len() {
@@ -381,9 +400,9 @@ mod tests {
         let v = json!({"sets": [{"cell": 1, "paths": []}], "beacons": [{"set": 0, "at": [0.0, 0.0, 0.0], "period": 0.0, "phase": std::f64::consts::PI, "size": 1.0, "level": 1.0}],
             "wind": {"dt": 0.01, "beta": 8.0 / 3.0, "reach": 10.0, "waves": [{"step": 1, "speed": 0.3, "strength": 0.001, "toward": [0.6, 0.8]}]}});
         let w = Weather::new(&v).unwrap();
-        let wave = &w.wind.2[0];
+        let wave = &w.wind.waves[0];
         // (1, 1, 1) a step on: x stays 1, (1 + 40) / 80
-        let mut fresh = Wave { lorenz: [1.0; 3], ..Weather::new(&v).unwrap().wind.2.remove(0) };
+        let mut fresh = Wave { lorenz: [1.0; 3], ..Weather::new(&v).unwrap().wind.waves.remove(0) };
         assert!((fresh.next(0.01, 8.0 / 3.0) - 41.0 / 80.0).abs() < 1e-6);
         // the oldest value on the front line (through x = sqrt(10^2 / (x^2 / z^2 + 1)) = 8, z = 8 z / x), later ones
         // further along the wave

@@ -766,6 +766,7 @@ impl Scene {
         let places = self.objects.as_ref().map(|m| m.places(to.x.atan2(to.z))).unwrap_or_default();
         let fades: HashMap<String, f32> = places.iter().map(|(n, _, f)| (n.clone(), *f)).collect();
         let over: HashMap<String, glam::Mat4> = places.into_iter().map(|(n, m, _)| (n, m)).collect();
+        let shears: HashMap<String, glam::Vec3> = self.objects.as_ref().map(|m| m.shears().into_iter().collect()).unwrap_or_default();
         for m in &self.moving {
             let Some(mesh) = self.sky.get_mut(m.mesh) else { continue };
             match &m.kind {
@@ -785,8 +786,14 @@ impl Scene {
                     let m = kumite_assets::Joint::chain_with(chain, frame, *place, self.eye, &|name| over.get(name).copied());
                     // (a fading object: its colours times its brightness)
                     let k = chain.last().and_then(|j| fades.get(&j.name)).copied().unwrap_or(1.0);
-                    let moved: Vec<StaticVertex> =
-                        (vertices.iter()).map(|v| StaticVertex { pos: m.transform_point3(glam::Vec3::from(v.pos)).to_array(), color: v.color.map(|c| c * k), ..*v }).collect();
+                    // (a swaying lantern: sheared in its own axes by its height)
+                    let shear = chain.last().and_then(|j| shears.get(&j.name)).copied().unwrap_or(glam::Vec3::ZERO);
+                    let moved: Vec<StaticVertex> = (vertices.iter())
+                        .map(|v| {
+                            let p = glam::Vec3::from(v.pos);
+                            StaticVertex { pos: m.transform_point3(p + shear * p.y).to_array(), color: v.color.map(|c| c * k), ..*v }
+                        })
+                        .collect();
                     r.move_mesh(mesh, &moved);
                 }
             }
@@ -1449,10 +1456,11 @@ impl App {
                 scene.moving = st.sky.iter().enumerate().filter_map(moving).collect();
                 // (the moved objects' places in their parents as the stage stands)
                 let rest = |name: &str| {
-                    let chains = scene.moving.iter().filter_map(|m| if let MovingKind::Track { chain, .. } = &m.kind { Some(chain) } else { None });
-                    chains.flatten().find(|j| j.name == name).map(|j| (j.rest.0, j.rest.1))
+                    let mut chains = scene.moving.iter().filter_map(|m| if let MovingKind::Track { chain, .. } = &m.kind { Some(chain) } else { None });
+                    let chain = chains.find(|c| c.last().is_some_and(|j| j.name == name))?;
+                    Some(kumite_assets::Joint::chain(chain, 0, glam::Mat4::IDENTITY, glam::Vec3::ZERO))
                 };
-                scene.objects = arcade_none.then(|| self.stage_json(stage)).flatten().and_then(|j| kumite_game::arena_motion::ArenaMotion::new(&j["objects"], rest));
+                scene.objects = arcade_none.then(|| self.stage_json(stage)).flatten().and_then(|j| kumite_game::arena_motion::ArenaMotion::new(&j, rest));
                 (scene.sky_base_y, scene.sky_y_scale, scene.sky_first, scene.floor_period) = (st.sky_base_y, st.sky_y_scale, st.sky_first, st.floor_period);
                 // (a mesh carries the glb's whole vertex list: its own are the ones its indices name)
                 scene.wall_z = st.sky.first().and_then(|m| m.vertices.get(*m.indices.first()? as usize)).filter(|_| st.backdrop_wall).map(|v| place(glam::Vec3::from(v.pos)).z);
@@ -1659,13 +1667,30 @@ impl App {
 
     /// One fixed 60 Hz logic step.
     fn step(&mut self) {
+        // (the fighters and the last frame's landings, for the arena's leaves)
+        let fighters: Vec<glam::Vec3> = match (self.fight.as_ref(), self.tag.as_ref()) {
+            (Some(fight), _) => fight.bout.game.fight.fighters.iter().map(|a| a.root() / kumite_game::UNITS).collect(),
+            (None, Some(t)) => t.game.melee.actors.iter().map(|a| a.root() / kumite_game::UNITS).collect(),
+            _ => vec![],
+        };
+        let landings = self.vfx.as_ref().map(|v| v.landings.clone()).unwrap_or_default();
+        // (and the fight camera, what the arena's objects see by when nothing is drawn between steps)
+        let view = match (self.fight.as_ref(), self.tag.as_ref()) {
+            (Some(fight), _) => Some(kumite_game::view_camera(&fight.bout.game.camera.view)),
+            (None, Some(t)) => Some(kumite_game::view_camera(&t.game.camera.view)),
+            _ => None,
+        };
         if let Some(s) = self.scene.as_mut() {
             s.frame += 1;
             if let Some(w) = s.weather.as_mut() {
                 w.step();
             }
             if let Some(m) = s.objects.as_mut() {
-                m.step(s.eye, s.view_proj);
+                if let Some((eye, forward, fov)) = view {
+                    let look = glam::camera::rh::view::look_at_mat4(eye, eye + forward, glam::Vec3::Y);
+                    (s.eye, s.view_proj) = (eye, glam::camera::rh::proj::directx::perspective(fov, 640.0 / 448.0, 0.05, 400.0) * look);
+                }
+                m.step(s.eye, s.view_proj, &fighters, &landings);
             }
             for p in &mut s.people {
                 let shown = p.walker.model();
