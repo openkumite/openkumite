@@ -45,7 +45,7 @@ fn kind(job: &Job) -> Kind {
 }
 
 /// Tekken Tag Tournament's game-only pack's budget: its conversion must stay within it (checked by the packs' test).
-pub const TTT_PACK: u64 = 650_000_000;
+pub const TTT_PACK: u64 = 850_000_000;
 
 /// About how much a part's conversion writes (its pack, and the extras it installs), with an archive's unpacked image.
 pub fn needed(part: Part, input: &Path) -> u64 {
@@ -54,7 +54,7 @@ pub fn needed(part: Part, input: &Path) -> u64 {
         Part::T2 => 1_800_000_000,
         Part::Cs => 200_000_000,
         Part::Arcade => 30_000_000,
-        // (the game-only pack, 0.58 GB at its format 20, and the Tekken 3 slice's extras, ~70 MB)
+        // (the game-only pack, 0.81 GB at its format 23 with the movies, and the Tekken 3 slice's extras, ~70 MB)
         Part::Ttt => TTT_PACK + 100_000_000,
     };
     let name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
