@@ -1089,7 +1089,7 @@ impl Bowl {
         };
         let v3 = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
         for p in &self.pins {
-            for v in [p.pos, p.vel, p.rate, Vec3::new(p.angles[0], p.angles[1], 0.0)] {
+            for v in [p.pos, p.vel, p.rate, Vec3::from(p.angles)] {
                 v3(v).into_iter().for_each(&mut eat);
             }
             eat(u32::from(p.standing) | u32::from(p.on_deck) << 1 | u32::from(p.untouched) << 2);
