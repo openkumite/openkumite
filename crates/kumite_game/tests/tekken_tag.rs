@@ -189,6 +189,24 @@ fn tag_out_runs_off_and_the_partner_comes_in() {
     assert_eq!(r.iter().map(|x| x.4).collect::<Vec<_>>(), tag_out(&a).iter().map(|x| x.4).collect::<Vec<_>>(), "the same pads, the same match");
 }
 
+/// The run off by the way P1 faces on the screen (conditions 0x54-0x5B): facing Lei it runs straight off its side
+/// (5394), turned away (facing its own edge, +0x54 2 on the left) it takes 5431.
+#[test]
+fn the_run_off_follows_the_facing_on_the_screen() {
+    let Some(a) = assets() else { return };
+    let tag = parse_script("5").unwrap()[0];
+    let run = |turned: bool| {
+        let mut b = tag_bout(&a, LAW);
+        if turned {
+            b.game.fight.fighters[0].yaw += std::f32::consts::PI;
+        }
+        b.step([tag, Pad::default()]);
+        b.step([Pad::default(); 2]);
+        b.game.fight.fighters[0].alias
+    };
+    assert_eq!((run(false), run(true)), (RUN_OFF, 5431));
+}
+
 #[test]
 fn recoverable_health_and_anger() {
     let Some(a) = assets() else { return };
@@ -651,7 +669,7 @@ fn cpus_tag_in_a_tag_battle() {
 #[test]
 fn strings_go_on_from_normal_level_4() {
     let Some(a) = assets() else { return };
-    let (l0, l4) = (cpu_run(&a, [Some((1, 0)), None], 4000), cpu_run(&a, [Some((1, 4)), None], 4000));
+    let (l0, l4) = (cpu_run(&a, [Some((1, 0)), None], 8000), cpu_run(&a, [Some((1, 4)), None], 8000));
     eprintln!("NORMAL L0 {:?}, L4 {:?}", l0.stats, l4.stats);
     assert_eq!(l0.stats[0], 0, "level 0: no follow-up");
     assert!(l4.stats[0] > 0, "level 4: follow-ups");
