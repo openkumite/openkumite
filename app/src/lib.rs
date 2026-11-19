@@ -2185,6 +2185,9 @@ impl App {
             self.debug.history_len = self.history.len();
         }
         self.hud.step(&fight.bout);
+        if let Some(p) = fight.ttt_practice.as_mut() {
+            p.hits(&fight.bout.game.fight.hits);
+        }
         if let Some(p) = fight.practice.as_mut() {
             // a side acts on its own again (its own moves, not a reaction) once its combo is over
             let neutral = std::array::from_fn(|i| fight.bout.game.fight.fighters[i].current.bank == kumite_sim::data::Bank::Own);
@@ -5802,11 +5805,15 @@ impl App {
                             let project = |m: glam::Vec3| project_point(&cam, size, window, &view, m);
                             p.draw(ctx, art, f.bout.phase == Phase::Intro, &project);
                         }
-                        if let (Some(p), Some(d)) = (f.ttt_practice.as_ref().filter(|p| p.open), roster.ttt.as_deref()) {
+                        if let (Some(p), Some(d)) = (f.ttt_practice.as_ref(), roster.ttt.as_deref()) {
                             let view = art::Screen::fit(ctx.content_rect());
                             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("practice"))).with_clip_rect(view.rect);
                             let name = f.setup.as_ref().and_then(|s| roster.characters.get(s.players[0].0)).map_or("", |c| c.name.as_str());
-                            ttt::draw_practice(&painter, &view, art, d, p, name);
+                            if p.open {
+                                ttt::draw_practice(&painter, &view, art, d, p, name);
+                            } else {
+                                ttt::draw_practice_hud(&painter, &view, art, d, p);
+                            }
                         }
                         if let (Some(_), true) = (f.pause, f.rules) {
                             draw_rules(ctx, art);
