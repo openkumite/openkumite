@@ -27,9 +27,10 @@ const MESSAGE_FRAMES: u32 = 60;
 const KO_FRAMES: u32 = 180;
 const KO_VOICE_AT: u32 = 90;
 /// How long a strike's pose (states 5-7) stays when the scene gives no motion lengths ([`Bowler::strike_frames`]),
-/// and a count's callout (OpenKumite's); START skips.
+/// and a count without a callout (OpenKumite's); a callout's 150 frames (0x3EF470, 0x3EF660); START skips.
 pub const STRIKE_FRAMES: u32 = 150;
 const RESULT_FRAMES: u32 = 90;
+const CALLOUT_FRAMES: u32 = 150;
 /// The strike's pose (state 5, 0x3F0670): the bowler at z -6500, the partner at -9500, 1000 to the side.
 pub const STRIKE_Z: [f32; 2] = [-6500.0, -9500.0];
 pub const STRIKE_SIDE: f32 = 1000.0;
@@ -165,6 +166,12 @@ pub struct BowlData {
 /// The pad's CROSS and CIRCLE: buttons 3 and 4 (the default layout's), taken on the frame they go down.
 pub const CROSS: u8 = 1 << 2;
 pub const CIRCLE: u8 = 1 << 3;
+/// SELECT (none of the fight's buttons: the app sets it), taken on the frame it goes down.
+pub const SELECT: u8 = 1 << 5;
+/// SELECT in the position step switches the hand of these characters (0x3EAE28: Lei, Hwoarang, Kuma, P. Jack,
+/// Jun), BOWL STYLE / SWITCH HANDS shown this many frames (gp-0x6032).
+const SWITCHERS: [usize; 5] = [2, 6, 11, 22, 30];
+pub const STYLE_FRAMES: u32 = 120;
 
 /// What the current player's pad does this frame: the d-pad held, the buttons gone down, START pressed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -173,6 +180,7 @@ struct Pad {
     right: bool,
     cross: bool,
     circle: bool,
+    select: bool,
     start: bool,
 }
 
@@ -195,6 +203,8 @@ pub struct Bowler {
     pub charge: Vec<f32>,
     /// How long its strike's pose lasts: the longer of its and its partner's reaction motions (0x3E9628).
     pub strike_frames: u32,
+    /// The other hand's `hand` and `charge`, for a character SELECT switches the hand of (the game layer sets it).
+    pub other_hand: Option<(Vec3, Vec<f32>)>,
 }
 
 impl Bowler {
@@ -216,7 +226,13 @@ impl Bowler {
             hand: Vec3::new(if left { -150.0 } else { 150.0 }, -500.0, 4200.0),
             charge: Vec::new(),
             strike_frames: STRIKE_FRAMES,
+            other_hand: None,
         }
+    }
+
+    /// SELECT switches its hand (0x3EAE08: not Unknown's).
+    pub fn switches(&self) -> bool {
+        SWITCHERS.contains(&self.character)
     }
 
     /// S' (0x3E9C58): S, above 400 a third of the rest.
@@ -411,7 +427,7 @@ pub struct Replay {
     /// playing (gp-0x6034), its half-speed toggle (gp-0x602C), the frames since z 4000 (gp-0x6046).
     pub left: u32,
     until: u32,
-    slow: bool,
+    pub slow: bool,
     pub on: bool,
     half: bool,
     t: u32,
@@ -451,7 +467,7 @@ pub struct Bowl {
     data_rack: Vec<[f32; 2]>,
     pin_y: f32,
     people: Vec<[f32; 2]>,
-    callouts: Callouts,
+    pub callouts: Callouts,
     standing_before: [bool; 10],
     /// The roll's mark, its pins and the next ball once counted.
     counted: Option<(u8, Mark)>,
@@ -460,6 +476,8 @@ pub struct Bowl {
     quiet: u32,
     /// The buttons held last frame.
     held: u8,
+    /// Frames BOWL STYLE / SWITCH HANDS stays (gp-0x6032).
+    pub style: u32,
     seed: u32,
 }
 
@@ -582,6 +600,7 @@ impl Bowl {
             split_first: false,
             quiet: 0,
             held: 0,
+            style: 0,
             seed,
         };
         b.new_turn();
@@ -648,12 +667,22 @@ impl Bowl {
     pub fn step(&mut self, pad: crate::input::Pad) {
         let down = pad.buttons & !self.held;
         self.held = pad.buttons;
-        let pad = Pad { left: pad.left, right: pad.right, cross: down & CROSS != 0, circle: down & CIRCLE != 0, start: pad.start };
+        let pad = Pad { left: pad.left, right: pad.right, cross: down & CROSS != 0, circle: down & CIRCLE != 0, select: down & SELECT != 0, start: pad.start };
         self.events.clear();
         self.frame += 1;
+        self.style = self.style.saturating_sub(1);
         let Some(b) = self.bowler().cloned() else { return };
         match self.phase {
             Phase::Position => {
+                // SELECT: the other hand (its motions, release point and charge); the step starts again
+                if let Some(p) = self.players.get_mut(self.current).filter(|p| pad.select && p.switches()) {
+                    if let Some((hand, charge)) = p.other_hand.take() {
+                        p.other_hand = Some((std::mem::replace(&mut p.hand, hand), std::mem::replace(&mut p.charge, charge)));
+                        p.left = !p.left;
+                        self.style = STYLE_FRAMES;
+                        return;
+                    }
+                }
                 if pad.left != pad.right {
                     self.x = (self.x + if pad.left { -STEP } else { STEP }).clamp(-X_LIMIT, X_LIMIT);
                 }
@@ -735,7 +764,7 @@ impl Bowl {
                 }
             }
             Phase::Result(f) => {
-                if f + 1 >= RESULT_FRAMES || pad.start {
+                if f + 1 >= if self.callout.is_some() { CALLOUT_FRAMES } else { RESULT_FRAMES } || pad.start {
                     self.next_ball();
                 } else {
                     self.phase = Phase::Result(f + 1);
@@ -1240,6 +1269,7 @@ impl Bowl {
             c.rolls.iter().for_each(|&r| eat(u32::from(r)));
         }
         [self.x.to_bits(), self.angle as u32, self.spin.to_bits(), self.power.to_bits(), self.seed, self.current as u32].into_iter().for_each(&mut eat);
+        self.players.iter().for_each(|p| eat(u32::from(p.left)));
         h
     }
 }
@@ -1357,6 +1387,27 @@ mod tests {
             b.step(In::default());
         }
         b
+    }
+
+    /// SELECT in the position step switches Lei's hand (its release point, charge and spin bounds), and back; Paul's
+    /// stays (0x3EAE28).
+    #[test]
+    fn select_switches_the_hand_of_those_who_can() {
+        let d = data();
+        let other = (Vec3::new(-150.0, -500.0, 4200.0), vec![1.0]);
+        let mut lei = Bowler::new(&d, 2, 2);
+        lei.other_hand = Some(other.clone());
+        let mut b = Bowl::new(&d, vec![lei], 1);
+        let select = In { buttons: SELECT, ..In::default() };
+        b.step(select);
+        let p = &b.players[0];
+        assert!(p.left && p.hand == other.0 && p.charge == other.1 && b.style == STYLE_FRAMES && b.phase == Phase::Position);
+        b.step(In::default());
+        b.step(select);
+        assert!(!b.players[0].left && b.players[0].hand.x > 0.0);
+        let mut paul = Bowl::new(&d, vec![Bowler { other_hand: Some(other), ..Bowler::new(&d, 0, 0) }], 1);
+        paul.step(select);
+        assert!(!paul.players[0].left && paul.style == 0);
     }
 
     #[test]

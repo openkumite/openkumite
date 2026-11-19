@@ -79,6 +79,7 @@ struct Models {
 /// second, 0x3E9550).
 #[derive(Clone, Debug)]
 struct Clips {
+    left: bool,
     stand: usize,
     step_right: usize,
     step_left: usize,
@@ -104,6 +105,8 @@ pub struct BowlScene {
     /// Per player: its character with the bowl clips.
     pub characters: Vec<Arc<Character>>,
     clips: Vec<Clips>,
+    /// Per player: the other hand's motions, when SELECT switches its hand (0x3EAE28).
+    other_clips: Vec<Option<Clips>>,
     /// Per player: its tag partner, who joins the strike's pose (0x3E99C0's slot 1), with its strike reaction.
     pub partners: Vec<Option<(Arc<Character>, usize)>>,
     /// The ball's, the pin's and the pin deck's glbs (`stages/`), and the pin's centre above its base.
@@ -117,7 +120,20 @@ pub struct BowlScene {
     /// The bowler's motion now and its frame; the step clip the pad asked for last.
     anim: (usize, usize),
     stepping: i8,
+    /// The strike's pose: the point the camera looks at (metres), after the bowler's body (0x3EBC98 modes 4, 5).
+    pivot: Vec3,
+    /// The throw's and the roll's camera (0x1FC51B0, game units): its pivot, yaw (radians) and distance.
+    view: (Vec3, f32, f32),
 }
+
+/// The camera's pitch (0x3E9C10: -0.2 rad, looking down), the fixed view behind the lane (mode 0: its pivot and
+/// distance), the bowler's eye height (mode 1), where the roll's camera goes (mode 2, 0x523960) and how far behind the
+/// ball it stays.
+const PITCH: f32 = -0.2;
+const LANE_VIEW: ([f32; 3], f32) = ([0.0, -2300.0, -12000.0], 2000.0);
+const EYE_Y: f32 = -2350.0;
+const ROLL_TO: [f32; 3] = [0.0, -1500.0, 4000.0];
+const ROLL_BEHIND: f32 = 4000.0;
 
 impl BowlScene {
     /// A game for `players`: each one's model record (its character file) and character id, in turn order, and
@@ -127,7 +143,7 @@ impl BowlScene {
         let data: BowlData = serde_json::from_value(raw.clone()).context("bowl.json")?;
         let extra: Extra = serde_json::from_value(raw).unwrap_or_default();
         let mut draw = seed;
-        let (mut characters, mut clips, mut bowlers, mut mates) = (vec![], vec![], vec![], vec![]);
+        let (mut characters, mut clips, mut others, mut bowlers, mut mates) = (vec![], vec![], vec![], vec![], vec![]);
         // a character with the bowl motions `m`, and the clip of its strike reaction (Mokujin: who he copies')
         let with_motions = |record: usize, ms: &[usize], strike: Option<usize>| -> Result<Character> {
             let mut ch = assets.character(record)?;
@@ -151,22 +167,35 @@ impl BowlScene {
                 *id
             };
             let mut b = Bowler::new(&data, *id, stats);
-            let hand = if b.left { 4 } else { 0 };
-            let (run, after) = (0x6A + 2 * usize::from(b.female) + usize::from(b.left), 0x6E + 2 * usize::from(b.female) + usize::from(b.left));
-            let strike = strike_of(if *id == COPIERS[0] { stats } else { *id });
-            let ch = with_motions(*record, &[hand, hand + 1, hand + 2, hand + 3, run, after], strike)?;
-            let clip = |m: usize| ch.clip(&format!("bowl_{m:03}"));
-            let k = Clips {
-                stand: clip(hand).context("no bowl motions (motions/bowl_NNN.glb): convert the disc again")?,
-                step_right: clip(hand + 1).context("bowl motion")?,
-                step_left: clip(hand + 2).context("bowl motion")?,
-                throw: clip(hand + 3).context("bowl motion")?,
-                run: clip(run).context("bowl motion")?,
-                after: clip(after).context("bowl motion")?,
-                strike: strike.and_then(clip),
+            // a hand's motions: stand, the steps, the throw (0-3, a left-hander's 4-7), the charge and after it
+            let (female, both) = (usize::from(b.female), b.switches());
+            let set = |left: bool| {
+                let (h, l) = (4 * usize::from(left), usize::from(left));
+                [h, h + 1, h + 2, h + 3, 0x6A + 2 * female + l, 0x6E + 2 * female + l]
             };
-            b.hand = hand_at_release(&ch, k.throw, b.left).unwrap_or(b.hand);
+            let strike = strike_of(if *id == COPIERS[0] { stats } else { *id });
+            let wanted: Vec<usize> = [b.left, !b.left].iter().take(1 + usize::from(both)).flat_map(|&l| set(l)).collect();
+            let ch = with_motions(*record, &wanted, strike)?;
+            let clips_of = |left: bool| -> Result<Clips> {
+                let clip = |m: usize| ch.clip(&format!("bowl_{m:03}")).context("no bowl motions (motions/bowl_NNN.glb): convert the disc again");
+                let [stand, step_right, step_left, throw, run, after] = set(left);
+                Ok(Clips {
+                    left,
+                    stand: clip(stand)?,
+                    step_right: clip(step_right)?,
+                    step_left: clip(step_left)?,
+                    throw: clip(throw)?,
+                    run: clip(run)?,
+                    after: clip(after)?,
+                    strike: strike.and_then(|m| clip(m).ok()),
+                })
+            };
+            let k = clips_of(b.left)?;
+            let other = if both { Some(clips_of(!b.left)?) } else { None };
+            let at_release = |c: &Clips| hand_at_release(&ch, c.throw, c.left).unwrap_or(Vec3::new(if c.left { -150.0 } else { 150.0 }, -500.0, 4200.0));
+            b.hand = at_release(&k);
             b.charge = travel(&ch, k.run);
+            b.other_hand = other.as_ref().map(|o| (at_release(o), travel(&ch, o.run)));
             let mate = match partners.get(n).copied().flatten() {
                 Some((record, id)) => {
                     // (a Mokujin partner takes the bowler's moveset, 0x3F0684)
@@ -185,6 +214,7 @@ impl BowlScene {
             mates.push(mate);
             bowlers.push(b);
             clips.push(k);
+            others.push(other);
             characters.push(Arc::new(ch));
         }
         // (a plain file name in `stages/` only: a folder in it would read outside)
@@ -193,7 +223,23 @@ impl BowlScene {
         let pin_base = if extra.models.pin_base > 0.0 { extra.models.pin_base } else { 250.66 };
         let first = clips.first().map_or(0, |c| c.stand);
         let (records, texts) = (extra.records, extra.texts);
-        Ok(Self { bowl: Bowl::new(&data, bowlers, draw), characters, clips, partners: mates, ball_model, pin_model, deck_model, pin_base, records, texts, anim: (first, 0), stepping: 0 })
+        Ok(Self {
+            bowl: Bowl::new(&data, bowlers, draw),
+            characters,
+            clips,
+            other_clips: others,
+            partners: mates,
+            ball_model,
+            pin_model,
+            deck_model,
+            pin_base,
+            records,
+            texts,
+            anim: (first, 0),
+            stepping: 0,
+            pivot: Vec3::ZERO,
+            view: (Vec3::from(LANE_VIEW.0), 0.0, LANE_VIEW.1),
+        })
     }
 
     /// One frame with the current player's pad.
@@ -208,6 +254,13 @@ impl BowlScene {
             0
         };
         self.bowl.step(pad);
+        // (SELECT switched the hand: its other motions)
+        let k = self.bowl.current;
+        if let (Some(p), Some(c), Some(Some(o))) = (self.bowl.players.get(k), self.clips.get_mut(k), self.other_clips.get_mut(k)) {
+            if o.left == p.left {
+                std::mem::swap(c, o);
+            }
+        }
         let Some(c) = self.clips.get(self.bowl.current) else { return };
         let (clip, frame) = match self.bowl.phase {
             Phase::Throw(f) if f <= THROW_FRAMES => (c.throw, Some(f as usize - 1)),
@@ -224,6 +277,45 @@ impl BowlScene {
             None if self.anim.0 == clip => (clip, self.anim.1 + 1),
             None => (clip, 0),
         };
+        // the camera (0x3EBC98, its mode set by the throw's phases): behind the lane while the bowler takes its place
+        // (mode 0), at the bowler's eye turned with its aim (mode 1), held for the power and the run-up, then from the
+        // release (or the charge) 4000 behind the ball, on the way to over the lane by the time the ball is at 8000
+        // (mode 2)
+        let (at, angle) = self.bowl.bowler_at();
+        match self.bowl.phase {
+            Phase::Position => self.view = (Vec3::from(LANE_VIEW.0), 0.0, LANE_VIEW.1),
+            Phase::Aim => self.view = (Vec3::new(at.x, EYE_Y, at.z), angle, 0.0),
+            Phase::Throw(_) | Phase::Charge(_) if self.bowl.rolled.is_some() && !self.bowl.replay.on => {
+                let z = if matches!(self.bowl.phase, Phase::Charge(_)) { at.z } else { self.bowl.ball.pos.z };
+                let (pivot, yaw, dist) = &mut self.view;
+                let to = Vec3::from(ROLL_TO);
+                let gap = z - ROLL_BEHIND - pivot.z;
+                if gap > 0.0 {
+                    let t = gap / (to.z - pivot.z);
+                    if t < 1.0 {
+                        *pivot += (to - *pivot) * t;
+                        (*yaw, *dist) = (*yaw * (1.0 - t), *dist * (1.0 - t));
+                    } else {
+                        self.view = (to, 0.0, 0.0);
+                    }
+                }
+            }
+            _ => {}
+        }
+        // the strike's camera: on the body 500 above its root (mode 4), then a frame after it halfway there, a
+        // Hwoarang (moveset 6, a Mokujin copying him too) 0.03 of the way (mode 5)
+        if let (Phase::Strike(f), Some(root)) = (self.bowl.phase, self.root()) {
+            let to = root + Vec3::Y * 500.0 / UNITS;
+            let slow = self.bowl.players.get(self.bowl.current).is_some_and(|p| p.character == 6 || (p.character == COPIERS[0] && p.stats == 6));
+            self.pivot = if f == 0 { to } else { self.pivot.lerp(to, if slow { 0.03 } else { 0.5 }) };
+        }
+    }
+
+    /// The bowler's root (metres).
+    fn root(&self) -> Option<Vec3> {
+        let (ch, pose, place) = self.pose()?;
+        let root = ch.nodes.iter().position(|n| n.parent.is_none()).and_then(|r| pose.get(r));
+        Some(root.map_or(place.w_axis.truncate(), |m| place.transform_point3(m.w_axis.truncate())))
     }
 
     /// The bowler drawn now: its character, node matrices and placement.
@@ -279,9 +371,6 @@ impl BowlScene {
     // shortcut: the modes' offsets from the bowler and the ball are OpenKumite's (only their bases are decoded)
     pub fn camera(&self) -> (Vec3, Vec3) {
         let b = &self.bowl;
-        let (at, a) = b.bowler_at();
-        let (s, c) = a.dsin_cos();
-        let ahead = |p: Vec3, d: f32| p + Vec3::new(s * d, 0.0, c * d);
         if b.replay.on {
             // the pivot, and the eye at the distance turned by pitch (about x) and yaw (about y)
             let ((sp, cp), (sy, cy)) = (b.replay.view.0.dsin_cos(), b.replay.view.1.dsin_cos());
@@ -289,32 +378,15 @@ impl BowlScene {
             let d = REPLAY_DISTANCE;
             return (to_m(pivot + Vec3::new(-d * cp * sy, d * sp, -d * cp * cy)), to_m(pivot));
         }
-        // the strike's pose: after the bowler's body as its reaction moves it (mode 5 follows it)
-        // shortcut: on it at once, not eased (mode 5's 0.97 / 0.03 a frame)
-        if let (Phase::Strike(_), Some((ch, pose, place))) = (b.phase, self.pose()) {
-            let root = ch.nodes.iter().position(|n| n.parent.is_none()).and_then(|r| pose.get(r));
-            let at = root.map_or(place.w_axis.truncate(), |m| place.transform_point3(m.w_axis.truncate()));
-            let pivot = Vec3::new(at.x, 0.5, at.z);
-            return (pivot + Vec3::Z * 3.5, pivot);
+        // the strike's pose: 3500 down the lane from the point after the bowler's body, looking back (yaw pi)
+        if let Phase::Strike(_) = b.phase {
+            return (self.pivot + Vec3::Z * 3500.0 / UNITS, self.pivot);
         }
-        let (eye, target) = match b.phase {
-            Phase::Position | Phase::Aim | Phase::Power | Phase::OverCharged(_) => (ahead(Vec3::new(at.x, -2350.0, at.z), -4500.0), ahead(Vec3::new(at.x, -400.0, at.z), 9000.0)),
-            Phase::Throw(f) if b.rolled.is_none() || f < RELEASE_FRAME + 10 => (ahead(Vec3::new(at.x, -2350.0, at.z), -4500.0 + 30.0 * f as f32), ahead(Vec3::new(at.x, -400.0, at.z), 9000.0)),
-            Phase::Charge(_) => {
-                let z = (at.z + b.players.get(b.current).and_then(|p| p.charge.last()).copied().unwrap_or(0.0)).min(4000.0);
-                (Vec3::new(0.0, -1500.0, z - 3000.0), Vec3::new(0.0, -300.0, 8000.0))
-            }
-            Phase::Throw(_) | Phase::Ko(_) => {
-                // behind the ball, over to the middle by the time it is past z 4000
-                let ball = b.ball.pos;
-                let t = ((ball.z + 3000.0) / 10000.0).clamp(0.0, 1.0);
-                let x = ball.x * (1.0 - t);
-                (Vec3::new(x, -1500.0, (ball.z - 3000.0).min(4000.0)), Vec3::new(x, -300.0, (ball.z + 4000.0).min(8000.0)))
-            }
-            Phase::Strike(_) => (Vec3::new(at.x, -500.0, at.z + 3500.0), Vec3::new(at.x, -500.0, at.z)),
-            Phase::Result(_) | Phase::Over => (Vec3::new(0.0, -1500.0, 4000.0), Vec3::new(0.0, -300.0, 8000.0)),
-        };
-        (to_m(eye), to_m(target))
+        // the eye `dist` back from the pivot along the view, turned by the pitch and the yaw
+        let (pivot, yaw, dist) = self.view;
+        let ((sp, cp), (sy, cy)) = (PITCH.dsin_cos(), yaw.dsin_cos());
+        let ahead = Vec3::new(cp * sy, -sp, cp * cy);
+        (to_m(pivot - ahead * dist), to_m(pivot + ahead * 1000.0))
     }
 }
 
