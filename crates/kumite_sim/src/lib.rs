@@ -618,6 +618,8 @@ pub struct Fighter {
     pub tag_swap: bool,
     pub tag_partner: Option<(Option<i64>, Option<i64>)>,
     pub off_screen: bool,
+    /// Tekken Tag: the screen's right in the ground plane, as an angle (the axis of +0x54, set by the game layer).
+    pub screen_right: f32,
     pub juggle_bias: u32,
 }
 
@@ -712,6 +714,7 @@ impl Fighter {
             tag_swap: false,
             tag_partner: None,
             off_screen: false,
+            screen_right: 0.0,
             juggle_bias: 0,
         };
         f.current = f.resolve(neutral).unwrap_or(f.current);
@@ -1686,6 +1689,12 @@ impl Fighter {
             0x24 => back,
             dialect::COND_NOT_BACK => !back,
             dialect::COND_OFF_SCREEN => self.off_screen,
+            // Tekken Tag's 0x54-0x5B (0x3693E0): my facing's quadrant off the screen's right (+0x54, 0x371130: 0 facing
+            // right, PCSX2) is 1, 2, 0, 3, on the left of the screen, then the same on its right
+            c @ dialect::COND_SCREEN..=0x109 => {
+                let k = c - dialect::COND_SCREEN;
+                quadrant_of(wrap_pi(self.screen_right - self.yaw) / ANGLE) == [1, 2, 0, 3][k as usize & 3] && c6 == (k >= 4)
+            }
             0x25 => (0x4E38 as f32..0x8000 as f32).contains(&off),
             0x26 => (-0x8000 as f32..=(0xB1C6 - 0x10000) as f32).contains(&off),
             0x27 => quadrant == 0,

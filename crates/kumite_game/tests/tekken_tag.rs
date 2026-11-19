@@ -189,6 +189,24 @@ fn tag_out_runs_off_and_the_partner_comes_in() {
     assert_eq!(r.iter().map(|x| x.4).collect::<Vec<_>>(), tag_out(&a).iter().map(|x| x.4).collect::<Vec<_>>(), "the same pads, the same match");
 }
 
+/// The run off by the way P1 faces on the screen (conditions 0x54-0x5B): facing Lei it runs straight off its side
+/// (5394), turned away (facing its own edge, +0x54 2 on the left) it takes 5431.
+#[test]
+fn the_run_off_follows_the_facing_on_the_screen() {
+    let Some(a) = assets() else { return };
+    let tag = parse_script("5").unwrap()[0];
+    let run = |turned: bool| {
+        let mut b = tag_bout(&a, LAW);
+        if turned {
+            b.game.fight.fighters[0].yaw += std::f32::consts::PI;
+        }
+        b.step([tag, Pad::default()]);
+        b.step([Pad::default(); 2]);
+        b.game.fight.fighters[0].alias
+    };
+    assert_eq!((run(false), run(true)), (RUN_OFF, 5431));
+}
+
 #[test]
 fn recoverable_health_and_anger() {
     let Some(a) = assets() else { return };
@@ -651,7 +669,7 @@ fn cpus_tag_in_a_tag_battle() {
 #[test]
 fn strings_go_on_from_normal_level_4() {
     let Some(a) = assets() else { return };
-    let (l0, l4) = (cpu_run(&a, [Some((1, 0)), None], 4000), cpu_run(&a, [Some((1, 4)), None], 4000));
+    let (l0, l4) = (cpu_run(&a, [Some((1, 0)), None], 8000), cpu_run(&a, [Some((1, 4)), None], 8000));
     eprintln!("NORMAL L0 {:?}, L4 {:?}", l0.stats, l4.stats);
     assert_eq!(l0.stats[0], 0, "level 0: no follow-up");
     assert!(l4.stats[0] > 0, "level 4: follow-ups");
@@ -700,6 +718,38 @@ fn the_cpu_reads_yoshimitsu() {
     eprintln!("after his sweep {sweep:.0}, his stance {stance:.0}");
     assert!(sweep > 2200.0, "kept off the sweep: {sweep:.0}");
     assert!(stance < 3200.0, "walked in on the stance: {stance:.0}");
+}
+
+/// Ogre's first model and his fire breath (0xBA9).
+const OGRE: usize = 534;
+const FIRE_BREATH: usize = 0xBA9;
+
+/// The frames of 90 the top CPU (Lei), lying 1500 from Ogre, stays down while Ogre plays `alias`.
+fn lying_against_ogre(a: &Assets, alias: usize) -> usize {
+    let mut b = Bout::new(Game::load(a, [OGRE, LEI]).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
+    b.set_cpu(1, Some((4, 7)));
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let f = &mut b.game.fight.fighters;
+    let along = (f[1].position - f[0].position).normalize();
+    f[1].position = f[0].position + along * 1500.0;
+    assert!(f[0].play_alias(alias) && f[1].play_alias(214));
+    (0..90)
+        .filter(|_| {
+            b.step([Pad::default(); 2]);
+            b.game.fight.fighters[1].posture(&b.game.fight.data) & kumite_sim::posture::LYING != 0
+        })
+        .count()
+}
+
+/// The wake-up waits out Ogre's fire breath within 2000 (0x3890D0, pack format 31), not his other moves.
+#[test]
+fn the_cpu_stays_down_under_the_fire_breath() {
+    let Some(a) = assets() else { return };
+    let (breath, other) = (lying_against_ogre(&a, FIRE_BREATH), lying_against_ogre(&a, 422));
+    eprintln!("frames down under the breath {breath}, under 422 {other}");
+    assert!(breath >= 60 && other < 30, "waits under the breath only");
 }
 
 /// The arcade CPU, team `cpu` at NORMAL `level`, against Xiaoyu and Yoshimitsu over the seeds' matches: (damage a

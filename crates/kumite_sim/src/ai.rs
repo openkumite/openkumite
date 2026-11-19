@@ -340,6 +340,13 @@ enum Allow {
     /// (Tekken Tag's follow-up rule) not at difficulty 0.
     NotEasy,
 }
+/// Tekken Tag's wake-up wait (0x3890D0): his move set's alias within the distance.
+#[derive(Deserialize)]
+struct WakeWait {
+    moveset: i64,
+    alias: usize,
+    distance: i32,
+}
 /// Tekken Tag's per-alias rule of the follow-up inputs and chain throws (0x3876A4): to these aliases, for my move
 /// sets named (all without).
 #[derive(Default, Deserialize)]
@@ -388,6 +395,9 @@ struct Rules {
     /// Tekken Tag: the per-alias rule of the follow-ups and chain throws.
     #[serde(default)]
     followup_rules: Vec<FollowRule>,
+    /// Tekken Tag (format 31): the wake-up waits only against this move.
+    #[serde(default)]
+    wake_wait: Option<WakeWait>,
 }
 
 /// Everything the AI reads from ai.json (default: a game without it, an older Tekken Tag pack: no tables, a CPU does
@@ -858,6 +868,13 @@ impl Cx<'_> {
     /// Tekken Tag's tag entries (0x384B80): the tag button's commands, or a swap transition.
     fn is_tag(e: &Ent) -> bool {
         (e.cmd & 0x8000 == 0 && e.cmd & crate::input::TAG_COMMAND != 0) || e.trans & crate::dialect::TRANSITION_SWAP != 0
+    }
+
+    /// A dash, or a hop move that is neither a throw nor 0x200000 (Tekken Tag's 0x384578 tests the attack word;
+    /// the port's Tekken 3 test reads the posture word, kept as it was).
+    fn dash_hop(ttt: bool, c: &Cand) -> bool {
+        let w = if ttt { c.mv.rec8 } else { c.mv.rec4 };
+        c.e.cmd == 0xC001 || (c.mv.rec4 & 0xA_0000 == 0x8_0000 && w & 0x60_0000 == 0)
     }
 }
 
@@ -2167,8 +2184,12 @@ impl Ai {
             self.out = 0x8000;
             return true;
         }
-        // shortcut: Tekken Tag's wait (0x3890D0) is only against Ogre's 0xBA9 within 2000, not ported; port it with that alias in ai.json
-        if !cx.data.ttt && ((self.h4 & 0x20_0000 != 0 && h.as_ == 0) || (self.hmask == 0x607 && self.h8 & 0x1_0000 == 0 && self.until < 29)) && cx.hf < h.ae {
+        // wait out his attack (Tekken Tag's 0x3890D0: with no time limit, only against `wake_wait`'s move, not past
+        // 180 frames lying)
+        let threat = (self.h4 & 0x20_0000 != 0 && h.as_ == 0) || (self.hmask == 0x607 && self.h8 & 0x1_0000 == 0 && (cx.data.ttt || self.until < 29));
+        let w = cx.data.rules.wake_wait.as_ref();
+        let his = !cx.data.ttt || (self.lying < 180 && w.is_some_and(|w| cx.op_moveset == w.moveset && cx.op.alias == w.alias && (self.dist as u32) < w.distance as u32));
+        if threat && cx.hf < h.ae && his {
             self.out = 0;
             return true;
         }
@@ -2257,7 +2278,8 @@ impl Ai {
                 self.mark(|c| c.mv.rec8 & 0x1_0000 != 0 || c.mv.low16() == 0x10F);
             }
             _ => {
-                self.mark(|c| c.e.cmd == 0xC001 || (c.mv.rec4 & 0xA_0000 == 0x8_0000 && c.mv.rec4 & 0x60_0000 == 0));
+                let ttt = cx.data.ttt;
+                self.mark(|c| Cx::dash_hop(ttt, c));
             }
         }
         if self.npool > 0 {
@@ -2659,8 +2681,19 @@ impl Ai {
         let perms = cx.data.perms.get(cx.my_moveset.max(0) as usize).unwrap_or(&none);
         if let Some(first) = perms.preludes.first() {
             if self.combocd < 0 && !self.atk && self.m4 & 1 == 0 && cx.me.alias != first.1 && self.turn < 0x2001 && !cx.me_air && self.myzone < 3 && !self.odown {
-                let u = (cx.lcg() & 0xFFF) as i32;
-                if let Some((_, alias, seq)) = perms.preludes.iter().find(|p| u <= p.0) {
+                // (Tekken Tag's 0x386D60 draws rand() again for each prelude)
+                let mut u = (cx.lcg() & 0xFFF) as i32;
+                let mut found = None;
+                for (k, p) in perms.preludes.iter().enumerate() {
+                    if k > 0 && cx.data.ttt {
+                        u = (cx.lcg() & 0xFFF) as i32;
+                    }
+                    if u <= p.0 {
+                        found = Some(p);
+                        break;
+                    }
+                }
+                if let Some((_, alias, seq)) = found {
                     if self.reachable(cx, *alias) {
                         self.play(&seq[1.min(seq.len())..]);
                         self.lc_b = 1;
@@ -2671,7 +2704,8 @@ impl Ai {
             }
         }
         let crouch_na = |c: &Cand| c.mv.rec4 & 1 == 1 && c.mv.as_ == 0;
-        let dash_hop = |c: &Cand| c.e.cmd == 0xC001 || (c.mv.rec4 & 0xA_0000 == 0x8_0000 && c.mv.rec4 & 0x60_0000 == 0);
+        let ttt = cx.data.ttt;
+        let dash_hop = |c: &Cand| Cx::dash_hop(ttt, c);
         // Rushdown: fast pokes when they reach, else straight to the other attacks
         let rush = self.playing == Style::Rushdown;
         if rush {

@@ -40,6 +40,9 @@ pub const TRANSITION_ACROSS: u32 = 0x2F;
 /// The engine's numbers for Tekken Tag's off-screen condition (0x5C: ends the tag-out runs) and the tag swap
 /// (transition bit 0x2000 without a parameter, section 10), beside the transition's bits 0x40 / 0x80.
 pub const COND_OFF_SCREEN: u32 = 0x101;
+/// The engine's numbers for Tekken Tag's 0x54-0x5B (which way I face on the screen, on its left / right: the tag-out
+/// runs' variants): 0x102-0x109.
+pub const COND_SCREEN: u32 = 0x102;
 pub const TRANSITION_SWAP: u32 = 0x100;
 
 /// A game's numbering, as ranges `(first, last, the engine's number for first)` and pairs `(its, the engine's)`.
@@ -67,9 +70,9 @@ pub struct Dialect {
 /// Tekken Tag Tournament (FIGHT_DATA.md sections 1, 2, 5, 7, 8).
 pub static TTT: Dialect = Dialect {
     // 0-0x24 kept; 0x25 not back turned; Tekken 3's 0x25-0x44 are 3 up; 0x5C off screen; reversals from 0x60 (Tekken
-    // 3's 0x45); 0x26 / 0x27 (unused) and 0x48-0x5B, 0x5D-0x5F (camera-relative, screen sides, round decided: the
-    // tag-out runs' variants and one win) never
-    cond: &[(0, 0x24, 0), (0x25, 0x25, COND_NOT_BACK), (0x28, 0x47, 0x25), (0x5C, 0x5C, COND_OFF_SCREEN), (0x60, 0x66, 0x45)],
+    // 3's 0x45); 0x54-0x5B the facing on the screen; 0x26 / 0x27, 0x48-0x53, 0x5D / 0x5E (unused) and 0x5F (round
+    // decided: the team's lose motion, which the round flow plays, rounds.json `team_lose`) never
+    cond: &[(0, 0x24, 0), (0x25, 0x25, COND_NOT_BACK), (0x28, 0x47, 0x25), (0x54, 0x5B, COND_SCREEN), (0x5C, 0x5C, COND_OFF_SCREEN), (0x60, 0x66, 0x45)],
     req: &[(0x01, 0x21, 1), (0x22, 0x42, 2), (0x43, 0x63, 3), (0x64, 0x84, 7), (0x85, 0xA6, 4), (0xA7, 0xC8, 8), (0xC9, 0xEA, 5), (0xEC, 0xED, 9)],
     // 0-28 kept; 29 / 30 are Tekken 3's 0x1D / 0x1E, 31 / 32 its link (33), 36-45 its 0x22-0x2B, 46 its use END (44);
     // 33-35 the engine's own
@@ -368,6 +371,7 @@ mod tests {
                 0..=0x24 => x,
                 0x25 => COND_NOT_BACK,
                 0x5C => COND_OFF_SCREEN,
+                0x54..=0x5B => x - 0x54 + COND_SCREEN,
                 // back turned left / right, own quadrants, opponent's, the always-false arm, then 0x30-0x44
                 0x28..=0x47 => x - 3,
                 0x60..=0x66 => x - 0x60 + 0x45,

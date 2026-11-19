@@ -843,6 +843,10 @@ impl Game {
     fn project_sides(&mut self, v: &View) {
         let (eye, forward, fov) = view_camera(v);
         let right = forward.cross(Vec3::Y).normalize_or_zero();
+        let axis = right.x.datan2(right.z);
+        for f in self.fight.fighters.iter_mut() {
+            f.screen_right = axis;
+        }
         for i in 0..2 {
             let (pose, place) = self.pose(i);
             let Some(m) = pose.get(self.bodies[i].pelvis) else { continue };
