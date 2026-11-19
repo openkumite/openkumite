@@ -606,13 +606,14 @@ impl Renderer {
 
         let skin_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Uint16x4, 3 => Float32x4, 4 => Float32x3];
         let static_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4];
+        use wgpu::CompareFunction::{Always, Less, LessEqual};
         let make = |label: &str,
                     layout: &wgpu::PipelineLayout,
                     vs: &str,
                     fs: &str,
                     buffers: &[wgpu::VertexBufferLayout],
                     depth_write: bool,
-                    depth_test: bool,
+                    depth_compare: wgpu::CompareFunction,
                     topology: wgpu::PrimitiveTopology,
                     blend: Option<wgpu::BlendState>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -623,7 +624,7 @@ impl Renderer {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH,
                     depth_write_enabled: Some(depth_write),
-                    depth_compare: Some(if depth_test { wgpu::CompareFunction::Less } else { wgpu::CompareFunction::Always }),
+                    depth_compare: Some(depth_compare),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
@@ -644,36 +645,38 @@ impl Renderer {
         let line_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<LineVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &line_attrs }];
         let line_layout = layout(&[Some(&globals_layout)]);
         let tri = wgpu::PrimitiveTopology::TriangleList;
-        let skinned_pipeline = make("skinned", &skinned_layout, "vs_skinned", "fs_lit", &skin_vb, true, true, tri, None);
+        let skinned_pipeline = make("skinned", &skinned_layout, "vs_skinned", "fs_lit", &skin_vb, true, Less, tri, None);
         // a character's blended primitive (Tekken Tag's): over what is drawn by its texture's alpha, depth not written
-        let skinned_blend_pipeline = make("skinned blend", &skinned_layout, "vs_skinned", "fs_lit_blend", &skin_vb, false, true, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
-        let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, true, tri, None);
-        let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, false, tri, None);
-        let sky_depth_pipeline = make("sky depth", &static_layout, "vs_sky", "fs_unlit", &static_vb, true, true, tri, None);
+        let skinned_blend_pipeline = make("skinned blend", &skinned_layout, "vs_skinned", "fs_lit_blend", &skin_vb, false, Less, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
+        let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, None);
+        let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, Always, tri, None);
+        let sky_depth_pipeline = make("sky depth", &static_layout, "vs_sky", "fs_unlit", &static_vb, true, Less, tri, None);
         // (the colour kept as it is: only the depth is written)
         let keep = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-        let static_depth_pipeline = make("static depth", &static_layout, "vs_static", "fs_static", &static_vb, true, true, tri, Some(wgpu::BlendState { color: keep, alpha: keep }));
-        let backdrop_pipeline = make("backdrop", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, false, tri, None);
+        let static_depth_pipeline = make("static depth", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, Some(wgpu::BlendState { color: keep, alpha: keep }));
+        let backdrop_pipeline = make("backdrop", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, Always, tri, None);
         let sub = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Subtract };
-        let negative_pipeline = make("negative", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, false, tri, Some(wgpu::BlendState { color: sub, alpha: keep }));
-        let line_pipeline = make("lines", &line_layout, "vs_line", "fs_line", &line_vb, false, false, wgpu::PrimitiveTopology::LineList, None);
+        let negative_pipeline = make("negative", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, Always, tri, Some(wgpu::BlendState { color: sub, alpha: keep }));
+        let line_pipeline = make("lines", &line_layout, "vs_line", "fs_line", &line_vb, false, Always, wgpu::PrimitiveTopology::LineList, None);
         // particles: depth-tested against the scene, never written
-        let particle_alpha = make("particles alpha", &static_layout, "vs_static", "fs_particle_alpha", &static_vb, false, true, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
+        let particle_alpha = make("particles alpha", &static_layout, "vs_static", "fs_particle_alpha", &static_vb, false, Less, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
         let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-        let particle_add = make("particles add", &static_layout, "vs_static", "fs_particle_add", &static_vb, false, true, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
-        let soft_alpha = make("particles soft alpha", &static_layout, "vs_static", "fs_particle_soft_alpha", &static_vb, false, true, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
-        let soft_add = make("particles soft add", &static_layout, "vs_static", "fs_particle_soft_add", &static_vb, false, true, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
+        let particle_add = make("particles add", &static_layout, "vs_static", "fs_particle_add", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
+        let soft_alpha = make("particles soft alpha", &static_layout, "vs_static", "fs_particle_soft_alpha", &static_vb, false, Less, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
+        let soft_add = make("particles soft add", &static_layout, "vs_static", "fs_particle_soft_add", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
         // shadows: opaque, depth-tested against the stage (the original sorts them behind what stands nearer), never
         // written
         let shade = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::SrcAlpha, operation: wgpu::BlendOperation::Add };
+        // the strips lie on the faces they light or shade (Hwoarang's floor: its stone added over the same quads), so
+        // they pass where the depth is equal
         let stage_blends = ["vs_static", "vs_sky"]
             .into_iter()
             .flat_map(|vs| {
                 [("fs_stage_add", add), ("fs_stage_shade", shade)]
-                    .map(|(fs, c)| make("stage strips", &static_layout, vs, fs, &static_vb, false, true, tri, Some(wgpu::BlendState { color: c, alpha: keep })))
+                    .map(|(fs, c)| make("stage strips", &static_layout, vs, fs, &static_vb, false, LessEqual, tri, Some(wgpu::BlendState { color: c, alpha: keep })))
             })
             .collect();
-        let shadow_pipeline = make("shadows", &skinned_layout, "vs_shadow", "fs_shadow", &skin_vb, false, true, tri, None);
+        let shadow_pipeline = make("shadows", &skinned_layout, "vs_shadow", "fs_shadow", &skin_vb, false, Less, tri, None);
         // Tekken Tag's: a fighter a channel (its triangles cover it once, however they overlap), no depth
         let shadow_map = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shadow picture"),
@@ -719,9 +722,9 @@ impl Renderer {
         // the frame times a fragment's factor (the floor's shadow, the blobs)
         let times = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::Src, operation: wgpu::BlendOperation::Add };
         // the floor again over itself (a hair nearer)
-        let floor_shadow_pipeline = make("floor shadow", &static_layout, "vs_floor_shadow", "fs_floor_shadow", &static_vb, false, true, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
+        let floor_shadow_pipeline = make("floor shadow", &static_layout, "vs_floor_shadow", "fs_floor_shadow", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
         // blobs: the frame times the fragment's factor
-        let blob_pipeline = make("blob shadows", &static_layout, "vs_world", "fs_blob", &static_vb, false, true, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
+        let blob_pipeline = make("blob shadows", &static_layout, "vs_world", "fs_blob", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
 
         Ok(Self {
             instance,
