@@ -63,6 +63,7 @@ const CHANGE_ROW: usize = 3;
 const GUARD_ROW: usize = 4;
 /// GAME OPTIONS' CHARACTER SELECT CURSOR (1 HOLD), QUICK SELECT, CHICKEN MARKING rows.
 const CURSOR_ROW: usize = 5;
+const QUICK_ROW: usize = 6;
 const HELP_ROW: usize = 8;
 const SPEAKER_ROW: usize = 9;
 const BGM_ROW: usize = 10;
@@ -2556,12 +2557,41 @@ fn small_in(painter: &egui::Painter, v: &View, art: &Art, d: &Data, colour: Opti
 /// side that took them, RANDOM's showing its roll); each side's name plates (0x3CC3E0) and "1ST"; the timer
 /// (0x3CC190, blinking in its last seconds); the cursors, pulsing (0x3CC9E0), with their tags; the screen darkening
 /// to the fight. Each side's 3D characters ([`Posers`]) stand between the lightning and the rest.
+/// QUICK SELECT on (and its layout in the data): the select without its lightning, frame, 3D characters or timer.
+fn quick_select(d: &Data, p: &Progress) -> bool {
+    p.setting(d, QUICK_ROW) == 1 && d.raw["select"]["quick"].is_object()
+}
+
+/// QUICK SELECT's own layer (`select.quick`): the mode's title centred by its width (0x3BBC40), the white lines fading
+/// out under the plates (0x3BE8C0).
+fn draw_quick_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, mode: u32) {
+    let q = &d.raw["select"]["quick"];
+    let t = &q["titles"][mode as usize];
+    chrome(painter, v, art, d, t[0].as_str().unwrap_or_default(), ((W - num(&t[1])) / 2.0).floor(), num(&q["title_y"]), Some(int(&t[2])), num(&q["title_size"]));
+    let (l, one) = (&q["line"], matches!(mode, ONE_ARCADE | ONE_VS));
+    let points = q[if mode == TEAM { "team_lines" } else { "lines" }].as_array().cloned().unwrap_or_default();
+    let on = Color32::from_white_alpha((int(&l["alpha"]) * 255 / 128).min(255) as u8);
+    for (k, pt) in points.iter().take(if one { 2 } else { points.len() }).enumerate() {
+        let (x, y) = (num(&pt[0]), num(&pt[1]) + if one { num(&q["one_on_one_dy"]) } else { 0.0 });
+        let (near, far) = (num(&l["near"]), num(&l["far"]));
+        let (y0, y1) = (y + num(&l["y"][0]), y + num(&l["y"][1]));
+        // (even: from 4 right of the point leftwards; odd: from 4 left of it rightwards)
+        let (a, b) = if k % 2 == 0 { (x - far, x + near) } else { (x - near, x + far) };
+        let cs = if k % 2 == 0 { [Color32::TRANSPARENT, on, Color32::TRANSPARENT, on] } else { [on, Color32::TRANSPARENT, on, Color32::TRANSPARENT] };
+        Art::shade(painter, v, sv([a, y0, b - a, y1 - y0]), cs);
+    }
+}
+
 fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &Roster, p: &Progress, s: &Select) {
     let sel = &d.raw["select"];
+    let quick = quick_select(d, p);
+    if quick {
+        draw_quick_select(painter, v, art, d, s.mode);
+    }
     let l = &sel["lightning"];
     let pics: Vec<&str> = l["pictures"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
     // (stretched twice with the GS's bilinear filter, as the PS2 shows it)
-    if let Some((tex, _)) = pics.get(s.frame as usize % pics.len().max(1)).and_then(|file| art.pic_linear(file)) {
+    if let Some((tex, _)) = pics.get(s.frame as usize % pics.len().max(1)).and_then(|file| art.pic_linear(file)).filter(|_| !quick) {
         let [x, y, w, h] = sv([0, 1, 2, 3].map(|k| num(&l["rect"][k])));
         painter.image(tex.id(), Rect::from_min_max(v.pos(x, y), v.pos(x + w, y + h)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), ps2(num(&l["level"])).0);
     }
@@ -2571,9 +2601,12 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
     crate::debug::mark_under(painter);
     let frame = sel["frame"]["picture"].as_str().unwrap_or_default();
     let [fw, fh] = [num(&sel["frame"]["size"][0]), num(&sel["frame"]["size"][1])];
-    image(painter, v, art, frame, [0.0, 0.0, fw, fh], Color32::WHITE);
-    image(painter, v, art, frame, [W - 1.0, 0.0, -fw, fh], Color32::WHITE);
-    let dy = num(&sel["face_dy"]);
+    if !quick {
+        image(painter, v, art, frame, [0.0, 0.0, fw, fh], Color32::WHITE);
+        image(painter, v, art, frame, [W - 1.0, 0.0, -fw, fh], Color32::WHITE);
+    }
+    // (QUICK SELECT puts the grid 52 lower: 0x3CC6D4, 0x3CCA28)
+    let dy = num(&sel["face_dy"]) + if quick { num(&sel["quick"]["face_dy"]) } else { 0.0 };
     let size = num(&sel["face_size"]);
     let level = |k: &str| num(&sel["face_level"][k]);
     for (k, slot) in d.slots.iter().enumerate() {
@@ -2624,7 +2657,7 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
     // the timer: its seconds as (t + 59) / 60 - 1, off `off` frames every `period` in the last `below`; after the last
     // pick too (0x3CC190, as the PS2 shows it)
     let t = &sel["timer"];
-    if let Some(frames) = t["frames"].as_u64() {
+    if let Some(frames) = t["frames"].as_u64().filter(|_| !quick) {
         let left = (frames as u32).saturating_sub(s.frame);
         let secs = left.div_ceil(60).saturating_sub(1);
         let b = &t["blink"];
@@ -2705,7 +2738,7 @@ impl Posers {
     /// on.
     pub fn step(&mut self, assets: &kumite_assets::Assets, d: &Data, roster: &Roster, s: &Select) {
         let progress = &progress();
-        let wanted = if d.raw["select"]["models"].is_object() { s.posers(d, roster, progress) } else { vec![] };
+        let wanted = if d.raw["select"]["models"].is_object() && !quick_select(d, progress) { s.posers(d, roster, progress) } else { vec![] };
         self.shown.retain(|m| wanted.iter().any(|w| w.0 == m.slot && w.1 == m.record));
         for (slot, record, picked) in wanted {
             match self.shown.iter_mut().find(|m| m.slot == slot) {
