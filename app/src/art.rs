@@ -131,6 +131,9 @@ pub struct Art {
     pub fonts: Vec<Font>,
     /// gamedata/screens.json: the places of the screens' pictures.
     pub screens: serde_json::Value,
+    /// Tekken Tag's extras: Tekken 3's HUD for its modes (`t3/`, the Tekken 3 converter's `T3_HUD`), as an art of its
+    /// own.
+    pub t3: Option<Box<Art>>,
 }
 
 /// An original-hardware 15-bit colour (0 = transparent).
@@ -248,6 +251,7 @@ impl Art {
             index_sizes: RefCell::new(HashMap::new()),
             fonts,
             screens,
+            t3: kumite_fs::exists(&assets.join("t3/gamedata/screens.json")).then(|| Box::new(Self::load(ctx, &assets.join("t3")))),
         }
     }
 

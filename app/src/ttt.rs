@@ -444,6 +444,9 @@ pub struct Run {
     /// SURVIVAL: the team's members carried (Game::tag_carry).
     #[serde(default)]
     pub carry: [Option<[(i32, i32); 2]>; 2],
+    /// Tekken Ball: the ball type (ball.json `types`: BEACH, GUM, IRON).
+    #[serde(default)]
+    pub ball: usize,
 }
 
 /// A tag battle's mode (SURVIVAL too: its records keep two members, 0x3C1620 refills both).
@@ -472,6 +475,7 @@ impl Run {
             options: progress.options(d),
             guard_damage: progress.setting(d, GUARD_ROW) == 1,
             carry: [None; 2],
+            ball: 0,
         };
         if ladder_mode(mode) {
             run.ladder = ladder(d, roster, progress.stage, &d.pool(progress), &run.teams[0], tag(mode), seed);
@@ -511,7 +515,7 @@ impl Run {
             _ => (self.options[0], self.fight.min(7)),
         };
         let stage = cpu.map_or(self.stage, |c| c.1);
-        FightSetup { mode, players: [side(0), side(1)], stage, difficulty, level, handicap: [100; 2], ball: (self.mode == BALL).then_some((0, 0)), partners: None }
+        FightSetup { mode, players: [side(0), side(1)], stage, difficulty, level, handicap: [100; 2], ball: (self.mode == BALL).then_some((self.ball, 0)), partners: None }
     }
 
     /// The CPU plays side `k` (practice's dummy stands).
@@ -769,6 +773,11 @@ pub enum Page {
     Select(Box<Select>),
     /// The VS modes' arena (OpenKumite's): RANDOM, Tekken Tag's, the arcade pack's.
     Stage {
+        run: Box<Run>,
+        cursor: usize,
+    },
+    /// Tekken Ball's ball type (Tekken 3 picks it on its select, 0x800B5478; OpenKumite's list here).
+    BallType {
         run: Box<Run>,
         cursor: usize,
     },
@@ -1278,6 +1287,25 @@ impl Front {
                     _ => None,
                 }
             }
+            Page::BallType { run, cursor } => {
+                let n = roster.ball_types();
+                match key {
+                    Key::Up | Key::Down => {
+                        sfx::play(sound(&d, "cursor"));
+                        *cursor = (*cursor + if key == Key::Up { n - 1 } else { 1 }) % n;
+                        None
+                    }
+                    Key::Start | Key::Button(_) => {
+                        sfx::play(sound(&d, "decide"));
+                        return Outcome::TttFight(Box::new(Run { ball: *cursor, ..*run.clone() }));
+                    }
+                    Key::Back => {
+                        sfx::play(sound(&d, "cancel"));
+                        Some(Page::Select(Box::new(Select::new(run.mode, &d, None))))
+                    }
+                    _ => None,
+                }
+            }
             Page::Continue { run, countdown } => match key {
                 // START continues the same fight, through the select with CHARACTER CHANGE AT CONTINUE (row 3) YES
                 // (0x3BA560); a face button skips 100 frames
@@ -1460,6 +1488,10 @@ impl Front {
                         self.page = Page::Stage { run: Box::new(run), cursor: 0 };
                         return Outcome::None;
                     }
+                    if run.mode == BALL && roster.ball_types() > 1 {
+                        self.page = Page::BallType { run: Box::new(run), cursor: 0 };
+                        return Outcome::None;
+                    }
                     return Outcome::TttFight(Box::new(run));
                 }
             }
@@ -1571,6 +1603,18 @@ impl Front {
                     if id.is_some_and(|id| arcade_file(id).is_some()) {
                         small(painter, v, art, d, "TEKKEN 3 ARCADE", 545.0, y + 5.0, Color32::from_gray(170));
                     }
+                }
+            }
+            Page::BallType { cursor, .. } => {
+                backdrop(painter, v, art);
+                font(painter, v, art, d, "BALL SELECT", W / 2.0, 30.0, 0.6, Color32::WHITE);
+                for (k, t) in roster.ball.iter().flat_map(|b| &b.types).enumerate() {
+                    let y = 150.0 + 40.0 * k as f32;
+                    if k == *cursor {
+                        Art::shade(painter, v, sv([160.0, y - 3.0, 320.0, 34.0]), [Color32::from_rgba_unmultiplied(40, 80, 200, 150); 4]);
+                    }
+                    let c = if k == *cursor { Color32::WHITE } else { Color32::from_gray(150) };
+                    font(painter, v, art, d, &format!("{} {}", t.name, t.level), W / 2.0, y, 0.4, c);
                 }
             }
             Page::Select(s) => draw_select(painter, v, art, d, roster, progress, s),
@@ -2195,6 +2239,14 @@ fn draw_game_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data, cur
 /// Tekken Tag's 640 x 448 rectangle in the 368 x 480 one the screens draw on.
 fn sv([x, y, w, h]: [f32; 4]) -> [f32; 4] {
     [x * SCREEN_W / W, y * SCREEN_H / H, w * SCREEN_W / W, h * SCREEN_H / H]
+}
+
+/// Character `id`'s select face (None: RANDOM's "?") at [x, y, w, h] of the 368 x 480 screen (a place of Tekken 3's).
+pub fn face_in(painter: &egui::Painter, v: &View, art: &Art, d: &Data, id: Option<usize>, [x, y, w, h]: [f32; 4]) {
+    let file = id.map_or_else(|| d.picture(&["select", "random_face"]), |c| d.picture(&["select", "faces", &c.to_string()]));
+    if let Some((t, _)) = art.pic(&file) {
+        Art::image(painter, v, &t, x, y, w, h, Color32::WHITE);
+    }
 }
 
 /// A picture (pictures/`file`) at [x, y, w, h] of the 640 x 448 screen (a negative w mirrors it, to the left of x).
@@ -3304,19 +3356,40 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         let hand = if bowler.is_some_and(|p| p.left) { "LEFT-HANDED" } else { "RIGHT-HANDED" };
         small(painter, v, art, d, hand, 560.0, 372.0, Color32::from_gray(200));
     }
-    // (shortcut: REPLAY's place and blink are OpenKumite's; its draw in 0x3E4BC0 is not decoded)
-    if b.replay.on && (frame / 30).is_multiple_of(2) {
-        font(painter, v, art, d, "REPLAY", W / 2.0, 120.0, 0.6, Color32::WHITE);
+    let text = |t: &str, x: f32, y: f32, colour: usize, size: f32| chrome(painter, v, art, d, t, x, y, Some(colour), size);
+    // BOWL STYLE / SWITCH HANDS:R or L, 120 frames after SELECT switched the hand (0x3EBADC)
+    if b.style > 0 {
+        text(&scene.text("bowl_style", "BOWL STYLE"), 239.0, 364.0, 15, 4.0);
+        text(&scene.text("switch_hands", "SWITCH HANDS:%C").replace("%C", if bowler.is_some_and(|p| p.left) { "L" } else { "R" }), 174.0, 384.0, 15, 5.0);
     }
-    if b.rolled.is_some() && b.speed > 0.0 && !matches!(b.phase, Phase::Charge(_)) {
+    // REPLAY while the slow replay after the roll plays, blinking (0x3EF348)
+    if b.replay.on && b.replay.slow && b.replay.left == 0 && frame & 0x30 != 0 {
+        text(&scene.text("replay", "REPLAY"), 48.0, 412.0, 14, 5.0);
+    }
+    // SPEED from z 4000 on and over a spectator's K.O. (0x3EAD18): the mph's whole part, its hundredths, MPH; dashes
+    // for a charge
+    let past = b.rolled.is_some() && (b.ball.pos.z >= 4000.0 || matches!(b.phase, Phase::Charge(_)));
+    if past && matches!(b.phase, Phase::Throw(_) | Phase::Charge(_) | Phase::Ko(_)) {
         let mph = b.mph();
-        small(painter, v, art, d, &format!("SPEED {:3}.{:02} MPH", mph / 100, mph % 100), 540.0, 410.0, Color32::WHITE);
+        let (whole, part) = if matches!(b.phase, Phase::Charge(_)) || b.speed <= 0.0 { (" --".into(), ".--".into()) } else { (format!("{:3}", mph / 100), format!(".{:02}", mph % 100)) };
+        text("SPEED", 464.0, 396.0, 5, 4.0);
+        text(&whole, 448.0, 412.0, 5, 5.0);
+        text(&part, 512.0, 417.0, 5, 4.0);
+        text("MPH", 564.0, 422.0, 5, 3.0);
     }
-    if let Some(c) = b.callout.as_deref().filter(|c| !c.is_empty()) {
-        // (a strike's callout pulses)
-        let k = if matches!(b.phase, Phase::Strike(_)) { 0.85 + 0.1 * ((frame / 8) % 2) as f32 } else { 0.8 };
-        font(painter, v, art, d, c, W / 2.0, 190.0, k, Color32::WHITE);
+    // OVER CHARGED, blinking (0x3EB830)
+    if let (Phase::OverCharged(_), Some(c)) = (b.phase, b.callout.as_deref()) {
+        text(c, 113.0, 240.0, if frame & 2 != 0 { 12 } else { 24 }, 8.0);
     }
+    // a spectator's K.O. (state 4, 0x3EFF6C): from frame 90, blinking, on the side of the one hit, an arrow at it
+    if let Phase::Ko(f) = b.phase {
+        let side = if b.ko_side > 0.0 { -1.0 } else { 1.0 };
+        if f >= 90 && frame & 0x30 != 0 {
+            text("K.O.", 270.0 + 224.0 * side, 200.0, 12, 5.0);
+            text(if side < 0.0 { "{" } else { "}" }, 304.0 + 274.0 * side, 204.0, 2, 10.0);
+        }
+    }
+    bowl_callout(painter, v, art, d, scene, frame);
     if b.phase == Phase::Over {
         let text = match b.winner() {
             Some(w) if b.cards.len() > 1 => format!("{}P WINS", w + 1),
@@ -3327,6 +3400,52 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         if (frame / 30).is_multiple_of(2) {
             small(painter, v, art, d, "PRESS START", W / 2.0, 410.0, Color32::WHITE);
         }
+    }
+}
+
+/// The count's callout at y 360 in the chrome font: a strike's (0x3EF8B0: its x and colour by the run, PERFECT
+/// blinking, a chicken a strike from a TURKEY on), SPARE / NICE COVER sliding in from the bowler's side (0x3EF660), MISS /
+/// FOUL dropping in and bouncing (0x3EF470).
+fn bowl_callout(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, frame: u64) {
+    use kumite_sim::bowl::Phase;
+    let b = &scene.bowl;
+    let Some(c) = b.callout.as_deref().filter(|c| !c.is_empty()) else { return };
+    let co = &b.callouts;
+    let (f, x, y, colour) = match b.phase {
+        Phase::Strike(f) => {
+            let k = co.strikes.iter().chain([&co.punch_out, &co.perfect]).position(|s| s == c).unwrap_or(0);
+            let run = b.runs.get(b.current).copied().unwrap_or(0);
+            if run >= 3 {
+                let x0 = (644.0 - 36.0 * run as f32) / 2.0;
+                for n in 0..run {
+                    image(painter, v, art, "003_016.png", [x0 + 36.0 * n as f32, 296.0, 32.0, 32.0], Color32::WHITE);
+                }
+            }
+            let colour = [2, 9, 18, 11, 18, if frame & 2 != 0 { 11 } else { 2 }];
+            (f, [178.0, 144.0, 129.0, 125.0, 126.0, 170.0][k.min(5)], 360.0, colour[k.min(5)])
+        }
+        Phase::Result(f) if c == co.spare || c == co.nice_cover => {
+            let (w, colour) = if c == co.spare { (214.0, 17) } else { (420.0, 7) };
+            let centre = (640.0 - w) / 2.0;
+            let x = if b.current == 0 { (32.0 * f as f32 - w).min(centre) } else { (640.0 - 32.0 * f as f32).max(centre) };
+            (f, x, 360.0, colour)
+        }
+        Phase::Result(f) if c == co.miss || c == co.foul => {
+            // from y -20 at 5 a frame, 0.5 more each frame; past 360 back at 360, rebounding at half the speed
+            let (mut y, mut vy) = (-20.0f32, 5.0f32);
+            for _ in 0..f {
+                y += vy;
+                vy += 0.5;
+                if y as i32 >= 361 {
+                    (y, vy) = (360.0, -vy * 0.5);
+                }
+            }
+            (f, if c == co.miss { 242.0 } else { 232.0 }, y, if c == co.miss { 1 } else { 10 })
+        }
+        _ => return,
+    };
+    if f < 150 {
+        chrome(painter, v, art, d, c, x, y, Some(colour), 10.0);
     }
 }
 
@@ -3525,6 +3644,21 @@ mod tests {
         let run = Run::new(&d, &roster, &Progress::default(), BALL, [vec![(0, 0)], vec![]], &mut seed);
         let s = run.setup(&d);
         assert_eq!((s.mode, s.stage, s.ball, run.bench(), run.teams[1].len()), (Mode::Ball, 23, Some((0, 0)), None, 1));
+        // the ball type chosen after the select (IRON)
+        let mut front = Front { page: Page::BallType { run: Box::new(run), cursor: 0 }, frame: 0 };
+        let mut roster = roster;
+        let mesh = serde_json::json!({"vertices": [], "normals": [], "triangles": [], "quads": []});
+        let kind = serde_json::json!({"speed_unit": 0, "lob_unit": 0, "gravity": 0, "ambient": [0, 0, 0], "damage_percent": 0, "zone": 0, "level": "", "name": "", "colours": []});
+        let types = vec![kind; 3];
+        roster.ball = Some(Arc::new(serde_json::from_value(serde_json::json!({"types": types, "mesh": mesh, "body_offsets": []})).unwrap()));
+        roster.ttt = Some(d.clone());
+        for k in [Key::Down, Key::Down, Key::Start] {
+            if let Outcome::TttFight(r) = front.key(0, k, &roster, &mut seed) {
+                assert_eq!(r.setup(&d).ball, Some((2, 0)));
+                return;
+            }
+        }
+        panic!("no fight");
     }
 
     /// The CPU's profile (0x380120, measured in PCSX2: fight n of the arcade plays NORMAL level n - 1): the

@@ -282,6 +282,8 @@ struct BowlRun {
     ball: Vec<(usize, Vec<StaticVertex>)>,
     pins: Vec<Vec<(usize, Vec<StaticVertex>)>>,
     start: bool,
+    /// SELECT (BACK) pressed: the hand switched (0x3EAE28).
+    select: bool,
     /// Each player's model record (its voices).
     records: Vec<usize>,
     /// Each player's team (character ids: the bowler, its partner), for TOP 5 BOWLERS.
@@ -3874,7 +3876,7 @@ impl App {
             log::info!("Tekken Bowl: {} player(s)", players.len());
             self.scene = Some(stage);
             let teams = players.iter().zip(&partners).map(|(p, m)| [p.1, m.map_or(p.1, |m| m.1)]).collect();
-            self.bowl = Some(BowlRun { scene, models, partners: mates, ball, pins, start: false, records: players.iter().map(|p| p.0).collect(), teams, pause: None });
+            self.bowl = Some(BowlRun { scene, models, partners: mates, ball, pins, start: false, select: false, records: players.iter().map(|p| p.0).collect(), teams, pause: None });
             self.screen = None;
             self.fight = None;
             Ok(())
@@ -3889,8 +3891,9 @@ impl App {
         self.tapped.clear();
         let Some(run) = self.bowl.as_mut().filter(|r| r.pause.is_none()) else { return };
         let who = run.scene.bowl.current;
-        let start = std::mem::take(&mut run.start);
-        run.scene.step(Pad { start, ..pads[who.min(1)] });
+        let (start, select) = (std::mem::take(&mut run.start), std::mem::take(&mut run.select));
+        let pad = pads[who.min(1)];
+        run.scene.step(Pad { start, buttons: pad.buttons | if select { kumite_sim::bowl::SELECT } else { 0 }, ..pad });
         let Some(audio) = self.audio.as_mut() else { return };
         for e in &run.scene.bowl.events {
             let (code, player) = match *e {
@@ -4377,10 +4380,10 @@ impl App {
                     leaving: false,
                 };
                 self.force = None;
-                // (Tekken Tag: its message page, the run's score)
-                self.screen = Some(match self.roster.ttt {
-                    Some(_) => ttt_message(vec!["TEKKEN FORCE".into(), format!("SCORE {}", r.score)]),
-                    None => Screen::ForceResults(Box::new(r)),
+                // (Tekken Tag without Tekken 3's HUD in its extras: its message page, the run's score)
+                self.screen = Some(match (&self.roster.ttt, self.art.as_ref().is_some_and(|a| a.t3.is_some())) {
+                    (Some(_), false) => ttt_message(vec!["TEKKEN FORCE".into(), format!("SCORE {}", r.score)]),
+                    _ => Screen::ForceResults(Box::new(r)),
                 });
             }
             return;
@@ -4799,7 +4802,8 @@ impl App {
             return true;
         }
         // Tekken Bowl: START skips a strike's pose or a replay and ends a finished game; in the throw it pauses
-        // (state 9: TOP BOWLERS, EXIT); BACK leaves it for the main menu
+        // (state 9: TOP BOWLERS, EXIT); BACK (SELECT) switches the hand of those who can in the position step
+        // (0x3EAE08), else leaves for the main menu
         if let Some(b) = self.bowl.as_mut() {
             use kumite_sim::bowl::Phase as P;
             match (&mut b.pause, key) {
@@ -4818,6 +4822,7 @@ impl App {
                     }
                 }
                 (Some(_), _) => {}
+                (None, Key::Back) if b.scene.bowl.phase == P::Position && b.scene.bowl.players.get(b.scene.bowl.current).is_some_and(|p| p.switches()) => b.select = true,
                 (None, Key::Back) => self.end_bowl(),
                 (None, Key::Start) if b.scene.bowl.phase == P::Over => self.end_bowl(),
                 (None, Key::Start) if matches!(b.scene.bowl.phase, P::Position | P::Aim | P::Power) => {
@@ -7969,7 +7974,20 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
             }
         }
     }
-    let hud = Hud::new(hud_data);
+    let mut hud = Hud::new(hud_data);
+    // Tekken Tag with Tekken 3's HUD in its extras (Tekken Force, Tekken Ball): its layout, every fighter's name on its
+    // plates in its font (Tekken 3 has no name pictures of Tekken Tag's fighters)
+    let t3_screens: Option<serde_json::Value> = roster.ttt.as_ref().and_then(|_| serde_json::from_slice(&kumite_fs::read(&assets.root.join("t3/gamedata/screens.json")).ok()?).ok());
+    hud.t3 = t3_screens.map(|s| {
+        let mut d = hud::HudData::load(&s, &roster.ball_hud);
+        let r: serde_json::Value = assets.gamedata("roster.json").unwrap_or_default();
+        for e in r["selections"]["entries"].as_array().into_iter().flatten() {
+            if let (Some(m), Some(n)) = (e["model_record"].as_u64(), e["name"].as_str()) {
+                d.extra_names.insert(m as usize, n.to_uppercase());
+            }
+        }
+        d
+    });
     // (and the AI's matches: what it wins is not the player's)
     if arg("--shot").is_some() || flag("--ai") {
         save::set_read_only();

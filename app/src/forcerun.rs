@@ -264,10 +264,12 @@ impl ForceRun {
         frame: u64,
         project: &dyn Fn(Vec3) -> Option<(f32, f32)>,
     ) {
-        // (Tekken Tag: in its pictures)
-        if let Some(d) = roster.ttt.as_deref() {
-            return crate::ttt::force_hud(painter, v, art, d, self, bout, frame, project);
-        }
+        // (Tekken Tag: Tekken 3's HUD from its extras, else in Tekken Tag's pictures)
+        let (art, hd) = match (roster.ttt.as_deref(), art.t3.as_deref(), hud.t3.as_ref()) {
+            (Some(_), Some(a), Some(d)) => (a, d),
+            (Some(d), ..) => return crate::ttt::force_hud(painter, v, art, d, self, bout, frame, project),
+            _ => (art, &hud.data),
+        };
         let game = &bout.game;
         let Some(st) = &self.stage else { return };
         let src: &[&str] = &["exe"];
@@ -320,14 +322,14 @@ impl ForceRun {
         let plate = |k: usize| [num(&dr["plates"][k][0]), num(&dr["plates"][k][1])];
         let ([px, py], [sx, sy], [_, sy1]) = (plate(0), plate(1), plate(2));
         let pdy = sy1 - sy;
-        hud.name_plate(painter, v, art, game.bodies[0].model_record, self.player_costume, px, py, false);
+        crate::hud::name_plate(hd, painter, v, art, game.bodies[0].model_record, self.player_costume, px, py, false);
         // the co-op partner under the player (OpenKumite's own), or the invitation to join; a partner who is down
         // can come back with START
         let blink = game.fight.frame & 0x30 != 0;
-        let push_p2 = hud.data.push.get(1).map_or("", String::as_str);
+        let push_p2 = hd.push.get(1).map_or("", String::as_str);
         match (game.partner_body.as_ref(), game.fight.partner.as_deref()) {
             (Some(b), Some(p)) => {
-                hud.name_plate(painter, v, art, b.model_record, self.partner_costume, px, py + pdy, false);
+                crate::hud::name_plate(hd, painter, v, art, b.model_record, self.partner_costume, px, py + pdy, false);
                 art.text(painter, v, 0, 5, 150.0 - 18.0, 116.0, "2P", Color32::WHITE);
                 if p.health <= 0 && blink {
                     art.text(painter, v, 0, 5, 19.0, 140.0, push_p2, Color32::WHITE);
@@ -340,7 +342,7 @@ impl ForceRun {
         for (j, p) in self.more_players.iter().enumerate() {
             if let (Some((_, _, cos)), Some(Some(b))) = (p, game.more_body.get(j)) {
                 let y = py + pdy * (2 + j) as f32;
-                hud.name_plate(painter, v, art, b.model_record, *cos, px, y, false);
+                crate::hud::name_plate(hd, painter, v, art, b.model_record, *cos, px, y, false);
                 art.text(painter, v, 0, 5, 150.0 - 18.0, y + 2.0, &format!("{}P", j + 3), Color32::WHITE);
             }
         }
@@ -352,12 +354,12 @@ impl ForceRun {
                 // (the soldiers' costumes: a model every 4 records from the first soldier's)
                 let first = roster.by_selection.get(&self.data.soldier_selection_base).map_or(usize::MAX, |s| s.1);
                 let cos = if b.model_record >= first { (b.model_record - first) / 4 } else { 0 };
-                hud.name_plate(painter, v, art, b.model_record, cos, sx, sy + pdy * k as f32, true);
+                crate::hud::name_plate(hd, painter, v, art, b.model_record, cos, sx, sy + pdy * k as f32, true);
             }
         }
         // SCORE and HI-SCORE over the bars
         let texts = &self.data.hud;
-        let (ux, uy, uc) = hud.data.under_place();
+        let (ux, uy, uc) = hd.under_place();
         art.text(painter, v, 0, uc[0], ux[0], uy, &printf(&texts.score, &[st.score]), Color32::WHITE);
         art.text(painter, v, 0, uc[1], ux[1], uy, &printf(&texts.hi_score, &[st.hiscore]), Color32::WHITE);
         // the progress map: a box per stage, the final box, the cursor
@@ -550,7 +552,12 @@ impl ForceResults {
 
     pub fn draw(&self, painter: &egui::Painter, v: &View, art: &Art, roster: &crate::menu::Roster) {
         Art::shade(painter, v, crate::art::FULL, [Color32::BLACK; 4]);
-        let texts = &roster.screens["modes"]["results"]["force"];
+        // (Tekken Tag: Tekken 3's screen from its extras, the bosses' faces Tekken Tag's)
+        let (art, ttt) = match (roster.ttt.as_deref(), art.t3.as_deref()) {
+            (Some(d), Some(t3)) => (t3, Some((art, d))),
+            _ => (art, None),
+        };
+        let texts = &art.screens["modes"]["results"]["force"];
         crate::modes::Text::from(&texts["title"]).draw(painter, v, art);
         fn s(v: &serde_json::Value) -> &str {
             v.as_str().unwrap_or_default()
@@ -584,7 +591,11 @@ impl ForceResults {
                 if t >= 90 && late >= 20 * k as u32 {
                     let id = b.map_or(roster.ui.question, |(c, _)| c);
                     let xy = |i: usize| at[i].as_f64().unwrap_or(0.0) as f32;
-                    crate::modes::face(painter, v, art, roster, id, xy(0), xy(1), 0);
+                    match ttt {
+                        // (its 40 x 42 face in Tekken 3's 32 x 58 place)
+                        Some((a, d)) => crate::ttt::face_in(painter, v, a, d, b.map(|(c, _)| c), [xy(0), xy(1) + 12.0, 32.0, 34.0]),
+                        None => crate::modes::face(painter, v, art, roster, id, xy(0), xy(1), 0),
+                    }
                 }
             }
             if late >= 80 {

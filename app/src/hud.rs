@@ -332,6 +332,9 @@ impl HudData {
 
 pub struct Hud {
     pub data: HudData,
+    /// Tekken Tag with Tekken 3's HUD in its extras (`Art::t3`): its layout for Tekken 3's modes, the names in its
+    /// font on its plates.
+    pub t3: Option<HudData>,
     pub state: HudState,
     /// The camera's projection (metres to clip space), for texts over the 3D scene; set by the app each frame.
     pub view_proj: Option<glam::Mat4>,
@@ -370,7 +373,7 @@ struct BallHud {
 
 impl Hud {
     pub fn new(data: HudData) -> Self {
-        Self { data, state: HudState::default(), view_proj: None }
+        Self { data, t3: None, state: HudState::default(), view_proj: None }
     }
 
     /// The run's fighting time so far (frames).
@@ -395,9 +398,8 @@ impl Hud {
 
     /// Ball's gauges (two bars filling towards the middle, the owner's flashing while the ball has power) and the
     /// floating texts at the ball, rising a pixel a frame.
-    fn draw_ball(&self, painter: &egui::Painter, v: &View, art: &Art) {
+    fn draw_ball(&self, painter: &egui::Painter, v: &View, art: &Art, g: &BallLayout) {
         let src: &[&str] = &["exe"];
-        let g = &self.data.ball;
         for (i, &(_, _, shown, trail)) in self.state.ball.gauges.iter().enumerate() {
             let (x, y) = (g.x[i], g.y);
             let tint = if self.state.ball.flash == Some(i) {
@@ -422,14 +424,14 @@ impl Hud {
                 at += w;
             }
         }
-        for (s, c, [x, y]) in self.ball_texts() {
+        for (s, c, [x, y]) in self.ball_texts(g) {
             art.text(painter, v, g.text_font as usize, c, x - g.text_dx * s.len() as f32, y, s, Color32::WHITE);
         }
     }
 
     /// Ball's floating texts on the screen: text, colour, place (at the ball, risen a pixel a frame).
-    fn ball_texts(&self) -> Vec<(&str, u32, [f32; 2])> {
-        let (Some(vp), g) = (self.view_proj, &self.data.ball) else { return Vec::new() };
+    fn ball_texts(&self, g: &BallLayout) -> Vec<(&str, u32, [f32; 2])> {
+        let Some(vp) = self.view_proj else { return Vec::new() };
         let mut out = Vec::new();
         for (s, c, world, life) in &self.state.ball.texts {
             let clip = vp * (*world / kumite_game::UNITS).extend(1.0);
@@ -441,14 +443,6 @@ impl Hud {
             out.push((s.as_str(), *c, [sx, sy + g.text_dy - rise]));
         }
         out
-    }
-
-    /// A name plate (0x8004E8B4 / Force 0x800B32AC): the model's name picture on a shaded plate in the costume's
-    /// colours, its left edge at `x` (or its right edge, when `right`), at `y`. A sheet of names (Force's
-    /// soldiers, one 16-row name per costume) shows its costume's row.
-    #[allow(clippy::too_many_arguments)]
-    pub fn name_plate(&self, painter: &egui::Painter, v: &View, art: &Art, model: usize, costume: usize, x: f32, y: f32, right: bool) {
-        name_plate(&self.data, painter, v, art, model, costume, x, y, right);
     }
 
     /// STAGE n (from the final stage STAGE while frame & 0x20, else FINAL: 0x800B1A54-0x800B1A74) and the run's time
@@ -544,10 +538,15 @@ impl Hud {
                 // (Force's pickups behind the HUD)
                 under(&painter, &v);
                 crate::ttt::hud(&painter, &v, art, t, bout, info, &self.state.tag, self.state.ko, self.state.frame, self.state.run_frames);
+                // (Tekken 3's gauges from the extras, else in Tekken Tag's bar strips)
                 if bout.game.fight.ball.is_some() && !matches!(bout.phase, Phase::Replay { .. }) {
-                    let w = self.data.ball.w.max(1) as f32;
-                    let gauges = self.state.ball.gauges.map(|(_, _, shown, trail)| [shown as f32 / w, trail as f32 / w]);
-                    crate::ttt::ball_hud(&painter, &v, art, t, gauges, self.state.ball.flash, &self.ball_texts(), self.state.frame);
+                    if let (Some(a), Some(d)) = (art.t3.as_deref(), self.t3.as_ref()) {
+                        self.draw_ball(&painter, &v, a, &d.ball);
+                    } else {
+                        let w = self.data.ball.w.max(1) as f32;
+                        let gauges = self.state.ball.gauges.map(|(_, _, shown, trail)| [shown as f32 / w, trail as f32 / w]);
+                        crate::ttt::ball_hud(&painter, &v, art, t, gauges, self.state.ball.flash, &self.ball_texts(&self.data.ball), self.state.frame);
+                    }
                 }
                 return;
             }
@@ -662,7 +661,7 @@ impl Hud {
             }
         }
         if bout.game.fight.ball.is_some() && !replay {
-            self.draw_ball(&painter, &v, art);
+            self.draw_ball(&painter, &v, art, &self.data.ball);
         }
         under(&painter, &v);
         // everything above is drawn behind the fighters (the game's 2D list B); the round texts are in front
