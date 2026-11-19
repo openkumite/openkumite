@@ -173,7 +173,7 @@ fn every_converted_glb_loads() {
 #[test]
 fn joint_keys_go_round() {
     use glam::{Quat, Vec3};
-    let j = kumite_assets::Joint { rest: (Vec3::ZERO, Quat::IDENTITY, Vec3::ONE), translations: (0..4).map(|k| Vec3::X * k as f32).collect(), rotations: vec![], face: false };
+    let j = kumite_assets::Joint { rest: (Vec3::ZERO, Quat::IDENTITY, Vec3::ONE), translations: (0..4).map(|k| Vec3::X * k as f32).collect(), rotations: vec![], face: false, name: String::new() };
     let x = |f| j.at(f).w_axis.x;
     assert_eq!([x(0), x(1), x(2), x(3), x(4)], [0.0, 1.0, 2.0, 0.0, 1.0]);
     let parent = kumite_assets::Joint { rest: (Vec3::Y, Quat::IDENTITY, Vec3::splat(2.0)), ..Default::default() };

@@ -2,8 +2,6 @@
 //! FORMATS.md 12, the PS2's 0x3D8908 start, 0x3D8B20 / 0x3D8848 a step's motion, 0x3D8D38 / 0x3D8E30 a motion's end,
 //! 0x3D9718 the frames): unseen while they wait, a motion of the step's at random, steps repeated and gone back to,
 //! moved on by how far each motion takes them. Drawn only: their own random numbers (the PS2's rand()).
-// shortcut: a step's model offset (six steps on Law-A) and the model's scale of the root's motion and the walk
-// (its file's +4 / 1000: 1.2 and 1.5 on some arenas) are not applied; upgrade: export both and swap / scale here.
 
 use glam::Vec3;
 use serde_json::Value;
@@ -12,6 +10,7 @@ use std::collections::HashMap;
 /// A step of a script.
 struct Step {
     motions: Vec<usize>,
+    model: i8,
     repeat: i8,
     back: i8,
     wait: i16,
@@ -30,8 +29,11 @@ pub struct Walker {
     repeat0: i8,
     script: Vec<Step>,
     stop: bool,
-    /// How far each motion takes it: [dx, dz] (m, its own axes), the turn (degrees).
+    /// How far each motion takes it: [dx, dz] (m, its own axes), the turn (degrees); its model, and each model's
+    /// scale of that and of its root's motion (stages.json `scales`, 0x3D87A8).
     walk: HashMap<usize, [f32; 3]>,
+    model: usize,
+    scales: Vec<f32>,
     // the state (the PS2's person +0x50 .. +0x8E)
     pos: Vec3,
     turn: f32,
@@ -51,13 +53,14 @@ fn i(v: &Value) -> i64 {
 }
 
 impl Walker {
-    /// A person of stages.json `people`, `walk` the arena's table, `seed` its own random numbers' start.
-    pub fn new(p: &Value, walk: &Value, seed: u32) -> Self {
+    /// A person of stages.json `people`, `walk` and `scales` the arena's tables, `seed` its own random numbers' start.
+    pub fn new(p: &Value, walk: &Value, scales: &Value, seed: u32) -> Self {
         let f = |v: &Value| v.as_f64().unwrap_or(0.0) as f32;
         let pair = |v: &Value| [i(&v[0]).max(0) as i32, i(&v[1]).max(0) as i32];
         let script = (p["script"].as_array().into_iter().flatten())
             .map(|s| Step {
                 motions: s["motions"].as_array().into_iter().flatten().filter_map(Value::as_u64).map(|m| m as usize).collect(),
+                model: i(&s["model"]).clamp(-16, 16) as i8,
                 repeat: i(&s["repeat"]) as i8,
                 back: i(&s["back"]) as i8,
                 wait: i(&s["wait"]) as i16,
@@ -78,6 +81,8 @@ impl Walker {
             script,
             stop: p["stop"].as_bool().unwrap_or(false),
             walk,
+            model: p["model"].as_u64().unwrap_or(0) as usize,
+            scales: scales.as_array().into_iter().flatten().map(f).collect(),
             pos: at,
             turn: 0.0,
             step: 0,
@@ -150,6 +155,7 @@ impl Walker {
     /// A step begun (0x3D8B20): moved on by how far the motion just played took it, the step's frames from 0.
     fn begin(&mut self) {
         if let Some([dx, dz, turn]) = self.walk.get(&self.motion).copied() {
+            let (dx, dz) = (dx * self.scale(), dz * self.scale());
             let (sin, cos) = (self.heading + self.turn).to_radians().sin_cos();
             self.pos += Vec3::new(dx * cos + dz * sin, 0.0, dz * cos - dx * sin);
             self.turn += turn;
@@ -235,6 +241,17 @@ impl Walker {
         }
     }
 
+    /// The model it shows now: its own plus its step's (0x3D87A8).
+    pub fn model(&self) -> usize {
+        let add = self.script.get(self.step).map_or(0, |s| s.model);
+        self.model.saturating_add_signed(isize::from(add))
+    }
+
+    /// Its model's scale of its root's motion and its walk (1 without one).
+    pub fn scale(&self) -> f32 {
+        self.scales.get(self.model()).copied().filter(|s| *s > 0.0).unwrap_or(1.0)
+    }
+
     /// What it shows now: its motion, the frame of it, where it stands and its heading (degrees); None while unseen.
     pub fn now(&self) -> Option<(usize, usize, Vec3, f32)> {
         (!self.gone && self.wait <= 0).then_some((self.motion, self.frame.max(0) as usize, self.pos, self.heading + self.turn))
@@ -253,7 +270,7 @@ mod tests {
         let p = json!({"at": [5.0, 0.0, 0.0], "heading": 0.0, "motions": [10, 11], "wait": [0, 0], "start": [0, 0], "repeat": -1, "stop": false,
             "script": [{"motions": [10], "repeat": 2, "back": 0, "wait": -1, "start": -1, "frames": -1},
                        {"motions": [11], "repeat": 1, "back": 1, "wait": -1, "start": -1, "frames": -1}]});
-        let mut w = Walker::new(&p, &json!({"10": [0.0, 1.0, 90.0]}), 1);
+        let mut w = Walker::new(&p, &json!({"10": [0.0, 1.0, 90.0]}), &json!([]), 1);
         let mut seen = vec![];
         for _ in 0..40 {
             let (m, f, at, h) = w.now().unwrap();
@@ -274,7 +291,7 @@ mod tests {
     fn it_waits_unseen_and_is_gone_at_a_stopping_end() {
         let p = json!({"at": [0.0, 0.0, 0.0], "heading": 0.0, "motions": [3], "wait": [0, 0], "start": [0, 0], "repeat": -1, "stop": true,
             "script": [{"motions": [3], "repeat": 0, "back": 0, "wait": 2, "start": -1, "frames": 3}]});
-        let mut w = Walker::new(&p, &json!({}), 1);
+        let mut w = Walker::new(&p, &json!({}), &json!([2.0]), 1);
         assert!(w.now().is_none());
         w.step(|_| 100);
         w.step(|_| 100);

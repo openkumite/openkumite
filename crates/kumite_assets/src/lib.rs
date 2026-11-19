@@ -454,6 +454,8 @@ pub struct Joint {
     pub rotations: Vec<Quat>,
     /// Turned about y to face the eye, its other turns kept (node extras `"face": "camera"`: Xiaoyu's lamps).
     pub face: bool,
+    /// Its node's name (`object_K`: what the engine moves itself, `kumite_game::arena_motion`).
+    pub name: String,
 }
 
 impl Joint {
@@ -468,8 +470,13 @@ impl Joint {
     /// A chain's place (the first joint's in the stage) at `frame`, under `place`; a joint that faces the eye turned
     /// about y towards `eye` (0x3D5640: its turn the camera's less its parent's).
     pub fn chain(chain: &[Joint], frame: u64, place: Mat4, eye: Vec3) -> Mat4 {
+        Self::chain_with(chain, frame, place, eye, &|_| None)
+    }
+
+    /// [`Joint::chain`], a joint's place in its parent `over`'s where it names one by the joint's name.
+    pub fn chain_with(chain: &[Joint], frame: u64, place: Mat4, eye: Vec3, over: &dyn Fn(&str) -> Option<Mat4>) -> Mat4 {
         chain.iter().fold(place, |m, j| {
-            let local = j.at(frame);
+            let local = over(&j.name).unwrap_or_else(|| j.at(frame));
             if !j.face {
                 return m * local;
             }
@@ -730,7 +737,7 @@ impl Stage {
                 let (t, r, s) = n.transform().decomposed();
                 let (translations, rotations) = keys.remove(&n.index()).unwrap_or_default();
                 let face = n.extras().as_ref().and_then(|x| serde_json::from_str::<serde_json::Value>(x.get()).ok()).is_some_and(|x| x["face"] == "camera");
-                chain.push(Joint { rest: (Vec3::from(t), Quat::from_array(r).normalize(), Vec3::from(s)), translations, rotations, face });
+                chain.push(Joint { rest: (Vec3::from(t), Quat::from_array(r).normalize(), Vec3::from(s)), translations, rotations, face, name: name.to_string() });
                 if let Some(m) = n.mesh() {
                     st.sky.extend(mesh_data(m, Mat4::IDENTITY)?.into_iter().map(|mesh| Mesh { motion: Some(Motion::Track(chain.clone())), ..mesh }));
                 }
