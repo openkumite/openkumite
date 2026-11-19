@@ -61,6 +61,8 @@ const ARCADE_ROW: usize = usize::MAX;
 const CHANGE_ROW: usize = 3;
 /// GAME OPTIONS' GUARD DAMAGE, HELP MESSAGES, SPEAKER OUT, BGM / SE VOLUME rows.
 const GUARD_ROW: usize = 4;
+/// GAME OPTIONS' CHARACTER SELECT CURSOR (1 HOLD), QUICK SELECT, CHICKEN MARKING rows.
+const CURSOR_ROW: usize = 5;
 const HELP_ROW: usize = 8;
 const SPEAKER_ROW: usize = 9;
 const BGM_ROW: usize = 10;
@@ -297,6 +299,9 @@ pub struct Progress {
     pub survivors: Vec<Record>,
     /// The main menu's entries entered once (a bit by mode; config +0x24): an unlocked one blinks until then.
     pub entered: u32,
+    /// CHARACTER SELECT CURSOR HOLD's memory (0x4157F8, config +0x38 / +0x39): per side the slots of its first and
+    /// second pick (None: the select's `start_slots`, none for the second).
+    pub cursors: [[Option<usize>; 2]; 2],
 }
 
 /// A TIME ATTACK (frames) or SURVIVAL (wins) record: the team's character ids and the name entered.
@@ -330,6 +335,7 @@ static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress {
     times: Vec::new(),
     survivors: Vec::new(),
     entered: 0,
+    cursors: [[None; 2]; 2],
 });
 
 pub fn progress() -> Progress {
@@ -870,6 +876,8 @@ pub struct Select {
     pub tally: Option<[u32; 2]>,
     /// CONTINUE with CHARACTER CHANGE AT CONTINUE: the run the picks go on with.
     pub cont: Option<Box<Run>>,
+    /// HOLD's memory ([`Progress::cursors`]) as the picks change it.
+    memory: [[Option<usize>; 2]; 2],
 }
 
 impl Select {
@@ -881,8 +889,10 @@ impl Select {
             m if tag(m) || m == BOWL || m == BALL => 2,
             _ => 1,
         };
-        // (the cursors start on `start_slots`: 1P's on Xiaoyu's, as the PS2 shows)
-        let first = |k: usize| int(&d.raw["select"]["start_slots"][k]).min(d.slots.len().saturating_sub(1));
+        // (the cursors start on the first pick's slot HOLD kept (0x3C993C), at first `start_slots`: 1P's on Xiaoyu's, as
+        // the PS2 shows)
+        let memory = progress().cursors;
+        let first = |k: usize| memory[k][0].unwrap_or(int(&d.raw["select"]["start_slots"][k])).min(d.slots.len().saturating_sub(1));
         let p2 = matches!(mode, VS | ONE_VS);
         let side = |player: Option<usize>, k: usize| Side { player, cursor: first(k), picks: vec![], need, done: false, since: 0 };
         let mut sides = [side(Some(0), 0), side(p2.then_some(1), 1)];
@@ -890,7 +900,7 @@ impl Select {
         if mode == PRACTICE {
             sides[1] = side(Some(0), 1);
         }
-        Self { mode, sides, frame: 0, done: 0, tally, cont: None }
+        Self { mode, sides, frame: 0, done: 0, tally, cont: None, memory }
     }
 
     /// The side `player`'s keys move now.
@@ -995,6 +1005,10 @@ impl Select {
                     sfx::play(sound(d, "cancel"));
                     return Some(Page::Menu { cursor: 0, scroll: 0, idle: 0 });
                 }
+                // (HOLD forgets the second pick's slot, 0x3C94C0)
+                if progress.setting(d, CURSOR_ROW) == 1 {
+                    self.memory[s][1] = None;
+                }
             }
         }
         None
@@ -1036,9 +1050,18 @@ impl Select {
         }
         let frame = self.frame;
         let side = &mut self.sides[s];
+        // HOLD keeps the pick's slot (0x3CAB18); after the first pick the cursor goes to the second's kept (0x3CAB8C)
+        if progress.setting(d, CURSOR_ROW) == 1 {
+            if let Some(m) = self.memory[s].get_mut(side.picks.len()) {
+                *m = Some(side.cursor);
+            }
+        }
         side.picks.push((i, index(costume).unwrap_or(0)));
         side.done = side.picks.len() >= side.need;
         side.since = frame;
+        if let (1, false, Some(slot)) = (side.picks.len(), side.done, self.memory[s][1]) {
+            side.cursor = slot;
+        }
         // (0x3CA3BC: select 1 for a pick before the last, select 2 for the last)
         sfx::play(sound(d, if side.done { "last_pick" } else { "pick" }));
         Some(())
@@ -1502,6 +1525,15 @@ impl Front {
                 if let Some(run) = s.tick(&d, roster, progress, seed) {
                     // CHARACTER USAGE: each of the players' picks
                     let mut p = progress.clone();
+                    // (HOLD's memory into the save, 0x3CB6CC; 1 ON 1 keeps the first pick's only)
+                    if p.setting(&d, CURSOR_ROW) == 1 {
+                        for (k, m) in s.memory.iter().enumerate() {
+                            p.cursors[k][0] = m[0];
+                            if !matches!(s.mode, ONE_ARCADE | ONE_VS) {
+                                p.cursors[k][1] = m[1];
+                            }
+                        }
+                    }
                     for c in run.teams.iter().zip(run.humans).filter(|t| t.1).flat_map(|t| t.0).filter_map(|m| roster.characters.get(m.0)) {
                         if p.usage.len() <= c.id {
                             p.usage.resize(c.id + 1, 0);
@@ -4404,6 +4436,20 @@ mod tests {
         assert_eq!((run.mode, run.ladder.len(), run.teams[0].len()), (ARCADE, 8, 2));
         p.stage = 1;
         assert!(d.selectable(p.stage, 2));
+    }
+
+    /// CHARACTER SELECT CURSOR HOLD: a pick keeps its slot, the cursor goes on to the second pick's slot kept, back
+    /// forgets it (0x3CAB18, 0x3CAB8C, 0x3C94C0).
+    #[test]
+    fn select_cursor_hold_keeps_the_picks_slots() {
+        let (d, r) = (data(), roster());
+        let p = Progress { settings: vec![0, 0, 1], ..Progress::default() };
+        let mut s = Select::new(ARCADE, &d, None);
+        (s.memory, s.sides[0].cursor) = ([[None, Some(1)], [None; 2]], 0);
+        s.key(0, Key::Button(0), &d, &r, &p);
+        assert_eq!((s.memory[0], s.sides[0].cursor), ([Some(0), Some(1)], 1));
+        s.key(0, Key::Back, &d, &r, &p);
+        assert_eq!(s.memory[0], [Some(0), None]);
     }
 
     /// The select's sounds (group 0: 3 cursor, 4 select 1, 5 select 2), RANDOM's roll and the timer (FRONTEND.md 9).
