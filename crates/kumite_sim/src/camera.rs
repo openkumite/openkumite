@@ -752,6 +752,9 @@ pub struct Actor {
     pub ko: bool,
     pub character: i64,
     pub alias: i64,
+    /// The shot a K.O. row takes when this fighter is the one down: 2 on a counter hit taken this frame (+0x13A,
+    /// 0x3724AC), 1 on a close reaction (+0x13B, 0x371FCC), else 0 (0x394460).
+    pub shot: usize,
 }
 
 /// Tekken Tag's director block (CAM 0x433330).
@@ -1199,9 +1202,8 @@ impl FightCamera {
     /// 0x38DEA0 / 0x3943A8: a per-fighter camera, once a move: a fighter's move with camera id 0x23-0x66 picks a
     /// script from its list (rand & 0xFFF) about the other fighter; once the other is down (K.O.) also ids 0x1C-0x20
     /// and the rows by the mover's character and alias (0x509820); kind 4 of ids 0x23-0x66 only on a fighter down.
-    /// The script's kind sets the state, its frames the count, its blend in the blend. shortcut: a row's script by
-    /// +0x13A / +0x13B (set by the damage function, not decoded) is its first; the point +0x39C kept at the K.O. is
-    /// the root.
+    /// The script's kind sets the state, its frames the count, its blend in the blend; a row's entry gives the down
+    /// fighter's shot (0x394300), an id's its first. shortcut: the point +0x39C kept at the K.O. is the root.
     fn fighter_start(&mut self, dir: &Director, orient: [bool; 2]) -> bool {
         if self.cam.used.iter().any(Option::is_some) {
             return false;
@@ -1210,6 +1212,7 @@ impl FightCamera {
         for it in 0..2 {
             let (o, m) = (&a[it], &a[1 - it]);
             let by_id = (0x23..=0x66).contains(&m.cam) || (o.ko && (0x1C..=0x20).contains(&m.cam));
+            let shot = if by_id { 0 } else { o.shot.min(2) };
             let list = if by_id {
                 dir.fighter_ids.iter().find(|e| e.0 == m.cam).map(|e| e.1)
             } else if o.ko {
@@ -1219,7 +1222,7 @@ impl FightCamera {
             };
             let Some(list) = list.and_then(|k| dir.fighter_lists.get(k)) else { continue };
             let r = self.rand() & 0xFFF;
-            let Some(&(_, [script, ..])) = list.iter().find(|e| e.0 >= r) else { return false };
+            let Some(script) = list.iter().find(|e| e.0 >= r).map(|e| e.1[shot]) else { return false };
             if script[0] == -1 || (0x23..=0x66).contains(&m.cam) && script[0] == 4 && !o.ko {
                 return false;
             }

@@ -454,6 +454,43 @@ fn a_finishing_move_has_its_camera_once_the_other_is_down() {
     assert!(up.iter().all(|&s| s == 1), "{up:?}");
 }
 
+/// A row's shot is the down fighter's damage flags' (0x394460): Paul's alias 935 has a camera only when its K.O. was
+/// a counter hit (+0x13A, the third shot); a plain K.O. takes the first, none.
+#[test]
+fn a_counter_hit_ko_takes_its_rows_third_shot() {
+    let Some(a) = assets() else { return };
+    let run = |counter: bool| {
+        let mut g = Game::load(&a, [PAUL, LEI]).unwrap();
+        g.camera.data().director.as_ref()?;
+        if !a.gamedata::<serde_json::Value>("camera.json").is_ok_and(|c| c["fighter_cameras"]["rows"].is_array()) {
+            return None;
+        }
+        for _ in 0..60 {
+            g.step([Pad::default(); 2]);
+        }
+        let f = &mut g.fight.fighters;
+        let along = (f[1].position - f[0].position).normalize();
+        f[1].position = f[0].position + along * 900.0;
+        f[1].health = kumite_sim::ONE;
+        f[0].play_alias(935);
+        // Lei's slow strike (active from frame 31): Paul's lands in its start-up; else Lei stands without guard
+        if counter {
+            f[1].play_alias(307);
+        }
+        f[1].guard_input = false;
+        let mut states = Vec::new();
+        for _ in 0..30 {
+            g.step([Pad::default(); 2]);
+            states.push(g.camera.special());
+        }
+        assert!(g.fight.fighters[1].health <= 0, "the K.O.");
+        Some(states)
+    };
+    let (Some(counter), Some(plain)) = (run(true), run(false)) else { return };
+    assert!(counter.iter().any(|s| (7..=15).contains(s)), "{counter:?}");
+    assert!(plain.iter().all(|&s| s == 1), "{plain:?}");
+}
+
 /// The K.O. replay runs on Tekken Tag's own shots (0x3D0748): a still eye per pass, a new one each pass; the same
 /// each time.
 #[test]

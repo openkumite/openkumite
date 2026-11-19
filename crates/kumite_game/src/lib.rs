@@ -817,6 +817,7 @@ impl Game {
                 ko: f.health <= 0,
                 character: self.characters[i].unwrap_or(-1),
                 alias: f.alias as i64,
+                shot: self.fight.hits.iter().filter(|h| h.victim == i && !h.blocked).map(|h| if h.counter { 2 } else { usize::from(h.clean) }).max().unwrap_or(0),
             }
         })
     }
