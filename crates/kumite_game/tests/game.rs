@@ -1189,7 +1189,7 @@ fn end_cameras_aim_at_the_fighter() {
         (seed >> 16) % n.max(1)
     };
     for b_variant in [false, true] {
-        let mut cam = kumite_sim::camera::EndCam::winner(&data, &p, b_variant, &mut random);
+        let mut cam = kumite_sim::camera::EndCam::winner(&data, &p, b_variant, 0, &mut random);
         let v = cam.step(&data, &p);
         let (eye, fwd, _) = kumite_game::view_camera(&v);
         let root = glam::Vec3::new(p.root[0] as f32, -p.root[1] as f32, -p.root[2] as f32) / kumite_game::UNITS;

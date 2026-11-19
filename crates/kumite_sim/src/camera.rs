@@ -275,9 +275,17 @@ pub struct WinCam {
     radius_add: i64,
     eye_y: i64,
     light_yaw: Vec<i64>,
+    /// The arenas whose far background turns with the camera's parallax, and light 0 with it (0x417780), and the
+    /// turn's step: its divisor and cap (0x366C18).
+    #[serde(default)]
+    world_turn: Vec<bool>,
+    #[serde(default)]
+    turn_step: [i64; 2],
     /// This arena's (set by [`CameraData::for_arena`]).
     #[serde(skip)]
     light: i64,
+    #[serde(skip)]
+    turns: bool,
 }
 
 /// Tekken Tag's special cameras (0x38C1E8): situation types 1-30 (0x508908), the camera lists by move camera id
@@ -544,6 +552,7 @@ impl CameraData {
         }
         if let Some(w) = d.win.as_mut() {
             w.light = w.light_yaw.get(arena).copied().unwrap_or(0);
+            w.turns = w.world_turn.get(arena).copied().unwrap_or(false) && w.turn_step[0] > 0;
         }
         Some(d)
     }
@@ -840,6 +849,10 @@ pub struct FightCamera {
     /// (gp-0x6FA8); its random streams, the CPU's (libc rand and the AI's LCG: a bout lends its own for each fight
     /// step, as the PS2 shares them) and the end cameras' LCG (gp-0x73FC), carried from round to round.
     pub actors: [Actor; 2],
+    /// The far background's turn and the last frame's point ahead and yaw it is measured by (0x366C18).
+    pub world_turn: i64,
+    look: [i64; 2],
+    look_yaw: i64,
     cam: Cam,
     lift: i64,
     pub rng: crate::ai::AiRng,
@@ -888,6 +901,9 @@ impl FightCamera {
             replay: None,
             view: View::default(),
             actors: [Actor::default(); 2],
+            world_turn: 0,
+            look: [0; 2],
+            look_yaw: 0,
             cam: Cam::new(),
             lift: 0,
             rng: crate::ai::AiRng::new(0),
@@ -897,6 +913,30 @@ impl FightCamera {
 
     pub fn data(&self) -> &Arc<CameraData> {
         &self.data
+    }
+
+    /// The far background's turn (gp-0x7278, 4096 a turn; reset as a round starts, 0x366DB0) after a frame's view
+    /// (0x366C18): on the arenas that turn it, the angle from the eye to last frame's point 4096 ahead against the
+    /// view's yaw, /0x22 at most 0xAA, while the yaw moved less than 1/256 turn. Light 0 turns with it in a fight
+    /// (0x353C88), and with it the win pose's camera. shortcut: summed in 4096ths, not the PS2's float radians.
+    pub fn turn_world(&mut self) {
+        let Some(w) = self.data.win.as_ref() else { return };
+        let v = self.view;
+        let s = (self.data.ratan2(self.look[0] - v.eye[0], self.look[1] - v.eye[2]) - 0x400) & 0xFFF;
+        let (old, new) = (self.look_yaw, v.yaw & 0xFFF);
+        self.look_yaw = new;
+        self.look = [v.eye[0] + self.data.sin(-new), v.eye[2] + self.data.cos(-new)];
+        if !w.turns {
+            return;
+        }
+        let x16 = |a: i64| s16(a << 4);
+        if s16(x16(old) - x16(new)).abs() > 16 {
+            return;
+        }
+        let [div, cap] = w.turn_step;
+        let d = s16(x16(s) - x16(new));
+        let step = if d >= 0 { (d / div).min(cap) } else { -((((new - s) << 4) & 0xFFFF) / div).min(cap) };
+        self.world_turn = (self.world_turn + step) & 0xFFF;
     }
 
     /// Tekken Tag's director state (CAM+0): 1 the fight camera, 2-5 a situation's, 6 a camera motion.
@@ -1964,10 +2004,11 @@ fn s12(v: i64) -> i64 {
 impl EndCam {
     /// Winner camera A (0x80046460) or B (0x800467A0) on the round winner. `random(n)`: 0..n. Tekken Tag's
     /// (0x35BB58): camera A only, beside the arena's light 0 at a distance by H.
-    pub fn winner(d: &CameraData, p: &Subject, b_variant: bool, random: &mut dyn FnMut(i64) -> i64) -> Self {
+    /// `world_turn`: the far background's turn ([`FightCamera::world_turn`]; Tekken Tag's light 0 turns with it).
+    pub fn winner(d: &CameraData, p: &Subject, b_variant: bool, world_turn: i64, random: &mut dyn FnMut(i64) -> i64) -> Self {
         let [rx, _, rz] = p.root;
         if let Some(w) = &d.win {
-            let a = (w.arc_from + random(w.arc_range) - w.light) & 0xFFF;
+            let a = (w.arc_from + random(w.arc_range) - w.light + world_turn) & 0xFFF;
             let r = tdiv(d.h * w.distance_per_h[0], w.distance_per_h[1]) + w.radius_add;
             let y = if d.variant { p.chest + d.end.aim.chest_offset } else { w.eye_y };
             let eye = [rx + sra_tz(d.cos(a) * r, 12), y, rz + sra_tz(d.sin(a) * r, 12)];

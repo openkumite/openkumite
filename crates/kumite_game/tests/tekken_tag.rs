@@ -365,7 +365,7 @@ fn the_win_pose_camera_stands_by_h() {
         return; // a pack from before it
     }
     let p = g.subject(0);
-    let v = kumite_sim::camera::EndCam::winner(&d, &p, true, &mut |_| 0).step(&d, &p);
+    let v = kumite_sim::camera::EndCam::winner(&d, &p, true, 0, &mut |_| 0).step(&d, &p);
     let (dx, dz) = ((v.eye[0] - p.root[0]) as f64, (v.eye[2] - p.root[2]) as f64);
     let r = (615 * 5200 / 955 + 1440 - 8) as f64;
     assert!(((dx * dx + dz * dz).sqrt() - r).abs() < 600.0, "{v:?} from {:?}", p.root);

@@ -864,6 +864,7 @@ impl Game {
     /// the camera's framing).
     fn step_camera(&mut self) -> View {
         let v = self.step_view();
+        self.camera.turn_world();
         self.project_sides(&v);
         v
     }
