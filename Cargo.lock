@@ -3962,7 +3962,7 @@ dependencies = [
 [[package]]
 name = "ok_tekken_tag_converter"
 version = "0.1.0"
-source = "git+https://github.com/openkumite/ok_tekken_tag_converter?branch=main#95d0111318a800d9f7a56d145d9e00d0fe314086"
+source = "git+https://github.com/openkumite/ok_tekken_tag_converter?branch=main#887338fa6ee3760844bafab8bb95e44e6a44edec"
 dependencies = [
  "anyhow",
  "libm",

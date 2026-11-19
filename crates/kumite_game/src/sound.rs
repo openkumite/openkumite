@@ -68,7 +68,7 @@ pub struct SoundData {
     /// Bank key ("sys", "ann", "m071", ...) -> samples with the tones that play them.
     banks: HashMap<String, Vec<Sample>>,
     /// Music by BGM id (column 0, the arranged tracks) and the characters each belongs to.
-    pub music: Vec<(PathBuf, bool, Vec<String>)>,
+    pub music: Vec<(PathBuf, bool, Vec<String>, f64)>,
     /// The same BGM ids' column 1 (the arcade originals), as the Theater's music player plays them.
     pub music_arcade: Vec<(PathBuf, bool)>,
     /// Announcer calls: sound-table indices traced in the round code (sound.json `announcer`).
@@ -189,7 +189,7 @@ impl SoundData {
             .map(|b| {
                 let col = &b["columns"][0];
                 let names = b["characters"].as_array().into_iter().flatten().filter_map(|n| n.as_str()).map(str::to_string).collect();
-                (music_dir.join(col["file"].as_str().unwrap_or_default()), col["loop"].as_bool().unwrap_or(false), names)
+                (music_dir.join(col["file"].as_str().unwrap_or_default()), col["loop"].as_bool().unwrap_or(false), names, col["loop_seconds"].as_f64().unwrap_or(0.0))
             })
             .collect();
         let music_arcade = music_json["bgm"]
@@ -428,6 +428,11 @@ impl SoundData {
     /// Music by BGM id, and whether it loops (the jingles play once).
     pub fn music(&self, id: usize) -> Option<(&Path, bool)> {
         self.music.get(id).map(|m| (m.0.as_path(), m.1))
+    }
+
+    /// Where a track loops back to, in seconds (music.json `loop_seconds`: Tekken Tag's driver's loop point; 0 the start).
+    pub fn loop_start(&self, track: Option<(&Path, bool)>) -> f64 {
+        track.and_then(|(p, _)| self.music.iter().find(|m| m.0 == p)).map_or(0.0, |m| m.3)
     }
 
     /// Tekken Tag: a sound entry (`kind << 12 | id`) as Tekken Bowl plays them: kinds 2-5 a voice of the character
@@ -781,10 +786,20 @@ struct TagGroup {
     bank: Option<u32>,
     samples: Vec<TagSample>,
 }
+/// The Tekken Tag sample volume heard as OpenKumite's full effect volume.
+const VOLUME_FULL: u32 = 51;
+
+fn volume_full() -> u32 {
+    VOLUME_FULL
+}
+
 #[derive(Deserialize)]
 struct TagSample {
     /// 0x1000 = 48 kHz.
     pitch: u32,
+    /// The SPU volume the sample plays at (0x374B48's entry byte 6).
+    #[serde(default = "volume_full")]
+    volume: u32,
 }
 #[derive(Deserialize)]
 struct VoiceBank {
@@ -876,8 +891,10 @@ impl Tag {
         let n = usize::from(id - g.first_id);
         let bank = g.bank.unwrap_or(voice);
         let rate = self.rates.get(&bank)?.get(n).copied().filter(|&r| r > 0)?;
-        let pitch = g.samples.get(n).map_or(0x1000, |s| s.pitch);
-        Some(Sound { file: self.sfx.join(format!("{bank:03}/{n:03}.wav")), volume: 1.0, speed: pitch as f32 * 48000.0 / 4096.0 / rate as f32 })
+        let (pitch, volume) = g.samples.get(n).map_or((0x1000, VOLUME_FULL), |s| (s.pitch, s.volume));
+        // (measured in PCSX2: a volume 25 effect plays at 0.8 of the select's music; the music here plays at the file's
+        // level, so volume / 51 keeps that balance)
+        Some(Sound { file: self.sfx.join(format!("{bank:03}/{n:03}.wav")), volume: volume as f32 / VOLUME_FULL as f32, speed: pitch as f32 * 48000.0 / 4096.0 / rate as f32 })
     }
 
     /// Voice `index` of category `cat` (entry types 2-5) of voice row `row` (0x375AA8).

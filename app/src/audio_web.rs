@@ -54,6 +54,12 @@ impl Audio {
 
     /// Play `path` as music, looped or once; None stops the music.
     pub fn music(&mut self, track: Option<(&Path, bool)>) {
+        self.music_from(track, 0.0);
+    }
+
+    /// [`Audio::music`]; shortcut: the browser's audio element loops from the start, not from `_from` (a loop point
+    /// needs Web Audio's buffer source with loopStart).
+    pub fn music_from(&mut self, track: Option<(&Path, bool)>, _from: f64) {
         let (path, looped) = (track.map(|t| t.0), track.is_some_and(|t| t.1));
         if self.current.as_deref() == path {
             return;

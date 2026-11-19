@@ -1046,6 +1046,8 @@ pub struct VsExtra {
     pub force: Option<(Option<usize>, [String; 2], u32)>,
     /// Tekken Tag: each side's tag partner (roster index, costume).
     pub bench: Option<[(usize, usize); 2]>,
+    /// Tekken Tag: the run's mode and fight number.
+    pub stage: Option<(u32, u32)>,
 }
 
 /// Where a movie leads.

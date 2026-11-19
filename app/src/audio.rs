@@ -69,6 +69,11 @@ impl Audio {
     /// Play `path` as music, looped or once (nothing changes when it is already the current track, even when a
     /// jingle has ended); None stops the music.
     pub fn music(&mut self, track: Option<(&Path, bool)>) {
+        self.music_from(track, 0.0);
+    }
+
+    /// [`Audio::music`], a looped track going back to `from` seconds at its end (Tekken Tag's loop points).
+    pub fn music_from(&mut self, track: Option<(&Path, bool)>, from: f64) {
         let (path, looped) = (track.map(|t| t.0), track.is_some_and(|t| t.1));
         if self.current.as_deref() == path {
             return;
@@ -86,7 +91,11 @@ impl Audio {
             Ok(src) => {
                 let player = Player::connect_new(sink.mixer());
                 player.set_volume(if self.muted { 0.0 } else { self.music_volume });
-                if looped {
+                if looped && from > 0.0 {
+                    let src = src.buffered();
+                    player.append(src.clone());
+                    player.append(src.skip_duration(std::time::Duration::from_secs_f64(from)).repeat_infinite());
+                } else if looped {
                     player.append(src.repeat_infinite());
                 } else {
                     player.append(src);
