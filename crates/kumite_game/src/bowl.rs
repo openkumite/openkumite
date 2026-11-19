@@ -52,6 +52,7 @@ pub struct Record {
     pub name: String,
     pub bodies: [usize; 2],
     pub score: u16,
+    pub card: kumite_sim::bowl::Card,
 }
 
 impl Records {
@@ -438,7 +439,7 @@ mod tests {
     #[test]
     fn a_score_takes_its_place_among_the_top_five() {
         let r = Records { size: 5, ..Records::default() };
-        let rec = |score| Record { name: "PAU".into(), bodies: [0, 1], score };
+        let rec = |score| Record { name: "PAU".into(), bodies: [0, 1], score, ..Default::default() };
         let mut list: Vec<Record> = [268, 214, 157, 103, 30].map(rec).to_vec();
         // above an equal score, the last one out; too low: no place; the second player not above the first's
         assert_eq!(r.insert(&mut list, 0, rec(157)), Some(2));

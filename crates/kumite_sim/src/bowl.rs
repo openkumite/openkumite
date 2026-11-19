@@ -233,7 +233,8 @@ impl Bowler {
 }
 
 /// A ball's mark (score card +0x27).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Mark {
     #[default]
     None,
@@ -254,7 +255,8 @@ pub struct Turn {
 }
 
 /// A player's score card (0x1FC61E0): the pins of each ball and its mark.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct Card {
     pub rolls: Vec<u8>,
     pub marks: Vec<Mark>,

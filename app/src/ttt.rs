@@ -3902,16 +3902,56 @@ fn exit_start(painter: &egui::Painter, v: &View, art: &Art, d: &Data) {
 
 /// TOP 5 BOWLERS from the Bowl pause (0x3F3118): over the hall as it stands, with no shade of its own; the row under
 /// the cursor lit by the band (0x3F2A38) before the list (0x3F2D00), THE KING OF IRONBOWL above, the help line 109
-/// (or EXIT:START with the help off).
-// shortcut: a button on a row opens its score card on the PS2 (0x3F25D8); records keep no card here, so it does nothing
-pub fn bowl_pause_top(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, list: &[kumite_game::bowl::Record], cursor: usize) {
-    record_band(painter, v, 135.0 + 71.0 * cursor as f32);
-    bowl_top(painter, v, art, d, scene, list, None, 0);
+/// (or EXIT:START with the help off); `sheet` (the frame): the cursor's record's SCORE SHEET instead of the list.
+#[allow(clippy::too_many_arguments)]
+pub fn bowl_pause_top(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, list: &[kumite_game::bowl::Record], cursor: usize, sheet: Option<u64>) {
+    match (sheet, list.get(cursor)) {
+        (Some(frame), Some(r)) => bowl_sheet(painter, v, art, d, scene, r, cursor, frame),
+        _ => {
+            record_band(painter, v, 135.0 + 71.0 * cursor as f32);
+            bowl_top(painter, v, art, d, scene, list, None, 0);
+        }
+    }
     chrome(painter, v, art, d, &scene.text("king", "THE KING OF IRONBOWL"), 112.0, 40.0, Some(15), 5.0);
     if progress().setting(d, HELP_ROW) != 0 {
         help_line(painter, v, art, d, 109, 0);
     } else {
         exit_start(painter, v, art, d);
+    }
+}
+
+/// SCORE SHEET (0x3F25D8): a record's card at (36, 100) under its title; RANK and the score in the colour of its
+/// class (300 blinking); the team's faces; SUMMARY and the count of each kind of mark.
+// shortcut: the rank's turning pin (0x3F2480, an arena object) is not drawn, nor are the portraits' exact sizes known:
+// the faces are TOP 5's
+#[allow(clippy::too_many_arguments)]
+fn bowl_sheet(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, r: &kumite_game::bowl::Record, place: usize, frame: u64) {
+    use kumite_sim::bowl::Mark;
+    chrome(painter, v, art, d, &scene.text("score_sheet", "SCORE SHEET"), 203.0, 80.0, Some(10), 5.0);
+    let colour = match r.score {
+        300.. => [11, 2][usize::from(frame & 2 != 0)],
+        230.. => 11,
+        170.. => 2,
+        100.. => 9,
+        _ => 21,
+    };
+    let ordinal = scene.texts.get("ordinals").and_then(|o| o.get(place)).and_then(|o| o.as_str()).unwrap_or_default().to_string();
+    let rank = scene.text("rank", "RANK %s:%3d").replace("%s", &ordinal).replace("%3d", &format!("{:3}", r.score));
+    chrome(painter, v, art, d, &rank, 106.0, 212.0, Some(colour), 8.0);
+    bowl_card(painter, v, art, d, std::slice::from_ref(&r.card), None, [36.0, 100.0], (1, 10), true, frame);
+    for (m, body) in r.bodies.iter().enumerate() {
+        let y = 296.0 + 80.0 * m as f32;
+        image(painter, v, art, "003_110.png", [202.0, y - 2.0, 55.0, 56.0], Color32::WHITE);
+        image(painter, v, art, &d.picture(&["select", "faces", &body.to_string()]), [204.0, y, 51.0, 52.0], Color32::WHITE);
+    }
+    chrome(painter, v, art, d, &scene.text("summary", "SUMMARY"), 365.0, 259.0, Some(19), 5.0);
+    let count = |kinds: &[Mark]| r.card.marks.iter().filter(|m| kinds.contains(m)).count();
+    let counts = [count(&[Mark::Strike]), count(&[Mark::Spare]), count(&[Mark::Miss]), count(&[Mark::Foul]), count(&[Mark::Split])];
+    let labels = scene.texts.get("summary_rows").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+    for (k, (n, c)) in counts.iter().zip([2, 17, 1, 10, 22]).enumerate() {
+        let y = 285.0 + 26.0 * k as f32;
+        chrome(painter, v, art, d, labels.get(k).and_then(|l| l.as_str()).unwrap_or_default(), 336.0, y, Some(c), 5.0);
+        chrome(painter, v, art, d, &format!(":{n:2}"), 476.0, y, Some(c), 5.0);
     }
 }
 
