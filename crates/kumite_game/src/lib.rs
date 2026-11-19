@@ -8,6 +8,7 @@ use kumite_sim::data::{Moveset, MovesetIndex};
 use kumite_sim::detmath::DetMath;
 use kumite_sim::input::Pad;
 use std::sync::Arc;
+pub mod arena_motion;
 pub mod bout;
 pub mod bowl;
 pub mod crowd;

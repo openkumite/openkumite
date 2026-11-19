@@ -196,8 +196,11 @@ struct Scene {
     flare: Option<Flare>,
     /// And its weather (stages.json `weather`: smoke, steam, wisps, beacons), a frame on each 60 Hz step.
     weather: Option<kumite_game::weather::Weather>,
-    /// The eye as it was last drawn (m: what the stage's objects that face the camera turn to).
+    /// The eye as it was last drawn (m: what the stage's objects that face the camera turn to), and its projection.
     eye: glam::Vec3,
+    view_proj: glam::Mat4,
+    /// The arena's objects its code moves by the camera and by chance (stages.json `objects`).
+    objects: Option<kumite_game::arena_motion::ArenaMotion>,
 }
 
 /// Tekken Tag's lens flare (0x3A1C78): its sun (m, the arena's axes), its strength, its nine discs (picture, size,
@@ -247,11 +250,19 @@ impl Flare {
 
 /// An arena's background character: its model, where it stands, the clips it plays in turn from frame `start`.
 struct Person {
-    character: Arc<kumite_assets::Character>,
-    model: SkinnedModel,
-    /// Its clip of each motion it may play, and its script as it runs.
-    clips: HashMap<usize, usize>,
+    /// Each model it may show (its own and its script's steps'): the model's number, character, GPU model and clip of
+    /// each motion it may play.
+    bodies: Vec<(usize, Arc<kumite_assets::Character>, SkinnedModel, HashMap<usize, usize>)>,
+    /// Its script as it runs.
     walker: kumite_game::crowd::Walker,
+}
+
+impl Person {
+    /// The body it shows now.
+    fn body(&self) -> Option<&(usize, Arc<kumite_assets::Character>, SkinnedModel, HashMap<usize, usize>)> {
+        let m = self.walker.model();
+        self.bodies.iter().find(|b| b.0 == m)
+    }
 }
 
 /// The attract embu running: the scene and, per slot, a GPU mesh for every cast model.
@@ -744,6 +755,12 @@ impl Scene {
     /// pause and do not follow a replay's seeking; upgrade: the fight's frame counter.
     fn animate(&mut self, r: &Renderer) {
         let frame = self.frame;
+        // (the camera's turn about y: what King's clouds turn from)
+        let inv = self.view_proj.inverse();
+        let to = inv.project_point3(glam::Vec3::Z) - inv.project_point3(glam::Vec3::ZERO);
+        let places = self.objects.as_ref().map(|m| m.places(to.x.atan2(to.z))).unwrap_or_default();
+        let fades: HashMap<String, f32> = places.iter().map(|(n, _, f)| (n.clone(), *f)).collect();
+        let over: HashMap<String, glam::Mat4> = places.into_iter().map(|(n, m, _)| (n, m)).collect();
         for m in &self.moving {
             let Some(mesh) = self.sky.get_mut(m.mesh) else { continue };
             match &m.kind {
@@ -760,18 +777,28 @@ impl Scene {
                     }
                 }
                 MovingKind::Track { vertices, chain, place } => {
-                    let m = kumite_assets::Joint::chain(chain, frame, *place, self.eye);
-                    let moved: Vec<StaticVertex> = vertices.iter().map(|v| StaticVertex { pos: m.transform_point3(glam::Vec3::from(v.pos)).to_array(), ..*v }).collect();
+                    let m = kumite_assets::Joint::chain_with(chain, frame, *place, self.eye, &|name| over.get(name).copied());
+                    // (a fading object: its colours times its brightness)
+                    let k = chain.last().and_then(|j| fades.get(&j.name)).copied().unwrap_or(1.0);
+                    let moved: Vec<StaticVertex> =
+                        (vertices.iter()).map(|v| StaticVertex { pos: m.transform_point3(glam::Vec3::from(v.pos)).to_array(), color: v.color.map(|c| c * k), ..*v }).collect();
                     r.move_mesh(mesh, &moved);
                 }
             }
         }
         // the background characters where their scripts have them
         for p in &self.people {
-            let Some((motion, f, at, heading)) = p.walker.now() else { continue };
-            let Some(&clip) = p.clips.get(&motion) else { continue };
+            let (Some((motion, f, at, heading)), Some((_, ch, model, clips))) = (p.walker.now(), p.body()) else { continue };
+            let Some(&clip) = clips.get(&motion) else { continue };
             let place = glam::Mat4::from_rotation_translation(glam::Quat::from_rotation_y(heading.to_radians()), at);
-            r.update_bones(&p.model, &p.character.skin_matrices(&p.character.pose(clip, f, false), place));
+            // (0x3D9AA8: the root's motion times the model's scale)
+            let mut pose = ch.pose(clip, f, false);
+            let root = ch.nodes.iter().position(|n| n.parent.is_none()).and_then(|k| pose.get(k)).map_or(glam::Vec3::ZERO, |m| m.w_axis.truncate());
+            let shift = glam::Mat4::from_translation(root * (p.walker.scale() - 1.0));
+            for m in &mut pose {
+                *m = shift * *m;
+            }
+            r.update_bones(model, &ch.skin_matrices(&pose, place));
         }
     }
 }
@@ -1355,12 +1382,15 @@ impl App {
             flare: None,
             weather: None,
             eye: glam::Vec3::ZERO,
+            view_proj: glam::Mat4::IDENTITY,
+            objects: None,
         };
         // the arcade game's stage in its place, when the arcade pack has one and the setting asks for it
         let hidden = hidden.then(|| self.assets.arcade_hidden()).flatten();
         // (Tekken Tag: the arcade stages are not its arenas' stand-ins, but arenas of their own)
         let arcade = (self.graphics.arcade_stages && self.roster.ttt.is_none()).then(|| hidden.or_else(|| self.assets.arcade_stage(stage))).flatten();
         let arcade = self.ttt_arcade(stage).map(|f| kumite_assets::Stage::load(&self.assets.root.join(f))).or(arcade);
+        let arcade_none = arcade.is_none();
         // (the arena's own model: its background characters stand in it)
         if arcade.is_none() {
             scene.people = self.people(r, stage);
@@ -1411,6 +1441,12 @@ impl App {
                     Some(Moving { mesh, kind })
                 };
                 scene.moving = st.sky.iter().enumerate().filter_map(moving).collect();
+                // (the moved objects' places in their parents as the stage stands)
+                let rest = |name: &str| {
+                    let chains = scene.moving.iter().filter_map(|m| if let MovingKind::Track { chain, .. } = &m.kind { Some(chain) } else { None });
+                    chains.flatten().find(|j| j.name == name).map(|j| (j.rest.0, j.rest.1))
+                };
+                scene.objects = arcade_none.then(|| self.stage_json(stage)).flatten().and_then(|j| kumite_game::arena_motion::ArenaMotion::new(&j["objects"], rest));
                 (scene.sky_base_y, scene.sky_y_scale, scene.sky_first, scene.floor_period) = (st.sky_base_y, st.sky_y_scale, st.sky_first, st.floor_period);
                 // (a mesh carries the glb's whole vertex list: its own are the ones its indices name)
                 scene.wall_z = st.sky.first().and_then(|m| m.vertices.get(*m.indices.first()? as usize)).filter(|_| st.backdrop_wall).map(|v| place(glam::Vec3::from(v.pos)).z);
@@ -1443,35 +1479,51 @@ impl App {
     fn people(&self, r: &Renderer, stage: usize) -> Vec<Person> {
         let Some(json) = self.stage_json(stage) else { return vec![] };
         let Some(list) = json["people"].as_array() else { return vec![] };
+        // each person's models: its own and its steps' (0x3D87A8)
+        let wears = |q: &serde_json::Value| -> Vec<u64> {
+            let base = q["model"].as_u64().unwrap_or(0);
+            let steps = q["script"].as_array().into_iter().flatten().map(|s| s["model"].as_i64().unwrap_or(0));
+            let mut out: Vec<u64> = std::iter::once(0).chain(steps).filter_map(|d| base.checked_add_signed(d)).collect();
+            out.sort_unstable();
+            out.dedup();
+            out
+        };
         let mut models: std::collections::BTreeMap<u64, Option<Arc<kumite_assets::Character>>> = Default::default();
         let mut out = vec![];
         for p in list {
-            let (Some(k), Some(motions)) = (p["model"].as_u64(), p["motions"].as_array()) else { continue };
+            let Some(motions) = p["motions"].as_array() else { continue };
             let motions: Vec<u64> = motions.iter().filter_map(serde_json::Value::as_u64).collect();
-            let ch = models.entry(k).or_insert_with(|| {
-                // the model with every clip of its arena's people who wear it
-                let ch = kumite_assets::Character::load(&self.assets.root.join(format!("stages/stage_{stage:02}_p{k}.glb")));
-                let mut ch = ch.map_err(|e| log::warn!("stage {stage}'s person {k}: {e:#}")).ok()?;
-                let used: std::collections::BTreeSet<u64> =
-                    list.iter().filter(|q| q["model"].as_u64() == Some(k)).flat_map(|q| q["motions"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_u64)).collect();
-                for m in used {
-                    let file = self.assets.root.join(format!("stages/stage_{stage:02}_m{m}.glb"));
-                    if let Err(e) = kumite_fs::read(&file).map_err(anyhow::Error::from).and_then(|b| ch.add_motions(&b)) {
-                        log::warn!("stage {stage}'s motion {m}: {e:#}");
+            let mut bodies = vec![];
+            for k in wears(p) {
+                let ch = models.entry(k).or_insert_with(|| {
+                    // the model with every clip of its arena's people who may wear it
+                    let ch = kumite_assets::Character::load(&self.assets.root.join(format!("stages/stage_{stage:02}_p{k}.glb")));
+                    let mut ch = ch.map_err(|e| log::warn!("stage {stage}'s person {k}: {e:#}")).ok()?;
+                    let used: std::collections::BTreeSet<u64> =
+                        (list.iter().filter(|q| wears(q).contains(&k))).flat_map(|q| q["motions"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_u64)).collect();
+                    for m in used {
+                        let file = self.assets.root.join(format!("stages/stage_{stage:02}_m{m}.glb"));
+                        if let Err(e) = kumite_fs::read(&file).map_err(anyhow::Error::from).and_then(|b| ch.add_motions(&b)) {
+                            log::warn!("stage {stage}'s motion {m}: {e:#}");
+                        }
                     }
+                    Some(Arc::new(ch))
+                });
+                let Some(ch) = ch.clone() else { continue };
+                let clips: HashMap<usize, usize> = motions.iter().filter_map(|&m| Some((m as usize, ch.clip(&format!("stage_{stage:02}_m{m}"))?))).collect();
+                if clips.is_empty() {
+                    continue;
                 }
-                Some(Arc::new(ch))
-            });
-            let Some(ch) = ch.clone() else { continue };
-            let clips: HashMap<usize, usize> = motions.iter().filter_map(|&m| Some((m as usize, ch.clip(&format!("stage_{stage:02}_m{m}"))?))).collect();
-            if clips.is_empty() {
+                let verts: Vec<SkinVertex> = ch.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal }).collect();
+                let model = r.skinned(&verts, &ch.indices, ch.blend_from, r.texture(ch.texture.width, ch.texture.height, &ch.texture.rgba));
+                bodies.push((k as usize, ch, model, clips));
+            }
+            if bodies.is_empty() {
                 continue;
             }
             // (each its own random numbers, the same each time the arena loads)
-            let walker = kumite_game::crowd::Walker::new(p, &json["walk"], out.len() as u32 + 1);
-            let verts: Vec<SkinVertex> = ch.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal }).collect();
-            let model = r.skinned(&verts, &ch.indices, ch.blend_from, r.texture(ch.texture.width, ch.texture.height, &ch.texture.rgba));
-            out.push(Person { character: ch, model, clips, walker });
+            let walker = kumite_game::crowd::Walker::new(p, &json["walk"], &json["scales"], out.len() as u32 + 1);
+            out.push(Person { bodies, walker });
         }
         out
     }
@@ -1603,9 +1655,14 @@ impl App {
             if let Some(w) = s.weather.as_mut() {
                 w.step();
             }
+            if let Some(m) = s.objects.as_mut() {
+                m.step(s.eye, s.view_proj);
+            }
             for p in &mut s.people {
-                let (ch, clips) = (&p.character, &p.clips);
-                p.walker.step(|m| clips.get(&m).and_then(|&c| ch.clips.get(c)).map_or(1, |c| c.frames.max(1) as i32));
+                let shown = p.walker.model();
+                let Some((_, ch, _, clips)) = p.bodies.iter().find(|b| b.0 == shown) else { continue };
+                let len = |m: usize| clips.get(&m).and_then(|&c| ch.clips.get(c)).map_or(1, |c| c.frames.max(1) as i32);
+                p.walker.step(len);
             }
         }
         // a save that failed (a full disk, the browser's storage full): the player is told, once each time
@@ -5375,6 +5432,7 @@ impl App {
         };
         if let Some(s) = self.scene.as_mut() {
             s.eye = cam.eye;
+            s.view_proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, r.aspect(), 0.05, 400.0) * cam.view();
         }
         let (sky, statics, models): (Vec<_>, Vec<_>, Vec<_>) = match (&self.scene, &self.fight) {
             (None, None) => (vec![], vec![], self.posers.shown.iter().filter_map(|p| self.poser_models.get(&p.record)).collect()),
@@ -5412,18 +5470,27 @@ impl App {
         // the arena's background characters wherever it is drawn
         let mut models = models;
         if let (Some(s), false) = (self.scene.as_ref(), statics.is_empty()) {
-            models.extend(s.people.iter().filter(|p| p.walker.now().is_some()).map(|p| &p.model));
+            models.extend(s.people.iter().filter(|p| p.walker.now().is_some()).filter_map(|p| p.body().map(|b| &b.2)));
         }
         // ... and its lens flare, dimmed by the fighters before the sun
-        // shortcut: the fighters' roots and 0.6 m above them stand for the two points of each the PS2 tests (player
-        // +0x590, +0x11A0, not decoded); upgrade: those points
+        // (player +0x590 and +0x11A0: the world places of its skeleton's nodes 0 and 5, the root and the head, measured
+        // in PCSX2; node k's block is +0xDB0 + 0xC0 k, its place at +0x30)
         let flare = self.scene.as_ref().filter(|_| !statics.is_empty()).and_then(|s| s.flare.as_ref()).map_or_else(Vec::new, |f| {
-            let roots: Vec<glam::Vec3> = match (self.fight.as_ref(), self.tag.as_ref()) {
-                (Some(fight), _) => fight.bout.game.fight.fighters.iter().map(|a| a.root()).collect(),
-                (None, Some(t)) => t.game.melee.actors.iter().map(|a| a.root()).collect(),
+            let points = |(pose, place): (Vec<glam::Mat4>, glam::Mat4), ch: &kumite_assets::Character| -> Vec<glam::Vec3> {
+                let head = ch.nodes.iter().position(|n| n.name == "head").unwrap_or(0);
+                [0, head].iter().filter_map(|&k| pose.get(k)).map(|m| place.transform_point3(m.w_axis.truncate())).collect()
+            };
+            let blockers: Vec<glam::Vec3> = match (self.fight.as_ref(), self.tag.as_ref()) {
+                (Some(fight), _) => {
+                    let g = &fight.bout.game;
+                    (0..g.bodies.len().min(2)).filter(|&i| g.visible[i]).flat_map(|i| points(g.pose(i), &g.bodies[i].character)).collect()
+                }
+                (None, Some(t)) => {
+                    let g = &t.game;
+                    (0..g.bodies.len().min(4)).filter(|&i| g.visible[i]).flat_map(|i| points(g.pose(i), &g.bodies[i].character)).collect()
+                }
                 _ => vec![],
             };
-            let blockers: Vec<glam::Vec3> = roots.iter().map(|p| *p / kumite_game::UNITS).flat_map(|p| [p, p + glam::Vec3::Y * 0.6]).collect();
             let proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, r.aspect(), 0.05, 400.0);
             f.quads(proj * cam.view(), r.aspect(), cam.eye, &blockers)
         });
@@ -5435,8 +5502,17 @@ impl App {
             // (Tekken Tag's dust: blended at its texture's alpha, as the arenas' soft particles)
             effect_quads(&v.sprites(), v.atlas(), &cam, &mut p_alpha, &mut p_add, &mut soft_alpha);
             // (the arena's weather where its stage is drawn)
+            // (0x346830 / 0x345A00: none nearer the eye than the farther fighter, player +0x620)
             if let Some(w) = self.scene.as_ref().filter(|_| !statics.is_empty()).and_then(|s| s.weather.as_ref()) {
-                effect_quads(&w.sprites(), v.atlas(), &cam, &mut soft_alpha, &mut soft_add, &mut Vec::new());
+                let forward = (cam.target - cam.eye).normalize_or_zero();
+                let roots: Vec<glam::Vec3> = match (self.fight.as_ref(), self.tag.as_ref()) {
+                    (Some(fight), _) => fight.bout.game.fight.fighters.iter().map(|a| a.root()).collect(),
+                    (None, Some(t)) => t.game.melee.actors.iter().map(|a| a.root()).collect(),
+                    _ => vec![],
+                };
+                let far = roots.iter().map(|p| (*p / kumite_game::UNITS - cam.eye).dot(forward)).fold(f32::MIN, f32::max);
+                let behind: Vec<_> = w.sprites().into_iter().filter(|s| (s.pos - cam.eye).dot(forward) >= far).collect();
+                effect_quads(&behind, v.atlas(), &cam, &mut soft_alpha, &mut soft_add, &mut Vec::new());
             }
         }
         // the projection the renderer uses, for texts at 3D positions
