@@ -254,7 +254,17 @@ impl Art {
     /// A picture by file name relative to `pictures/` ("r009/029.png") and its size, loaded on first use. In a
     /// browser one not arrived yet is asked for and None till then (it shows a frame or two later).
     pub fn pic(&self, file: &str) -> Option<(TextureHandle, [usize; 2])> {
-        if let Some(p) = self.pics.borrow().get(file) {
+        self.pic_with(file, egui::TextureOptions::NEAREST)
+    }
+
+    /// A picture sampled bilinearly (one the original stretches with the GS's filter on).
+    pub fn pic_linear(&self, file: &str) -> Option<(TextureHandle, [usize; 2])> {
+        self.pic_with(file, egui::TextureOptions::LINEAR)
+    }
+
+    fn pic_with(&self, file: &str, options: egui::TextureOptions) -> Option<(TextureHandle, [usize; 2])> {
+        let key = if options == egui::TextureOptions::NEAREST { file.to_string() } else { format!("{file}#linear") };
+        if let Some(p) = self.pics.borrow().get(&key) {
             return p.clone();
         }
         let path = self.dir.join(file);
@@ -264,9 +274,9 @@ impl Art {
         }
         let p = load_png(&path).ok().map(|im| {
             let size = im.size;
-            (self.ctx.load_texture(file, im, egui::TextureOptions::NEAREST), size)
+            (self.ctx.load_texture(&key, im, options), size)
         });
-        self.pics.borrow_mut().insert(file.to_string(), p.clone());
+        self.pics.borrow_mut().insert(key, p.clone());
         p
     }
 
