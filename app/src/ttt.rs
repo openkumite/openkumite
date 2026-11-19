@@ -261,11 +261,15 @@ pub struct Progress {
     /// 200-point game (+0x202, JUKEBOX's), a 300 (+0x204).
     pub bowlers: Option<Vec<kumite_game::bowl::Record>>,
     pub bowl_bonus: [bool; 2],
+    /// Tekken Force's keys and hi-score here (apart from Tekken 3's records).
+    pub force_keys: u32,
+    pub force_hiscore: u32,
 }
 
 /// The save's progress as last loaded or changed (the menus read it; the app keeps it in the save), as the
 /// DIFFICULTY of the Tekken 3 menus.
-static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress { stage: 0, points: 0, seen: 0, options: None, arcade_off: false, bowlers: None, bowl_bonus: [false; 2] });
+static PROGRESS: std::sync::Mutex<Progress> =
+    std::sync::Mutex::new(Progress { stage: 0, points: 0, seen: 0, options: None, arcade_off: false, bowlers: None, bowl_bonus: [false; 2], force_keys: 0, force_hiscore: 0 });
 
 pub fn progress() -> Progress {
     PROGRESS.lock().map_or_else(|e| e.into_inner().clone(), |p| p.clone())
@@ -1517,11 +1521,25 @@ fn font_in(painter: &egui::Painter, v: &View, art: &Art, d: &Data, colour: Optio
     let text = text.to_uppercase().replace(['´', '`'], "'");
     let mut at = x - text.chars().map(advance).sum::<f32>() / 2.0;
     for c in text.chars() {
-        if let Some((r, k)) = rows.iter().enumerate().find_map(|(r, row)| row.chars().position(|g| g == c).map(|k| (r, k))) {
+        // (the font has no '+', which Tekken 3's "+N SEC" wants: its '-', and the '-' turned a quarter about its middle)
+        let g = if c == '+' { '-' } else { c };
+        if let Some((r, k)) = rows.iter().enumerate().find_map(|(r, row)| row.chars().position(|x| x == g).map(|k| (r, k))) {
             let (u, vv) = (k as f32 * gw / tw as f32, r as f32 * gh / th as f32);
             let uv = Rect::from_min_max(Pos2::new(u, vv), Pos2::new(u + gw / tw as f32, vv + gh / th as f32));
             let [rx, ry, rw, rh] = sv([at - (gw * sx - advance(c)) / 2.0, y, gw * sx, gh * sy]);
-            painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, tint);
+            let cell = v.rect(rx, ry, rw, rh);
+            painter.image(tex.id(), cell, uv, tint);
+            if c == '+' {
+                // (about the dash's ink, below and left of its cell's middle: read off the picture)
+                let m = cell.center() + egui::vec2(-0.14 * cell.width(), 0.13 * cell.height());
+                let turn = |p: Pos2| m + egui::vec2(m.y - p.y, p.x - m.x);
+                let mut mesh = egui::Mesh::with_texture(tex.id());
+                for (p, t) in [(cell.left_top(), uv.left_top()), (cell.right_top(), uv.right_top()), (cell.right_bottom(), uv.right_bottom()), (cell.left_bottom(), uv.left_bottom())] {
+                    mesh.vertices.push(egui::epaint::Vertex { pos: turn(p), uv: t, color: tint });
+                }
+                mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+                painter.add(egui::Shape::mesh(mesh));
+            }
         }
         at += advance(c);
     }

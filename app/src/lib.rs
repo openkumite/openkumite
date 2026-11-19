@@ -3204,7 +3204,37 @@ impl App {
         let stride = if self.roster.ttt.is_some() { 8 } else { 4 };
         let selection = c.id * stride + self.roster.costume_of.get(&model).copied().unwrap_or(0);
         let drb = false;
-        self.force = Some(forcerun::ForceRun::new(data, player, selection, c.id, difficulty, self.records.force_keys, self.records.force_hiscore, drb));
+        let (keys, hiscore) = self.force_best();
+        self.force = Some(forcerun::ForceRun::new(data, player, selection, c.id, difficulty, keys, hiscore, drb));
+    }
+
+    /// Tekken Force's keys and hi-score: Tekken 3's records', or under Tekken Tag its save's (apart).
+    fn force_best(&self) -> (u32, u32) {
+        match self.roster.ttt {
+            Some(_) => {
+                let p = ttt::progress();
+                (p.force_keys, p.force_hiscore)
+            }
+            None => (self.records.force_keys, self.records.force_hiscore),
+        }
+    }
+
+    /// A Force run's keys and score kept (the best of them), saved; and (Tekken 3) its character played. The
+    /// hi-score now.
+    fn keep_force(&mut self, keys: u32, score: u32, played: Option<usize>) -> u32 {
+        let (k, h) = self.force_best();
+        let (keys, hiscore) = (k.max(keys), h.max(score));
+        if self.roster.ttt.is_some() {
+            ttt::set_progress(ttt::Progress { force_keys: keys, force_hiscore: hiscore, ..ttt::progress() });
+            self.records.ttt = ttt::progress();
+        } else {
+            (self.records.force_keys, self.records.force_hiscore) = (keys, hiscore);
+            if let Some(c) = played {
+                self.records.played(c);
+            }
+        }
+        self.records.save();
+        hiscore
     }
 
     /// `--mode`: start a mode straight away, past its menus (debugging; see `launch.rs`).
@@ -4283,20 +4313,19 @@ impl App {
                 run.clock = f.bout.game.fight.clock;
             }
             let more = run.next();
-            self.records.force_keys = self.records.force_keys.max(run.keys);
+            let (keys, score, player) = (run.keys, run.score, run.player_char);
+            let new = !more && score > self.force_best().1;
+            let hiscore = self.keep_force(keys, if more { 0 } else { score }, (!more).then_some(player));
+            let Some(run) = self.force.as_mut() else { return };
+            run.new_hiscore |= new;
             self.fight = None;
             self.scene = None;
             if more {
                 self.start_force_stage();
             } else {
-                run.new_hiscore = run.score > self.records.force_hiscore;
-                self.records.force_hiscore = self.records.force_hiscore.max(run.score);
-                self.records.save();
-                self.records.played(run.player_char);
-                self.records.save();
                 let r = forcerun::ForceResults {
                     score: run.score,
-                    hiscore: self.records.force_hiscore,
+                    hiscore,
                     new_hiscore: run.new_hiscore,
                     flags: run.flags,
                     bosses: run.bosses.clone(),
@@ -4316,10 +4345,8 @@ impl App {
             return;
         }
         // lost: the hi-score is kept, GAME OVER
-        self.records.played(run.player_char);
-        let score = run.stage.as_ref().map_or(run.score, |s| s.score);
-        self.records.force_hiscore = self.records.force_hiscore.max(score);
-        self.records.save();
+        let (score, player) = (run.stage.as_ref().map_or(run.score, |s| s.score), run.player_char);
+        self.keep_force(0, score, Some(player));
         self.force = None;
         self.fight = None;
         self.scene = None;
