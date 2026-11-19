@@ -804,6 +804,7 @@ impl Game {
                 root: s.root,
                 marks: [mark(0x0C), mark(0x0D)],
                 release: mv.posture.raw & 0x40_0000 != 0,
+                follow: i64::from(mv.flags24.raw >> 20 & 3),
             }
         })
     }

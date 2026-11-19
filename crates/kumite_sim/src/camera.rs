@@ -29,6 +29,17 @@ struct Json {
     situation_presets: Option<JsonSituations>,
     move_camera_lists: Option<JsonLists>,
     camera_motions: Option<JsonMotions>,
+    fighter_cameras: Option<JsonFighterCams>,
+}
+#[derive(Deserialize)]
+struct JsonFighterCams {
+    ids: Vec<[i64; 2]>,
+    lists: Vec<Vec<JsonFighterEntry>>,
+}
+#[derive(Deserialize)]
+struct JsonFighterEntry {
+    weight: i64,
+    scripts: Vec<[i64; 16]>,
 }
 #[derive(Deserialize)]
 struct JsonSituations {
@@ -271,6 +282,10 @@ pub struct Director {
     situations: Vec<Situation>,
     lists: Vec<Option<CamList>>,
     motions: Vec<CamMotion>,
+    /// The per-fighter situation cameras (0x3943A8): by camera id its list (0x12C on), a list's entries (cumulative
+    /// weight of 4096, as 0x3941F0 leaves them; the first of its three scripts, the one a move's id takes).
+    fighter_ids: Vec<(i64, usize)>,
+    fighter_lists: Vec<Vec<(i64, [i64; 16])>>,
 }
 #[derive(Debug)]
 struct Situation {
@@ -304,7 +319,7 @@ pub struct CamMotion {
 impl Director {
     /// The lists as the boot leaves them (0x393898): weights cumulative, of 4096; the split before the first entry
     /// flagged 0x10 (none at the first); flags & 3 = 1 with two cameras made 2.
-    fn new(s: JsonSituations, l: JsonLists, m: JsonMotions) -> Result<Self> {
+    fn new(s: JsonSituations, l: JsonLists, m: JsonMotions, f: Option<JsonFighterCams>) -> Result<Self> {
         let camera = |kind: u8, value: i64| match kind {
             1 => value,
             2 => -value,
@@ -328,7 +343,21 @@ impl Director {
             lists[list.id] = Some(CamList { split, entries });
         }
         let situations = s.entries.iter().map(|e| Situation { in_frames: e.in_frames, hold: e.field_1, pitch: e.pitch, yaw: e.yaw_offset }).collect();
-        Ok(Self { situations, lists, motions: m.motions })
+        let (mut fighter_ids, mut fighter_lists) = (Vec::new(), Vec::new());
+        if let Some(f) = f {
+            for list in f.lists {
+                let total: i64 = list.iter().map(|e| e.weight).sum();
+                let mut sum = 0;
+                let mut entries = Vec::new();
+                for e in list {
+                    sum += e.weight;
+                    entries.push(((sum << 12) / total.max(1), e.scripts.first().copied().unwrap_or([-1; 16])));
+                }
+                fighter_lists.push(entries);
+            }
+            fighter_ids = f.ids.iter().filter_map(|&[id, list]| Some((id, usize::try_from(list - 0x12C).ok()?))).collect();
+        }
+        Ok(Self { situations, lists, motions: m.motions, fighter_ids, fighter_lists })
     }
 }
 
@@ -457,7 +486,7 @@ impl CameraData {
         anyhow::ensure!(blend > 0 && j.intro.ease_frames.is_none_or(|e| e > 0), "camera.json: intro frames must be positive");
         anyhow::ensure!(j.screen_width.is_none_or(|w| w > 0), "camera.json: screen_width must be positive");
         let director = match (j.situation_presets, j.move_camera_lists, j.camera_motions) {
-            (Some(s), Some(l), Some(m)) => Some(Arc::new(Director::new(s, l, m)?)),
+            (Some(s), Some(l), Some(m)) => Some(Arc::new(Director::new(s, l, m, j.fighter_cameras)?)),
             _ => None,
         };
         Ok(Self {
@@ -698,6 +727,8 @@ pub struct Actor {
     pub marks: [i64; 2],
     /// Its move's posture word has 0x400000 (the throw lets go).
     pub release: bool,
+    /// Its move's flags bits 20-21 (2: a per-fighter camera freezes on it, 0x394A40).
+    pub follow: i64,
 }
 
 /// Tekken Tag's director block (CAM 0x433330).
@@ -727,6 +758,15 @@ struct Cam {
     anchor: [i64; 3],
     mirror: bool,
     chained: bool,
+    /// The per-fighter cameras: +0x7C / +0x80 the move each fighter set one with, +0x4C / +0x50 the count and
+    /// length (-1 none), its script, the point it looks at (0x8BC680), +0x74 its yaw, the freeze (gp-0x64C4).
+    used: [Option<u64>; 2],
+    fn_: i64,
+    flen: i64,
+    script: [i64; 16],
+    point: [i64; 3],
+    face: i64,
+    frozen: bool,
 }
 
 impl Cam {
@@ -750,6 +790,13 @@ impl Cam {
             anchor: [0; 3],
             mirror: false,
             chained: false,
+            used: [None; 2],
+            fn_: -1,
+            flen: -1,
+            script: [0; 16],
+            point: [0; 3],
+            face: 0,
+            frozen: false,
         }
     }
 }
@@ -906,15 +953,22 @@ impl FightCamera {
         if self.cam.latch >= 0 && a[self.cam.latch as usize & 1].throw == 0 {
             self.cam.latch = -1;
         }
+        for (u, f) in self.cam.used.iter_mut().zip(&a) {
+            if u.is_some_and(|m| m != f.mv) {
+                *u = None;
+            }
+        }
         let cam3 = a.iter().any(|f| f.cam == 3);
         let orient = |side: usize| self.samp[side].side >= self.samp[1 - side].side;
         let orient = [orient(0), orient(1)];
         let c = &mut self.cam;
         match c.state {
             1 => {
-                c.n = -1;
-                if c.latch < 0 && a.iter().any(|f| f.throw > 0) && !a.iter().all(|f| (0x11..=0x68).contains(&f.cam)) {
+                (c.n, c.flen) = (-1, -1);
+                if self.fighter_start(dir, orient) {
+                } else if self.cam.latch < 0 && a.iter().any(|f| f.throw > 0) && !a.iter().all(|f| (0x11..=0x68).contains(&f.cam)) {
                     let side = usize::from(a[0].throw < 1);
+                    let c = &mut self.cam;
                     (c.latch, c.side, c.orient) = (side as i64, side, orient[side]);
                     if let Some(r) = self.select(dir, &a[side], false) {
                         let c = &mut self.cam;
@@ -930,7 +984,9 @@ impl FightCamera {
             }
             2 => {
                 self.w[..3].copy_from_slice(&[0, 0x1000, 0]);
-                if self.ended(&a) {
+                if self.fighter_start(dir, orient) {
+                    self.w = [0, 0, 0, 0, 0x1000];
+                } else if self.ended(&a) {
                     let h = self.hold(dir);
                     (self.cam.n, self.cam.len, self.cam.state) = (h, h, 4);
                 }
@@ -1004,16 +1060,65 @@ impl FightCamera {
                         c.state = 5;
                         self.freeze();
                     }
-                } else if c.delay == -2 && share == 0 {
-                    c.delay = -3;
-                } else if c.delay == -3 && share == 0x80 {
-                    (c.state, c.delay) = (1, -1);
+                } else {
+                    if c.delay == -2 && share == 0 {
+                        c.delay = -3;
+                    } else if c.delay == -3 && share == 0x80 {
+                        (c.state, c.delay) = (1, -1);
+                    }
+                    if self.fighter_start(dir, orient) {
+                        self.w = [0, 0, 0, 0, 0x1000];
+                    }
+                }
+            }
+            // the per-fighter cameras: 7 / 10 slot 1 blended in from the fight camera, 12 / 13 from the frozen slot 4
+            // (10 and 13 after a delay an id-3 move ends), then 8 held, 9 blended back; 14 the fight camera blended
+            // into the view frozen at the delay's end, 15 held, then the S-curve back (5)
+            7 | 10 | 12 | 13 | 14 if c.delay >= 0 => {
+                c.delay -= 1;
+                if c.state == 14 && c.delay == 0 {
+                    self.keys[4] = self.keys[3];
+                } else if matches!(c.state, 10 | 13) && cam3 {
+                    (c.delay, c.state) = (-1, 1);
+                }
+            }
+            7 | 10 | 12 | 13 | 14 => {
+                let v = (c.n << 12) / c.len.max(1);
+                (c.n, c.fn_) = (c.n - 1, c.fn_ - 1);
+                self.w = match c.state {
+                    7 | 10 => [v, 0x1000 - v, 0, 0, 0],
+                    14 => [v, 0, 0, 0, 0x1000 - v],
+                    _ => [0, 0x1000 - v, 0, 0, v],
+                };
+                if c.n <= 0 {
+                    c.state = if c.state == 14 { 15 } else { 8 };
+                }
+            }
+            8 | 15 => {
+                self.w = if c.state == 8 { [0, 0x1000, 0, 0, 0] } else { [0, 0, 0, 0, 0x1000] };
+                c.fn_ -= 1;
+                let b = c.script[3];
+                if b >= c.fn_ {
+                    (c.n, c.len, c.state) = (b, b, if c.state == 8 { 9 } else { 5 });
+                }
+            }
+            9 => {
+                let v = (c.n << 12) / c.len.max(1);
+                (c.n, c.fn_) = (c.n - 1, c.fn_ - 1);
+                self.w = [0x1000 - v, v, 0, 0, 0];
+                if c.n <= 0 {
+                    (c.state, c.flen, c.n, c.len) = (1, -1, -1, -1);
+                    self.w = [0x1000, 0, 0, 0, 0];
                 }
             }
             _ => self.reset(),
         }
         if self.w[1] > 0 {
-            self.slot1(dir, self.wprev[1] < 1);
+            if self.cam.flen < 0 {
+                self.slot1(dir, self.wprev[1] < 1);
+            } else {
+                self.fighter_slot1(self.wprev[1] < 1);
+            }
         }
         if self.w[0] > 0 {
             self.slot0_update(self.wprev[0] < 1, fss, mc);
@@ -1028,6 +1133,132 @@ impl FightCamera {
     fn freeze(&mut self) {
         self.keys[4] = self.keys[3];
         self.w = [0, 0, 0, 0, 0x1000];
+    }
+
+    /// 0x38DEA0 / 0x3943A8: a per-fighter camera, once a move: a fighter's move with camera id 0x23-0x66 picks a
+    /// script from its list (rand & 0xFFF) about the other fighter; the script's kind sets the state, its frames the
+    /// count, its blend in the blend. shortcut: as when the other's +0x131 is clear (unknown): not ids 0x1C-0x20 nor
+    /// the rows by character and motion (0x509820), and kinds 9 / 17 look at the root, not +0x39C.
+    fn fighter_start(&mut self, dir: &Director, orient: [bool; 2]) -> bool {
+        if self.cam.used.iter().any(Option::is_some) {
+            return false;
+        }
+        let a = self.actors;
+        for it in 0..2 {
+            let (o, m) = (&a[it], &a[1 - it]);
+            if !(0x23..=0x66).contains(&m.cam) {
+                continue;
+            }
+            let Some(list) = dir.fighter_ids.iter().find(|e| e.0 == m.cam).and_then(|e| dir.fighter_lists.get(e.1)) else { continue };
+            let r = self.rand() & 0xFFF;
+            let Some(&(_, script)) = list.iter().find(|e| e.0 >= r) else { return false };
+            if script[0] == -1 {
+                return false;
+            }
+            let (kind, frames, blend) = (script[0], script[1], script[2]);
+            let c = &mut self.cam;
+            (c.script, c.point, c.used[1 - it], c.frozen) = (script, o.root, Some(m.mv), false);
+            (c.side, c.orient, c.camera, c.fn_, c.flen, c.face) = (it, orient[it], 1, frames, frames, o.facing);
+            let delay = if script[14] != 0 { script[14] } else { -1 };
+            let (state, delay) = match kind {
+                3 | 6 => (10, 16),
+                11 | 14 => (13, 16),
+                10 => (if blend == 1 && delay == -1 { 15 } else { 14 }, delay),
+                12 | 13 | 15..=17 => (if blend == 1 && delay == -1 { 8 } else { 12 }, delay),
+                4 | 5 | 7..=9 => (if blend == 1 && delay == -1 { 8 } else { 7 }, delay),
+                _ => (if blend == 1 { 8 } else { 7 }, -1),
+            };
+            let n = if matches!(state, 8 | 15) { 0 } else { blend };
+            (c.state, c.delay, c.n, c.len) = (state, delay, n, n);
+            if kind != 10 || state == 15 {
+                self.keys[4] = self.keys[3];
+            }
+            return true;
+        }
+        false
+    }
+
+    /// 0x394648: slot 1 for a per-fighter camera by its script's kind: 0 a situation's angle (one of four pitches
+    /// and yaw offsets off the fighters' axis), 1 an orbit of the point at that angle, its distance easing from the
+    /// script's second to its first; 3-5 and 11-13 turned by pitch and yaw (and the other's facing) easing from / to,
+    /// 6-8 and 14-16 an orbit at a pitch and a yaw off the fighters' axis easing from / to (both following the other
+    /// fighter's root halfway a frame, heights kept within -1400..-900, the eye lifted by the script's +0x14, frozen
+    /// once the other's move's flags bits 20-21 are 2); else back to the fight camera.
+    fn fighter_slot1(&mut self, snap: bool) {
+        let c = self.cam;
+        let sc = c.script;
+        let s32 = |k: usize| (sc[k + 1] << 16) | (sc[k] & 0xFFFF);
+        let (d0, d1) = (s32(4), s32(6));
+        let h = self.data.h;
+        let t = (((c.flen - c.fn_) << 12) / c.flen.max(1)).max(0);
+        let ease = |a: i64, b: i64, t: i64| a + sra_tz((b - a) * t, 12);
+        let [sa, sb] = self.samp;
+        let axis = if sa.side < sb.side { self.data.ratan2(sb.x - sa.x, sb.z - sa.z) } else { self.data.ratan2(sa.x - sb.x, sa.z - sb.z) } << 6;
+        let ang = |a6: i64| sra_tz(a6, 6);
+        let other = self.actors[c.side];
+        let orbit = |d: &CameraData, dist: i64, pitch: i64, yaw: i64| {
+            let (sy, cy, sp, cp) = (d.sin(ang(yaw)), d.cos(ang(yaw)), d.sin(ang(pitch)), d.cos(ang(pitch)));
+            [sra_tz(sra_tz(dist * sy, 12) * cp, 12), -sra_tz(dist * sp, 12), -sra_tz(sra_tz(dist * cy, 12) * cp, 12)]
+        };
+        match sc[0] {
+            0 | 1 => {
+                if snap {
+                    self.randint(0xE3);
+                    let pitch = sc[8 + (self.rand() & 3) as usize] << 6;
+                    let off = sc[12 + (self.rand() & 3) as usize] << 6;
+                    self.cam.pitch = if self.data.variant { 0 } else { pitch };
+                    self.cam.yaw = if c.orient { axis - off } else { axis + off };
+                }
+                let (pitch, yaw) = (self.cam.pitch, self.cam.yaw);
+                if sc[0] == 0 {
+                    self.frame_key(1, pitch, yaw, snap, tdiv(self.data.distance * 0x72, 128));
+                    return;
+                }
+                let k = ((c.fn_ << 12) / c.flen.max(1) - 0x400).max(0);
+                let v = orbit(&self.data, tdiv(ease(d1, d0, k) * h, 955), pitch, yaw);
+                let p = c.point;
+                self.keys[1] = self.lookat([p[0] + v[0], p[1] + v[1], p[2] + v[2]], p, h);
+            }
+            3..=8 | 11..=16 => {
+                let turned = matches!(sc[0], 3..=5 | 11..=13);
+                if !turned && (c.fn_ == c.flen - 2 || c.fn_ == c.flen - 1) {
+                    self.cam.face = axis;
+                }
+                if other.follow == 2 {
+                    self.cam.frozen = true;
+                }
+                if self.cam.frozen {
+                    self.keys[1] = self.keys[3];
+                    return;
+                }
+                let dist = tdiv(ease(d0, d1, t) * h, 955);
+                let p = &mut self.cam.point;
+                for k in 0..3 {
+                    p[k] += tdiv(other.root[k] - p[k], 2);
+                }
+                p[1] = p[1].clamp(-1400, -900);
+                let p = *p;
+                let v = if turned {
+                    let (y0, y1) = if c.orient { (s16(0x1000 - sc[12]), s16(0x1000 - sc[13])) } else { (sc[12], sc[13]) };
+                    let f = other.facing & 0xFFF;
+                    if (self.cam.face - f).abs() <= 0x400 {
+                        self.cam.face = f;
+                    }
+                    self.data.turn([s16(ease(sc[8], sc[9], t)), s16(ease(y0, y1, t) + self.cam.face), 0], [0, 0, dist])
+                } else {
+                    let pitch = ease(sc[8], sc[9], t) << 6;
+                    let off = ease(sc[12], sc[13], t) << 6;
+                    let yaw = if c.orient { self.cam.face - off } else { self.cam.face + off };
+                    (self.cam.pitch, self.cam.yaw) = (pitch, yaw);
+                    orbit(&self.data, dist, pitch, yaw)
+                };
+                let eye = [p[0] + v[0], (p[1] + v[1]).clamp(-1400, -900), p[2] + v[2]];
+                let mut key = self.lookat(eye, p, h);
+                key.y += sc[10];
+                self.keys[1] = key;
+            }
+            _ => self.reset(),
+        }
     }
 
     /// 0x3940B0: the situation's blend back.

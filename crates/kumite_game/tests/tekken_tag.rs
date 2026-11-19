@@ -378,6 +378,36 @@ fn a_throw_has_its_camera() {
     assert_eq!(Some(seen), run());
 }
 
+/// A move with a per-fighter camera id (0x23-0x66; alias 5459, id 0x29 in every set: kind 3) starts its camera about
+/// the other fighter (0x38DEA0: 17 frames' delay and 30 of blend (state 10), held to 30 frames left (8), 30 back (9))
+/// and goes back to the fight camera; the same each run.
+#[test]
+fn a_move_has_its_per_fighter_camera() {
+    let Some(a) = assets() else { return };
+    let run = || {
+        let mut g = Game::load(&a, [PAUL, LEI]).unwrap();
+        g.camera.data().director.as_ref()?;
+        for _ in 0..60 {
+            g.step([Pad::default(); 2]);
+        }
+        g.fight.fighters[0].play_alias(5459);
+        let mut seen = Vec::new();
+        for _ in 0..400 {
+            g.step([Pad::default(); 2]);
+            seen.push((g.camera.special(), g.camera.view));
+        }
+        Some(seen)
+    };
+    let Some(seen) = run() else { return };
+    let states: Vec<u8> = seen.iter().map(|s| s.0).collect();
+    if !states.iter().any(|&s| (7..=15).contains(&s)) {
+        eprintln!("(a pack without the per-fighter cameras) {states:?}");
+        return;
+    }
+    assert_eq!(states.last(), Some(&1), "{states:?}");
+    assert_eq!(Some(seen), run());
+}
+
 /// The K.O. replay runs on Tekken Tag's own shots (0x3D0748): a still eye per pass, a new one each pass; the same
 /// each time.
 #[test]
