@@ -288,8 +288,20 @@ struct BowlRun {
     records: Vec<usize>,
     /// Each player's team (character ids: the bowler, its partner), for TOP 5 BOWLERS.
     teams: Vec<[usize; 2]>,
-    /// The pause menu (state 9, START in the throw): its cursor, TOP BOWLERS shown.
-    pause: Option<(usize, bool)>,
+    /// The pause menu (state 9, START in the throw: Tekken Tag's with Bowl's entries): its cursor and player, RESET?
+    /// open (YES chosen), TOP BOWLERS or BOWLING OPTIONS open (its cursor).
+    pause: Option<(usize, usize)>,
+    reset: Option<bool>,
+    page: Option<BowlPage>,
+    /// The teams it started with (RESET starts them again).
+    started: Vec<ttt::Team>,
+}
+
+/// The Bowl pause's own pages.
+#[derive(Clone, Copy)]
+enum BowlPage {
+    Top,
+    Options(usize),
 }
 
 /// The attract loop's state: its step (0x80097F3E), the embu variant last shown (0x80097F20), the demo list
@@ -3841,7 +3853,8 @@ impl App {
 
     /// Tekken Bowl (mode 8, 0x3F0C00): the bowling hall, each player's bowler, the ball and the ten pins
     /// (`stages/bowl_*.glb`, moved with the hall's model), the pin deck's machinery, its music.
-    fn start_bowl(&mut self, teams: &[ttt::Team]) -> Result<()> {
+    fn start_bowl(&mut self, started: &[ttt::Team]) -> Result<()> {
+        let teams = started;
         let pick = |&(i, costume): &(usize, usize)| {
             let c = self.roster.characters.get(i)?;
             Some((*c.costumes.get(costume).or(c.costumes.first())?, c.id))
@@ -3876,7 +3889,21 @@ impl App {
             log::info!("Tekken Bowl: {} player(s)", players.len());
             self.scene = Some(stage);
             let teams = players.iter().zip(&partners).map(|(p, m)| [p.1, m.map_or(p.1, |m| m.1)]).collect();
-            self.bowl = Some(BowlRun { scene, models, partners: mates, ball, pins, start: false, select: false, records: players.iter().map(|p| p.0).collect(), teams, pause: None });
+            self.bowl = Some(BowlRun {
+                scene,
+                models,
+                partners: mates,
+                ball,
+                pins,
+                start: false,
+                select: false,
+                records: players.iter().map(|p| p.0).collect(),
+                teams,
+                pause: None,
+                reset: None,
+                page: None,
+                started: started.to_vec(),
+            });
             self.screen = None;
             self.fight = None;
             Ok(())
@@ -4802,32 +4829,37 @@ impl App {
             return true;
         }
         // Tekken Bowl: START skips a strike's pose or a replay and ends a finished game; in the throw it pauses
-        // (state 9: TOP BOWLERS, EXIT); BACK (SELECT) switches the hand of those who can in the position step
-        // (0x3EAE08), else leaves for the main menu
-        if let Some(b) = self.bowl.as_mut() {
+        // (state 9: Tekken Tag's pause with TOP BOWLERS and BOWLING OPTIONS; RESET starts the game again); BACK
+        // (SELECT) switches the hand of those who can in the position step (0x3EAE08), else leaves for the main menu
+        if let (Some(b), Some(d)) = (self.bowl.as_mut(), self.roster.ttt.clone()) {
             use kumite_sim::bowl::Phase as P;
-            match (&mut b.pause, key) {
-                (Some((_, top)), _) if *top => *top = false,
-                (Some(_), Key::Back) => b.pause = None,
-                (Some((c, _)), Key::Up | Key::Down) => {
-                    menu::sfx::play(menu::sfx::cursor());
-                    *c ^= 1;
-                }
-                (Some((c, top)), Key::Start | Key::Button(_)) => {
-                    menu::sfx::play(menu::sfx::pick());
-                    if *c == 0 {
-                        *top = true;
-                    } else {
-                        self.end_bowl();
+            let item = b.pause.and_then(|(c, _)| ttt::BOWL_PAUSE_ITEMS.get(c).copied());
+            match (b.page.as_mut(), key) {
+                (Some(BowlPage::Top), _) => b.page = None,
+                (Some(BowlPage::Options(c)), _) => {
+                    if ttt::bowl_options_key(&d, c, key) {
+                        b.page = None;
                     }
                 }
-                (Some(_), _) => {}
+                (None, Key::Button(_)) if b.reset.is_none() && matches!(item, Some(4 | 5)) => {
+                    menu::sfx::play(menu::sfx::pick());
+                    b.page = Some(if item == Some(4) { BowlPage::Top } else { BowlPage::Options(0) });
+                }
+                (None, _) if b.pause.is_some() => {
+                    if ttt::pause_key(&d, &ttt::BOWL_PAUSE_ITEMS, &mut b.pause, &mut b.reset, key) {
+                        let teams = b.started.clone();
+                        self.bowl = None;
+                        if let Err(e) = self.start_bowl(&teams) {
+                            log::error!("Tekken Bowl: {e:#}");
+                        }
+                    }
+                }
                 (None, Key::Back) if b.scene.bowl.phase == P::Position && b.scene.bowl.players.get(b.scene.bowl.current).is_some_and(|p| p.switches()) => b.select = true,
                 (None, Key::Back) => self.end_bowl(),
                 (None, Key::Start) if b.scene.bowl.phase == P::Over => self.end_bowl(),
                 (None, Key::Start) if matches!(b.scene.bowl.phase, P::Position | P::Aim | P::Power) => {
                     menu::sfx::play(menu::sfx::pick());
-                    b.pause = Some((0, false));
+                    b.pause = Some((0, b.scene.bowl.current));
                 }
                 (None, Key::Start) => b.start = true,
                 _ => {}
@@ -4957,7 +4989,7 @@ impl App {
         }
         // Tekken Tag's pause menu (0x3B7B98): its entries and RESET?
         if let Some(d) = self.roster.ttt.as_deref().filter(|_| fight.pause.is_some() && !ball) {
-            if ttt::pause_key(d, &mut fight.pause, &mut fight.reset, key) {
+            if ttt::pause_key(d, &ttt::PAUSE_ITEMS, &mut fight.pause, &mut fight.reset, key) {
                 if let Some(a) = self.audio.as_mut() {
                     a.duck(false);
                 }
@@ -5507,9 +5539,14 @@ impl App {
                         let view = art::Screen::fit(ctx.content_rect());
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("bowl_hud")));
                         ttt::bowl_hud(&painter, &view, art, d, roster, &b.scene, frames);
-                        if let Some(p) = b.pause {
-                            let top = ttt::progress().bowlers.unwrap_or_else(|| b.scene.records.defaults.clone());
-                            ttt::bowl_pause(&painter, &view, art, d, &b.scene, p, &top);
+                        match (b.page, b.pause) {
+                            (Some(BowlPage::Top), _) => {
+                                let top = ttt::progress().bowlers.unwrap_or_else(|| b.scene.records.defaults.clone());
+                                ttt::bowl_top(&painter, &view, art, d, &b.scene, &top);
+                            }
+                            (Some(BowlPage::Options(c)), _) => ttt::draw_bowl_options(&painter, &view, art, d, &b.scene, c),
+                            (None, Some((c, player))) => ttt::draw_pause(&painter, &view, art, d, &ttt::BOWL_PAUSE_ITEMS, c, player, b.reset, frames as u32),
+                            _ => {}
                         }
                     } else if let Some(t) = tag {
                         if replay_view.as_ref().is_none_or(|v| v.hud) {
@@ -5563,7 +5600,7 @@ impl App {
                         } else if let (Some((c, player)), Some(d), None) = (f.pause, roster.ttt.as_deref(), f.bout.game.ball.as_ref()) {
                             let view = art::Screen::fit(ctx.content_rect());
                             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("pause"))).with_clip_rect(view.rect);
-                            ttt::draw_pause(&painter, &view, art, d, c, player, f.reset, frames as u32);
+                            ttt::draw_pause(&painter, &view, art, d, &ttt::PAUSE_ITEMS, c, player, f.reset, frames as u32);
                         } else if let Some((c, player)) = f.pause {
                             let ball = f.bout.game.ball.is_some();
                             // (no ball_items: the usual items)
@@ -7464,6 +7501,15 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
                     _ => Pad::default(),
                 };
                 b.scene.step(pad);
+            }
+            // (`--page pause|top|options`: the pause, TOP 5 BOWLERS or BOWLING OPTIONS open)
+            if let (Some(b), Some(page)) = (app.bowl.as_mut(), std::env::args().skip_while(|a| a != "--page").nth(1)) {
+                b.pause = Some((0, 0));
+                b.page = match page.as_str() {
+                    "top" => Some(BowlPage::Top),
+                    "options" => Some(BowlPage::Options(0)),
+                    _ => None,
+                };
             }
             for _ in 0..13 {
                 app.draw();

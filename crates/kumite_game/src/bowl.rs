@@ -122,7 +122,18 @@ pub struct BowlScene {
     stepping: i8,
     /// The strike's pose: the point the camera looks at (metres), after the bowler's body (0x3EBC98 modes 4, 5).
     pivot: Vec3,
+    /// The throw's and the roll's camera (0x1FC51B0, game units): its pivot, yaw (radians) and distance.
+    view: (Vec3, f32, f32),
 }
+
+/// The camera's pitch (0x3E9C10: -0.2 rad, looking down), the fixed view behind the lane (mode 0: its pivot and
+/// distance), the bowler's eye height (mode 1), where the roll's camera goes (mode 2, 0x523960) and how far behind the
+/// ball it stays.
+const PITCH: f32 = -0.2;
+const LANE_VIEW: ([f32; 3], f32) = ([0.0, -2300.0, -12000.0], 2000.0);
+const EYE_Y: f32 = -2350.0;
+const ROLL_TO: [f32; 3] = [0.0, -1500.0, 4000.0];
+const ROLL_BEHIND: f32 = 4000.0;
 
 impl BowlScene {
     /// A game for `players`: each one's model record (its character file) and character id, in turn order, and
@@ -227,6 +238,7 @@ impl BowlScene {
             anim: (first, 0),
             stepping: 0,
             pivot: Vec3::ZERO,
+            view: (Vec3::from(LANE_VIEW.0), 0.0, LANE_VIEW.1),
         })
     }
 
@@ -265,6 +277,31 @@ impl BowlScene {
             None if self.anim.0 == clip => (clip, self.anim.1 + 1),
             None => (clip, 0),
         };
+        // the camera (0x3EBC98, its mode set by the throw's phases): behind the lane while the bowler takes its place
+        // (mode 0), at the bowler's eye turned with its aim (mode 1), held for the power and the run-up, then from the
+        // release (or the charge) 4000 behind the ball, on the way to over the lane by the time the ball is at 8000
+        // (mode 2)
+        let (at, angle) = self.bowl.bowler_at();
+        match self.bowl.phase {
+            Phase::Position => self.view = (Vec3::from(LANE_VIEW.0), 0.0, LANE_VIEW.1),
+            Phase::Aim => self.view = (Vec3::new(at.x, EYE_Y, at.z), angle, 0.0),
+            Phase::Throw(_) | Phase::Charge(_) if self.bowl.rolled.is_some() && !self.bowl.replay.on => {
+                let z = if matches!(self.bowl.phase, Phase::Charge(_)) { at.z } else { self.bowl.ball.pos.z };
+                let (pivot, yaw, dist) = &mut self.view;
+                let to = Vec3::from(ROLL_TO);
+                let gap = z - ROLL_BEHIND - pivot.z;
+                if gap > 0.0 {
+                    let t = gap / (to.z - pivot.z);
+                    if t < 1.0 {
+                        *pivot += (to - *pivot) * t;
+                        (*yaw, *dist) = (*yaw * (1.0 - t), *dist * (1.0 - t));
+                    } else {
+                        self.view = (to, 0.0, 0.0);
+                    }
+                }
+            }
+            _ => {}
+        }
         // the strike's camera: on the body 500 above its root (mode 4), then a frame after it halfway there, a
         // Hwoarang (moveset 6, a Mokujin copying him too) 0.03 of the way (mode 5)
         if let (Phase::Strike(f), Some(root)) = (self.bowl.phase, self.root()) {
@@ -334,9 +371,6 @@ impl BowlScene {
     // shortcut: the modes' offsets from the bowler and the ball are OpenKumite's (only their bases are decoded)
     pub fn camera(&self) -> (Vec3, Vec3) {
         let b = &self.bowl;
-        let (at, a) = b.bowler_at();
-        let (s, c) = a.dsin_cos();
-        let ahead = |p: Vec3, d: f32| p + Vec3::new(s * d, 0.0, c * d);
         if b.replay.on {
             // the pivot, and the eye at the distance turned by pitch (about x) and yaw (about y)
             let ((sp, cp), (sy, cy)) = (b.replay.view.0.dsin_cos(), b.replay.view.1.dsin_cos());
@@ -348,23 +382,11 @@ impl BowlScene {
         if let Phase::Strike(_) = b.phase {
             return (self.pivot + Vec3::Z * 3500.0 / UNITS, self.pivot);
         }
-        let (eye, target) = match b.phase {
-            Phase::Position | Phase::Aim | Phase::Power | Phase::OverCharged(_) => (ahead(Vec3::new(at.x, -2350.0, at.z), -4500.0), ahead(Vec3::new(at.x, -400.0, at.z), 9000.0)),
-            Phase::Throw(f) if b.rolled.is_none() || f < RELEASE_FRAME + 10 => (ahead(Vec3::new(at.x, -2350.0, at.z), -4500.0 + 30.0 * f as f32), ahead(Vec3::new(at.x, -400.0, at.z), 9000.0)),
-            Phase::Charge(_) => {
-                let z = (at.z + b.players.get(b.current).and_then(|p| p.charge.last()).copied().unwrap_or(0.0)).min(4000.0);
-                (Vec3::new(0.0, -1500.0, z - 3000.0), Vec3::new(0.0, -300.0, 8000.0))
-            }
-            Phase::Throw(_) | Phase::Ko(_) => {
-                // behind the ball, over to the middle by the time it is past z 4000
-                let ball = b.ball.pos;
-                let t = ((ball.z + 3000.0) / 10000.0).clamp(0.0, 1.0);
-                let x = ball.x * (1.0 - t);
-                (Vec3::new(x, -1500.0, (ball.z - 3000.0).min(4000.0)), Vec3::new(x, -300.0, (ball.z + 4000.0).min(8000.0)))
-            }
-            Phase::Strike(_) | Phase::Result(_) | Phase::Over => (Vec3::new(0.0, -1500.0, 4000.0), Vec3::new(0.0, -300.0, 8000.0)),
-        };
-        (to_m(eye), to_m(target))
+        // the eye `dist` back from the pivot along the view, turned by the pitch and the yaw
+        let (pivot, yaw, dist) = self.view;
+        let ((sp, cp), (sy, cy)) = (PITCH.dsin_cos(), yaw.dsin_cos());
+        let ahead = Vec3::new(cp * sy, -sp, cp * cy);
+        (to_m(pivot - ahead * dist), to_m(pivot + ahead * 1000.0))
     }
 }
 

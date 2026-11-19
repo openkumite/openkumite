@@ -281,6 +281,8 @@ pub struct Progress {
     /// 200-point game (+0x202, JUKEBOX's), a 300 (+0x204).
     pub bowlers: Option<Vec<kumite_game::bowl::Record>>,
     pub bowl_bonus: [bool; 2],
+    /// BOWLING OPTIONS' HELP MESSAGES and SPECIAL EFFECTS set OFF (+0x1FE, +0x200: both ON at first).
+    pub bowl_off: [bool; 2],
     /// Tekken Force's keys and hi-score here (apart from Tekken 3's records).
     pub force_keys: u32,
     pub force_hiscore: u32,
@@ -316,6 +318,7 @@ static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress {
     arcade_off: false,
     bowlers: None,
     bowl_bonus: [false; 2],
+    bowl_off: [false; 2],
     force_keys: 0,
     force_hiscore: 0,
     settings: Vec::new(),
@@ -2884,9 +2887,10 @@ fn rgba(c: &Value) -> Color32 {
 }
 
 /// The pause menu's entries (0x3B7B98: `front_end.pause.items` by number): CANCEL, RESET, COMMAND LIST, ADJUST
-/// DISPLAY, CONTROLLER SETUP. SCREEN CAPTURE (3) shows once the Gallery is open, the Bowl's two (4, 5) only in Tekken
-/// Bowl: neither is here (no Gallery; Tekken Bowl's pause is its own).
+/// DISPLAY, CONTROLLER SETUP. SCREEN CAPTURE (3) shows once the Gallery is open (no Gallery here); Tekken Bowl's
+/// (mode 8) has TOP BOWLERS and BOWLING OPTIONS (4, 5) instead of COMMAND LIST and SCREEN CAPTURE.
 pub const PAUSE_ITEMS: [usize; 5] = [0, 1, 2, 6, 7];
+pub const BOWL_PAUSE_ITEMS: [usize; 6] = [0, 1, 4, 5, 6, 7];
 
 /// The pause entries OpenKumite does not have, drawn in the game's colour for one unavailable (`colours.off`).
 /// shortcut: COMMAND LIST (no move list), ADJUST DISPLAY and CONTROLLER SETUP (OpenKumite's GRAPHICS and KEY
@@ -2899,9 +2903,9 @@ fn pause_off(item: usize) -> bool {
 /// the entry (CANCEL closes, sound 3; RESET opens RESET?, sound 3); START and back close it. RESET? (`reset`: YES
 /// chosen): left / right choose (sound 3); a button takes it (YES: the reset, sound 4; NO: back to the entries, sound
 /// 3); START and back close it. True: the game is reset.
-pub fn pause_key(d: &Data, pause: &mut Option<(usize, usize)>, reset: &mut Option<bool>, key: Key) -> bool {
+pub fn pause_key(d: &Data, items: &[usize], pause: &mut Option<(usize, usize)>, reset: &mut Option<bool>, key: Key) -> bool {
     let Some((cursor, _)) = pause.as_mut() else { return false };
-    let n = PAUSE_ITEMS.len();
+    let n = items.len();
     match (reset.as_mut(), key) {
         (Some(yes), Key::Left | Key::Right) => {
             sfx::play(sound(d, "cursor"));
@@ -2920,7 +2924,7 @@ pub fn pause_key(d: &Data, pause: &mut Option<(usize, usize)>, reset: &mut Optio
             sfx::play(sound(d, "cursor"));
             *cursor = (*cursor + if key == Key::Up { n - 1 } else { 1 }) % n;
         }
-        (None, Key::Button(_)) => match PAUSE_ITEMS.get(*cursor) {
+        (None, Key::Button(_)) => match items.get(*cursor) {
             Some(0) => {
                 sfx::play(sound(d, "cursor"));
                 *pause = None;
@@ -2946,7 +2950,7 @@ pub fn pause_key(d: &Data, pause: &mut Option<(usize, usize)>, reset: &mut Optio
 /// the cursor entry's help line (HELP MESSAGES on); or RESET? alone with YES / NO (the chosen gold, the other grey), the arrow towards
 /// the choice and its help line.
 #[allow(clippy::too_many_arguments)]
-pub fn draw_pause(painter: &egui::Painter, v: &View, art: &Art, d: &Data, cursor: usize, player: usize, reset: Option<bool>, frame: u32) {
+pub fn draw_pause(painter: &egui::Painter, v: &View, art: &Art, d: &Data, items: &[usize], cursor: usize, player: usize, reset: Option<bool>, frame: u32) {
     let p = &d.raw["pause"];
     let help = progress().setting(d, HELP_ROW) != 0;
     let window = |r: &Value| {
@@ -2976,13 +2980,18 @@ pub fn draw_pause(painter: &egui::Painter, v: &View, art: &Art, d: &Data, cursor
         }
         return;
     }
-    window(&p["window"]);
+    // (six entries: the window `h_capture` high)
+    let mut w = p["window"].clone();
+    if items.len() > PAUSE_ITEMS.len() {
+        w[3] = p["h_capture"].clone();
+    }
+    window(&w);
     if frame & 0x30 != 0 {
         let text = crate::art::printf(p["header"].as_str().unwrap_or_default(), &[player as u32 + 1]);
         chrome(painter, v, art, d, &text, num(&p["header_xy"][0]), num(&p["header_xy"][1]), Some(0), num(&p["header_size"]));
     }
     let (x, y0, dy) = (num(&p["item_xy"][0]), num(&p["item_xy"][1]), num(&p["item_dy"]));
-    for (k, &item) in PAUSE_ITEMS.iter().enumerate() {
+    for (k, &item) in items.iter().enumerate() {
         let label = p["items"][item].as_str().unwrap_or_default();
         let y = y0 + dy * k as f32;
         if k == cursor {
@@ -3002,7 +3011,7 @@ pub fn draw_pause(painter: &egui::Painter, v: &View, art: &Art, d: &Data, cursor
         chrome(painter, v, art, d, label, x, y, c, size);
     }
     if help {
-        help_line(painter, v, art, d, int(&p["help"]) + PAUSE_ITEMS.get(cursor).copied().unwrap_or(0), 0);
+        help_line(painter, v, art, d, int(&p["help"]) + items.get(cursor).copied().unwrap_or(0), 0);
     }
 }
 
@@ -3328,33 +3337,20 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         small(painter, v, art, d, &card.total().to_string(), x0 + frame_w * 10.0 + 24.0, y + 15.0, Color32::WHITE);
     }
     // the throw's step: its prompt and meters
-    let meter = |y: f32, label: &str, part: f32, mark: Option<f32>| {
-        small(painter, v, art, d, label, 70.0, y - 1.0, Color32::WHITE);
-        box_(Color32::from_rgba_unmultiplied(0, 0, 0, 170), [110.0, y, 200.0, 12.0]);
-        match mark {
-            Some(m) => {
-                box_(Color32::from_gray(90), [209.0, y, 2.0, 12.0]);
-                box_(Color32::from_rgb(255, 210, 60), [110.0 + 196.0 * m.clamp(0.0, 1.0), y, 4.0, 12.0]);
-            }
-            None => box_(Color32::from_rgb(255, 80 + (175.0 * (1.0 - part)) as u8, 40), [110.0, y, 200.0 * part.clamp(0.0, 1.0), 12.0]),
-        }
-    };
     let bowler = b.players.get(b.current);
-    let prompt = match b.phase {
-        Phase::Position => Some("LEFT / RIGHT: POSITION   CROSS: OK"),
-        Phase::Aim => Some("LEFT / RIGHT: AIM   CROSS: SPIN   CIRCLE: BACK"),
-        Phase::Power => Some("CROSS: POWER"),
+    bowl_meters(painter, v, art, b);
+    // HELP MESSAGES on: the step's instructions for the frame's first, second or third ball (0x3F0330: help texts 93 on,
+    // four a ball: position, spin, power, the run-up's steering)
+    let step = match b.phase {
+        Phase::Position => Some(0),
+        Phase::Aim => Some(1),
+        Phase::Power => Some(2),
+        Phase::Throw(_) if b.rolled.is_none() => Some(3),
         _ => None,
     };
-    if let Some(p) = prompt {
-        small(painter, v, art, d, p, W / 2.0, 410.0, Color32::from_gray(230));
-        // the spin meter between -2 and 2 (the hand's bounds), the power meter 0-100
-        meter(372.0, "SPIN", 0.0, Some((b.spin + 2.0) / 4.0));
-        if b.phase == Phase::Power {
-            meter(390.0, "POWER", b.power / 100.0, None);
-        }
-        let hand = if bowler.is_some_and(|p| p.left) { "LEFT-HANDED" } else { "RIGHT-HANDED" };
-        small(painter, v, art, d, hand, 560.0, 372.0, Color32::from_gray(200));
+    if let (Some(s), false) = (step, progress().bowl_off[0]) {
+        let ball = b.cards.get(b.current).map_or(0, |c| c.at().ball.min(2));
+        help_line(painter, v, art, d, 93 + 4 * ball + s, 0);
     }
     let text = |t: &str, x: f32, y: f32, colour: usize, size: f32| chrome(painter, v, art, d, t, x, y, Some(colour), size);
     // BOWL STYLE / SWITCH HANDS:R or L, 120 frames after SELECT switched the hand (0x3EBADC)
@@ -3400,6 +3396,56 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         if (frame / 30).is_multiple_of(2) {
             small(painter, v, art, d, "PRESS START", W / 2.0, 410.0, Color32::WHITE);
         }
+    }
+}
+
+/// The throw's gauges (0x3C65D0), each step's alpha (table 0x51FD30: 128 drawn, 64 half): the rack for the frame's
+/// second ball (0x3C6280: `130_015` at (524, 20), a dot a pin, `130_024` standing, `130_023` down), the spin meter
+/// (0x3C6410: the arc `130_019` at (50, 280); the needle `130_022` centred 94 from (138, 369) at (spin / 4 - 0.5) x
+/// 3.14, turned spin / 1.3), the power bar (0x3C64E8: `130_020` at (550, 140), 64 x 246, its lowest power x 236 / 100 + 4
+/// in `130_021`).
+fn bowl_meters(painter: &egui::Painter, v: &View, art: &Art, b: &kumite_sim::bowl::Bowl) {
+    use kumite_sim::bowl::Phase;
+    let alpha = match b.phase {
+        Phase::Position => [128, 0, 0],
+        Phase::Aim => [128, 128, 64],
+        Phase::Power => [128, 64, 128],
+        Phase::Throw(_) if b.rolled.is_none() => [64; 3],
+        _ => return,
+    };
+    let tint = |a: u32| Color32::from_white_alpha((a * 255 / 128).min(255) as u8);
+    const RACK: [[f32; 2]; 10] = [[37.0, 66.0], [26.0, 46.0], [48.0, 46.0], [15.0, 26.0], [37.0, 26.0], [59.0, 26.0], [4.0, 6.0], [26.0, 6.0], [48.0, 6.0], [70.0, 6.0]];
+    if b.cards.get(b.current).is_some_and(|c| c.at().ball == 1) {
+        sprite(painter, v, art, "130_015.png", 524.0, 20.0, tint(alpha[0]));
+        for (p, [dx, dy]) in b.pins.iter().zip(RACK) {
+            sprite(painter, v, art, if p.standing { "130_024.png" } else { "130_023.png" }, 524.0 + dx, 20.0 + dy, tint(alpha[0]));
+        }
+    }
+    if alpha[1] > 0 {
+        sprite(painter, v, art, "130_019.png", 50.0, 280.0, tint(alpha[1]));
+        let a = (b.spin / 4.0 - 0.5) * 3.14;
+        let (x, y) = (138.0 + 94.0 * a.cos(), 369.0 + 94.0 * a.sin());
+        if let Some((tex, _)) = art.pic("130_022.png") {
+            let (s, c) = (b.spin / 1.3).sin_cos();
+            let mut mesh = egui::Mesh::with_texture(tex.id());
+            for (dx, dy, u, w) in [(-8.0, -10.0, 0.0, 0.0), (8.0, -10.0, 1.0, 0.0), (-8.0, 10.0, 0.0, 1.0), (8.0, 10.0, 1.0, 1.0)] {
+                let [px, py, _, _] = sv([x + dx * c - dy * s, y + dx * s + dy * c, 0.0, 0.0]);
+                mesh.vertices.push(egui::epaint::Vertex { pos: v.pos(px, py), uv: Pos2::new(u, w), color: tint(alpha[1]) });
+            }
+            mesh.indices.extend([0, 1, 2, 1, 3, 2]);
+            painter.add(egui::Shape::mesh(mesh));
+        }
+    }
+    if alpha[2] > 0 {
+        let fill = (b.power * 236.0 / 100.0).floor() + 4.0;
+        let part = |file: &str, v0: f32, v1: f32| {
+            if let Some((tex, _)) = art.pic(file) {
+                let [x, y, w, h] = sv([550.0, 140.0 + v0, 64.0, v1 - v0]);
+                painter.image(tex.id(), Rect::from_min_max(v.pos(x, y), v.pos(x + w, y + h)), Rect::from_min_max(Pos2::new(0.0, v0 / 246.0), Pos2::new(1.0, v1 / 246.0)), tint(alpha[2]));
+            }
+        };
+        part("130_020.png", 0.0, 246.0 - fill);
+        part("130_021.png", 246.0 - fill, 246.0);
     }
 }
 
@@ -3449,21 +3495,99 @@ fn bowl_callout(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &
     }
 }
 
-/// Tekken Bowl's pause (state 9; OpenKumite's box): TOP BOWLERS and EXIT, or TOP 5 BOWLERS' list.
-// shortcut: of the PS2's pause items only TOP BOWLERS and EXIT (BOWLING OPTIONS' HELP MESSAGES, SPECIAL EFFECTS and
-// JUKEBOX are not done; their effects are not decoded)
-pub fn bowl_pause(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, (cursor, top): (usize, bool), list: &[kumite_game::bowl::Record]) {
-    Art::shade(painter, v, sv([170.0, 120.0, 300.0, 210.0]), [Color32::from_rgba_unmultiplied(0, 0, 0, 200); 4]);
-    if top {
-        font(painter, v, art, d, &scene.text("top", "TOP 5 BOWLERS"), W / 2.0, 140.0, 0.4, Color32::WHITE);
-        for (k, r) in list.iter().enumerate() {
-            small(painter, v, art, d, &format!("{:2}  {}  {:3}", k + 1, r.name, r.score), W / 2.0, 190.0 + 24.0 * k as f32, Color32::WHITE);
+/// BOWLING OPTIONS (the Bowl pause's entry 5, 0x3F1968): HELP MESSAGES and SPECIAL EFFECTS (ON / OFF), the bonus row
+/// (BONUS AT 200 PTS until a 200 game unlocks the JUKEBOX), EXIT. Up / down move the cursor (past the bonus row while
+/// it is locked), left / right switch the one at it, a button on EXIT or START leave (true). The switches are kept in
+/// the save (block 0x46BC70 +0x1FE, +0x200; both ON at first, 0x3F20E8).
+// shortcut: the JUKEBOX's track choice (0x455D80's list) is not here: the row stays BONUS AT 200 PTS
+pub fn bowl_options_key(d: &Data, cursor: &mut usize, key: Key) -> bool {
+    let mut p = progress();
+    match key {
+        Key::Up | Key::Down => {
+            sfx::play(sound(d, "cursor"));
+            // (0 HELP MESSAGES, 1 SPECIAL EFFECTS, 3 EXIT)
+            let rows = [0, 1, 3];
+            let k = rows.iter().position(|r| r == cursor).unwrap_or(0);
+            *cursor = rows[(k + if key == Key::Up { rows.len() - 1 } else { 1 }) % rows.len()];
         }
-        return;
+        Key::Left | Key::Right if *cursor < 2 => {
+            sfx::play(sound(d, "cursor"));
+            p.bowl_off[*cursor] = !p.bowl_off[*cursor];
+            set_progress(p);
+        }
+        Key::Start | Key::Back => return true,
+        Key::Button(_) if *cursor == 3 => {
+            sfx::play(sound(d, "decide"));
+            return true;
+        }
+        _ => {}
     }
-    for (k, item) in [scene.text("top_bowlers", "TOP BOWLERS"), scene.text("exit", "EXIT")].iter().enumerate() {
-        let c = if k == cursor { Color32::from_rgb(255, 80, 60) } else { Color32::WHITE };
-        font(painter, v, art, d, item, W / 2.0, 190.0 + 50.0 * k as f32, 0.45, c);
+    false
+}
+
+/// BOWLING OPTIONS as the PS2 draws it (0x3F1968): the pause's window at (135, 172, 370, 88), each row's label at x 155
+/// from y 200 every 20 (size 4; the cursor's in colour 11 over its bar, the others 5) with its value after it (ON 16,
+/// OFF 12), an arrow towards the other value, and the cursor row's help line.
+pub fn draw_bowl_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, cursor: usize) {
+    let p = &d.raw["pause"];
+    let [x, y, w, h] = [135.0, 172.0, 370.0, 88.0];
+    for r in [[x - 10.0, y - 10.0, w + 20.0, 4.0], [x - 10.0, y + h + 6.0, w + 20.0, 4.0], [x - 10.0, y - 6.0, 4.0, h + 12.0], [x + w + 6.0, y - 6.0, 4.0, h + 12.0]] {
+        Art::shade(painter, v, sv(r), [Color32::from_gray(195); 4]);
+    }
+    Art::shade(painter, v, sv([x - 6.0, y - 6.0, w + 12.0, h + 12.0]), [rgba(&p["colour"]); 4]);
+    let off = progress().bowl_off;
+    let bar = |bx: f32, by: f32| {
+        let (on, b0, b1) = (rgba(&p["bar"]["colour"]), num(&p["bar"]["y"][0]), num(&p["bar"]["y"][1]));
+        Art::shade(painter, v, sv([155.0, by + b0, bx + 30.0, b1 - b0]), [on, Color32::TRANSPARENT, on, Color32::TRANSPARENT]);
+    };
+    // (the menu's arrow towards the other value, 0x3BB890)
+    let arrow = d.raw["menu"]["arrows"]["pictures"][1].as_str().unwrap_or_default();
+    let ah = art.pic(arrow).map_or(0.0, |p| p.1[1] as f32);
+    for (k, (key, label)) in [("help_messages", "HELP MESSAGES:"), ("special_effects", "SPECIAL EFFECTS:")].iter().enumerate() {
+        let y = 200.0 + 20.0 * k as f32;
+        let on = !off[k];
+        let label = scene.text(key, label);
+        if cursor == k {
+            bar([291.0, 322.0][k], y);
+            sprite(painter, v, art, arrow, [450.0, 483.0][k], y - ah, Color32::WHITE);
+        }
+        let end = chrome(painter, v, art, d, &label, 155.0, y, Some(if cursor == k { 11 } else { 5 }), 4.0);
+        chrome(painter, v, art, d, if on { "ON" } else { "OFF" }, end, y, Some(if on { 16 } else { 12 }), 4.0);
+    }
+    chrome(painter, v, art, d, &scene.text("bonus", "BONUS AT 200 PTS"), 155.0, 240.0, Some(17), 4.0);
+    if cursor == 3 {
+        bar(70.0, 260.0);
+    }
+    chrome(painter, v, art, d, &scene.text("exit", "EXIT"), 155.0, 260.0, Some(if cursor == 3 { 11 } else { 5 }), 4.0);
+    if cursor < 2 {
+        help_line(painter, v, art, d, 106 + cursor, usize::from(!off[cursor]));
+    }
+}
+
+/// TOP 5 BOWLERS (the Bowl pause's entry 4, 0x3F2D00): the title at (183, 64); a record every 71 from y 135 (0x3F2AC0):
+/// its place large at x 16 with ST / ND / RD / TH after it, the team's two faces in their frames from x 176 (52 apart),
+/// the score right-aligned on 364 (size 9) and PTS at 408, the name at 468.
+// shortcut: over the scene darkened (what the PS2 shows behind it is not decoded)
+pub fn bowl_top(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, list: &[kumite_game::bowl::Record]) {
+    Art::shade(painter, v, crate::art::FULL, [Color32::from_black_alpha(200); 4]);
+    chrome(painter, v, art, d, &scene.text("top", "TOP 5 BOWLERS"), 183.0, 64.0, Some(10), 5.0);
+    for (k, r) in list.iter().enumerate().take(5) {
+        let y = 135.0 + 71.0 * k as f32;
+        let end = chrome(painter, v, art, d, &format!("{:2}", k + 1), 16.0, y - 27.0, Some(15), 10.0);
+        chrome(painter, v, art, d, ["ST", "ND", "RD"].get(k).copied().unwrap_or("TH"), end, y - 7.0, Some(15), 5.0);
+        for (m, body) in r.bodies.iter().enumerate() {
+            let x = 176.0 + 52.0 * m as f32;
+            image(painter, v, art, "003_110.png", [x - 2.0, y - 59.0, 55.0, 56.0], Color32::WHITE);
+            image(painter, v, art, &d.picture(&["select", "faces", &body.to_string()]), [x, y - 57.0, 51.0, 52.0], Color32::WHITE);
+        }
+        let x = match r.score {
+            0..=9 => 364.0,
+            10..=99 => 326.0,
+            _ => 288.0,
+        };
+        chrome(painter, v, art, d, &r.score.to_string(), x, y - 23.0, Some(21), 9.0);
+        chrome(painter, v, art, d, "PTS", 408.0, y - 3.0, Some(21), 4.0);
+        chrome(painter, v, art, d, &r.name, 468.0, y - 27.0, Some(15), 10.0);
     }
 }
 
@@ -3826,16 +3950,16 @@ mod tests {
     fn pause_reset_asks_first() {
         let d = data();
         let (mut pause, mut reset) = (Some((0, 0)), None);
-        assert!(!pause_key(&d, &mut pause, &mut reset, Key::Up));
+        assert!(!pause_key(&d, &PAUSE_ITEMS, &mut pause, &mut reset, Key::Up));
         assert_eq!(pause, Some((PAUSE_ITEMS.len() - 1, 0)));
         pause = Some((1, 0));
-        assert!(!pause_key(&d, &mut pause, &mut reset, Key::Button(0)));
+        assert!(!pause_key(&d, &PAUSE_ITEMS, &mut pause, &mut reset, Key::Button(0)));
         assert_eq!(reset, Some(false));
-        pause_key(&d, &mut pause, &mut reset, Key::Left);
-        assert!(pause_key(&d, &mut pause, &mut reset, Key::Button(0)));
+        pause_key(&d, &PAUSE_ITEMS, &mut pause, &mut reset, Key::Left);
+        assert!(pause_key(&d, &PAUSE_ITEMS, &mut pause, &mut reset, Key::Button(0)));
         assert_eq!((pause, reset), (None, None));
         pause = Some((0, 1));
-        pause_key(&d, &mut pause, &mut reset, Key::Button(0));
+        pause_key(&d, &PAUSE_ITEMS, &mut pause, &mut reset, Key::Button(0));
         assert_eq!(pause, None);
     }
 
