@@ -395,7 +395,7 @@ struct Rules {
     /// Tekken Tag: the per-alias rule of the follow-ups and chain throws.
     #[serde(default)]
     followup_rules: Vec<FollowRule>,
-    /// Tekken Tag (format 26): the wake-up waits only against this move.
+    /// Tekken Tag (format 31): the wake-up waits only against this move.
     #[serde(default)]
     wake_wait: Option<WakeWait>,
 }

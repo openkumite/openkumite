@@ -743,7 +743,7 @@ fn lying_against_ogre(a: &Assets, alias: usize) -> usize {
         .count()
 }
 
-/// The wake-up waits out Ogre's fire breath within 2000 (0x3890D0, pack format 26), not his other moves.
+/// The wake-up waits out Ogre's fire breath within 2000 (0x3890D0, pack format 31), not his other moves.
 #[test]
 fn the_cpu_stays_down_under_the_fire_breath() {
     let Some(a) = assets() else { return };
