@@ -1463,6 +1463,15 @@ impl Front {
                     self.frame = 0;
                 }
             }
+            // (0x3C9124: the time to name it out, the name is taken as it is)
+            Page::NameEntry { survival, record, then, .. } if self.frame >= int(&d.raw["ranking"]["frames"]).max(1) as u32 && d.raw["ranking"].is_object() => {
+                let mut p = progress.clone();
+                p.record(&d, *survival, record.clone());
+                set_progress(p);
+                self.page = std::mem::replace(then.as_mut(), Page::Title);
+                self.frame = 0;
+                return Outcome::TttSaved;
+            }
             Page::Records { attract: true, .. } if self.frame >= MESSAGE_FRAMES => {
                 self.page = Page::Title;
                 self.frame = 0;
@@ -1561,19 +1570,20 @@ impl Front {
                 }
                 draw_records(painter, v, art, d, roster, progress, *page, *scroll, self.frame, !*attract);
             }
-            Page::NameEntry { record, letter, .. } => {
-                backdrop(painter, v, art);
+            // (the ranking, screen 7: the records with the new one in its place, its name so far and the letter under
+            // the cursor in its place, as 0x3D0350 writes it each frame)
+            Page::NameEntry { survival, record, letter, .. } => {
                 let r = &d.raw["records"];
-                let text = r["new_record"].as_str().unwrap_or_default();
-                let w = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, text, 0.0, 0.0, None, 10.0);
-                chrome(painter, v, art, d, text, (W - w) / 2.0, 150.0, Some(int(&r["pages"][2]["colour"])), 10.0);
-                // (OpenKumite's layout: the letters so far, then the cursor's blinking)
-                let letters: Vec<char> = r["letters"].as_str().unwrap_or_default().chars().collect();
-                let mut name = record.name.clone();
-                if self.frame & 0x10 == 0 {
-                    name.push(letters.get(*letter).copied().unwrap_or(' '));
+                let mut list = progress.list(d, *survival);
+                let at = progress.rank(d, *survival, record).unwrap_or(list.len()).min(list.len());
+                let typed = record.name.chars().count();
+                let mut shown = record.clone();
+                if typed < int(&r["name_len"]) {
+                    shown.name.extend(r["letters"].as_str().unwrap_or_default().chars().nth(*letter));
                 }
-                chrome(painter, v, art, d, &name, W / 2.0 - 60.0, 260.0, Some(11), 10.0);
+                list.insert(at, shown);
+                list.truncate(RECORDS);
+                draw_ranking(painter, v, art, d, usize::from(*survival), &list, (at, typed), self.frame);
             }
             Page::Message { lines, .. } => {
                 backdrop(painter, v, art);
@@ -1894,6 +1904,82 @@ fn draw_records(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
     }
     if help && p.setting(d, HELP_ROW) != 0 {
         help_line(painter, v, art, d, int(&r["help"]) + page, 0);
+    }
+}
+
+/// The ranking (screen 7, `ranking`) of TIME ATTACK (`kind` 0) or SURVIVAL (1) where a new record is named: the banner,
+/// `shown` rows about the entry's (0x3C9034), each over its separator: the rank, the members' faces and name plates, the
+/// time or the wins, the name; the entry's row over its band, the place being named underlined (red to white), the
+/// seconds left. shortcut: the rows' slide and the arena behind are not done; upgrade: decode 0x3C8A88's steps.
+#[allow(clippy::too_many_arguments)]
+fn draw_ranking(painter: &egui::Painter, v: &View, art: &Art, d: &Data, kind: usize, list: &[Record], (entry, typed): (usize, usize), frame: u32) {
+    let rk = &d.raw["ranking"];
+    let p = |v: &Value| [num(&v[0]), num(&v[1])];
+    let [bx, by] = p(&rk["banner_xy"]);
+    sprite(painter, v, art, rk["banners"][kind].as_str().unwrap_or_default(), bx, by, Color32::WHITE);
+    let [c0, c1] = p(&rk["clip"]);
+    let [_, top, _, h] = sv([0.0, c0, 0.0, c1 - c0]);
+    let clip = painter.with_clip_rect(Rect::from_min_max(v.pos(0.0, top), v.pos(SCREEN_W, top + h)));
+    let rows = &rk["rows"][kind];
+    let (dy, y0, n) = (num(&rows["dy"]), num(&rows["first"]), int(&rows["shown"]).max(1));
+    let first = if entry < 2 { 0 } else { (entry - 2).min(list.len().saturating_sub(n)) };
+    let colour = |k: &str| Some(int(&rk["colours"][k]));
+    let measure = |text: &str, size: f32| chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, text, 0.0, 0.0, None, size);
+    for (k, r) in list.iter().enumerate().skip(first).take(n) {
+        let y = y0 + dy * (k - first) as f32;
+        let on = k == entry;
+        let c = if on { colour("entry") } else { colour("row") };
+        if on {
+            let b = &rk["band"];
+            Art::shade(&clip, v, sv([0.0, y - num(&b["h"]), W, num(&b["h"])]), [rgba(&b["colour"]); 4]);
+        }
+        sprite(&clip, v, art, rk["separator"].as_str().unwrap_or_default(), 0.0, y, Color32::WHITE);
+        let rank = &rk["rank"];
+        let end = chrome(&clip, v, art, d, &format!("{:2}", k + 1), num(&rank["x"]), y + num(&rank["dy"]), c, 10.0);
+        let suffix = match (k + 1) % 10 {
+            1 if k + 1 != 11 => 0,
+            2 if k + 1 != 12 => 1,
+            3 if k + 1 != 13 => 2,
+            _ => 3,
+        };
+        chrome(&clip, v, art, d, d.raw["records"]["suffixes"][suffix].as_str().unwrap_or_default(), end, y + num(&rank["suffix_dy"]), c, num(&rank["suffix_size"]));
+        // (the second member's face first, the first's over it; then their name plates)
+        let fs = num(&rk["face_size"]);
+        for (m, body) in [1, 0].into_iter().filter_map(|m| Some((m, *r.members.get(m)?))) {
+            let [fx, fy] = p(&rk["faces"][m]);
+            sprite(&clip, v, art, rk["face_frame"].as_str().unwrap_or_default(), fx - 2.0, y + fy - 2.0, Color32::WHITE);
+            image(&clip, v, art, &d.picture(&["select", "faces", &body.to_string()]), [fx, y + fy, fs, fs], Color32::WHITE);
+        }
+        for (m, &body) in r.members.iter().enumerate().take(2) {
+            let [px, py] = p(&rk["plates"][m]);
+            sprite(&clip, v, art, &d.picture(&["hud", "plates", &body.to_string(), "picture"]), px, y + py, Color32::WHITE);
+        }
+        if kind == 0 {
+            let t = &rk["time"];
+            chrome(&clip, v, art, d, &clock(r.score), num(&t["x"]), y + num(&t["dy"]), if on { c } else { colour("time") }, num(&t["size"]));
+        } else {
+            // (0x3C7428: "WINS" then the number, a space between below 100)
+            let w = &rk["wins"];
+            let label = if r.score < 100 { "WINS " } else { "WINS" };
+            let end = chrome(&clip, v, art, d, label, num(&w["x"]), y + num(&w["dy"]), if on { c } else { colour("wins") }, num(&w["size"]));
+            chrome(&clip, v, art, d, &r.score.min(999).to_string(), end, y + num(&w["number_dy"]), if on { c } else { colour("wins") }, num(&w["number_size"]));
+        }
+        let nm = &rk["name"];
+        chrome(&clip, v, art, d, &r.name, num(&nm["x"]), y + num(&nm["dy"]), c, 10.0);
+        if on && typed < int(&d.raw["records"]["name_len"]) {
+            // (the place being named: (255, 2t + 1, 2t + 1), t from `low` to `high` and back by `step` a frame)
+            let cu = &rk["cursor"];
+            let (lo, hi, st) = (num(&cu["low"]), num(&cu["high"]), num(&cu["step"]).max(1.0));
+            let span = ((hi - lo) / st).max(1.0) as u32;
+            let i = frame % (2 * span);
+            let t = lo + st * if i < span { i } else { 2 * span - i } as f32;
+            let g = (2.0 * t + 1.0).min(255.0) as u8;
+            let x = num(&nm["x"]) + measure(&r.name.chars().take(typed).collect::<String>(), 10.0);
+            Art::shade(&clip, v, sv([x, y + num(&cu["dy"]), num(&cu["w"]), num(&cu["h"])]), [Color32::from_rgb(255, g, g); 4]);
+            let n = &rk["counter"];
+            let left = int(&rk["frames"]).saturating_sub(frame as usize).div_ceil(60);
+            chrome(&clip, v, art, d, &left.to_string(), num(&n["x"]), y + num(&n["dy"]), Some(int(&n["colour"])), num(&n["size"]));
+        }
     }
 }
 
@@ -3176,7 +3262,9 @@ mod tests {
             "unlocks": {"schedule": [{"stage": 0, "kind": 0, "character": 2}, {"stage": 1, "kind": 1, "character": 2}, {"stage": 1, "kind": 0, "character": 3}], "points_per_stage": 50},
             "arcade": {"fights": 8, "rivals": [[2, 3, null], [0, null, null]], "fallback": [3], "pairs": [[1, 2]], "rival_arena": 6, "boss": 3, "boss_arena": 14, "early_fights": 3, "early_excluded": []},
             "team_battle": {"refill_percent": 15},
-            "records": {"defaults": {"survivors": [{"members": [0, 1], "score": 5, "name": "PAU"}, {"members": [2, 3], "score": 1, "name": "KIN"}]}},
+            "records": {"defaults": {"survivors": [{"members": [0, 1], "score": 5, "name": "PAU"}, {"members": [2, 3], "score": 1, "name": "KIN"}]},
+                "letters": "ABC<=", "name_len": 3},
+            "ranking": {"frames": 10},
             "volumes": {"bgm": [0, 32, 40, 48, 56, 64, 72, 80, 96, 112, 128], "se": 10},
             "options": [{"default": 1, "values": ["EASY", "NORMAL"]}, {"default": 1, "values": ["1", "2", "3"]}, {"default": 2, "values": ["30", "40", "60"]}],
         }});
@@ -3509,6 +3597,25 @@ mod tests {
             p.record(&d, true, r(w));
         }
         assert_eq!((p.survivors.len(), p.survivors[0].score, p.rank(&d, true, &r(2))), (RECORDS, 12, None));
+    }
+
+    /// The name entry (0x3D0350): right / down the next letter, left / up the one before, round; a face button takes
+    /// the letter; the time out (0x3C9124) takes the name as it is.
+    #[test]
+    fn name_entry_keys_and_time_out() {
+        let mut r = roster();
+        r.ttt = Some(data());
+        let mut seed = 0;
+        let record = Record { score: 900, members: vec![0, 1], name: String::new() };
+        let mut f = Front { page: Page::NameEntry { survival: true, record, letter: 0, then: Box::new(Page::Title) }, frame: 0 };
+        for k in [Key::Up, Key::Down, Key::Right, Key::Button(2), Key::Left] {
+            f.key(0, k, &r, &mut seed);
+        }
+        assert!(matches!(&f.page, Page::NameEntry { record, letter: 0, .. } if record.name == "B"));
+        while matches!(f.page, Page::NameEntry { .. }) && f.frame < 20 {
+            f.tick(&r, &mut seed);
+        }
+        assert!(matches!(f.page, Page::Title) && progress().survivors.first().is_some_and(|s| s.name == "B" && s.score == 900));
     }
 
     /// The main menu's rows slide a row's height in 4 a frame; no move while they slide (0x3BD2E0).

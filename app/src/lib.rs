@@ -1751,7 +1751,7 @@ impl App {
                 self.vs_record = g.record;
             }
             // CONTINUE? and GAME OVER show over the loser shot, which keeps running; other screens end the fight
-            if matches!(screen, Screen::Continue { .. } | Screen::GameOver { .. }) || screen.ttt_over_fight() {
+            if matches!(screen, Screen::Continue { .. } | Screen::GameOver { .. }) || screen.ttt_over_fight() || screen.ttt_over_arena() {
                 if let Some(f) = self.fight.as_mut() {
                     f.bout.step([Pad::default(); 2]);
                 }
@@ -2896,7 +2896,7 @@ impl App {
             self.records.ttt = progress;
             self.records.save();
             // (CONTINUE? over the fight's scene and HUD, which keep running)
-            let over_fight = matches!(next, ttt::Next::Screen(ttt::Page::Continue { .. }));
+            let over_fight = matches!(next, ttt::Next::Screen(ttt::Page::Continue { .. } | ttt::Page::NameEntry { .. }));
             if over_fight {
                 self.fight = Some(fight);
             } else {
@@ -7389,6 +7389,12 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
                 log::info!("ending {:?} frame {}: camera {:?}, slots {:?}", s.ending, s.frame(), s.camera(), (0..2).map(|k| s.pose(k).map(|p| (p.0, p.1[0].w_axis))).collect::<Vec<_>>());
             }
             return Ok(());
+        }
+        // Tekken Tag's ranking naming a new record (--variant 1: SURVIVAL's, 4 wins; else TIME ATTACK's, 6'00"00)
+        Some("ttt-name") => {
+            let survival = std::env::args().skip_while(|a| a != "--variant").nth(1).as_deref() == Some("1");
+            let record = ttt::Record { score: if survival { 4 } else { 21600 }, members: vec![7, 4], name: String::new() };
+            app.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::NameEntry { survival, record, letter: 0, then: Box::new(ttt::Page::Title) }, frame: 0 })));
         }
         // Tekken Tag's THEATER (--variant: the endings seen, a bit each)
         Some("ttt-theater") => {
