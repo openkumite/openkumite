@@ -250,6 +250,9 @@ pub struct Game {
     pub ko_collapse: bool,
     /// Tekken Tag's GUARD DAMAGE option (Fight::guard_damage), kept across rounds.
     pub guard_damage: bool,
+    /// Tekken Tag's members carried into a tag battle by side (SURVIVAL): the lead's and the partner's (health, cap),
+    /// 16.16; the lead's health also as `start_health`.
+    pub tag_carry: [Option<[(i32, i32); 2]>; 2],
     pub face_data: Arc<face::FaceData>,
     face_rand: u32,
     /// The copying character's forms, for each fighter that is one.
@@ -495,6 +498,7 @@ impl Game {
             faces: Default::default(),
             ko_collapse: true,
             guard_damage: false,
+            tag_carry: [None; 2],
             face_data: Arc::new(face::FaceData::load(&assets.root.join("gamedata"))),
             face_rand: 1,
             copiers: [None, None],
@@ -526,6 +530,15 @@ impl Game {
             kumite_sim::TagMember::new(p.moveset.clone(), p.character, max, &gd.tag)
         });
         self.fight.start_tag(members);
+        // (a team's members carried from the last match: the lead's recoverable cap, the partner's health and cap)
+        if let Some(t) = self.fight.teams.as_deref_mut() {
+            for (team, carry) in t.iter_mut().zip(self.tag_carry) {
+                if let Some([(_, lead_cap), (health, cap)]) = carry {
+                    team.members[0].cap = lead_cap;
+                    (team.members[1].health, team.members[1].cap) = (health, cap);
+                }
+            }
+        }
         self.tag_bench = Some(partners);
     }
 

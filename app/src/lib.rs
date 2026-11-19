@@ -777,6 +777,7 @@ impl App {
         if let (Some(run), Some(d)) = (&ttt, self.roster.ttt.as_ref()) {
             let model = |(c, k): (usize, usize)| self.roster.characters.get(c).and_then(|ch| ch.costumes.get(k).or(ch.costumes.first())).copied().unwrap_or(0);
             if let Some(b) = run.bench() {
+                game.tag_carry = run.carry;
                 game.start_tag([kumite_game::Actor::load(&self.assets, model(b[0]))?, kumite_game::Actor::load(&self.assets, model(b[1]))?]);
             }
             let (r, clock) = run.rules(&d.round_frames);
@@ -2890,8 +2891,17 @@ impl App {
         if let (Some(run), Some(d)) = (self.ttt_run.take(), self.roster.ttt.clone()) {
             let f = &fight.bout.game.fight;
             let (health, max) = (f.fighters.each_ref().map(|x| x.health), f.fighters.each_ref().map(|x| x.max_health * kumite_sim::ONE));
+            // (a tag battle's members in their run order, the fighting one's health its fighter's)
+            let tag = f.teams.as_deref().map(|t| {
+                std::array::from_fn(|k| {
+                    std::array::from_fn(|m| {
+                        let x = &t[k].members[m];
+                        (if m == t[k].active { f.fighters[k].health } else { x.health }, x.cap, x.max_health * kumite_sim::ONE)
+                    })
+                })
+            });
             let mut progress = ttt::progress();
-            let next = run.after(&d, &self.roster, &mut progress, winner, health, max, self.hud.run_frames(), &mut self.seed);
+            let next = run.after(&d, &self.roster, &mut progress, winner, health, max, tag, self.hud.run_frames(), &mut self.seed);
             ttt::set_progress(progress.clone());
             self.records.ttt = progress;
             self.records.save();

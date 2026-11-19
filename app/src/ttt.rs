@@ -414,6 +414,9 @@ pub fn volumes(d: &Data, p: &Progress) -> Option<(f32, f32, bool)> {
     Some((bgm, p.setting(d, SE_ROW) as f32 / v["se"].as_f64()?.max(1.0) as f32, p.setting(d, SPEAKER_ROW) == 0))
 }
 
+/// A tag battle's members at its end by side, in their run order: (health, recoverable cap, full health), 16.16.
+pub type Members = [[(i32, i32, i32); 2]; 2];
+
 /// One side's fighters: (roster index, costume).
 pub type Team = Vec<(usize, usize)>;
 
@@ -438,10 +441,14 @@ pub struct Run {
     /// GUARD DAMAGE ON (settings +0xC, 0x43B804): a guarded hit takes a tenth of its damage.
     #[serde(default)]
     pub guard_damage: bool,
+    /// SURVIVAL: the team's members carried (Game::tag_carry).
+    #[serde(default)]
+    pub carry: [Option<[(i32, i32); 2]>; 2],
 }
 
+/// A tag battle's mode (SURVIVAL too: its records keep two members, 0x3C1620 refills both).
 fn tag(mode: u32) -> bool {
-    matches!(mode, ARCADE | VS | TIME_ATTACK)
+    matches!(mode, ARCADE | VS | TIME_ATTACK | SURVIVAL)
 }
 fn ladder_mode(mode: u32) -> bool {
     matches!(mode, ARCADE | TIME_ATTACK | ONE_ARCADE)
@@ -464,6 +471,7 @@ impl Run {
             stage: pick(&d.pool(progress), seed).unwrap_or(0),
             options: progress.options(d),
             guard_damage: progress.setting(d, GUARD_ROW) == 1,
+            carry: [None; 2],
         };
         if ladder_mode(mode) {
             run.ladder = ladder(d, roster, progress.stage, &d.pool(progress), &run.teams[0], tag(mode), seed);
@@ -472,8 +480,8 @@ impl Run {
             run.stage = d.ball.unwrap_or(run.stage);
         }
         if run.teams[1].is_empty() && mode != BOWL {
-            // Team Battle against the CPU: as many as the player's; Survival: the first opponent
-            let n = if mode == TEAM { run.teams[0].len() } else { 1 };
+            // Team Battle against the CPU: as many as the player's; Survival: the first opponents
+            let n = if mode == TEAM { run.teams[0].len() } else { 1 + usize::from(tag(mode)) };
             run.teams[1] = cpu_team(d, roster, progress.stage, &run.teams[0], n, false, seed);
         }
         run
@@ -552,7 +560,7 @@ impl Run {
 
     /// The match is over (`winner`: side; `health`, `max`: the fighters' at the end, 16.16): what comes next.
     #[allow(clippy::too_many_arguments)]
-    pub fn after(mut self, d: &Data, roster: &Roster, progress: &mut Progress, winner: Option<usize>, health: [i32; 2], max: [i32; 2], frames: u32, seed: &mut u32) -> Next {
+    pub fn after(mut self, d: &Data, roster: &Roster, progress: &mut Progress, winner: Option<usize>, health: [i32; 2], max: [i32; 2], tag: Option<Members>, frames: u32, seed: &mut u32) -> Next {
         self.frames = frames;
         let won = winner == Some(0);
         match self.mode {
@@ -589,11 +597,19 @@ impl Run {
                 Next::Screen(Page::Continue { run: Box::new(self), countdown: CONTINUE })
             }
             SURVIVAL if won => {
-                // the player's 15 % of its full health back, as Team Battle's winner (0x3C1620, mode 4)
+                // each of the player's members 15 % of its full health back, to its health and its recoverable cap
+                // (0x3C1620, mode 4); the first member leads again
                 self.wins[0] += 1;
                 let refill = d.raw["team_battle"]["refill_percent"].as_i64().unwrap_or(15) as i32;
-                self.health[0] = Some((health[0] + max[0] / 100 * refill).min(max[0]));
-                self.teams[1] = cpu_team(d, roster, progress.stage, &self.teams[0], 1, false, seed);
+                let up = |(h, cap, m): (i32, i32, i32)| ((h + m / 100 * refill).min(m), (cap + m / 100 * refill).min(m));
+                match tag {
+                    Some([t, _]) => {
+                        let carry = t.map(up);
+                        (self.health[0], self.carry[0]) = (Some(carry[0].0), Some(carry));
+                    }
+                    None => self.health[0] = Some(up((health[0], 0, max[0])).0),
+                }
+                self.teams[1] = cpu_team(d, roster, progress.stage, &self.teams[0], 1 + usize::from(tag.is_some()), false, seed);
                 self.stage = pick(&d.pool(progress), seed).unwrap_or(self.stage);
                 Next::Fight(Box::new(self))
             }
@@ -3370,9 +3386,9 @@ mod tests {
         assert_eq!(last.bench(), None);
         // a lost fight: CONTINUE?; a won one: the next fight; the eighth won: the clear, the unlock
         let mut p = Progress::default();
-        assert!(matches!(run.clone().after(&d, &r, &mut p, Some(1), [0; 2], [1; 2], 0, &mut seed), Next::Screen(Page::Continue { .. })));
-        assert!(matches!(run.clone().after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], 0, &mut seed), Next::Fight(f) if f.fight == 1));
-        assert!(matches!(last.after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], 0, &mut seed), Next::Ending(0, 0, Page::Message { title: true, .. })));
+        assert!(matches!(run.clone().after(&d, &r, &mut p, Some(1), [0; 2], [1; 2], None, 0, &mut seed), Next::Screen(Page::Continue { .. })));
+        assert!(matches!(run.clone().after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], None, 0, &mut seed), Next::Fight(f) if f.fight == 1));
+        assert!(matches!(last.after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], None, 0, &mut seed), Next::Ending(0, 0, Page::Message { title: true, .. })));
         assert_eq!((p.stage, p.seen), (1, 1));
     }
 
@@ -3386,9 +3402,24 @@ mod tests {
         assert!(!run.cpu(1));
         assert_eq!(run.teams[1].len(), 2);
         let max = 140 * kumite_sim::ONE;
-        let Next::Fight(next) = run.after(&d, &r, &mut Progress::default(), Some(0), [max / 2, 0], [max; 2], 0, &mut seed) else { panic!() };
+        let Next::Fight(next) = run.after(&d, &r, &mut Progress::default(), Some(0), [max / 2, 0], [max; 2], None, 0, &mut seed) else { panic!() };
         assert_eq!((next.health[0], next.member), (Some(max / 2 + max / 100 * 15), [0, 1]));
-        assert!(matches!(next.after(&d, &r, &mut Progress::default(), Some(0), [max, 0], [max; 2], 0, &mut seed), Next::Screen(Page::Message { .. })));
+        assert!(matches!(next.after(&d, &r, &mut Progress::default(), Some(0), [max, 0], [max; 2], None, 0, &mut seed), Next::Screen(Page::Message { .. })));
+    }
+
+    /// SURVIVAL is a tag battle: a won match gives each of the player's members 15 % of its full health back, to its
+    /// health and its recoverable cap (0x3C1620), carried into the next.
+    #[test]
+    fn survival_refills_both_members() {
+        let (d, r) = (data(), roster());
+        let mut seed = 1;
+        let run = Run::new(&d, &r, &Progress::default(), SURVIVAL, [vec![(0, 0), (1, 0)], vec![]], &mut seed);
+        assert!(tag(SURVIVAL));
+        let max = 140 * kumite_sim::ONE;
+        let (q, add) = (max / 4, max / 100 * 15);
+        let members = [[(q, 2 * q, max), (max, max, max)], [(0, 0, max); 2]];
+        let Next::Fight(next) = run.after(&d, &r, &mut Progress::default(), Some(0), [q, 0], [max; 2], Some(members), 0, &mut seed) else { panic!() };
+        assert_eq!((next.wins[0], next.health[0], next.carry[0]), (1, Some(q + add), Some([(q + add, 2 * q + add), (max, max)])));
     }
 
     #[test]
