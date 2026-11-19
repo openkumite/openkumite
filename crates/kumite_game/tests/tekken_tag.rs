@@ -702,6 +702,38 @@ fn the_cpu_reads_yoshimitsu() {
     assert!(stance < 3200.0, "walked in on the stance: {stance:.0}");
 }
 
+/// Ogre's first model and his fire breath (0xBA9).
+const OGRE: usize = 534;
+const FIRE_BREATH: usize = 0xBA9;
+
+/// The frames of 90 the top CPU (Lei), lying 1500 from Ogre, stays down while Ogre plays `alias`.
+fn lying_against_ogre(a: &Assets, alias: usize) -> usize {
+    let mut b = Bout::new(Game::load(a, [OGRE, LEI]).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
+    b.set_cpu(1, Some((4, 7)));
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let f = &mut b.game.fight.fighters;
+    let along = (f[1].position - f[0].position).normalize();
+    f[1].position = f[0].position + along * 1500.0;
+    assert!(f[0].play_alias(alias) && f[1].play_alias(214));
+    (0..90)
+        .filter(|_| {
+            b.step([Pad::default(); 2]);
+            b.game.fight.fighters[1].posture(&b.game.fight.data) & kumite_sim::posture::LYING != 0
+        })
+        .count()
+}
+
+/// The wake-up waits out Ogre's fire breath within 2000 (0x3890D0, pack format 26), not his other moves.
+#[test]
+fn the_cpu_stays_down_under_the_fire_breath() {
+    let Some(a) = assets() else { return };
+    let (breath, other) = (lying_against_ogre(&a, FIRE_BREATH), lying_against_ogre(&a, 422));
+    eprintln!("frames down under the breath {breath}, under 422 {other}");
+    assert!(breath >= 60 && other < 30, "waits under the breath only");
+}
+
 /// The arcade CPU, team `cpu` at NORMAL `level`, against Xiaoyu and Yoshimitsu over the seeds' matches: (damage a
 /// fight minute, the fight steps of each match); side 0 stands (`hold`: off) or holds back. The match's seed starts
 /// each CPU on its own draws.
