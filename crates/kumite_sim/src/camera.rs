@@ -34,6 +34,8 @@ struct Json {
 #[derive(Deserialize)]
 struct JsonFighterCams {
     ids: Vec<[i64; 2]>,
+    #[serde(default)]
+    rows: Vec<[i64; 3]>,
     lists: Vec<Vec<JsonFighterEntry>>,
 }
 #[derive(Deserialize)]
@@ -273,9 +275,17 @@ pub struct WinCam {
     radius_add: i64,
     eye_y: i64,
     light_yaw: Vec<i64>,
+    /// The arenas whose far background turns with the camera's parallax, and light 0 with it (0x417780), and the
+    /// turn's step: its divisor and cap (0x366C18).
+    #[serde(default)]
+    world_turn: Vec<bool>,
+    #[serde(default)]
+    turn_step: [i64; 2],
     /// This arena's (set by [`CameraData::for_arena`]).
     #[serde(skip)]
     light: i64,
+    #[serde(skip)]
+    turns: bool,
 }
 
 /// Tekken Tag's special cameras (0x38C1E8): situation types 1-30 (0x508908), the camera lists by move camera id
@@ -288,7 +298,9 @@ pub struct Director {
     /// The per-fighter situation cameras (0x3943A8): by camera id its list (0x12C on), a list's entries (cumulative
     /// weight of 4096, as 0x3941F0 leaves them; the first of its three scripts, the one a move's id takes).
     fighter_ids: Vec<(i64, usize)>,
-    fighter_lists: Vec<Vec<(i64, [i64; 16])>>,
+    fighter_lists: Vec<Vec<(i64, [[i64; 16]; 3])>>,
+    /// The rows by character and alias (0x509820): [character, alias, list], read when the other fighter is down.
+    fighter_rows: Vec<[i64; 3]>,
 }
 #[derive(Debug)]
 struct Situation {
@@ -346,7 +358,7 @@ impl Director {
             lists[list.id] = Some(CamList { split, entries });
         }
         let situations = s.entries.iter().map(|e| Situation { in_frames: e.in_frames, hold: e.field_1, pitch: e.pitch, yaw: e.yaw_offset }).collect();
-        let (mut fighter_ids, mut fighter_lists) = (Vec::new(), Vec::new());
+        let (mut fighter_ids, mut fighter_lists, mut fighter_rows) = (Vec::new(), Vec::new(), Vec::new());
         if let Some(f) = f {
             for list in f.lists {
                 let total: i64 = list.iter().map(|e| e.weight).sum();
@@ -354,13 +366,15 @@ impl Director {
                 let mut entries = Vec::new();
                 for e in list {
                     sum += e.weight;
-                    entries.push(((sum << 12) / total.max(1), e.scripts.first().copied().unwrap_or([-1; 16])));
+                    let script = |k: usize| e.scripts.get(k).copied().unwrap_or([-1; 16]);
+                    entries.push(((sum << 12) / total.max(1), [script(0), script(1), script(2)]));
                 }
                 fighter_lists.push(entries);
             }
             fighter_ids = f.ids.iter().filter_map(|&[id, list]| Some((id, usize::try_from(list - 0x12C).ok()?))).collect();
+            fighter_rows = f.rows;
         }
-        Ok(Self { situations, lists, motions: m.motions, fighter_ids, fighter_lists })
+        Ok(Self { situations, lists, motions: m.motions, fighter_ids, fighter_lists, fighter_rows })
     }
 }
 
@@ -538,6 +552,7 @@ impl CameraData {
         }
         if let Some(w) = d.win.as_mut() {
             w.light = w.light_yaw.get(arena).copied().unwrap_or(0);
+            w.turns = w.world_turn.get(arena).copied().unwrap_or(false) && w.turn_step[0] > 0;
         }
         Some(d)
     }
@@ -732,6 +747,11 @@ pub struct Actor {
     pub release: bool,
     /// Its move's flags bits 20-21 (2: a per-fighter camera freezes on it, 0x394A40).
     pub follow: i64,
+    /// Down for the round (+0x131, set by the damage that K.O.s it, 0x372414 / 0x37271C); its character (+0x28)
+    /// and its move's alias (+0x10C).
+    pub ko: bool,
+    pub character: i64,
+    pub alias: i64,
 }
 
 /// Tekken Tag's director block (CAM 0x433330).
@@ -829,6 +849,10 @@ pub struct FightCamera {
     /// (gp-0x6FA8); its random streams, the CPU's (libc rand and the AI's LCG: a bout lends its own for each fight
     /// step, as the PS2 shares them) and the end cameras' LCG (gp-0x73FC), carried from round to round.
     pub actors: [Actor; 2],
+    /// The far background's turn and the last frame's point ahead and yaw it is measured by (0x366C18).
+    pub world_turn: i64,
+    look: [i64; 2],
+    look_yaw: i64,
     cam: Cam,
     lift: i64,
     pub rng: crate::ai::AiRng,
@@ -877,6 +901,9 @@ impl FightCamera {
             replay: None,
             view: View::default(),
             actors: [Actor::default(); 2],
+            world_turn: 0,
+            look: [0; 2],
+            look_yaw: 0,
             cam: Cam::new(),
             lift: 0,
             rng: crate::ai::AiRng::new(0),
@@ -886,6 +913,30 @@ impl FightCamera {
 
     pub fn data(&self) -> &Arc<CameraData> {
         &self.data
+    }
+
+    /// The far background's turn (gp-0x7278, 4096 a turn; reset as a round starts, 0x366DB0) after a frame's view
+    /// (0x366C18): on the arenas that turn it, the angle from the eye to last frame's point 4096 ahead against the
+    /// view's yaw, /0x22 at most 0xAA, while the yaw moved less than 1/256 turn. Light 0 turns with it in a fight
+    /// (0x353C88), and with it the win pose's camera. shortcut: summed in 4096ths, not the PS2's float radians.
+    pub fn turn_world(&mut self) {
+        let Some(w) = self.data.win.as_ref() else { return };
+        let v = self.view;
+        let s = (self.data.ratan2(self.look[0] - v.eye[0], self.look[1] - v.eye[2]) - 0x400) & 0xFFF;
+        let (old, new) = (self.look_yaw, v.yaw & 0xFFF);
+        self.look_yaw = new;
+        self.look = [v.eye[0] + self.data.sin(-new), v.eye[2] + self.data.cos(-new)];
+        if !w.turns {
+            return;
+        }
+        let x16 = |a: i64| s16(a << 4);
+        if s16(x16(old) - x16(new)).abs() > 16 {
+            return;
+        }
+        let [div, cap] = w.turn_step;
+        let d = s16(x16(s) - x16(new));
+        let step = if d >= 0 { (d / div).min(cap) } else { -((((new - s) << 4) & 0xFFFF) / div).min(cap) };
+        self.world_turn = (self.world_turn + step) & 0xFFF;
     }
 
     /// Tekken Tag's director state (CAM+0): 1 the fight camera, 2-5 a situation's, 6 a camera motion.
@@ -1146,9 +1197,11 @@ impl FightCamera {
     }
 
     /// 0x38DEA0 / 0x3943A8: a per-fighter camera, once a move: a fighter's move with camera id 0x23-0x66 picks a
-    /// script from its list (rand & 0xFFF) about the other fighter; the script's kind sets the state, its frames the
-    /// count, its blend in the blend. shortcut: as when the other's +0x131 is clear (unknown): not ids 0x1C-0x20 nor
-    /// the rows by character and motion (0x509820), and kinds 9 / 17 look at the root, not +0x39C.
+    /// script from its list (rand & 0xFFF) about the other fighter; once the other is down (K.O.) also ids 0x1C-0x20
+    /// and the rows by the mover's character and alias (0x509820); kind 4 of ids 0x23-0x66 only on a fighter down.
+    /// The script's kind sets the state, its frames the count, its blend in the blend. shortcut: a row's script by
+    /// +0x13A / +0x13B (set by the damage function, not decoded) is its first; the point +0x39C kept at the K.O. is
+    /// the root.
     fn fighter_start(&mut self, dir: &Director, orient: [bool; 2]) -> bool {
         if self.cam.used.iter().any(Option::is_some) {
             return false;
@@ -1156,13 +1209,18 @@ impl FightCamera {
         let a = self.actors;
         for it in 0..2 {
             let (o, m) = (&a[it], &a[1 - it]);
-            if !(0x23..=0x66).contains(&m.cam) {
-                continue;
-            }
-            let Some(list) = dir.fighter_ids.iter().find(|e| e.0 == m.cam).and_then(|e| dir.fighter_lists.get(e.1)) else { continue };
+            let by_id = (0x23..=0x66).contains(&m.cam) || (o.ko && (0x1C..=0x20).contains(&m.cam));
+            let list = if by_id {
+                dir.fighter_ids.iter().find(|e| e.0 == m.cam).map(|e| e.1)
+            } else if o.ko {
+                dir.fighter_rows.iter().find(|r| r[0] == m.character && r[1] == m.alias).and_then(|r| usize::try_from(r[2] - 0x12C).ok())
+            } else {
+                None
+            };
+            let Some(list) = list.and_then(|k| dir.fighter_lists.get(k)) else { continue };
             let r = self.rand() & 0xFFF;
-            let Some(&(_, script)) = list.iter().find(|e| e.0 >= r) else { return false };
-            if script[0] == -1 {
+            let Some(&(_, [script, ..])) = list.iter().find(|e| e.0 >= r) else { return false };
+            if script[0] == -1 || (0x23..=0x66).contains(&m.cam) && script[0] == 4 && !o.ko {
                 return false;
             }
             let (kind, frames, blend) = (script[0], script[1], script[2]);
@@ -1946,10 +2004,11 @@ fn s12(v: i64) -> i64 {
 impl EndCam {
     /// Winner camera A (0x80046460) or B (0x800467A0) on the round winner. `random(n)`: 0..n. Tekken Tag's
     /// (0x35BB58): camera A only, beside the arena's light 0 at a distance by H.
-    pub fn winner(d: &CameraData, p: &Subject, b_variant: bool, random: &mut dyn FnMut(i64) -> i64) -> Self {
+    /// `world_turn`: the far background's turn ([`FightCamera::world_turn`]; Tekken Tag's light 0 turns with it).
+    pub fn winner(d: &CameraData, p: &Subject, b_variant: bool, world_turn: i64, random: &mut dyn FnMut(i64) -> i64) -> Self {
         let [rx, _, rz] = p.root;
         if let Some(w) = &d.win {
-            let a = (w.arc_from + random(w.arc_range) - w.light) & 0xFFF;
+            let a = (w.arc_from + random(w.arc_range) - w.light + world_turn) & 0xFFF;
             let r = tdiv(d.h * w.distance_per_h[0], w.distance_per_h[1]) + w.radius_add;
             let y = if d.variant { p.chest + d.end.aim.chest_offset } else { w.eye_y };
             let eye = [rx + sra_tz(d.cos(a) * r, 12), y, rz + sra_tz(d.sin(a) * r, 12)];

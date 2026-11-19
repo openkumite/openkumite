@@ -874,8 +874,9 @@ impl Bout {
                 let l = 1 - w;
                 self.game.fight.fighters[l].play_alias(alias);
                 let p = self.game.subject(l);
+                let turn = self.game.camera.world_turn;
                 let mut rnd = |n: i64| self.end_random(n);
-                let cam = EndCam::winner(&data, &p, true, &mut rnd);
+                let cam = EndCam::winner(&data, &p, true, turn, &mut rnd);
                 self.game.camera_mode = CameraMode::End { cam, who: l };
                 self.game.visible = [l == 0, l == 1];
                 if self.game.pose_partner(l) {
@@ -905,8 +906,9 @@ impl Bout {
                 }
                 let b_variant = self.count(WINNER).is_multiple_of(2);
                 let p = self.game.subject(w);
+                let turn = self.game.camera.world_turn;
                 let mut rnd = |n: i64| self.end_random(n);
-                let cam = EndCam::winner(&data, &p, b_variant, &mut rnd);
+                let cam = EndCam::winner(&data, &p, b_variant, turn, &mut rnd);
                 self.game.camera_mode = CameraMode::End { cam, who: w };
                 self.game.visible = [w == 0, w == 1];
                 // a tag battle: the winner's partner poses the same alias beside it (0x3B5DB0)
