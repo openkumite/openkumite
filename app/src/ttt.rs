@@ -58,8 +58,12 @@ const OPT_MEMORY_CARD: usize = 4;
 const ARCADE_ROW: usize = usize::MAX;
 /// GAME OPTIONS' CHARACTER CHANGE AT CONTINUE row.
 const CHANGE_ROW: usize = 3;
-/// GAME OPTIONS' HELP MESSAGES row.
+/// GAME OPTIONS' GUARD DAMAGE, HELP MESSAGES, SPEAKER OUT, BGM / SE VOLUME rows.
+const GUARD_ROW: usize = 4;
 const HELP_ROW: usize = 8;
+const SPEAKER_ROW: usize = 9;
+const BGM_ROW: usize = 10;
+const SE_ROW: usize = 11;
 /// The last unlock stage (FRONTEND.md 7).
 const LAST_STAGE: u32 = 14;
 /// Frames the result and message screens stay (START skips).
@@ -339,19 +343,36 @@ impl Progress {
 
     /// Where `r` would stand among SURVIVAL's (`survival`: most wins first) or TIME ATTACK's records (fastest first);
     /// None: not among them.
-    pub fn rank(&self, survival: bool, r: &Record) -> Option<usize> {
-        let list = if survival { &self.survivors } else { &self.times };
+    pub fn rank(&self, d: &Data, survival: bool, r: &Record) -> Option<usize> {
+        let list = self.list(d, survival);
         let at = list.iter().position(|o| if survival { r.score > o.score } else { r.score < o.score }).unwrap_or(list.len());
         (at < RECORDS && (r.score > 0 || !survival)).then_some(at)
     }
 
     /// Keep `r` among the records.
-    pub fn record(&mut self, survival: bool, r: Record) {
-        if let Some(at) = self.rank(survival, &r) {
-            let list = if survival { &mut self.survivors } else { &mut self.times };
+    pub fn record(&mut self, d: &Data, survival: bool, r: Record) {
+        if let Some(at) = self.rank(d, survival, &r) {
+            let mut list = self.list(d, survival);
             list.insert(at, r);
             list.truncate(RECORDS);
+            *if survival { &mut self.survivors } else { &mut self.times } = list;
         }
+    }
+
+    /// SURVIVAL's (`survival`) or TIME ATTACK's records: the save's, else those a new save starts with
+    /// (`records.defaults`, 0x3C88A0).
+    fn list(&self, d: &Data, survival: bool) -> Vec<Record> {
+        let kept = if survival { &self.survivors } else { &self.times };
+        if !kept.is_empty() {
+            return kept.clone();
+        }
+        let key = if survival { "survivors" } else { "times" };
+        d.raw["records"]["defaults"][key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|r| Record { score: int(&r["score"]) as u32, members: ints(&r["members"]), name: r["name"].as_str().unwrap_or_default().to_string() })
+            .collect()
     }
 
     /// GAME OPTIONS row `row`'s value as set, else its default.
@@ -385,6 +406,14 @@ impl Progress {
     }
 }
 
+/// GAME OPTIONS' sound: the music's level (BGM VOLUME by `volumes.bgm`, of 128), the effects' (SE VOLUME / `volumes.se`),
+/// SPEAKER OUT MONO; None with a pack without `volumes`.
+pub fn volumes(d: &Data, p: &Progress) -> Option<(f32, f32, bool)> {
+    let v = &d.raw["volumes"];
+    let bgm = v["bgm"].get(p.setting(d, BGM_ROW))?.as_f64()? as f32 / 128.0;
+    Some((bgm, p.setting(d, SE_ROW) as f32 / v["se"].as_f64()?.max(1.0) as f32, p.setting(d, SPEAKER_ROW) == 0))
+}
+
 /// One side's fighters: (roster index, costume).
 pub type Team = Vec<(usize, usize)>;
 
@@ -406,6 +435,9 @@ pub struct Run {
     pub frames: u32,
     pub stage: usize,
     pub options: [usize; 3],
+    /// GUARD DAMAGE ON (settings +0xC, 0x43B804): a guarded hit takes a tenth of its damage.
+    #[serde(default)]
+    pub guard_damage: bool,
 }
 
 fn tag(mode: u32) -> bool {
@@ -431,6 +463,7 @@ impl Run {
             frames: 0,
             stage: pick(&d.pool(progress), seed).unwrap_or(0),
             options: progress.options(d),
+            guard_damage: progress.setting(d, GUARD_ROW) == 1,
         };
         if ladder_mode(mode) {
             run.ladder = ladder(d, roster, progress.stage, &d.pool(progress), &run.teams[0], tag(mode), seed);
@@ -538,7 +571,7 @@ impl Run {
                 }
                 let mut page = Page::Message { lines, frame: 0, title: true };
                 let record = Record { score: self.frames, members: self.members(roster), name: String::new() };
-                if self.mode == TIME_ATTACK && progress.rank(false, &record).is_some() {
+                if self.mode == TIME_ATTACK && progress.rank(d, false, &record).is_some() {
                     page = Page::NameEntry { survival: false, record, letter: 0, then: Box::new(page) };
                 }
                 match ending {
@@ -568,7 +601,7 @@ impl Run {
                 progress.played(d, None);
                 let page = Page::Message { lines: vec!["SURVIVAL".into(), format!("WINS {}", self.wins[0])], frame: 0, title: false };
                 let record = Record { score: self.wins[0], members: self.members(roster), name: String::new() };
-                if progress.rank(true, &record).is_some() {
+                if progress.rank(d, true, &record).is_some() {
                     return Next::Screen(Page::NameEntry { survival: true, record, letter: 0, then: Box::new(page) });
                 }
                 Next::Screen(page)
@@ -1258,7 +1291,7 @@ impl Front {
                     None
                 }
                 Key::Up | Key::Down => {
-                    let max = record_rows(progress, *page).len().saturating_sub(RECORD_ROWS);
+                    let max = record_rows(&d, progress, *page).len().saturating_sub(RECORD_ROWS);
                     let next = if key == Key::Up { scroll.saturating_sub(1) } else { (*scroll + 1).min(max) };
                     if next != *scroll {
                         sfx::play(sound(&d, "cursor"));
@@ -1271,34 +1304,36 @@ impl Front {
                     Some(Page::Options { cursor: OPT_RECORDS })
                 }
             },
-            // (0x3D0450: the letters go round; a button takes the one under the cursor, "<" takes the last back,
-            // "=" or the last letter ends; START ends)
+            // (0x3D0350: right / down the next letter, left / up the one before, round, sound 3; a face button takes
+            // the one under the cursor, "<" takes the last back, "=" or the third letter ends, sound 4)
             Page::NameEntry { survival, record, letter, then } => {
                 let letters: Vec<char> = d.raw["records"]["letters"].as_str().unwrap_or_default().chars().collect();
                 let n = letters.len().max(1);
-                let mut done = key == Key::Start;
+                let mut done = false;
                 match (key, letters.get(*letter)) {
                     (Key::Left | Key::Right | Key::Up | Key::Down, _) => {
                         sfx::play(sound(&d, "cursor"));
-                        *letter = (*letter + if matches!(key, Key::Left | Key::Down) { n - 1 } else { 1 }) % n;
+                        *letter = (*letter + if matches!(key, Key::Left | Key::Up) { n - 1 } else { 1 }) % n;
                     }
-                    (Key::Button(_) | Key::Back, Some('<')) | (Key::Back, _) => {
-                        sfx::play(sound(&d, "cancel"));
+                    (Key::Button(_), Some('<')) => {
+                        sfx::play(sound(&d, "pick"));
                         record.name.pop();
                     }
                     (Key::Button(_), Some('=')) => done = true,
                     (Key::Button(_), Some(&c)) => {
-                        sfx::play(sound(&d, "pick"));
                         record.name.push(c);
                         done = record.name.chars().count() >= int(&d.raw["records"]["name_len"]).max(1);
+                        if !done {
+                            sfx::play(sound(&d, "pick"));
+                        }
                     }
                     _ => {}
                 }
                 if !done {
                     return Outcome::None;
                 }
-                sfx::play(sound(&d, "decide"));
-                progress.record(*survival, record.clone());
+                sfx::play(sound(&d, "pick"));
+                progress.record(&d, *survival, record.clone());
                 set_progress(progress.clone());
                 self.page = std::mem::replace(then.as_mut(), Page::Title);
                 self.frame = 0;
@@ -1485,11 +1520,11 @@ impl Front {
             Page::Options { cursor } => {
                 let m = &d.raw["menu"];
                 let level = (128.0 - num(&m["logo_step"]) * self.frame as f32).max(num(&m["dim"]));
-                image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(level).0);
+                options_backdrop(painter, v, art, d, level);
                 draw_options(painter, v, art, d, progress, *cursor);
             }
             Page::GameOptions { cursor, values, arcade, reset } => {
-                image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(num(&d.raw["menu"]["dim"])).0);
+                options_backdrop(painter, v, art, d, num(&d.raw["menu"]["dim"]));
                 draw_game_options(painter, v, art, d, *cursor, values, *arcade, *reset);
             }
             Page::Stage { cursor, .. } => {
@@ -1519,8 +1554,11 @@ impl Front {
             }
             Page::GameOver { .. } => banner_at(painter, v, art, d, &d.raw["arcade"]["continue"]["game_over"], 0),
             Page::Records { page, scroll, attract } => {
-                let level = if *attract { 128.0 } else { num(&d.raw["menu"]["dim"]) };
-                image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(level).0);
+                if *attract {
+                    image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], Color32::WHITE);
+                } else {
+                    options_backdrop(painter, v, art, d, num(&d.raw["menu"]["dim"]));
+                }
                 draw_records(painter, v, art, d, roster, progress, *page, *scroll, self.frame, !*attract);
             }
             Page::NameEntry { record, letter, .. } => {
@@ -1721,6 +1759,18 @@ fn title(painter: &egui::Painter, v: &View, art: &Art, d: &Data, t: &Value) {
     chrome(painter, v, art, d, t["title"].as_str().unwrap_or_default(), num(&t["title_xy"][0]), num(&t["title_xy"][1]), Some(int(&m["title_colour"])), size);
 }
 
+/// The options screens' logo dimmed to `dim`, under `options_menu.backdrop` (0x3BF2F8): black at the sides to its
+/// colour in the middle, at its alpha.
+fn options_backdrop(painter: &egui::Painter, v: &View, art: &Art, d: &Data, dim: f32) {
+    image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(dim).0);
+    let b = &d.raw["options_menu"]["backdrop"];
+    if b.is_array() {
+        let (c, edge) = (rgba(b), Color32::from_rgba_unmultiplied(0, 0, 0, rgba(b).a()));
+        Art::shade(painter, v, sv([0.0, 0.0, W / 2.0, H]), [edge, c, edge, c]);
+        Art::shade(painter, v, sv([W / 2.0, 0.0, W / 2.0, H]), [c, edge, c, edge]);
+    }
+}
+
 /// OPTIONS (0x3B19B0, `options_menu`): the title, the entries `item_dy` apart, each over its `line` (the cursor's
 /// white, over the green `band`), in their colours (MEMORY CARD(PS2) in the unavailable one: OpenKumite saves by
 /// itself), the cursor entry's help line.
@@ -1754,18 +1804,18 @@ fn draw_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Prog
 /// RECORDS' rows shown at once.
 const RECORD_ROWS: usize = 6;
 
-/// A RECORDS page's rows: CHARACTER USAGE (each character picked: its id, its per-mille of the picks), GREATEST
-/// SURVIVORS, TIME ATTACK.
-fn record_rows(p: &Progress, page: usize) -> Vec<(Vec<usize>, u32, String)> {
+/// A RECORDS page's rows: CHARACTER USAGE (each selectable character: its id, its per-mille of the picks; most picked
+/// first, by id among equals: 0x3C84B8), GREATEST SURVIVORS, TIME ATTACK.
+fn record_rows(d: &Data, p: &Progress, page: usize) -> Vec<(Vec<usize>, u32, String)> {
     match page {
         0 => {
             let total: u32 = p.usage.iter().sum();
-            let mut rows: Vec<(Vec<usize>, u32, String)> = p.usage.iter().enumerate().filter(|u| *u.1 > 0).map(|(c, &n)| (vec![c], n * 1000 / total.max(1), String::new())).collect();
+            let mut rows: Vec<(Vec<usize>, u32, String)> =
+                (0..34).filter(|&c| d.selectable(p.stage, c)).map(|c| (vec![c], p.usage.get(c).copied().unwrap_or(0) * 1000 / total.max(1), String::new())).collect();
             rows.sort_by_key(|a| std::cmp::Reverse(a.1));
             rows
         }
-        1 => p.survivors.iter().map(|r| (r.members.clone(), r.score, r.name.clone())).collect(),
-        _ => p.times.iter().map(|r| (r.members.clone(), r.score, r.name.clone())).collect(),
+        _ => p.list(d, page == 1).into_iter().map(|r| (r.members, r.score, r.name)).collect(),
     }
 }
 
@@ -1786,11 +1836,22 @@ fn draw_records(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         let h = art.pic(pic).map_or(0.0, |p| p.1[1] as f32);
         sprite(painter, v, art, pic, x, y - h, Color32::WHITE);
     };
+    let rows = record_rows(d, p, page);
     if frame / int(&r["arrows_blink"]).max(1) as u32 % 2 == 1 {
         arrow(0, num(&r["arrows_x"][0]), py);
         arrow(1, num(&r["arrows_x"][1]), py);
+        // (rows above, rows below: `more`'s up and down at their feet)
+        let m = &r["more"];
+        let (tex, n) = (art.pic(m["picture"].as_str().unwrap_or_default()), num(&m["cell"]));
+        for (k, more) in [scroll > 0, scroll + RECORD_ROWS < rows.len()].into_iter().enumerate() {
+            if let (true, Some((tex, [tw, th]))) = (more, tex.as_ref().map(|(t, s)| (t, *s))) {
+                let u = num(&m["cells"][k]) * n / tw as f32;
+                let [x, y, w, h] = sv([num(&m["x"]), num(&m["y"][k]) - n, n, n]);
+                let c = |i: usize| int(&m["tint"][i]).min(255) as u8;
+                painter.image(tex.id(), v.rect(x, y, w, h), Rect::from_min_max(Pos2::new(u, 0.0), Pos2::new(u + n / tw as f32, n / th as f32)), Color32::from_rgb(c(0), c(1), c(2)));
+            }
+        }
     }
-    let rows = record_rows(p, page);
     let col = |k: usize, key: &str| num(&pg["columns"][k][key]);
     let colour = |k: usize| Some(int(&pg["columns"][k]["colour"]));
     let (y0, dy, bar_w) = (num(&r["row_y"]), num(&r["row_dy"]), num(&r["bar_w"]));
@@ -1862,6 +1923,24 @@ fn draw_game_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data, cur
         let h = art.pic(pic).map_or(0.0, |p| p.1[1] as f32);
         sprite(painter, v, art, pic, ax, y - h, Color32::WHITE);
     };
+    // the cursor's option's modes (0x3B3F88): the main menu's ARCADE..TEKKEN BOWL (once open) right-aligned over their
+    // box, in their colours where it applies, else `off`
+    if let Some(&row) = game_rows(d).get(cursor).filter(|&&r| r != ARCADE_ROW) {
+        let (m, mask) = (&g["modes"], int(&d.raw["options"][row]["modes"]));
+        let open = d.bowl_open(progress().stage);
+        let items: Vec<&Value> = d.raw["menu"]["items"].as_array().into_iter().flatten().filter(|i| int(&i["mode"]) < BOWL as usize || (int(&i["mode"]) == BOWL as usize && open)).collect();
+        let (top, dy, size) = (num(&m["y"]), num(&m["dy"]), num(&m["size"]));
+        let [b0, b1] = [num(&m["box"]["x"][0]), num(&m["box"]["x"][1])];
+        let bottom = top + dy * items.len() as f32 + num(&m["box"]["below"]);
+        let by = num(&m["box"]["y"]);
+        Art::shade(painter, v, sv([b0, by, b1 - b0, bottom - by]), [Color32::TRANSPARENT, Color32::BLACK, Color32::TRANSPARENT, Color32::BLACK]);
+        for (k, i) in items.iter().enumerate() {
+            let label = i["label"].as_str().unwrap_or_default();
+            let w = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, label, 0.0, 0.0, None, size);
+            let c = if mask >> int(&i["mode"]) & 1 == 1 { int(&i["colour"]) } else { int(&m["off"]) };
+            chrome(painter, v, art, d, label, num(&m["right"]) - w, top + dy * k as f32, Some(c), size);
+        }
+    }
     for (k, &row) in game_rows(d).iter().enumerate() {
         let y = y0 + dy * k as f32;
         let o = &d.raw["options"][row];
@@ -3097,6 +3176,8 @@ mod tests {
             "unlocks": {"schedule": [{"stage": 0, "kind": 0, "character": 2}, {"stage": 1, "kind": 1, "character": 2}, {"stage": 1, "kind": 0, "character": 3}], "points_per_stage": 50},
             "arcade": {"fights": 8, "rivals": [[2, 3, null], [0, null, null]], "fallback": [3], "pairs": [[1, 2]], "rival_arena": 6, "boss": 3, "boss_arena": 14, "early_fights": 3, "early_excluded": []},
             "team_battle": {"refill_percent": 15},
+            "records": {"defaults": {"survivors": [{"members": [0, 1], "score": 5, "name": "PAU"}, {"members": [2, 3], "score": 1, "name": "KIN"}]}},
+            "volumes": {"bgm": [0, 32, 40, 48, 56, 64, 72, 80, 96, 112, 128], "se": 10},
             "options": [{"default": 1, "values": ["EASY", "NORMAL"]}, {"default": 1, "values": ["1", "2", "3"]}, {"default": 2, "values": ["30", "40", "60"]}],
         }});
         // (each character's ending: its id)
@@ -3411,17 +3492,23 @@ mod tests {
     /// Records: TIME ATTACK fastest first, SURVIVAL most wins first (none for 0 wins), ten of each.
     #[test]
     fn records_keep_the_best_ten() {
+        let d = data();
         let mut p = Progress::default();
         let r = |score: u32| Record { score, members: vec![7], name: "ABC".into() };
         for t in [500, 300, 400] {
-            p.record(false, r(t));
+            p.record(&d, false, r(t));
         }
         assert_eq!(p.times.iter().map(|t| t.score).collect::<Vec<_>>(), [300, 400, 500]);
-        assert_eq!(p.rank(true, &r(0)), None);
+        assert_eq!(p.rank(&d, true, &r(0)), None);
+        // a new save's SURVIVAL records are the PS2's (`records.defaults`); CHARACTER USAGE lists the selectable at 0.0 %
+        assert_eq!(p.rank(&d, true, &r(3)), Some(1));
+        assert_eq!(record_rows(&d, &p, 0), [(vec![0], 0, String::new()), (vec![1], 0, String::new())]);
+        // BGM VOLUME 5 of the table, SE VOLUME 10, STEREO
+        assert_eq!(volumes(&d, &Progress { settings: vec![1, 0, 0, 0, 1, 1, 1, 5, 10], ..p.clone() }), Some((0.5, 1.0, false)));
         for w in 1..=12 {
-            p.record(true, r(w));
+            p.record(&d, true, r(w));
         }
-        assert_eq!((p.survivors.len(), p.survivors[0].score, p.rank(true, &r(2))), (RECORDS, 12, None));
+        assert_eq!((p.survivors.len(), p.survivors[0].score, p.rank(&d, true, &r(2))), (RECORDS, 12, None));
     }
 
     /// The main menu's rows slide a row's height in 4 a frame; no move while they slide (0x3BD2E0).
