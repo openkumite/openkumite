@@ -235,6 +235,9 @@ pub struct TeamIntro {
     pair_scale: i64,
     /// The pairs with their own places and motions (0x43A180).
     pub pairs: Vec<[PairMember; 2]>,
+    /// By character: [alias, frame] its intro motion starts at (0x447480).
+    #[serde(default)]
+    pub start_frames: Vec<Vec<[i64; 2]>>,
 }
 #[derive(Deserialize, Clone, Copy, Debug)]
 pub struct TeamPlace {
@@ -823,11 +826,13 @@ pub struct FightCamera {
     replay: Option<Replay>,
     pub view: View,
     /// Tekken Tag's director: the fighters as it reads them (set before each step), its block, slot 1's lift
-    /// (gp-0x6FA8) and its random stream (libc rand's, carried from round to round).
+    /// (gp-0x6FA8); its random streams, the CPU's (libc rand and the AI's LCG: a bout lends its own for each fight
+    /// step, as the PS2 shares them) and the end cameras' LCG (gp-0x73FC), carried from round to round.
     pub actors: [Actor; 2],
     cam: Cam,
     lift: i64,
-    pub seed: u32,
+    pub rng: crate::ai::AiRng,
+    pub lcg: u32,
 }
 
 /// The replay camera's block (0x800A04C8): distance, yaw and its sweeping offset (both kept in 16 bits, as the
@@ -874,7 +879,8 @@ impl FightCamera {
             actors: [Actor::default(); 2],
             cam: Cam::new(),
             lift: 0,
-            seed: 0,
+            rng: crate::ai::AiRng::new(0),
+            lcg: 0,
         }
     }
 
@@ -925,16 +931,20 @@ impl FightCamera {
         self.view
     }
 
-    /// libc rand (0x40FBD0) on the camera's own stream. shortcut: the game shares it with the CPU and everything
-    /// else, so its low bits look random there; drawn alone they repeat, so bits 16-30 (as the AI's `AiRng`).
+    /// libc rand (0x40FBD0) on the CPU's stream (its bits as the AI draws them, `AiRng`).
     fn rand(&mut self) -> i64 {
-        self.seed = self.seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
-        i64::from((self.seed >> 16) & 0x7FFF)
+        i64::from(self.rng.rand())
     }
 
-    /// 0x3800D8: 0..n (without the AI's second stream).
-    fn randint(&mut self, n: i64) -> i64 {
-        (n * self.rand()) >> 15
+    /// 0x3800D8: 0..n from both of the CPU's streams.
+    pub fn randint(&mut self, n: i64) -> i64 {
+        i64::from(self.rng.randint(n as i32))
+    }
+
+    /// The end cameras' 0..n (gp-0x73FC: x = (x + 1) * 69069, its high half scaled; 0x35BB58, 0x3957A0).
+    pub fn end_random(&mut self, n: i64) -> i64 {
+        self.lcg = self.lcg.wrapping_add(1).wrapping_mul(69069);
+        (i64::from(self.lcg >> 16) * n) >> 16
     }
 
     /// 0x38C0F0: back to the fight camera.
@@ -1922,8 +1932,9 @@ impl CameraData {
         out
     }
 
+    /// (H on the renderer's 368-wide screen, as `apply`: Tekken Tag measures it on 512)
     fn view6(&self, b: &Block) -> View {
-        View { eye: b.eye, pitch: sra_tz(b.p, 6), yaw: sra_tz(b.y, 6), h: self.h, roll: 0 }
+        View { eye: b.eye, pitch: sra_tz(b.p, 6), yaw: sra_tz(b.y, 6), h: tdiv(self.h * 368, self.screen_width), roll: 0 }
     }
 }
 
@@ -2017,7 +2028,7 @@ impl EndCam {
             }
             EndCam::Overhead { yaw } => {
                 let o = &d.end.overhead;
-                View { eye: [rx, o.height, rz], pitch: o.pitch, yaw: *yaw & 0xFFF, h: d.h, roll: 0 }
+                View { eye: [rx, o.height, rz], pitch: o.pitch, yaw: *yaw & 0xFFF, h: tdiv(d.h * 368, d.screen_width), roll: 0 }
             }
             EndCam::Orbit { eye, target } => {
                 let o = &d.end.orbit;
@@ -2032,7 +2043,7 @@ impl EndCam {
                 target[1] += sra_tz((p.chest - target[1]) * m, sh as u32);
                 target[2] += sra_tz((rz - target[2]) * m, sh as u32);
                 let (pt, y) = d.lookat6(*eye, *target);
-                View { eye: *eye, pitch: sra_tz(pt, 6), yaw: sra_tz(y, 6), h: d.h, roll: 0 }
+                View { eye: *eye, pitch: sra_tz(pt, 6), yaw: sra_tz(y, 6), h: tdiv(d.h * 368, d.screen_width), roll: 0 }
             }
         }
     }

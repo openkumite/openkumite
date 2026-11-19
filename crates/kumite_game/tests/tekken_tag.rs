@@ -339,11 +339,15 @@ fn the_cpu_team_shows_before_round_1() {
         let mut seen = Vec::new();
         for _ in 0..100 {
             b.step([Pad::default(); 2]);
-            seen.push((b.phase, b.game.camera.view.eye));
+            seen.push((b.phase, b.game.camera.view.eye, b.game.fight.fighters[1].frame));
         }
         seen
     };
     let seen = run();
+    // the intro motions (150 frames) from frame 60, their last 90 (0x368398 under the intro's flag; 0x447480's 255)
+    if a.gamedata::<serde_json::Value>("camera.json").is_ok_and(|c| c["team_intro"]["start_frames"].is_array()) {
+        assert_eq!(seen[0].2, 61, "{:?}", &seen[..3]);
+    }
     let shown = seen.iter().take_while(|s| s.0 == Phase::TeamIntro { team: 1 }).count();
     assert_eq!((shown, seen[shown].0), (92, Phase::Call), "{:?}", &seen[..3]);
     assert_ne!(seen[0].1, seen[60].1, "the shot moves");
@@ -724,7 +728,7 @@ fn strings_go_on_from_normal_level_4() {
 #[test]
 fn king_throws_canned_and_delays_inputs() {
     let Some(a) = assets() else { return };
-    let (normal, hard) = (cpu_run_of(&a, [KING, LEI], [Some((1, 7)), None], 9000, 2), cpu_run_of(&a, [KING, LEI], [Some((2, 0)), None], 15000, 2));
+    let (normal, hard) = (cpu_run_of(&a, [KING, LEI], [Some((1, 7)), None], 40000, 9), cpu_run_of(&a, [KING, LEI], [Some((2, 0)), None], 15000, 2));
     // (rare: a few a match)
     let ultra = cpu_run_of(&a, [LEI, KING], [None, Some((4, 0))], 60000, 9).stats[2];
     eprintln!("King NORMAL L7 {:?}, ULTRA HARD L0 delays {ultra}, HARD L0 {:?}", normal.stats, hard.stats);

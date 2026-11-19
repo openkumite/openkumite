@@ -609,6 +609,7 @@ impl Game {
             _ if is(a, 1) && is(b, 0) => Some([*b, *a]),
             _ => None,
         });
+        let chars = self.characters;
         let gd = self.fight.data.clone();
         for (i, f) in self.fight.fighters.iter_mut().enumerate() {
             let alias = match pair {
@@ -626,8 +627,11 @@ impl Game {
                 }
             };
             if f.play_alias(alias) {
-                let len = f.current_move(&gd).frames;
-                f.frame = if len >= 151 { len - 149 } else { 1 };
+                // 0x368398 under the team intro's flag: the character's frame for the alias (0x3D29E8; 1 for none),
+                // or the motion's frames (record +0x18, a byte) - 90 when shorter than it + 90: its last 90 frames
+                let len = i64::from(f.current_move(&gd).frames.min(255));
+                let start = chars[i].and_then(|c| ti.start_frames.get(usize::try_from(c).ok()?)).and_then(|l| l.iter().find(|e| e[0] == alias as i64)).map_or(1, |e| e[1]);
+                f.frame = (if len < start + 90 { len - 90 } else { start }).max(1) as u32;
             }
         }
         if pair.is_none() {
@@ -666,9 +670,9 @@ impl Game {
     /// Start with the round-start camera fly-in (variant = round counter % 10). While it plays the
     /// fighters stand in their stance, pads are ignored and the round clock does not run.
     pub fn with_intro(mut self, variant: usize, first_round: bool) -> Self {
-        let seed = self.camera.seed;
+        let (rng, lcg) = (self.camera.rng.clone(), self.camera.lcg);
         self.camera = FightCamera::new(self.camera.data().clone(), true, variant, first_round);
-        self.camera.seed = seed;
+        (self.camera.rng, self.camera.lcg) = (rng, lcg);
         self.intro = Some((variant, first_round));
         self.step_camera();
         self
@@ -756,9 +760,9 @@ impl Game {
             self.ball_doubles(&partner, &extra);
         }
         let (intro, (variant, first)) = (intro_setting.is_some(), intro_setting.unwrap_or((0, true)));
-        let seed = self.camera.seed;
+        let (rng, lcg) = (self.camera.rng.clone(), self.camera.lcg);
         self.camera = FightCamera::new(self.camera.data().clone(), intro, variant, first);
-        self.camera.seed = seed;
+        (self.camera.rng, self.camera.lcg) = (rng, lcg);
         self.camera_mode = CameraMode::Fight;
         self.recorded.clear();
         self.recorded_total = 0;

@@ -88,3 +88,13 @@ fn the_provisional_camera_is_tekken_3s() {
     }
     assert_eq!((p.distance, p.h, p.initial_eye, p.intro_frames, p.intro_offsets.clone()), (t3.distance, t3.h, t3.initial_eye, t3.intro_frames, t3.intro_offsets.clone()));
 }
+
+/// Tekken Tag's end cameras' random (gp-0x73FC, 0x35BB58): x = (x + 1) * 69069, then (x >> 16) * n >> 16.
+#[test]
+fn the_end_cameras_random_is_the_ps2s() {
+    let mut c = FightCamera::new(Arc::new(CameraData::provisional().unwrap()), false, 0, true);
+    c.lcg = 41;
+    let x = 42u32.wrapping_mul(69069);
+    assert_eq!(c.end_random(0xE3), (i64::from(x >> 16) * 0xE3) >> 16);
+    assert_eq!(c.lcg, x);
+}

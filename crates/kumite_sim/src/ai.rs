@@ -604,13 +604,13 @@ impl AiRng {
     /// libc rand(): 0..0x7FFF, the state's bits 16-30. (Tekken Tag's 0x40FBD0 returns bits 0-14, but its stream is
     /// shared with the rest of the game, which scatters the AI's draws; drawn on their own, the low bits repeat with
     /// a short period (bit 0 alternates) and lock the CPU's choices.)
-    fn rand(&mut self) -> i32 {
+    pub fn rand(&mut self) -> i32 {
         self.rand = self.rand.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
         ((self.rand >> 16) & 0x7FFF) as i32
     }
 
     /// 0x800566E8: 0..n from both streams, then the LCG steps.
-    fn randint(&mut self, n: i32) -> i32 {
+    pub fn randint(&mut self, n: i32) -> i32 {
         let r = self.rand() as u32;
         let v = n.wrapping_mul((r.wrapping_add(self.lcg) & 0x7FFF) as i32);
         self.lcg();
