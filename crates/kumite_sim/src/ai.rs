@@ -154,20 +154,10 @@ struct Jitter {
     sine: Vec<i32>,
 }
 /// The random generators' differences (Tekken 3's file describes its own in words: the defaults).
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct RngJson {
     #[serde(default)]
     ai_lcg_seed: u32,
-    #[serde(default = "rand_shift")]
-    rand_shift: u32,
-}
-fn rand_shift() -> u32 {
-    16
-}
-impl Default for RngJson {
-    fn default() -> Self {
-        Self { ai_lcg_seed: 0, rand_shift: rand_shift() }
-    }
 }
 #[derive(Deserialize)]
 struct Entries<T> {
@@ -432,11 +422,9 @@ pub struct AiData {
     evade: Vec<u8>,
     wakecat: Vec<u32>,
     /// Tekken Tag's tables (FIGHT_DATA.md section 19: 5 difficulties x 8 levels, Tekken 3's routine with the
-    /// differences read in 0x380568 and 0x385250); the AI generator's start, and libc rand() returning its state's
-    /// bits 0-14 (Tekken Tag's 0x40FBD0; Tekken 3's: 16-30).
+    /// differences read in 0x380568 and 0x385250); the AI generator's start.
     ttt: bool,
     lcg_seed: u32,
-    rand_low: bool,
     /// Tekken Tag's distance swing: the sine table (4096 = 1) and its amplitude; Ganryu's handler's canned poke.
     sine: Vec<i32>,
     jitter: i32,
@@ -518,7 +506,6 @@ impl AiData {
             jitter: j.distance_jitter.as_ref().map_or(0, |d| d.amplitude),
             sine: j.distance_jitter.map_or_else(Vec::new, |d| d.sine),
             lcg_seed: j.rng.ai_lcg_seed,
-            rand_low: j.rng.rand_shift == 0,
         })
     }
 
@@ -526,7 +513,7 @@ impl AiData {
     /// front end, so no two fights start the CPU on the same draws: `match_seed` (the match's own) stands in for that
     /// there; Tekken 3 keeps `seed`.
     pub fn rng(&self, seed: u32, match_seed: u32) -> AiRng {
-        AiRng { lcg: self.lcg_seed, rand: if self.ttt { seed ^ match_seed } else { seed }, shift: if self.rand_low { 0 } else { 16 } }
+        AiRng { lcg: self.lcg_seed, rand: if self.ttt { seed ^ match_seed } else { seed } }
     }
 
     pub fn profile(&self, difficulty: usize, level: usize) -> &Profile {
@@ -589,13 +576,12 @@ impl AiData {
 pub struct AiRng {
     lcg: u32,
     rand: u32,
-    shift: u32,
 }
 
 impl AiRng {
     /// `seed`: the libc state (OpenKumite seeds it per bout, so equal inputs give equal fights).
     pub fn new(seed: u32) -> Self {
-        Self { lcg: 0, rand: seed, shift: 16 }
+        Self { lcg: 0, rand: seed }
     }
 
     /// Step the AI LCG, returning its old value (the tests use the old value).
@@ -605,10 +591,12 @@ impl AiRng {
         o
     }
 
-    /// libc rand(): 0..0x7FFF (Tekken 3's: the state's bits 16-30; Tekken Tag's: 0-14).
+    /// libc rand(): 0..0x7FFF, the state's bits 16-30. (Tekken Tag's 0x40FBD0 returns bits 0-14, but its stream is
+    /// shared with the rest of the game, which scatters the AI's draws; drawn on their own, the low bits repeat with
+    /// a short period (bit 0 alternates) and lock the CPU's choices.)
     fn rand(&mut self) -> i32 {
         self.rand = self.rand.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
-        ((self.rand >> self.shift) & 0x7FFF) as i32
+        ((self.rand >> 16) & 0x7FFF) as i32
     }
 
     /// 0x800566E8: 0..n from both streams, then the LCG steps.
@@ -617,11 +605,6 @@ impl AiRng {
         let v = n.wrapping_mul((r.wrapping_add(self.lcg) & 0x7FFF) as i32);
         self.lcg();
         (if v < 0 { v + 0x7FFF } else { v }) >> 15
-    }
-
-    /// A profile test: `(lcg & 0xFFF) < p`.
-    fn chance(&mut self, p: i32) -> bool {
-        ((self.lcg() & 0xFFF) as i32) < p
     }
 }
 
@@ -773,11 +756,18 @@ struct Cx<'a> {
 }
 
 impl Cx<'_> {
+    /// Tekken 3's AI generator draw; Tekken Tag reads its generator (gp-0x64E8) only inside randint and draws
+    /// these tests from rand() (0x40FBD0).
     fn lcg(&mut self) -> u32 {
-        self.rng.lcg()
+        if self.data.ttt {
+            self.rng.rand() as u32
+        } else {
+            self.rng.lcg()
+        }
     }
+    /// A profile test: `(lcg & 0xFFF) < p`.
     fn chance(&mut self, p: i32) -> bool {
-        self.rng.chance(p)
+        ((self.lcg() & 0xFFF) as i32) < p
     }
     fn randint(&mut self, n: i32) -> i32 {
         self.rng.randint(n)
@@ -1150,6 +1140,8 @@ pub struct Ai {
     list_d: Vec<Ent>,
     delay: Option<(Ent, i32)>,
     low_guard: i32,
+    /// Tekken Tag's S+0x328: frames lying with something to do (0x388FA8).
+    lying: i32,
 }
 
 /// How an AI seat plays, on top of the game's routine (OpenKumite's own: a demo's or a test's players). Each
@@ -1319,6 +1311,7 @@ impl Ai {
             list_d: Vec::new(),
             delay: None,
             low_guard: -1,
+            lying: 0,
         }
     }
 
@@ -1377,7 +1370,7 @@ impl Ai {
         self.ringi = 0;
         self.ring = [None; 8];
         (self.now_n, self.now, self.glatch, self.evade) = (false, false, 0, 0);
-        (self.phase, self.tag_wanted, self.behind, self.op_prev, self.delay, self.low_guard) = (0, false, false, None, None, -1);
+        (self.phase, self.tag_wanted, self.behind, self.op_prev, self.delay, self.low_guard, self.lying) = (0, false, false, None, None, -1, 0);
         self.ring20.clear();
         self.list_b.clear();
         self.list_d.clear();
@@ -1869,7 +1862,9 @@ impl Ai {
         }
 
         // ---- 4.G lying / wake-up [0x8005AE94..0x8005B594]
-        if !cx.me_air && self.m4 & 0x404 != 0 && self.wake_up(cx) {
+        if cx.me_air || self.m4 & 0x404 == 0 {
+            self.lying = 0;
+        } else if self.wake_up(cx) {
             return;
         }
 
@@ -2018,7 +2013,10 @@ impl Ai {
 
         // ---- 4.L stance escape (Tekken Tag's 0x3864E8: no tag entries, and with none marked the chain goes on)
         if cx.data.ttt && self.stance && !self.cand.is_empty() {
-            if (self.until < m.as_ - cx.mf || self.myzone > 2 || cx.a.quadrant == 2) && self.mark(|c| !Cx::is_tag(&c.e)) > 0 {
+            if !(self.until < m.as_ - cx.mf || self.myzone > 2 || cx.a.quadrant == 2) {
+                return;
+            }
+            if self.mark(|c| !Cx::is_tag(&c.e)) > 0 {
                 if self.pick(cx) >= 0 {
                     self.cd = -1;
                 }
@@ -2164,17 +2162,22 @@ impl Ai {
         }
         self.reset_mv();
         self.wlock = 16;
+        self.lying += 1;
         if self.fire1a && cx.me.posture(cx.gd) & 0x200 != 0 {
             self.out = 0x8000;
             return true;
         }
-        if ((self.h4 & 0x20_0000 != 0 && h.as_ == 0) || (self.hmask == 0x607 && self.h8 & 0x1_0000 == 0 && self.until < 29)) && cx.hf < h.ae {
+        // shortcut: Tekken Tag's wait (0x3890D0) is only against Ogre's 0xBA9 within 2000, not ported; port it with that alias in ai.json
+        if !cx.data.ttt && ((self.h4 & 0x20_0000 != 0 && h.as_ == 0) || (self.hmask == 0x607 && self.h8 & 0x1_0000 == 0 && self.until < 29)) && cx.hf < h.ae {
             self.out = 0;
             return true;
         }
         // the categories that suit the situation: 1 up, 2 1 / d+1, 4 back, 8 general, 0x10 get-up attacks,
         // 0x20 spring moves
-        let mask: u32 = if h.as_ == 0 {
+        // (Tekken Tag: after 180 frames lying any category)
+        let mask: u32 = if cx.data.ttt && self.lying >= 180 {
+            0x3F
+        } else if h.as_ == 0 {
             if self.myzone > 2 {
                 if self.hiszone < 4 {
                     0x3F
@@ -2259,14 +2262,16 @@ impl Ai {
         }
         if self.npool > 0 {
             self.pick(cx);
+        } else if cx.data.ttt {
+            // nothing of it: still, after 180 frames up every 16
+            self.out = if self.lying >= 180 && (self.ticks >> 1) & 7 == 0 { 0x1000 } else { 0 };
         }
         true
     }
 
     /// 4.H: one handler (0x8005B598). Returns whether the frame is done.
     fn call_handler(&mut self, cx: &mut Cx, vs: bool) -> bool {
-        // (Tekken Tag's steps 6 / 7 draw from rand())
-        if self.wlock >= 0 || !(if cx.data.ttt { (cx.rand() & 0xFFF) < self.p.evade_and_handler_prob } else { cx.chance(self.p.evade_and_handler_prob) }) {
+        if self.wlock >= 0 || !cx.chance(self.p.evade_and_handler_prob) {
             return false;
         }
         let Some(k) = (if vs { self.h_vs } else { self.h_self }) else { return false };
@@ -2544,7 +2549,8 @@ impl Ai {
             if self.odown && !self.op_stance {
                 break 'decide self.okizeme(cx, &mut cd);
             }
-            if self.h4 & 0xFFFF == 0x4C02 && cx.chance(self.p.pressure_on_stun_prob) {
+            // (Tekken Tag's 0x3869B0 also wants his posture without bit 2, which 0x4C02 has: never)
+            if self.h4 & 0xFFFF == 0x4C02 && cx.chance(self.p.pressure_on_stun_prob) && !cx.data.ttt {
                 break 'decide self.stun_pressure(cx);
             }
             if self.jumpt >= 0 {
@@ -2675,14 +2681,17 @@ impl Ai {
             }
         }
         let mut n;
-        if self.myzone < 3 && !cx.me_air && self.m4 & 1 == 0 && (cx.lcg() & 0x3F) < 14 && !rush {
+        // (Tekken Tag's 0x386DF8: 10 / 64)
+        let crouch_p = if cx.data.ttt { 10 } else { 14 };
+        if self.myzone < 3 && !cx.me_air && self.m4 & 1 == 0 && (cx.lcg() & 0x3F) < crouch_p && !rush {
             n = self.mark(crouch_na); // crouch (crouch dash / d moves set-up)
         } else if (cx.lcg() & 0x3F) < 0x20 && !rush {
             n = if cx.lcg() & 1 != 0 { self.mark(dash_hop) } else { self.pool_punish_posture(cx) };
         } else {
-            if self.cdash < 0 && self.jumpt < 0 && self.m4 & 1 == 0 && !cx.me_air && cx.chance(0x200) {
+            // (Tekken Tag's 0x386EB4: 0x198 / 4096, and at EASY the crouches stay in the pool)
+            if self.cdash < 0 && self.jumpt < 0 && self.m4 & 1 == 0 && !cx.me_air && cx.chance(if cx.data.ttt { 0x198 } else { 0x200 }) {
                 let k = self.mark(crouch_na);
-                if k > 0 {
+                if k > 0 && !(cx.data.ttt && self.difficulty == 0) {
                     self.cdash = 18;
                     self.cd = -1;
                     return k;
@@ -2732,8 +2741,12 @@ impl Ai {
         if (cx.lcg() & 0xFFF) as i32 >= self.p.gate_always_zero {
             *cd = -1;
         }
-        if !(self.turn < 0x4001 || cx.lcg() & 0xF != 0) {
-            return self.mark(|c| c.mv.rec4 & 0x2_0000 != 0); // back turned, 1/16: the turn-round moves
+        // back turned, 1/16 (Tekken Tag's 0x38685C: 1/8, and with none the decision goes on): the turn-round moves
+        if !(self.turn < 0x4001 || cx.lcg() & if cx.data.ttt { 7 } else { 0xF } != 0) {
+            let n = self.mark(|c| c.mv.rec4 & 0x2_0000 != 0);
+            if n > 0 || !cx.data.ttt {
+                return n;
+            }
         }
         if *cd >= 0 {
             return 0;
@@ -2954,7 +2967,9 @@ impl Ai {
                             self.out = 0x2000;
                         }
                     } else {
-                        if self.cd < 0x24 && self.myzone == 2 && cx.lcg() & 0xF == 0 && self.mark(|c| c.e.cmd == 0xC001) > 0 && self.pick(cx) >= 0 {
+                        // (Tekken Tag's 0x3889A4 tests his zone)
+                        let zone = if cx.data.ttt { self.hiszone } else { self.myzone };
+                        if self.cd < 0x24 && zone == 2 && cx.lcg() & 0xF == 0 && self.mark(|c| c.e.cmd == 0xC001) > 0 && self.pick(cx) >= 0 {
                             (self.run3a, self.walk38, self.mvcd40) = (0, 0, 0x28);
                             moved = true;
                             break 'mv;
@@ -3431,7 +3446,8 @@ impl Ai {
     }
 
     /// The pool entry 0x80058A84 draws (on odd ticks counted from the start, where the first entry is twice as
-    /// likely and the last never picked; on even ticks from the end); -1 none.
+    /// likely and the last never picked; on even ticks from the end; Tekken Tag's 0x385318 counts from the start as
+    /// from the end); -1 none.
     fn choose(&mut self, cx: &mut Cx) -> i32 {
         if self.npool <= 0 {
             return -1;
@@ -3460,7 +3476,7 @@ impl Ai {
                 }
                 if self.cand[i as usize].state > 0 {
                     k -= 1;
-                    if k <= 0 {
+                    if k < i32::from(!cx.data.ttt) {
                         break i;
                     }
                 }
@@ -3479,8 +3495,7 @@ impl Ai {
             self.chain += 1;
         }
         if mv.as_ != 0 {
-            // (Tekken Tag's 0x385250 draws it from rand())
-            let k = if cx.data.ttt { cx.rand() as u32 & 3 } else { cx.lcg() & 3 };
+            let k = cx.lcg() & 3;
             self.cd = self.p.attack_cooldown_base + self.p.cooldown(k);
             self.cdash = -1;
             if self.jumpt > 0 {
@@ -3880,9 +3895,11 @@ impl Ai {
     /// 0x80057538: fast pokes (active before frame 14).
     fn pool_fast_poke(&mut self, cx: &Cx) -> i32 {
         let zm = cx.data.zm[self.myzone as usize];
+        // (Tekken Tag's 0x384130: active before frame 12)
+        let fast = if cx.data.ttt { 12 } else { 14 };
         self.mark(|c| {
             let m = &c.mv;
-            m.w14 > 0 && m.as_ != 0 && m.js == 0 && m.rec8 & 0x40_0000 == 0 && m.as_ < 14 && m.rec4 & 0x2_0000 == 0 && (m.range_class() & zm != 0 || m.rec4 & 0x1_0000 != 0)
+            m.w14 > 0 && m.as_ != 0 && m.js == 0 && m.rec8 & 0x40_0000 == 0 && m.as_ < fast && m.rec4 & 0x2_0000 == 0 && (m.range_class() & zm != 0 || m.rec4 & 0x1_0000 != 0)
         })
     }
 
@@ -4118,8 +4135,7 @@ impl Ai {
 
     /// 0x8006251C: canned throws.
     fn canned_throws(&mut self, cx: &mut Cx, f: &Routine) -> i32 {
-        // (Tekken Tag's 0x38BC00 draws from rand())
-        let a = if cx.data.ttt { cx.rand() as u32 } else { cx.lcg() };
+        let a = cx.lcg();
         if self.cd > 0 || (a & 0xFFF) as i32 >= self.p.throw_select_prob {
             return -1;
         }
@@ -4480,7 +4496,7 @@ mod tests {
     }
 
     fn rng(seed: u32) -> AiRng {
-        AiRng { lcg: seed.wrapping_mul(0x9E37_79B9), rand: seed, shift: 16 }
+        AiRng { lcg: seed.wrapping_mul(0x9E37_79B9), rand: seed }
     }
 
     #[test]

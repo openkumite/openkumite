@@ -372,6 +372,11 @@ pub struct Sphere {
 pub trait Animations {
     /// `partner`: the animation belongs to the opponent's character (a borrowed throw-victim move).
     fn root(&self, anim: &str, frame: u32, partner: bool) -> Option<Vec3>;
+    /// Tekken Tag: `f`'s volumes in the pose of its frame now (its strikes and hurt spheres are posed before the
+    /// hit test, 0x34F288); None: the caller's, the frame before's (Tekken 3's strikes are baked paths).
+    fn volumes(&self, _f: &Fighter, _gd: &GameData) -> Option<BodyVolumes> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2627,7 +2632,8 @@ impl Fight {
         }
         // (hits are still detected after a K.O. or time-up: a falling body can be struck again)
         if self.link.is_none() && pair {
-            self.resolve_hits(&gd, bodies.each_ref(), anims);
+            let now: [Option<BodyVolumes>; 2] = std::array::from_fn(|i| anims[i].volumes(&self.fighters[i], &gd));
+            self.resolve_hits(&gd, [now[0].as_ref().unwrap_or(&bodies[0]), now[1].as_ref().unwrap_or(&bodies[1])], anims);
         }
         // the other soldier's hits on the player and the player's on it, as a pair of their own (actor 2)
         if let (true, Some((_, body, anim))) = (extra_on && self.state == RoundState::Fighting && self.link.is_none(), extra) {
