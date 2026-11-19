@@ -1932,8 +1932,9 @@ impl CameraData {
         out
     }
 
+    /// (H on the renderer's 368-wide screen, as `apply`: Tekken Tag measures it on 512)
     fn view6(&self, b: &Block) -> View {
-        View { eye: b.eye, pitch: sra_tz(b.p, 6), yaw: sra_tz(b.y, 6), h: self.h, roll: 0 }
+        View { eye: b.eye, pitch: sra_tz(b.p, 6), yaw: sra_tz(b.y, 6), h: tdiv(self.h * 368, self.screen_width), roll: 0 }
     }
 }
 
@@ -2027,7 +2028,7 @@ impl EndCam {
             }
             EndCam::Overhead { yaw } => {
                 let o = &d.end.overhead;
-                View { eye: [rx, o.height, rz], pitch: o.pitch, yaw: *yaw & 0xFFF, h: d.h, roll: 0 }
+                View { eye: [rx, o.height, rz], pitch: o.pitch, yaw: *yaw & 0xFFF, h: tdiv(d.h * 368, d.screen_width), roll: 0 }
             }
             EndCam::Orbit { eye, target } => {
                 let o = &d.end.orbit;
@@ -2042,7 +2043,7 @@ impl EndCam {
                 target[1] += sra_tz((p.chest - target[1]) * m, sh as u32);
                 target[2] += sra_tz((rz - target[2]) * m, sh as u32);
                 let (pt, y) = d.lookat6(*eye, *target);
-                View { eye: *eye, pitch: sra_tz(pt, 6), yaw: sra_tz(y, 6), h: d.h, roll: 0 }
+                View { eye: *eye, pitch: sra_tz(pt, 6), yaw: sra_tz(y, 6), h: tdiv(d.h * 368, d.screen_width), roll: 0 }
             }
         }
     }
