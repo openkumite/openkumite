@@ -3530,6 +3530,8 @@ fn bowl_meters(painter: &egui::Painter, v: &View, art: &Art, b: &kumite_sim::bow
     }
     if alpha[1] > 0 {
         sprite(painter, v, art, "130_019.png", 50.0, 280.0, tint(alpha[1]));
+        // (the executable's 3.14, gp-0x7D8C, not pi)
+        #[allow(clippy::approx_constant)]
         let a = (b.spin / 4.0 - 0.5) * 3.14;
         let (x, y) = (138.0 + 94.0 * a.cos(), 369.0 + 94.0 * a.sin());
         if let Some((tex, _)) = art.pic("130_022.png") {
