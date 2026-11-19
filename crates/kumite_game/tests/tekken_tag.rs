@@ -564,6 +564,36 @@ fn king_throws_canned_and_delays_inputs() {
     assert!(ultra > 0 && hard.stats[2] == 0, "delayed inputs with P74 only");
 }
 
+/// The distance the top CPU (Lei) keeps over 30 frames from Yoshimitsu starting `alias` `gap` away.
+fn against_yoshimitsu(a: &Assets, alias: usize, gap: f32) -> f32 {
+    let mut b = Bout::new(Game::load(a, [YOSHIMITSU, LEI]).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
+    b.set_cpu(1, Some((4, 7)));
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let f = &mut b.game.fight.fighters;
+    let along = (f[1].position - f[0].position).normalize();
+    f[1].position = f[0].position + along * gap;
+    assert!(f[0].play_alias(alias));
+    for _ in 0..30 {
+        b.step([Pad::default(); 2]);
+    }
+    let f = &b.game.fight.fighters;
+    (f[1].root() - f[0].root()).length()
+}
+
+/// The CPU against Yoshimitsu (0x38B368, Tekken 3's handler with his aliases, pack format 20): from his sweep 0x1A1
+/// it backdashes within 0xA8D at his zone 3 (without the handler it closes in to about 1700), on his stance 0x5C7
+/// from afar it walks in.
+#[test]
+fn the_cpu_reads_yoshimitsu() {
+    let Some(a) = assets() else { return };
+    let (sweep, stance) = (against_yoshimitsu(&a, 0x1A1, 2400.0), against_yoshimitsu(&a, 0x5C7, 3500.0));
+    eprintln!("after his sweep {sweep:.0}, his stance {stance:.0}");
+    assert!(sweep > 2200.0, "kept off the sweep: {sweep:.0}");
+    assert!(stance < 3200.0, "walked in on the stance: {stance:.0}");
+}
+
 /// The arcade CPU, team `cpu` at NORMAL `level`, against Xiaoyu and Yoshimitsu over the seeds' matches: (damage a
 /// fight minute, the fight steps of each match); side 0 stands (`hold`: off) or holds back. The match's seed starts
 /// each CPU on its own draws.
