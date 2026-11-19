@@ -190,6 +190,17 @@ struct Scene {
     shadow: Option<kumite_render::Shadow>,
     /// Force's blob shadows instead, in this colour (the light table's +0x18).
     blob: Option<[u8; 3]>,
+    /// Tekken Tag's arenas' background characters (stages.json `people`).
+    people: Vec<Person>,
+}
+
+/// An arena's background character: its model, where it stands, the clips it plays in turn from frame `start`.
+struct Person {
+    character: Arc<kumite_assets::Character>,
+    model: SkinnedModel,
+    place: glam::Mat4,
+    clips: Vec<usize>,
+    start: u64,
 }
 
 /// The attract embu running: the scene and, per slot, a GPU mesh for every cast model.
@@ -654,6 +665,21 @@ impl Scene {
                     r.move_mesh(mesh, &moved);
                 }
             }
+        }
+        // the background characters: their clips one after another, round and round
+        for p in &self.people {
+            let ch = &p.character;
+            let lens: Vec<u64> = p.clips.iter().map(|&c| ch.clips.get(c).map_or(1, |c| c.frames.max(1) as u64)).collect();
+            let mut f = (frame + p.start) % lens.iter().sum::<u64>().max(1);
+            let mut clip = 0;
+            for (&c, &n) in p.clips.iter().zip(&lens) {
+                clip = c;
+                if f < n {
+                    break;
+                }
+                f -= n;
+            }
+            r.update_bones(&p.model, &ch.skin_matrices(&ch.pose(clip, f as usize, false), p.place));
         }
     }
 }
@@ -1229,12 +1255,17 @@ impl App {
             light: self.stage_lights.get(&stage).and_then(|l| l.0),
             shadow: self.stage_lights.get(&stage).and_then(|l| l.1),
             blob: None,
+            people: vec![],
         };
         // the arcade game's stage in its place, when the arcade pack has one and the setting asks for it
         let hidden = hidden.then(|| self.assets.arcade_hidden()).flatten();
         // (Tekken Tag: the arcade stages are not its arenas' stand-ins, but arenas of their own)
         let arcade = (self.graphics.arcade_stages && self.roster.ttt.is_none()).then(|| hidden.or_else(|| self.assets.arcade_stage(stage))).flatten();
         let arcade = self.ttt_arcade(stage).map(|f| kumite_assets::Stage::load(&self.assets.root.join(f))).or(arcade);
+        // (the arena's own model: its background characters stand in it)
+        if arcade.is_none() {
+            scene.people = self.people(r, stage);
+        }
         match arcade.unwrap_or_else(|| self.assets.stage(stage)) {
             Ok(st) => {
                 let tex: Vec<_> = st
@@ -1303,6 +1334,46 @@ impl App {
             }
         }
         scene
+    }
+
+    /// Stage `stage`'s background characters (stages.json `people`, Tekken Tag's 0x114FC8): each one's model
+    /// `stages/stage_NN_pK.glb` with the clips of `stage_NN_mK.glb` it plays, standing at `at` (m), turned `heading`
+    /// degrees about y. One whose files are missing or bad is left out (logged).
+    fn people(&self, r: &Renderer, stage: usize) -> Vec<Person> {
+        let json: serde_json::Value = kumite_fs::read(&self.assets.root.join("gamedata/stages.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let Some(list) = json["stages"].as_array().into_iter().flatten().find(|s| s["id"].as_u64() == Some(stage as u64)).and_then(|s| s["people"].as_array()) else { return vec![] };
+        let mut models: std::collections::BTreeMap<u64, Option<Arc<kumite_assets::Character>>> = Default::default();
+        let mut out = vec![];
+        for p in list {
+            let (Some(k), Some(motions)) = (p["model"].as_u64(), p["motions"].as_array()) else { continue };
+            let motions: Vec<u64> = motions.iter().filter_map(serde_json::Value::as_u64).collect();
+            let ch = models.entry(k).or_insert_with(|| {
+                // the model with every clip of its arena's people who wear it
+                let ch = kumite_assets::Character::load(&self.assets.root.join(format!("stages/stage_{stage:02}_p{k}.glb")));
+                let mut ch = ch.map_err(|e| log::warn!("stage {stage}'s person {k}: {e:#}")).ok()?;
+                let used: std::collections::BTreeSet<u64> =
+                    list.iter().filter(|q| q["model"].as_u64() == Some(k)).flat_map(|q| q["motions"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_u64)).collect();
+                for m in used {
+                    let file = self.assets.root.join(format!("stages/stage_{stage:02}_m{m}.glb"));
+                    if let Err(e) = kumite_fs::read(&file).map_err(anyhow::Error::from).and_then(|b| ch.add_motions(&b)) {
+                        log::warn!("stage {stage}'s motion {m}: {e:#}");
+                    }
+                }
+                Some(Arc::new(ch))
+            });
+            let Some(ch) = ch.clone() else { continue };
+            let clips: Vec<usize> = motions.iter().filter_map(|m| ch.clip(&format!("stage_{stage:02}_m{m}"))).collect();
+            if clips.is_empty() {
+                continue;
+            }
+            let f = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32;
+            let at = glam::Vec3::new(f(&p["at"][0]), f(&p["at"][1]), f(&p["at"][2]));
+            let place = glam::Mat4::from_rotation_translation(glam::Quat::from_rotation_y(f(&p["heading"]).to_radians()), at);
+            let verts: Vec<SkinVertex> = ch.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal }).collect();
+            let model = r.skinned(&verts, &ch.indices, ch.blend_from, r.texture(ch.texture.width, ch.texture.height, &ch.texture.rgba));
+            out.push(Person { character: ch, model, place, clips, start: p["start"].as_u64().unwrap_or(0) });
+        }
+        out
     }
 
     /// A menu is open (a screen, a pause, practice's menu, a match's end): the keys move its cursor, not a fighter.
@@ -5029,6 +5100,11 @@ impl App {
             },
             _ => (vec![], vec![], vec![]),
         };
+        // the arena's background characters wherever it is drawn
+        let mut models = models;
+        if let (Some(s), false) = (self.scene.as_ref(), statics.is_empty()) {
+            models.extend(s.people.iter().map(|p| &p.model));
+        }
         // an arcade stage's sky, behind everything
         r.backdrop = self.scene.as_ref().filter(|_| !sky.is_empty()).map_or_else(Vec::new, |s| sky_backdrop(&cam, s));
         // effect sprites, as quads facing the camera
