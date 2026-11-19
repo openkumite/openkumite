@@ -4,7 +4,7 @@
 
 use crate::{CameraMode, Game};
 use kumite_sim::ai::{Ai, AiData, AiRng, ForceSight, Sight};
-use kumite_sim::camera::EndCam;
+use kumite_sim::camera::{EndCam, Shot};
 use kumite_sim::input::Pad;
 use kumite_sim::RoundState;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -249,6 +249,9 @@ pub struct Bout {
     /// The K.O.: its frame number in the record (counted from the start) and the attacker's frame in its move
     /// (the replay starts 30 frames before that move did).
     ko_at: Option<(u64, u32)>,
+    /// Tekken Tag's replay shots (0x3D0660 at the K.O.): the sequence, its passes so far, the loser, the loser's
+    /// root then, a fighter in a throw.
+    tag_replay: Option<(usize, usize, usize, [i64; 3], bool)>,
     replay: Option<ReplayRun>,
     /// START was pressed during the replay (it ends; with rounds to go the pose is skipped too).
     skip: bool,
@@ -305,6 +308,7 @@ impl Bout {
             free: false,
             rng: 0x1234_5678,
             ko_at: None,
+            tag_replay: None,
             replay: None,
             skip: false,
             skipped: false,
@@ -610,6 +614,13 @@ impl Bout {
                         let attacker = self.game.fight.hits.last().map_or(winner, |h| h.attacker);
                         let frame = self.game.fight.actor(attacker).map_or(0, |f| f.frame);
                         self.ko_at = Some((self.game.recorded_total.saturating_sub(1), frame));
+                        // Tekken Tag: the replay's shots picked (0x3D0660: player 0 the loser unless its +0xB4 >= 0).
+                        // shortcut: the loser's root for its point +0x39C, `locked` for the throw tests
+                        if self.game.rounds.is_some() && self.game.ball.is_none() && self.game.camera.data().replay_shots.is_some() {
+                            let loser = if double { 0 } else { 1 - winner };
+                            let throw = self.game.fight.fighters.iter().any(|f| f.locked);
+                            self.tag_replay = Some((self.random(14) as usize, 0, loser, self.game.subject(loser).root, throw));
+                        }
                         self.round_over(if double { None } else { Some(winner) }, false);
                     }
                     RoundState::TimeUp { winner } => self.round_over(winner, true),
@@ -780,9 +791,9 @@ impl Bout {
         let run = ReplayRun { pos: 2 * start, end: 2 * len - 2, start: 2 * start, passes_left: passes - 1, live: tag.map_or(0, |t| t.2) };
         self.replay = Some(run);
         self.game.show(Some((start, false)));
-        self.replay_shot();
         // Ball keeps the live director through the replay
         self.game.camera_mode = if ball { CameraMode::Fight } else { CameraMode::Replay };
+        self.replay_shot();
         self.game.step_camera_only();
         self.phase = Phase::Replay { winner };
         self.phase_frame = 0;
@@ -790,6 +801,9 @@ impl Bout {
 
     /// A replay shot (variants alternate, B first).
     fn replay_shot(&mut self) {
+        if let Some((sequence, pass, loser, point, throw)) = self.tag_replay {
+            return self.tag_replay_shot(sequence, pass, loser, point, throw);
+        }
         let variant_a = self.count(REPLAY) % 2 == 1;
         let samples = self.game.replay_samples();
         let mut rng = self.rng;
@@ -799,6 +813,26 @@ impl Bout {
         };
         self.game.camera.start_replay(samples, variant_a, &mut random);
         self.rng = rng;
+    }
+
+    /// Tekken Tag's replay pass `pass` (0x3D0748): the sequence's next shot, on the winner's root, the loser's or the
+    /// loser's point at the K.O. (the loser's root after a throw), its yaw by the winner's facing (the loser's after
+    /// a throw), then following a fighter or not (0x3D0A38).
+    fn tag_replay_shot(&mut self, sequence: usize, pass: usize, loser: usize, point: [i64; 3], throw: bool) {
+        self.tag_replay = Some((sequence, pass + 1, loser, point, throw));
+        let data = self.game.camera.data().clone();
+        let Some(k) = Shot::replay_sequence(&data, sequence, pass) else { return };
+        let (target, follow) = Shot::replay_roles(&data, k);
+        let who = |r: i64| match r {
+            _ if throw => Some(loser),
+            0 => Some(1 - loser),
+            1 => Some(loser),
+            _ => None,
+        };
+        let at = who(target).map_or(point, |i| self.game.subject(i).root);
+        let facing = self.game.subject(if throw { loser } else { 1 - loser }).front;
+        let Some(shot) = Shot::replay(&data, k, at, facing, &mut |n| self.random(n)) else { return };
+        self.game.camera_mode = CameraMode::Shot { shot, follow: who(follow) };
     }
 
     /// After the replay (0x8003D124 / 0x8003EA5C): the win pose on the winner camera, the loser shot when a CPU

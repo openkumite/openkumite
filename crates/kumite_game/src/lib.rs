@@ -564,7 +564,10 @@ impl Game {
     /// on the team shot. A pair of the table (0x3B4F88) stands at its own places in its own motions. False without a
     /// partner or the data.
     pub fn team_intro(&mut self, t: usize, pick: [usize; 2]) -> bool {
+        // (the round's health, a carried one too, is set again after: the round restarts)
+        let health = self.fight.fighters.each_ref().map(|f| Some(f.health));
         self.restart(None);
+        self.start_health = health;
         let data = self.camera.data().clone();
         let (Some(ti), Some(teams), Some(_)) = (data.team_intro.as_ref(), self.fight.teams.as_deref(), self.tag_bench.as_ref()) else { return false };
         let m = teams[t].partner().clone();

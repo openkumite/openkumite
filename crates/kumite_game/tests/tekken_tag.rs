@@ -320,6 +320,41 @@ fn the_cpu_team_shows_before_round_1() {
     assert_eq!(seen, run());
 }
 
+/// The K.O. replay runs on Tekken Tag's own shots (0x3D0748): a still eye per pass, a new one each pass; the same
+/// each time.
+#[test]
+fn the_ko_replay_has_its_own_shots() {
+    let Some(a) = assets() else { return };
+    if !a.root.join("gamedata/camera.json").exists() {
+        return;
+    }
+    let run = || {
+        let mut b = tag_bout(&a, LAW);
+        b.game.fight.fighters[0].health = kumite_sim::ONE;
+        let (walk, jab) = (parse_script("f").unwrap()[0], parse_script("1").unwrap()[0]);
+        for k in 0..400 {
+            if b.phase != Phase::Fight {
+                break;
+            }
+            b.step([walk, if k % 20 == 0 { jab } else { Pad::default() }]);
+        }
+        let mut eyes = Vec::new();
+        while !matches!(b.phase, Phase::Result { .. }) && eyes.len() < 400 {
+            if matches!(b.phase, Phase::Replay { .. }) {
+                assert!(matches!(b.game.camera_mode, kumite_game::CameraMode::Shot { .. }));
+                eyes.push(b.game.camera.view.eye);
+            }
+            b.step([Pad::default(); 2]);
+        }
+        eyes
+    };
+    let eyes = run();
+    let mut shots = eyes.clone();
+    shots.dedup();
+    assert!((2..=4).contains(&shots.len()), "a still eye a pass: {shots:?} of {}", eyes.len());
+    assert_eq!(eyes, run());
+}
+
 /// What the sound tables make a step play: the files under audio/sfx.
 fn heard(a: &Assets, s: &SoundData, b: &Bout, st: &mut SoundState) -> Vec<String> {
     let mut out: Vec<_> = s.step(b, st, ["", ""], [0, 0]);
