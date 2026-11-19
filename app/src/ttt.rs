@@ -767,8 +767,46 @@ fn ladder(d: &Data, roster: &Roster, stage: u32, pool: &[usize], players: &Team,
     out
 }
 
-/// The ranking after GAME OVER (screen 7) until the title: 14.8 s in PCSX2.
-const RANKING_FRAMES: u32 = 880;
+/// The ranking after GAME OVER (screen 7) without an entry, at `frame` of it (0x3C8A88's steps 4-10, `ranking.pace`):
+/// in from black, the last page's rows (`per` a page, `dy` apart) down from over their places `scroll` a frame, each
+/// page held `hold` frames, then the page before, the first held `after` more, out to black. The rows' top (the first
+/// row's foot) and the black's level (1 opaque); None once it is over.
+fn ranking_pace(d: &Data, kind: usize, n: usize, frame: u32) -> Option<(f32, f32)> {
+    let (rk, r) = (&d.raw["ranking"], &d.raw["ranking"]["rows"][kind]);
+    let (pace, base, dy, per) = (&rk["pace"], int(&r["first"]) as i32, int(&r["dy"]) as i32, int(&r["shown"]).max(1));
+    let (fade, scroll, hold, after) = (int(&pace["fade"]).max(1) as i32, int(&pace["scroll"]).max(1) as i32, int(&r["hold"]) as u32, int(&pace["after"]) as u32);
+    let steps = (256 + fade - 1) / fade;
+    let black = |k: i32| 1.0 - (k * fade).min(256) as f32 / 256.0;
+    let mut f = frame as i32;
+    // (in from black, then a frame setting up)
+    if f < steps {
+        return Some(((base - n as i32 * dy) as f32, black(f + 1)));
+    }
+    f -= steps + 1;
+    let mut first = n.saturating_sub(if n % per == 0 { per } else { n % per }) as i32;
+    let mut top = base - n as i32 * dy;
+    loop {
+        // (down to the page's place, then held)
+        let target = base - first * dy;
+        let travel = ((target - top) + scroll - 1).max(0) / scroll;
+        if f < travel {
+            return Some(((top + scroll * (f + 1)).min(target) as f32, 0.0));
+        }
+        f -= travel;
+        top = target;
+        if f < hold as i32 {
+            return Some((top as f32, 0.0));
+        }
+        f -= hold as i32;
+        if first == 0 {
+            break;
+        }
+        first = (first - per as i32).max(0);
+    }
+    // (the first page `after` more frames, a frame setting up, out to black)
+    let out = f - after as i32 - 1;
+    (out < steps).then(|| (top as f32, if out < 0 { 0.0 } else { 1.0 - black(out + 1) }))
+}
 
 /// CONTINUE?'s frames (0x3BA560: 9 down to 0, 100 frames a digit).
 const CONTINUE: u32 = 898;
@@ -1584,7 +1622,7 @@ impl Front {
                 self.frame = 0;
                 return Outcome::TttSaved;
             }
-            Page::Records { attract: true, .. } if self.frame >= RANKING_FRAMES => {
+            Page::Records { attract: true, .. } if ranking_pace(&d, 2, record_rows(&d, progress, 0).len(), self.frame).is_none() => {
                 self.page = Page::Title;
                 self.frame = 0;
             }
@@ -1690,13 +1728,13 @@ impl Front {
             Page::GameOver { .. } => banner_at(painter, v, art, d, &d.raw["arcade"]["continue"]["game_over"], 0),
             Page::Records { page, scroll, attract } => {
                 if *attract && d.raw["ranking"]["usage"].is_object() {
-                    // (after GAME OVER the ranking, screen 7: CHARACTER USAGE rising from its last rows to its first;
-                    // shortcut: evenly from frame 30 to 630, the PS2's pace and the arena behind not decoded)
+                    // (after GAME OVER the ranking, screen 7: CHARACTER USAGE from its last page to its first, at the
+                    // PS2's pace; shortcut: the arena behind is not decoded)
                     let rows: Vec<Record> = record_rows(d, progress, 0).into_iter().map(|(members, score, name)| Record { score, members, name }).collect();
-                    let r = &d.raw["ranking"]["rows"][2];
-                    let span = num(&r["dy"]) * rows.len().saturating_sub(int(&r["shown"])) as f32;
-                    let rise = span * (1.0 - self.frame.saturating_sub(30) as f32 / 600.0).max(0.0);
+                    let (top, black) = ranking_pace(d, 2, rows.len(), self.frame).unwrap_or((0.0, 1.0));
+                    let rise = num(&d.raw["ranking"]["rows"][2]["first"]) - top;
                     draw_ranking(painter, v, art, d, 2, &rows, (usize::MAX, 0), rise, self.frame);
+                    painter.rect_filled(v.rect, 0.0, Color32::from_black_alpha((black * 255.0) as u8));
                     return;
                 } else if *attract {
                     image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], Color32::WHITE);
@@ -2122,7 +2160,6 @@ fn draw_ranking(painter: &egui::Painter, v: &View, art: &Art, d: &Data, kind: us
     let rk = &d.raw["ranking"];
     let p = |v: &Value| [num(&v[0]), num(&v[1])];
     let [bx, by] = p(&rk["banner_xy"]);
-    sprite(painter, v, art, rk["banners"][kind].as_str().unwrap_or_default(), bx, by, Color32::WHITE);
     let [c0, c1] = p(&rk["clip"]);
     let [_, top, _, h] = sv([0.0, c0, 0.0, c1 - c0]);
     let clip = painter.with_clip_rect(Rect::from_min_max(v.pos(0.0, top), v.pos(SCREEN_W, top + h)));
@@ -2221,6 +2258,8 @@ fn draw_ranking(painter: &egui::Painter, v: &View, art: &Art, d: &Data, kind: us
             chrome(&clip, v, art, d, &left.to_string(), num(&n["x"]), y + num(&n["dy"]), Some(int(&n["colour"])), num(&n["size"]));
         }
     }
+    // (the banner over the rows, 0x3C93A0 after them)
+    sprite(painter, v, art, rk["banners"][kind].as_str().unwrap_or_default(), bx, by, Color32::WHITE);
 }
 
 /// The cursor's bar (0x3B15F8; the pause's `bar` colour): from `x0` (nothing) to `x1` (its colour) to `x2` (nothing),
@@ -3145,6 +3184,29 @@ pub fn draw_practice_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
         at(&h["damage"], &format!("DMG:{dmg} ({:03}%)", if base > 0 { dmg * 100 / base } else { 0 }));
     }
     at(&h["mode"], d.raw["practice"]["modes"][p.mode]["title"].as_str().unwrap_or_default());
+    // FREESTYLE's COMMAND CAPTURE (0x37FE58) and its keys: SELECT, then the small font's "+", the circle button and
+    // "=REC" (the small font's top 20 over the foot). shortcut: recording and playing it back are not done
+    let c = &h["capture"];
+    if p.mode == 0 && c.is_object() {
+        at(c, c["text"].as_str().unwrap_or_default());
+        let k = &c["keys"];
+        let y = num(&k["xy"][1]);
+        let mut x = chrome(painter, v, art, d, k["select"].as_str().unwrap_or_default(), num(&k["xy"][0]), y, Some(int(&k["colour"])), num(&k["size"]));
+        for part in k["small"].as_array().into_iter().flatten() {
+            let text = part[0].as_str().unwrap_or_default();
+            if text == "o" {
+                let cell = int(&k["button"]) as f32 * 16.0;
+                if let Some((tex, [tw, th])) = art.pic("003_003.png") {
+                    let uv = Rect::from_min_max(Pos2::new(cell / tw as f32, 0.0), Pos2::new((cell + 16.0) / tw as f32, 16.0 / th as f32));
+                    let [rx, ry, rw, rh] = sv([x, y - 20.0, 16.0, 16.0]);
+                    painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, Color32::WHITE);
+                }
+            } else {
+                small_in(painter, v, art, d, Some(int(&part[1])), text, x, y - 20.0, Color32::WHITE);
+            }
+            x += small_width(d, text);
+        }
+    }
 }
 
 /// Practice's menu (`practice`) in the pause's window: the mode's name, its rows in their colours (the cursor's over
@@ -4158,7 +4220,7 @@ mod tests {
             "team_battle": {"refill_percent": 15},
             "records": {"defaults": {"survivors": [{"members": [0, 1], "score": 5, "name": "PAU"}, {"members": [2, 3], "score": 1, "name": "KIN"}]},
                 "letters": "ABC<=", "name_len": 3},
-            "ranking": {"frames": 10},
+            "ranking": {"frames": 10, "rows": [{}, {}, {"dy": 75, "first": 135, "shown": 5, "hold": 130}], "pace": {"fade": 8, "scroll": 12, "after": 60}},
             "practice": {"modes": [
                 {"rows": [{"label": "MODE SELECT", "kind": "mode"}, {"label": "CANCEL", "kind": "close"},
                     {"label": "TRAINING DUMMY", "kind": "list", "values": ["STAND", "STAND GUARD"], "default": 0}]},
@@ -4436,6 +4498,21 @@ mod tests {
         assert_eq!((run.mode, run.ladder.len(), run.teams[0].len()), (ARCADE, 8, 2));
         p.stage = 1;
         assert!(d.selectable(p.stage, 2));
+    }
+
+    /// The ranking's pace (0x3C8A88): 32 frames in from black; 7 rows: the last 2 down 150 from above at 12 a frame
+    /// (13 frames), 130 held, the first 5 down 375 (32 frames), 130 held, 60 more, 32 out to black.
+    #[test]
+    fn ranking_pages_down_at_the_ps2s_pace() {
+        let d = data();
+        let at = |f: u32| ranking_pace(&d, 2, 7, f);
+        assert_eq!(at(0), Some((135.0 - 525.0, 1.0 - 8.0 / 256.0)));
+        assert_eq!(at(33), Some((-390.0 + 12.0, 0.0)));
+        assert_eq!(at(33 + 12), Some((-240.0, 0.0)));
+        assert_eq!(at(33 + 13 + 129), Some((-240.0, 0.0)));
+        assert_eq!(at(33 + 13 + 130 + 31), Some((135.0, 0.0)));
+        let end = 33 + 13 + 130 + 32 + 130 + 60 + 1 + 32;
+        assert!(at(end - 1).is_some_and(|(top, black)| top == 135.0 && black == 1.0) && at(end).is_none());
     }
 
     /// CHARACTER SELECT CURSOR HOLD: a pick keeps its slot, the cursor goes on to the second pick's slot kept, back
