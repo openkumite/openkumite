@@ -235,6 +235,9 @@ pub struct TeamIntro {
     pair_scale: i64,
     /// The pairs with their own places and motions (0x43A180).
     pub pairs: Vec<[PairMember; 2]>,
+    /// By character: [alias, frame] its intro motion starts at (0x447480).
+    #[serde(default)]
+    pub start_frames: Vec<Vec<[i64; 2]>>,
 }
 #[derive(Deserialize, Clone, Copy, Debug)]
 pub struct TeamPlace {
