@@ -698,6 +698,7 @@ impl Roster {
                 grid.add_page_cell(c[0].as_u64().unwrap_or(0) as usize, c[1].as_u64().unwrap_or(0) as usize, id as usize);
             }
         }
+        let ai = read("ai.json");
         Self {
             homes,
             theater,
@@ -720,9 +721,12 @@ impl Roster {
             screens,
             extra_levels,
             extra_levels_title,
-            arcade: serde_json::from_value(read("ai.json")["arcade"].clone()).unwrap_or_else(|e| {
-                log::error!("ai.json arcade: {e}");
-                ArcadeData::default()
+            // (Tekken Tag's ai.json has none: its ladder is roster.json's `front_end.arcade`)
+            arcade: Some(ai["arcade"].clone()).filter(|a| !a.is_null()).map_or_else(ArcadeData::default, |a| {
+                serde_json::from_value(a).unwrap_or_else(|e| {
+                    log::error!("ai.json arcade: {e}");
+                    ArcadeData::default()
+                })
             }),
             ttt: crate::ttt::Data::load(
                 &roster,
@@ -735,6 +739,7 @@ impl Roster {
                 },
                 ball_court,
                 kumite_fs::exists(&gamedata.join("force.json")),
+                &ai,
             ),
         }
     }
