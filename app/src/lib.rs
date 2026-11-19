@@ -3950,6 +3950,13 @@ impl App {
         let pad = pads[who.min(1)];
         run.scene.step(Pad { start, buttons: pad.buttons | if select { kumite_sim::bowl::SELECT } else { 0 }, ..pad });
         run.place();
+        // (a spectator the ball hit leaves the hall)
+        if let Some(s) = self.scene.as_mut() {
+            for q in run.scene.bowl.knocked.iter().filter_map(|&k| run.scene.bowl.people.get(k)) {
+                let near = |p: &&mut Person| (p.walker.home().x * kumite_game::UNITS - q[0]).abs() < 1.0 && (p.walker.home().z * kumite_game::UNITS - q[1]).abs() < 1.0;
+                s.people.iter_mut().filter(near).for_each(|p| p.walker.leave());
+            }
+        }
         let Some(audio) = self.audio.as_mut() else { return };
         for e in &run.scene.bowl.events {
             let (code, player) = match *e {

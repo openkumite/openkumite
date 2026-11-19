@@ -447,9 +447,12 @@ pub struct Run {
     /// SURVIVAL: the team's members carried (Game::tag_carry).
     #[serde(default)]
     pub carry: [Option<[(i32, i32); 2]>; 2],
-    /// Tekken Ball: the ball type (ball.json `types`: BEACH, GUM, IRON).
+    /// Tekken Ball: the ball type (ball.json `types`: BEACH, GUM, IRON), and 2 ON 2 (OpenKumite's: each side's second
+    /// in the court too, the CPU's).
     #[serde(default)]
     pub ball: usize,
+    #[serde(default)]
+    pub doubles: bool,
 }
 
 /// A tag battle's mode (SURVIVAL too: its records keep two members, 0x3C1620 refills both).
@@ -479,6 +482,7 @@ impl Run {
             guard_damage: progress.setting(d, GUARD_ROW) == 1,
             carry: [None; 2],
             ball: 0,
+            doubles: false,
         };
         if ladder_mode(mode) {
             run.ladder = ladder(d, roster, progress.stage, &d.pool(progress), &run.teams[0], tag(mode), seed);
@@ -488,7 +492,7 @@ impl Run {
         }
         if run.teams[1].is_empty() && mode != BOWL {
             // Team Battle against the CPU: as many as the player's; Survival: the first opponents
-            let n = if mode == TEAM { run.teams[0].len() } else { 1 + usize::from(tag(mode)) };
+            let n = if mode == TEAM { run.teams[0].len() } else { 1 + usize::from(tag(mode) || mode == BALL) };
             run.teams[1] = cpu_team(d, roster, progress.stage, &run.teams[0], n, false, seed);
         }
         run
@@ -518,7 +522,14 @@ impl Run {
             _ => (self.options[0], self.fight.min(7)),
         };
         let stage = cpu.map_or(self.stage, |c| c.1);
-        FightSetup { mode, players: [side(0), side(1)], stage, difficulty, level, handicap: [100; 2], ball: (self.mode == BALL).then_some((self.ball, 0)), partners: None }
+        FightSetup { mode, players: [side(0), side(1)], stage, difficulty, level, handicap: [100; 2], ball: (self.mode == BALL).then_some((self.ball, 0)), partners: self.doubles() }
+    }
+
+    /// Tekken Ball 2 ON 2: each side's second (the CPU plays both).
+    fn doubles(&self) -> Option<crate::menu::Doubles> {
+        let second = |k: usize| self.teams[k].get(1).copied();
+        let partners = [second(0)?, second(1)?];
+        (self.mode == BALL && self.doubles).then_some(crate::menu::Doubles { partners, seats: [Some(0), self.humans[1].then_some(1), None, None] })
     }
 
     /// The CPU plays side `k` (practice's dummy stands).
@@ -861,7 +872,8 @@ impl Select {
         // (Tekken Bowl: a team too, its second the strike's partner and in the records, 0x3E99C0, 0x3F1408)
         let need = match mode {
             TEAM => 8,
-            m if tag(m) || m == BOWL => 2,
+            // (Tekken Ball: a pair, its second the partner in 2 ON 2)
+            m if tag(m) || m == BOWL || m == BALL => 2,
             _ => 1,
         };
         // (the cursors start on `start_slots`: 1P's on Xiaoyu's, as the PS2 shows)
@@ -1293,6 +1305,11 @@ impl Front {
             Page::BallType { run, cursor } => {
                 let n = roster.ball_types();
                 match key {
+                    Key::Left | Key::Right => {
+                        sfx::play(sound(&d, "cursor"));
+                        run.doubles = !run.doubles;
+                        None
+                    }
                     Key::Up | Key::Down => {
                         sfx::play(sound(&d, "cursor"));
                         *cursor = (*cursor + if key == Key::Up { n - 1 } else { 1 }) % n;
@@ -1306,7 +1323,6 @@ impl Front {
                         sfx::play(sound(&d, "cancel"));
                         Some(Page::Select(Box::new(Select::new(run.mode, &d, None))))
                     }
-                    _ => None,
                 }
             }
             Page::Continue { run, countdown } => match key {
@@ -1608,9 +1624,11 @@ impl Front {
                     }
                 }
             }
-            Page::BallType { cursor, .. } => {
+            Page::BallType { cursor, run } => {
                 backdrop(painter, v, art);
                 font(painter, v, art, d, "BALL SELECT", W / 2.0, 30.0, 0.6, Color32::WHITE);
+                // (left / right: OpenKumite's 2 ON 2)
+                font(painter, v, art, d, if run.doubles { "2 ON 2" } else { "1 ON 1" }, W / 2.0, 330.0, 0.4, Color32::WHITE);
                 for (k, t) in roster.ball.iter().flat_map(|b| &b.types).enumerate() {
                     let y = 150.0 + 40.0 * k as f32;
                     if k == *cursor {
@@ -3896,7 +3914,7 @@ mod tests {
         let d = Arc::new(Data { ball: Some(23), ..Arc::try_unwrap(d).unwrap() });
         let run = Run::new(&d, &roster, &Progress::default(), BALL, [vec![(0, 0)], vec![]], &mut seed);
         let s = run.setup(&d);
-        assert_eq!((s.mode, s.stage, s.ball, run.bench(), run.teams[1].len()), (Mode::Ball, 23, Some((0, 0)), None, 1));
+        assert_eq!((s.mode, s.stage, s.ball, run.bench(), run.teams[1].len()), (Mode::Ball, 23, Some((0, 0)), None, 2));
         // the ball type chosen after the select (IRON)
         let mut front = Front { page: Page::BallType { run: Box::new(run), cursor: 0 }, frame: 0 };
         let mut roster = roster;
@@ -3905,9 +3923,15 @@ mod tests {
         let types = vec![kind; 3];
         roster.ball = Some(Arc::new(serde_json::from_value(serde_json::json!({"types": types, "mesh": mesh, "body_offsets": []})).unwrap()));
         roster.ttt = Some(d.clone());
-        for k in [Key::Down, Key::Down, Key::Start] {
+        // (with a pair each and RIGHT, 2 ON 2: the seconds as the partners, the CPU's)
+        if let Page::BallType { run, .. } = &mut front.page {
+            run.teams = [vec![(0, 0), (1, 0)], vec![(2, 0), (3, 0)]];
+        }
+        for k in [Key::Down, Key::Down, Key::Right, Key::Start] {
             if let Outcome::TttFight(r) = front.key(0, k, &roster, &mut seed) {
-                assert_eq!(r.setup(&d).ball, Some((2, 0)));
+                let s = r.setup(&d);
+                assert_eq!(s.ball, Some((2, 0)));
+                assert_eq!(s.partners, Some(crate::menu::Doubles { partners: [(1, 0), (3, 0)], seats: [Some(0), None, None, None] }));
                 return;
             }
         }
