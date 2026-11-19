@@ -286,6 +286,8 @@ pub struct Progress {
     pub usage: Vec<u32>,
     pub times: Vec<Record>,
     pub survivors: Vec<Record>,
+    /// The main menu's entries entered once (a bit by mode; config +0x24): an unlocked one blinks until then.
+    pub entered: u32,
 }
 
 /// A TIME ATTACK (frames) or SURVIVAL (wins) record: the team's character ids and the name entered.
@@ -316,6 +318,7 @@ static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress {
     usage: Vec::new(),
     times: Vec::new(),
     survivors: Vec::new(),
+    entered: 0,
 });
 
 pub fn progress() -> Progress {
@@ -553,8 +556,10 @@ impl Run {
                 Next::Screen(Page::Continue { run: Box::new(self), countdown: CONTINUE })
             }
             SURVIVAL if won => {
+                // the player's 15 % of its full health back, as Team Battle's winner (0x3C1620, mode 4)
                 self.wins[0] += 1;
-                self.health[0] = Some(health[0]);
+                let refill = d.raw["team_battle"]["refill_percent"].as_i64().unwrap_or(15) as i32;
+                self.health[0] = Some((health[0] + max[0] / 100 * refill).min(max[0]));
                 self.teams[1] = cpu_team(d, roster, progress.stage, &self.teams[0], 1, false, seed);
                 self.stage = pick(&d.pool(progress), seed).unwrap_or(self.stage);
                 Next::Fight(Box::new(self))
@@ -897,9 +902,9 @@ impl Select {
                 side.done = true;
             }
             Key::Button(_) | Key::Start => {
-                // (the pad's raw bits as 0x3C9ED8 reads them: square, triangle, cross, circle, START)
+                // (the pad's raw bits as 0x3C9ED8 reads them: square, triangle, cross, circle, a shoulder, START)
                 let button = match key {
-                    Key::Button(b) => [0x80, 0x10, 0x40, 0x20].get(b).copied()?,
+                    Key::Button(b) => [0x80, 0x10, 0x40, 0x20, 0x04].get(b).copied()?,
                     _ => 0x800,
                 };
                 self.take(s, button, d, roster, progress)?;
@@ -1074,6 +1079,11 @@ impl Front {
                     }
                     Key::Start | Key::Button(_) => {
                         sfx::play(sound(&d, "decide"));
+                        // (a newly opened entry no longer blinks once entered: config +0x24, 0x3BFE78)
+                        if let Some(&(m, _)) = items.get(*cursor).filter(|i| i.0 < 32) {
+                            progress.entered |= 1 << m;
+                            set_progress(progress.clone());
+                        }
                         match items.get(*cursor).map(|i| i.0) {
                             Some(u32::MAX) => return Outcome::Exit,
                             Some(OPTIONS) => Some(Page::Options { cursor: 0 }),
@@ -1470,7 +1480,7 @@ impl Front {
                     Art::shade(painter, v, sv([0.0, 0.0, W, H]), [Color32::from_rgba_unmultiplied(255, 255, 255, a); 4]);
                 }
             }
-            Page::Menu { cursor, scroll, .. } => draw_menu(painter, v, art, d, &Self::items(d, progress), *cursor, *scroll, self.frame),
+            Page::Menu { cursor, scroll, .. } => draw_menu(painter, v, art, d, &Self::items(d, progress), *cursor, *scroll, self.frame, progress.entered),
             // (the logo dimmed: 0x3B4B20, 0x3C4868 a step a frame down to `dim`)
             Page::Options { cursor } => {
                 let m = &d.raw["menu"];
@@ -1965,9 +1975,10 @@ fn lit(painter: &egui::Painter, v: &View, art: &Art, file: &str, r: [f32; 4], le
 
 /// The main menu (0x3BD2E0): the logo, `rows` rows about the cursor, `row_h` apart and `scroll` off, each in its text
 /// colour, clipped to `clip` under the black fades; the band behind the cursor's row, its alpha up `alpha_step` a
-/// frame; the arrows on its sides, blinking every `period` frames once the band is whole.
+/// frame; the arrows on its sides, blinking every `period` frames once the band is whole. An unlocked entry not yet
+/// entered (`entered`) blinks colour 9 every 4 frames.
 #[allow(clippy::too_many_arguments)]
-fn draw_menu(painter: &egui::Painter, v: &View, art: &Art, d: &Data, items: &[(u32, String)], cursor: usize, scroll: i32, frame: u32) {
+fn draw_menu(painter: &egui::Painter, v: &View, art: &Art, d: &Data, items: &[(u32, String)], cursor: usize, scroll: i32, frame: u32, entered: u32) {
     let m = &d.raw["menu"];
     image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], Color32::WHITE);
     let band = &m["band"];
@@ -1988,7 +1999,8 @@ fn draw_menu(painter: &egui::Painter, v: &View, art: &Art, d: &Data, items: &[(u
         let Some((mode, label)) = items.get((cursor + n * rows + k - rows / 2) % n) else { continue };
         // (the row's y is the text's foot; OpenKumite's entries take OPTIONS' colour)
         let y = num(&m["y"]) + num(&m["row_h"]) * k as f32 + scroll as f32 - TEXT_H;
-        let colour = colour_of(*mode).or_else(|| colour_of(OPTIONS));
+        let new = *mode < 32 && entered >> mode & 1 == 0 && m["items"].as_array().into_iter().flatten().any(|i| int(&i["mode"]) as u32 == *mode && i["locked"] == true);
+        let colour = if new && frame / 4 % 2 == 1 { Some(9) } else { colour_of(*mode).or_else(|| colour_of(OPTIONS)) };
         font_in(&clip, v, art, d, colour, label, W / 2.0, y, TEXT_SCALE, Color32::WHITE);
     }
     for (k, f) in m["fades"].as_array().into_iter().flatten().enumerate() {
@@ -3369,7 +3381,7 @@ mod tests {
         // a character with a third, fourth and fifth costume
         r.characters[0].costumes = vec![10, 20, 30, 40, 50];
         r.costume_of.extend([(30, 2), (40, 3), (50, 4)]);
-        assert_eq!([Key::Button(1), Key::Button(3), Key::Start].map(|k| picked(k, &r)), [Some(2), Some(3), Some(4)]);
+        assert_eq!([Key::Button(1), Key::Button(3), Key::Start, Key::Button(4)].map(|k| picked(k, &r)), [Some(2), Some(3), Some(4), Some(4)]);
         let mut s = Select::new(VS, &d, None);
         s.sides[1].cursor = 0;
         s.key(0, Key::Button(0), &d, &r, &p);
@@ -3377,7 +3389,6 @@ mod tests {
         assert_eq!((s.sides[0].picks[0], s.sides[1].picks[0]), ((0, 0), (0, 2)));
     }
 
-    /// The main menu's rows slide a row's height in 4 a frame; no move while they slide (0x3BD2E0).
     /// The pause menu: the cursor goes round its five entries; RESET opens RESET? on NO, left takes YES, a button
     /// resets; CANCEL closes.
     #[test]
@@ -3413,6 +3424,7 @@ mod tests {
         assert_eq!((p.survivors.len(), p.survivors[0].score, p.rank(true, &r(2))), (RECORDS, 12, None));
     }
 
+    /// The main menu's rows slide a row's height in 4 a frame; no move while they slide (0x3BD2E0).
     #[test]
     fn menu_rows_slide_into_place() {
         let mut r = roster();

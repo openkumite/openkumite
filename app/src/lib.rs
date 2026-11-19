@@ -6256,7 +6256,7 @@ fn draw_pause(ctx: &egui::Context, art: &Art, items: &[String], cursor: usize, p
     }
 }
 
-/// `--keys "30:start,60:b1,90:shot"`: menu keys (up down left right start back b1..b4) or a screenshot
+/// `--keys "30:start,60:b1,90:shot"`: menu keys (up down left right start back b1..b5) or a screenshot
 /// (`shot`) at drawn-frame numbers.
 /// `--keys "30:down,40:p3:start"`: frame:key (1P's), or frame:pN:key (player N's).
 fn parse_keys(s: &str) -> Result<Vec<(u64, usize, Option<Key>)>> {
@@ -6274,7 +6274,7 @@ fn parse_keys(s: &str) -> Result<Vec<(u64, usize, Option<Key>)>> {
             "right" => Some(Key::Right),
             "start" => Some(Key::Start),
             "back" => Some(Key::Back),
-            "b1" | "b2" | "b3" | "b4" => Some(Key::Button(k[1..].parse::<usize>()? - 1)),
+            "b1" | "b2" | "b3" | "b4" | "b5" => Some(Key::Button(k[1..].parse::<usize>()? - 1)),
             "shot" => None,
             other => anyhow::bail!("--keys: unknown key {other:?}"),
         };
@@ -6861,7 +6861,13 @@ impl App {
             WindowEvent::RedrawRequested => {
                 // gamepad buttons drive the menus like the keyboard; so do scripted keys (--keys)
                 let pressed = self.gamepads.as_mut().map(|g| g.poll(&self.records.controls)).unwrap_or_default();
-                let mut keys: Vec<(usize, Key)> = pressed.iter().filter_map(|&(p, _, k)| Some((p, k?))).filter(|(p, _)| *p < 4).collect();
+                // (Tekken Tag's select: a shoulder button is the fifth, costume 4's: 0x3CA428)
+                let ttt_select = matches!(&self.screen, Some(Screen::Ttt(f)) if matches!(f.page, ttt::Page::Select(_)));
+                let shoulder = |b: controls::PadButton| {
+                    use controls::PadButton as B;
+                    (ttt_select && matches!(b, B::L1 | B::R1 | B::L2 | B::R2)).then_some(Key::Button(4))
+                };
+                let mut keys: Vec<(usize, Key)> = pressed.iter().filter_map(|&(p, b, k)| Some((p, k.or_else(|| shoulder(b))?))).filter(|(p, _)| *p < 4).collect();
                 // the soft reset: START held, SELECT pressed (L1 / R1 may be held too)
                 if pressed.iter().any(|&(p, b, _)| {
                     b == controls::PadButton::Select
@@ -7692,7 +7698,7 @@ Debug and testing:
                                debug overlays
   --record-demo FILE           record the session's inputs; --demo FILE replays one
   --replay ID|latest           watch a replay (REPLAYS lists them; ID: its file's name)
-  --keys \"FRAME:KEY,...\"       scripted menu keys (up down left right start back b1..b4, shot)
+  --keys \"FRAME:KEY,...\"       scripted menu keys (up down left right start back b1..b5, shot)
   --quit-after N               quit after N drawn frames
   --seed N                     the game's random seed
   --round-time SECONDS, --rounds N
