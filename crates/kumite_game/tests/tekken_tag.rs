@@ -292,6 +292,34 @@ fn tekken_tags_camera() {
     assert_eq!(g.camera.view.h, 442);
 }
 
+/// Against the CPU, round 1 starts with the CPU's team alone on its shot for 92 frames (0x3B5328), the call after;
+/// the same frames each time.
+#[test]
+fn the_cpu_team_shows_before_round_1() {
+    let Some(a) = assets() else { return };
+    if !a.root.join("gamedata/camera.json").exists() {
+        return;
+    }
+    let run = || {
+        let mut g = Game::load(&a, [PAUL, LEI]).unwrap();
+        g.start_tag([kumite_game::Actor::load(&a, LAW).unwrap(), kumite_game::Actor::load(&a, JIN).unwrap()]);
+        let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+        b.team_intro = true;
+        b.set_cpu(1, Some((1, 0)));
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            b.step([Pad::default(); 2]);
+            seen.push((b.phase, b.game.camera.view.eye));
+        }
+        seen
+    };
+    let seen = run();
+    let shown = seen.iter().take_while(|s| s.0 == Phase::TeamIntro { team: 1 }).count();
+    assert_eq!((shown, seen[shown].0), (92, Phase::Call), "{:?}", &seen[..3]);
+    assert_ne!(seen[0].1, seen[60].1, "the shot moves");
+    assert_eq!(seen, run());
+}
+
 /// What the sound tables make a step play: the files under audio/sfx.
 fn heard(a: &Assets, s: &SoundData, b: &Bout, st: &mut SoundState) -> Vec<String> {
     let mut out: Vec<_> = s.step(b, st, ["", ""], [0, 0]);

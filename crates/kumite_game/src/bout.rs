@@ -152,6 +152,10 @@ pub fn reset_camera_counters() {
 pub enum Phase {
     /// Free fights (practice, sandbox): the camera fly-in, then the fight.
     Intro,
+    /// Tekken Tag's team intro before the first round (0x3B5328): team `team` on its shot.
+    TeamIntro {
+        team: usize,
+    },
     /// "Round N" ... "Fight!" with the fly-in inside: fighters wait.
     Call,
     Fight,
@@ -259,6 +263,8 @@ pub struct Bout {
     pub interlude_check: bool,
     /// Tekken Tag's arcade (settings +0x1F): a match the CPU won ends on the losing pair's motion, not its pose.
     pub team_lose: bool,
+    /// Tekken Tag's team intro before the first round (a tag battle, not 1 ON 1).
+    pub team_intro: bool,
     /// Force: the other soldier's CPU, and no replay or result after the K.O. (the app takes over).
     pub extra_cpu: Option<Ai>,
     pub force: bool,
@@ -308,6 +314,7 @@ impl Bout {
             frames: 0,
             interlude_check: false,
             team_lose: false,
+            team_intro: false,
             extra_cpu: None,
             force: false,
             partner_pad: Pad::default(),
@@ -416,6 +423,27 @@ impl Bout {
         self.skipped = false;
     }
 
+    /// Team `t` on the stage for its intro, in its round-1 intros as its pad picks them (0x368398).
+    fn start_team(&mut self, t: usize) -> bool {
+        let b = if self.cpu[t].is_some() { 0 } else { self.last_pads[t].buttons };
+        let pick = [self.round_one_pick(b, true), self.round_one_pick(b, true)];
+        self.game.team_intro(t, pick)
+    }
+
+    /// The first round's start move for a pad's held buttons (0x8002D31C, Tekken Tag's 0x368398): 0 or 1 (a coin
+    /// flip when none decides).
+    fn round_one_pick(&mut self, b: u8, tag: bool) -> usize {
+        if b & 0b0011 != 0 {
+            0
+        } else if b & 0b0100 != 0 || (tag && b & 0b1000 != 0) {
+            1
+        } else if self.random(2) == 1 {
+            0
+        } else {
+            1
+        }
+    }
+
     /// The final round: the round limit of a best-of-N match (2N - 1) is reached (0x8003DB00).
     pub fn is_final_round(&self) -> bool {
         self.round >= 2 * self.rounds_to_win - 1
@@ -443,7 +471,7 @@ impl Bout {
     /// START: skips the replay (and, with rounds to go, the win pose), or ends the win pose.
     pub fn skip(&mut self) {
         match self.phase {
-            Phase::Replay { .. } => self.skip = true,
+            Phase::Replay { .. } | Phase::TeamIntro { .. } => self.skip = true,
             Phase::Result { .. } if self.phase_frame >= self.game.rounds.as_ref().map_or(1, |r| r.skip_from) => self.skip = true,
             _ => {}
         }
@@ -474,7 +502,7 @@ impl Bout {
         self.events.clear();
         // START pressed (online: from the pads, every computer on the same frame) skips the replay or the win pose
         let start = |p: &[Pad; 2]| p.iter().any(|p| p.start);
-        if start(&pads) && !start(&self.last_pads) && matches!(self.phase, Phase::Replay { .. } | Phase::Result { .. }) {
+        if start(&pads) && !start(&self.last_pads) && matches!(self.phase, Phase::Replay { .. } | Phase::Result { .. } | Phase::TeamIntro { .. }) {
             self.skip();
         }
         self.phase_frame += 1;
@@ -493,11 +521,38 @@ impl Bout {
                 *slot = if self.phase == Phase::Fight { *pad } else { Pad::default() };
             }
         }
+        // Tekken Tag (0x3B5328): before round 1 is called, the teams on their shots, side 0's first when side 1's
+        // pad is in (gp-0x7440), else side 1's
+        if self.phase == Phase::Call && self.phase_frame == 1 && self.round == 1 && std::mem::take(&mut self.team_intro) {
+            let first = usize::from(self.cpu[1].is_some());
+            if self.start_team(first) {
+                self.phase = Phase::TeamIntro { team: first };
+            }
+        }
         match self.phase {
             Phase::Intro => {
                 self.game.step([Pad::default(); 2]);
                 if !self.game.camera.in_intro() {
                     self.phase = Phase::Fight;
+                    self.phase_frame = 0;
+                }
+            }
+            Phase::TeamIntro { team } => {
+                let clock = self.game.fight.clock;
+                self.game.step([Pad::default(); 2]);
+                self.game.fight.clock = clock;
+                // each team its set-up frame and its count from `frames` down to -1 (state 1); START ends both (0x3BAA38)
+                let frames = self.game.camera.data().team_intro.as_ref().map_or(0, |t| t.frames as u32 + 2);
+                if self.skip || self.phase_frame > frames {
+                    // the other team too, but not against the CPU (settings mode 8 with +0x1A 1: the CPU's only)
+                    let first = usize::from(self.cpu[1].is_some());
+                    if !self.skip && team == first && self.cpu.iter().all(Option::is_none) && self.start_team(1 - first) {
+                        self.phase = Phase::TeamIntro { team: 1 - first };
+                    } else {
+                        self.skip = false;
+                        self.game.reset_round();
+                        self.phase = Phase::Call;
+                    }
                     self.phase_frame = 0;
                 }
             }
@@ -511,17 +566,7 @@ impl Bout {
                 if self.phase_frame == 1 {
                     let aliases: [usize; 2] = std::array::from_fn(|i| {
                         let b = if self.cpu[i].is_some() { 0 } else { pads[i].buttons };
-                        let k = if self.round > 1 {
-                            2
-                        } else if b & 0b0011 != 0 {
-                            0
-                        } else if b & 0b0100 != 0 || (tag && b & 0b1000 != 0) {
-                            1
-                        } else if self.random(2) == 1 {
-                            0
-                        } else {
-                            1
-                        };
+                        let k = if self.round > 1 { 2 } else { self.round_one_pick(b, tag) };
                         self.game.fight.fighters[i].moveset.fixed.round_start[k]
                     });
                     self.game.set_start_moves(aliases);
