@@ -38,6 +38,8 @@ pub const BALL: u32 = 0x100;
 /// Tekken Force (OpenKumite's: Tekken 3's mode, with the Tekken 3 slice's force.json): no mode of the game's.
 pub const FORCE: u32 = 0x101;
 const OPTIONS: u32 = 11;
+/// Armor King's character id.
+const ARMOR_KING: usize = 26;
 /// OPTIONS' rows the engine plays (the config's DIFFICULTY LEVEL, FIGHT COUNT, ROUND TIME), then EXIT.
 const OPTION_ROWS: [usize; 3] = [0, 1, 2];
 /// The last unlock stage (FRONTEND.md 7).
@@ -374,6 +376,11 @@ impl Run {
         ladder_mode(self.mode).then_some(self.fight as u32 + 1)
     }
 
+    /// The VS screen's mode and fight number (1..).
+    pub fn card(&self) -> (u32, u32) {
+        (self.mode, self.fight as u32 + 1)
+    }
+
     /// Time Attack: its clock runs over the whole run.
     pub fn timed(&self) -> bool {
         self.mode == TIME_ATTACK
@@ -615,6 +622,8 @@ pub struct Side {
     /// How many it picks (Team Battle: up to 8, START ends).
     pub need: usize,
     pub done: bool,
+    /// The select's frame of its last pick.
+    pub since: u32,
 }
 
 pub struct Select {
@@ -636,7 +645,7 @@ impl Select {
         // (the cursors start on `start_slots`: 1P's on Xiaoyu's, as the PS2 shows)
         let first = |k: usize| int(&d.raw["select"]["start_slots"][k]).min(d.slots.len().saturating_sub(1));
         let p2 = matches!(mode, VS | ONE_VS);
-        let side = |player: Option<usize>, k: usize| Side { player, cursor: first(k), picks: vec![], need, done: false };
+        let side = |player: Option<usize>, k: usize| Side { player, cursor: first(k), picks: vec![], need, done: false, since: 0 };
         let mut sides = [side(Some(0), 0), side(p2.then_some(1), 1)];
         // practice: P1 picks the dummy too
         if mode == PRACTICE {
@@ -735,25 +744,12 @@ impl Select {
                 side.done = true;
             }
             Key::Button(_) | Key::Start => {
-                let slot = d.slots.get(side.cursor)?;
-                let taken: Vec<usize> = side.picks.iter().map(|p| p.0).collect();
-                let id = match slot.character {
-                    Some(c) => Some(c).filter(|&c| d.selectable(progress.stage, c)),
-                    None => self.roll(d, roster, progress, s),
+                // (the pad's raw bits as 0x3C9ED8 reads them: square, triangle, cross, circle, START)
+                let button = match key {
+                    Key::Button(b) => [0x80, 0x10, 0x40, 0x20].get(b).copied()?,
+                    _ => 0x800,
                 };
-                let side = &mut self.sides[s];
-                let i = id.and_then(|c| roster.index_of(c)).filter(|i| !taken.contains(i))?;
-                // shortcut: buttons 1-4 give costumes 1-4, START the fifth (which pad bit gives which costume is not
-                // decoded), a costume the character lacks its first
-                let n = roster.characters[i].costumes.len().max(1);
-                let costume = match key {
-                    Key::Button(b) => b,
-                    _ => 4,
-                };
-                side.picks.push((i, if costume < n { costume } else { 0 }));
-                side.done = side.picks.len() >= side.need;
-                // (0x3CA3BC: select 1 for a pick before the last, select 2 for the last)
-                sfx::play(sound(d, if side.done { "last_pick" } else { "pick" }));
+                self.take(s, button, d, roster, progress)?;
             }
             Key::Back => {
                 if side.picks.pop().is_none() && s == 0 {
@@ -765,19 +761,65 @@ impl Select {
         None
     }
 
+    /// Side `s` takes the character under its cursor with the costume pad bits `button` give (0x3C9ED8): None when
+    /// it cannot.
+    fn take(&mut self, s: usize, button: u32, d: &Data, roster: &Roster, progress: &Progress) -> Option<()> {
+        let side = self.sides.get(s)?;
+        let slot = d.slots.get(side.cursor)?;
+        let taken: Vec<usize> = side.picks.iter().map(|p| p.0).collect();
+        let id = match slot.character {
+            Some(c) => Some(c).filter(|&c| d.selectable(progress.stage, c)),
+            None => self.roll(d, roster, progress, s),
+        };
+        let i = id.and_then(|c| roster.index_of(c)).filter(|i| !taken.contains(i))?;
+        let c = roster.characters.get(i)?;
+        let index = |n: usize| c.costumes.iter().position(|r| roster.costume_of.get(r) == Some(&n));
+        // (a costume the character has; Armor King's fifth once his ending was seen: 0x3AE608, config +0x10 bit 18)
+        let has = |n: usize| index(n).is_some() && !(n == 4 && c.id == ARMOR_KING && progress.seen >> 18 & 1 == 0);
+        let or = |n: usize, other: usize| if has(n) { n } else { other };
+        let mut costume = match button {
+            0x80 => 0,
+            0x40 => 1,
+            0x10 => or(2, 0),
+            0x20 => or(3, 1),
+            0x04 => or(4, 0),
+            0x800 if has(4) && self.mode != TEAM => 4,
+            _ => return None,
+        };
+        // both sides played: one taking the other's character in its costume gets another (0x3CA2BC -> 0x3C0210)
+        let other = &self.sides[1 - s.min(1)];
+        if self.sides.iter().all(|x| x.player.is_some()) && other.picks.iter().any(|q| q.0 == i && c.costumes.get(q.1).and_then(|r| roster.costume_of.get(r)) == Some(&costume)) {
+            costume = match costume {
+                0 => or(2, 1),
+                1 => or(3, 0),
+                _ => 0,
+            };
+        }
+        let frame = self.frame;
+        let side = &mut self.sides[s];
+        side.picks.push((i, index(costume).unwrap_or(0)));
+        side.done = side.picks.len() >= side.need;
+        side.since = frame;
+        // (0x3CA3BC: select 1 for a pick before the last, select 2 for the last)
+        sfx::play(sound(d, if side.done { "last_pick" } else { "pick" }));
+        Some(())
+    }
+
     fn tick(&mut self, d: &Data, roster: &Roster, progress: &Progress, seed: &mut u32) -> Option<Run> {
         self.frame += 1;
         // the timer out (`select.timer`, 0x3C9888): each side still picking takes what its cursor is on, else RANDOM's
-        // character (shortcut: what the original does then is not decoded)
+        // character (shortcut: what the original does then is not decoded), in a costume of a button drawn at random
+        // (0x3CA070: rand() % 5 of square, triangle, a tag button, cross, circle)
         if d.raw["select"]["timer"]["frames"].as_u64().is_some_and(|t| u64::from(self.frame) >= t) {
             let random = d.slots.iter().position(|s| s.character.is_none()).unwrap_or(0);
             for k in 0..2 {
-                let Some(player) = self.sides[k].player.filter(|_| !self.sides[k].done) else { continue };
-                let n = self.sides[k].picks.len();
-                let _ = self.key(player, Key::Button(0), d, roster, progress);
-                if self.sides[k].picks.len() == n {
+                if self.sides[k].player.is_none() || self.sides[k].done {
+                    continue;
+                }
+                let button = pick(&[0x80, 0x10, 0x04, 0x40, 0x20], seed).unwrap_or(0x80) as u32;
+                if self.take(k, button, d, roster, progress).is_none() {
                     self.sides[k].cursor = random;
-                    let _ = self.key(player, Key::Button(0), d, roster, progress);
+                    let _ = self.take(k, button, d, roster, progress);
                 }
                 self.sides[k].done |= self.mode == TEAM && !self.sides[k].picks.is_empty();
             }
@@ -1172,10 +1214,11 @@ impl Front {
         }
     }
 
-    /// The BGM the page plays (the music player's).
-    pub fn music(&self) -> Option<usize> {
-        match self.page {
-            Page::Music { playing, .. } => playing,
+    /// The BGM the page plays: the music player's, the select's from its frame `select.music.from` on (0x3CB900).
+    pub fn music(&self, d: Option<&Data>) -> Option<usize> {
+        match &self.page {
+            Page::Music { playing, .. } => *playing,
+            Page::Select(s) => d.map(|d| &d.raw["select"]["music"]).filter(|m| m.is_object() && s.frame >= int(&m["from"]) as u32).map(|m| int(&m["bgm"])),
             _ => None,
         }
     }
@@ -1485,7 +1528,6 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
         }
         lit(painter, v, art, &face, [slot.x, slot.y + dy, size, size], l);
     }
-    let all_done = s.sides.iter().all(|x| x.player.is_none() || x.done);
     for k in (0..2).filter(|&k| s.sides[k].player.is_some()) {
         let list = shown(k);
         let plates = sel["plates"][k].as_array().map_or(0, Vec::len);
@@ -1493,24 +1535,27 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
             let at = &sel["plates"][k][j];
             sprite(painter, v, art, &d.picture(&["hud", "plates", &body(i).to_string(), "picture"]), num(&at[0]), num(&at[1]), Color32::WHITE);
         }
-        // "1ST" (0x3CC660: the number big, its suffix small), the pick the side makes now
-        if !s.sides[k].done {
-            let n = s.sides[k].picks.len() + 1;
-            let suffix = match n {
-                1 => "ST",
-                2 => "ND",
-                3 => "RD",
-                _ => "TH",
-            };
+        // "1ST" while the side has no pick (0x3CC660), "2ND" once `second_after` frames after a pick passed while
+        // its partner's place stands nobody (0x3CB4B4); neither in 1 ON 1 (modes 5, 6; 1ST shows in 6); the number
+        // big, its suffix small
+        let o = &sel["ordinal"];
+        let side = &s.sides[k];
+        let first = side.picks.is_empty() && s.mode != ONE_ARCADE;
+        let second =
+            !side.picks.is_empty() && !matches!(s.mode, ONE_ARCADE | ONE_VS) && s.frame >= side.since + int(&o["second_after"]) as u32 && list.len() <= side.picks.len() && o["second"].is_string();
+        if !side.done && (first || second) {
+            let text = if first { o["text"].as_str() } else { o["second"].as_str() }.unwrap_or_default();
+            let (n, suffix) = text.split_at(text.find(|c: char| !c.is_ascii_digit()).unwrap_or(0));
             // (sized and placed as the PS2 shows them: both on one foot, about y 371)
             let (x, y) = (num(&sel["ordinal"]["x"][k]), num(&sel["ordinal"]["y"]));
-            font(painter, v, art, d, &n.to_string(), x + 27.0, y - 24.0, 1.15, Color32::WHITE);
+            font(painter, v, art, d, n, x + 27.0, y - 24.0, 1.15, Color32::WHITE);
             font(painter, v, art, d, suffix, x + 63.0, y - 2.0, 0.57, Color32::WHITE);
         }
     }
-    // the timer: its seconds as (t + 59) / 60 - 1, off `off` frames every `period` in the last `below`
+    // the timer: its seconds as (t + 59) / 60 - 1, off `off` frames every `period` in the last `below`; after the last
+    // pick too (0x3CC190, as the PS2 shows it)
     let t = &sel["timer"];
-    if let (Some(frames), false) = (t["frames"].as_u64(), all_done) {
+    if let Some(frames) = t["frames"].as_u64() {
         let left = (frames as u32).saturating_sub(s.frame);
         let secs = left.div_ceil(60).saturating_sub(1);
         let b = &t["blink"];
@@ -1552,12 +1597,7 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
     if let Some(t) = s.tally {
         font(painter, v, art, d, &format!("{} - {}", t[0], t[1]), W / 2.0, 300.0, 0.5, Color32::WHITE);
     }
-    // the last 20 frames to the fight: to black (0x3CBC14: 20 frames of the screen's fade)
-    let left = int(&sel["done"]) as f32 - s.done as f32;
-    if s.done > 0 && left < 20.0 {
-        let a = (255.0 * (1.0 - left.max(0.0) / 20.0)) as u8;
-        Art::shade(painter, v, sv([0.0, 0.0, W, H]), [Color32::from_rgba_unmultiplied(0, 0, 0, a); 4]);
-    }
+    // (no fade to the fight: the PS2 holds the select's last picture while the VS screen loads)
 }
 
 /// A number in the HUD timer's digits (`hud.timer`: `digits`, `digit_w`), two digits centred on `x`.
@@ -1706,6 +1746,29 @@ pub fn draw_vs(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, se
             let x = if k == 0 { off } else { W - off };
             image(painter, v, art, &file, [x, y, if k == 0 { 188.0 } else { -188.0 }, 256.0], Color32::WHITE);
         }
+    }
+    // not two players: the mode's texts (0x3C410C, `vs.texts`): STAGE and the fight's number, FINAL over STAGE, FIGHT
+    // and the number, PRACTICE
+    let t = &vs["texts"];
+    if let (Some((mode, n)), true, None, true) = (extra.stage, t.is_object(), &extra.force, extra.humans < 2) {
+        let has = |key: &str| ints(&t[key]).contains(&(mode as usize));
+        let text = |key: &str| t[key].as_str().unwrap_or_default().to_string();
+        let lines = if has("stage_modes") && n == int(&t["final_number"]) as u32 {
+            [(text("final"), "final"), (text("stage"), "final")]
+        } else if has("stage_modes") {
+            [(text("stage"), "text"), (n.to_string(), "number")]
+        } else if has("fight_modes") {
+            [(text("fight"), "text"), (n.to_string(), "number")]
+        } else if has("practice_modes") {
+            [(String::new(), "text"), (text("practice"), "text")]
+        } else {
+            Default::default()
+        };
+        for (k, (line, scale)) in lines.iter().enumerate() {
+            let s = num(&t["scales"][*scale]);
+            font_in(painter, v, art, d, t["colour"].as_u64().map(|c| c as usize), line, W / 2.0, num(&t["tops"][k]), [s; 2], Color32::WHITE);
+        }
+        return;
     }
     if extra.force.is_none() {
         match vs["logo"].as_str().and_then(|l| art.pic(l).map(|p| (l, p.1))) {
@@ -2053,7 +2116,7 @@ mod tests {
         let fe = serde_json::json!({"front_end": {
             "select": {"selectable": [0, 1], "slots": [{"x": 0, "y": 0, "character": 0, "right": 1}, {"x": 53, "y": 0, "character": 1, "right": 2},
                 {"x": 106, "y": 0, "character": 2, "right": 3}, {"x": 159, "y": 0, "character": null}], "hidden_slots": [],
-                "start_slots": [0, 3], "random_roll": 3, "timer": {"frames": 2400}, "done": 90},
+                "start_slots": [0, 3], "random_roll": 3, "timer": {"frames": 2400}, "done": 90, "music": {"bgm": 0, "from": 18}},
             "sounds": {"cursor": 3, "start": 4, "decide": 5, "cancel": 3, "pick": 4, "last_pick": 5},
             "menu": {"items": [{"mode": 0, "label": "ARCADE"}, {"mode": 11, "label": "OPTIONS"}], "row_h": 26, "scroll": 4, "idle": 480},
             "unlocks": {"schedule": [{"stage": 0, "kind": 0, "character": 2}, {"stage": 1, "kind": 1, "character": 2}, {"stage": 1, "kind": 0, "character": 3}], "points_per_stage": 50},
@@ -2070,6 +2133,7 @@ mod tests {
     fn roster() -> Roster {
         let mut r = Roster::load(std::path::Path::new("/nonexistent"));
         r.characters = (0..4).map(|id| crate::menu::Character { id, name: format!("C{id}"), costumes: vec![10 + id, 20 + id], extra: false, prefix: String::new(), face: None }).collect();
+        r.costume_of = (0..4).flat_map(|id| [(10 + id, 0), (20 + id, 1)]).collect();
         r
     }
 
@@ -2244,7 +2308,7 @@ mod tests {
         s.sides[0].cursor = 2;
         assert!(s.key(0, Key::Button(0), &d, &r, &p).is_none() && s.sides[0].picks.is_empty());
         s.sides[0].cursor = 0;
-        s.key(0, Key::Button(1), &d, &r, &p);
+        s.key(0, Key::Button(2), &d, &r, &p);
         s.key(0, Key::Button(0), &d, &r, &p);
         assert_eq!(s.sides[0].picks, vec![(0, 1)]);
         s.key(0, Key::Right, &d, &r, &p);
@@ -2279,6 +2343,13 @@ mod tests {
         assert_eq!(s.roll(&d, &r, &p, 0), Some(0), "Law is taken");
         s.key(0, Key::Button(0), &d, &r, &p);
         assert_eq!((sfx::take(), s.sides[0].picks.clone()), (vec![3, 4, 5], vec![(1, 0), (0, 0)]));
+        // the select's music from its frame 18
+        let mut f = Front { page: Page::Select(Box::new(Select::new(ARCADE, &d, None))), frame: 0 };
+        assert_eq!(f.music(Some(&d)), None);
+        if let Page::Select(s) = &mut f.page {
+            s.frame = 18;
+        }
+        assert_eq!((f.music(Some(&d)), f.music(None)), (Some(0), None));
         // 2400 frames: a pick a frame, the cursor's character then RANDOM's (the cursor's is taken)
         let mut s = Select::new(ARCADE, &d, None);
         assert!((1..2400).all(|_| s.tick(&d, &r, &p, &mut seed).is_none()) && s.sides[0].picks.is_empty());
@@ -2286,6 +2357,28 @@ mod tests {
         assert_eq!(s.sides[0].picks.len(), 1);
         s.tick(&d, &r, &p, &mut seed);
         assert!(s.sides[0].done && s.sides[0].picks.len() == 2);
+    }
+
+    /// The costume a button gives (0x3C9ED8): square 0, cross 1, triangle 2 else 0, circle 3 else 1, START the fifth
+    /// only; two players: the second to take the first's character and costume gets another (0x3C0210).
+    #[test]
+    fn select_costume_per_button() {
+        let (d, mut r, p) = (data(), roster(), Progress::default());
+        let picked = |key: Key, r: &Roster| {
+            let mut s = Select::new(ARCADE, &d, None);
+            s.key(0, key, &d, r, &p);
+            s.sides[0].picks.first().map(|q| q.1)
+        };
+        assert_eq!([Key::Button(0), Key::Button(2), Key::Button(1), Key::Button(3), Key::Start].map(|k| picked(k, &r)), [Some(0), Some(1), Some(0), Some(1), None]);
+        // a character with a third, fourth and fifth costume
+        r.characters[0].costumes = vec![10, 20, 30, 40, 50];
+        r.costume_of.extend([(30, 2), (40, 3), (50, 4)]);
+        assert_eq!([Key::Button(1), Key::Button(3), Key::Start].map(|k| picked(k, &r)), [Some(2), Some(3), Some(4)]);
+        let mut s = Select::new(VS, &d, None);
+        s.sides[1].cursor = 0;
+        s.key(0, Key::Button(0), &d, &r, &p);
+        s.key(1, Key::Button(0), &d, &r, &p);
+        assert_eq!((s.sides[0].picks[0], s.sides[1].picks[0]), ((0, 0), (0, 2)));
     }
 
     /// The main menu's rows slide a row's height in 4 a frame; no move while they slide (0x3BD2E0).

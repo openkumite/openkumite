@@ -897,7 +897,8 @@ impl App {
             let bgm = self.roster.bgm_of.get(&models[k]).or(self.roster.bgm_of.get(&models[0])).copied();
             // (Tekken Tag: the arena's)
             let arcade = arcade.and_then(|b| sound.music(b));
-            audio.music(sound.arena_music(stage).or(arcade).or_else(|| bgm.and_then(|b| sound.music(b))).or_else(|| sound.music_for(&names[k])));
+            let track = sound.arena_music(stage).or(arcade).or_else(|| bgm.and_then(|b| sound.music(b))).or_else(|| sound.music_for(&names[k]));
+            audio.music_from(track, sound.loop_start(track));
         }
         if watch {
             // the attract demo's fighters have 125 health (0x800516CC)
@@ -1620,7 +1621,10 @@ impl App {
                     // the staff roll's music once it started
                     Screen::StaffRoll(_) => audio.music(self.roll_music.and_then(|id| sound.music(id))),
                     // Tekken Tag's music player
-                    Screen::Ttt(f) => audio.music(f.music().and_then(|id| sound.music(id))),
+                    Screen::Ttt(f) => {
+                        let track = f.music(self.roster.ttt.as_deref()).and_then(|id| sound.music(id));
+                        audio.music_from(track, sound.loop_start(track));
+                    }
                     // the records: a new record's BGM 2 until its fade; else whatever played goes on
                     Screen::Records(r) => {
                         if r.entry.is_some() || self.records_music.is_some() {
@@ -3700,7 +3704,8 @@ impl App {
         };
         let force = (setup.mode == Mode::Force).then(|| self.force.as_ref().map(|r| r.card())).flatten();
         let bench = self.ttt_run.as_ref().and_then(|r| r.bench());
-        let extra = Box::new(menu::VsExtra { humans, teams, force, bench });
+        let stage = self.ttt_run.as_ref().map(|r| r.card());
+        let extra = Box::new(menu::VsExtra { humans, teams, force, bench, stage });
         self.screen = Some(Screen::Versus { setup, ladder, frame: 0, number, extra });
     }
 
