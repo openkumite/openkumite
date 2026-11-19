@@ -194,6 +194,8 @@ struct Scene {
     people: Vec<Person>,
     /// And its lens flare (stages.json `flare`).
     flare: Option<Flare>,
+    /// The eye as it was last drawn (m: what the stage's objects that face the camera turn to).
+    eye: glam::Vec3,
 }
 
 /// Tekken Tag's lens flare (0x3A1C78): its sun (m, the arena's axes), its strength, its nine discs (picture, size,
@@ -707,7 +709,7 @@ impl Scene {
                     }
                 }
                 MovingKind::Track { vertices, chain, place } => {
-                    let m = *place * kumite_assets::Joint::chain(chain, frame);
+                    let m = kumite_assets::Joint::chain(chain, frame, *place, self.eye);
                     let moved: Vec<StaticVertex> = vertices.iter().map(|v| StaticVertex { pos: m.transform_point3(glam::Vec3::from(v.pos)).to_array(), ..*v }).collect();
                     r.move_mesh(mesh, &moved);
                 }
@@ -1304,6 +1306,7 @@ impl App {
             blob: None,
             people: vec![],
             flare: None,
+            eye: glam::Vec3::ZERO,
         };
         // the arcade game's stage in its place, when the arcade pack has one and the setting asks for it
         let hidden = hidden.then(|| self.assets.arcade_hidden()).flatten();
@@ -5127,6 +5130,9 @@ impl App {
             }
             _ => (Camera::new(glam::Vec3::Z, glam::Vec3::ZERO, 0.8), Vec::new()),
         };
+        if let Some(s) = self.scene.as_mut() {
+            s.eye = cam.eye;
+        }
         let (sky, statics, models): (Vec<_>, Vec<_>, Vec<_>) = match (&self.scene, &self.fight) {
             (None, None) => (vec![], vec![], self.posers.shown.iter().filter_map(|p| self.poser_models.get(&p.record)).collect()),
             (Some(s), None) if matches!(self.screen, Some(Screen::Records(_))) => (s.sky.iter().collect(), s.statics.iter().collect(), vec![]),

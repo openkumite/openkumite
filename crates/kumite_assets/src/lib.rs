@@ -452,6 +452,8 @@ pub struct Joint {
     pub rest: (Vec3, Quat, Vec3),
     pub translations: Vec<Vec3>,
     pub rotations: Vec<Quat>,
+    /// Turned about y to face the eye, its other turns kept (node extras `"face": "camera"`: Xiaoyu's lamps).
+    pub face: bool,
 }
 
 impl Joint {
@@ -463,9 +465,19 @@ impl Joint {
         Mat4::from_scale_rotation_translation(self.rest.2, r, t)
     }
 
-    /// A chain's place (the first joint's in the stage) at `frame`.
-    pub fn chain(chain: &[Joint], frame: u64) -> Mat4 {
-        chain.iter().fold(Mat4::IDENTITY, |m, j| m * j.at(frame))
+    /// A chain's place (the first joint's in the stage) at `frame`, under `place`; a joint that faces the eye turned
+    /// about y towards `eye` (0x3D5640: its turn the camera's less its parent's).
+    pub fn chain(chain: &[Joint], frame: u64, place: Mat4, eye: Vec3) -> Mat4 {
+        chain.iter().fold(place, |m, j| {
+            let local = j.at(frame);
+            if !j.face {
+                return m * local;
+            }
+            let (s, _, t) = local.to_scale_rotation_translation();
+            let (to, ahead) = (eye - (m * local).w_axis.truncate(), m.transform_vector3(Vec3::Z));
+            let turn = to.x.atan2(to.z) - ahead.x.atan2(ahead.z);
+            m * Mat4::from_scale_rotation_translation(s, Quat::from_rotation_y(turn), t)
+        })
     }
 }
 
@@ -717,7 +729,8 @@ impl Stage {
             if let Some(mut chain) = chain {
                 let (t, r, s) = n.transform().decomposed();
                 let (translations, rotations) = keys.remove(&n.index()).unwrap_or_default();
-                chain.push(Joint { rest: (Vec3::from(t), Quat::from_array(r).normalize(), Vec3::from(s)), translations, rotations });
+                let face = n.extras().as_ref().and_then(|x| serde_json::from_str::<serde_json::Value>(x.get()).ok()).is_some_and(|x| x["face"] == "camera");
+                chain.push(Joint { rest: (Vec3::from(t), Quat::from_array(r).normalize(), Vec3::from(s)), translations, rotations, face });
                 if let Some(m) = n.mesh() {
                     st.sky.extend(mesh_data(m, Mat4::IDENTITY)?.into_iter().map(|mesh| Mesh { motion: Some(Motion::Track(chain.clone())), ..mesh }));
                 }

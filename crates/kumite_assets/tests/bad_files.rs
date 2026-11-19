@@ -173,10 +173,14 @@ fn every_converted_glb_loads() {
 #[test]
 fn joint_keys_go_round() {
     use glam::{Quat, Vec3};
-    let j = kumite_assets::Joint { rest: (Vec3::ZERO, Quat::IDENTITY, Vec3::ONE), translations: (0..4).map(|k| Vec3::X * k as f32).collect(), rotations: vec![] };
+    let j = kumite_assets::Joint { rest: (Vec3::ZERO, Quat::IDENTITY, Vec3::ONE), translations: (0..4).map(|k| Vec3::X * k as f32).collect(), rotations: vec![], face: false };
     let x = |f| j.at(f).w_axis.x;
     assert_eq!([x(0), x(1), x(2), x(3), x(4)], [0.0, 1.0, 2.0, 0.0, 1.0]);
     let parent = kumite_assets::Joint { rest: (Vec3::Y, Quat::IDENTITY, Vec3::splat(2.0)), ..Default::default() };
-    let m = kumite_assets::Joint::chain(&[parent, j], 1);
+    let m = kumite_assets::Joint::chain(&[parent.clone(), j], 1, glam::Mat4::IDENTITY, Vec3::ZERO);
     assert_eq!(m.transform_point3(Vec3::ZERO), Vec3::new(2.0, 1.0, 0.0));
+    // a joint that faces the eye turns its +z towards it (here: the eye along +x)
+    let lamp = kumite_assets::Joint { rest: (Vec3::ZERO, Quat::IDENTITY, Vec3::ONE), face: true, ..Default::default() };
+    let m = kumite_assets::Joint::chain(&[parent, lamp], 0, glam::Mat4::IDENTITY, Vec3::new(10.0, 1.0, 0.0));
+    assert!((m.transform_vector3(Vec3::Z).normalize() - Vec3::X).length() < 1e-5);
 }
