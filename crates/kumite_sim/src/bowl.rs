@@ -7,14 +7,15 @@
 //! draws from a seeded generator: the same pads give the same game.
 //!
 //! Decoded: the throw and its meters, the release, the ball, the rack, the deck walls, the spectators' test, the end
-//! of a roll, the count (a pin is down when it lies on the lane or its base left its spot), scoring and callouts.
-//! OpenKumite's own: the pins' collision response (the original's 0x3EDC90 / 0x3EDF88 are not decoded): each pin
-//! three spheres along its axis and a base, hit by impulses at the contact with friction, in the decoded structure
-//! (gravity 9.8, the ground's bounce, the walls' 0.4, a pin moving or at rest); where the hand lets the ball go and
-//! how far the charge runs come from the motions (the game layer's [`Bowler::hand`] and [`Bowler::charge`]).
+//! of a roll, the pins ([`pins`]: the ball's and each other's touches 0x3EDC90 / 0x3EDF88, the lane, the masking),
+//! the count (a pin is down once off its base), scoring and callouts. Where the hand lets the ball go and how far the
+//! charge runs come from the motions (the game layer's [`Bowler::hand`] and [`Bowler::charge`]).
+
+mod pins;
+pub use pins::Pin;
 
 use crate::detmath::DetMath;
-use glam::{Mat3, Vec3};
+use glam::Vec3;
 use serde::Deserialize;
 
 /// The throw motion's frames and the one the ball leaves the hand on (phase 4).
@@ -64,13 +65,13 @@ const ROLL_FRAMES: (u32, u32) = (150, 1000);
 /// A first touch slower than this sounds 0x10AA, else 0x10AB.
 const TOUCH_FAST: f32 = 270.0;
 const TOUCH: [u16; 2] = [0x10AA, 0x10AB];
-/// The pins: gravity, the deck walls (from z, at +-x, the back wall) and their restitution, the down test's radius.
-const PIN_GRAVITY: f32 = 9.8;
+/// The ball's deck walls (from z, at +-x, the back wall) and their restitution; a moving pin farther than 3000
+/// from (0, 8000) is down (0x3EF3A8).
 const WALLS_FROM: f32 = 9435.0;
 const WALL_X: f32 = 2550.0;
 const BACK_WALL: f32 = 12691.0;
 const WALL_BOUNCE: f32 = 0.4;
-const DOWN_RADIUS2: f32 = 5000.0;
+const OFF_DECK2: f32 = 9_000_000.0;
 /// The pin sounds (0x3EC200): by the sum of the pins' 5-frame hit timers, each with its quiet frames after.
 const PIN_SOUNDS: [(u32, u16, u32); 3] = [(15, 0x10AE, 8), (30, 0x10AD, 14), (u32::MAX, 0x10AC, 30)];
 /// The spectators' test (0x3EFDB8): a ball within 300 of one (horizontally) knocks it over; voice 0x1059.
@@ -85,22 +86,6 @@ const STRIKE_AFTER: u16 = 0x10B5;
 /// SPLIT: two standing pins more than this apart across the lane with none between (0x3EA3A0).
 const SPLIT_GAP: f32 = 500.0;
 
-// OpenKumite's pin body (not decoded): mass against the ball's, the spheres along its axis from the base (height,
-// radius), its base's rim, the inertia of a cylinder of its size, the ground's friction and damping, at rest when
-// this slow for this many frames; four sub-steps a frame for the contacts.
-const PIN_HEIGHT: f32 = 661.0;
-const PIN_SPHERES: [(f32, f32); 3] = [(80.0, 80.0), (250.0, 120.0), (520.0, 70.0)];
-const BASE_RIM: f32 = 70.0;
-const PIN_MASS: f32 = 1.0;
-const BALL_MASS: f32 = 4.5;
-const PIN_INERTIA: [f32; 2] = [38800.0, 5000.0];
-const RESTITUTION: f32 = 0.4;
-const FRICTION: f32 = 0.3;
-const PIN_RESTITUTION: f32 = 0.5;
-const REST_SPEED: f32 = 2.0;
-const REST_SPIN: f32 = 0.01;
-const REST_FRAMES: u32 = 10;
-const SUBSTEPS: u32 = 4;
 /// OVER CHARGED's runner as a body against the pins (OpenKumite's): a sphere of this radius at this height.
 const BODY: (f32, f32) = (350.0, -500.0);
 
@@ -358,27 +343,14 @@ impl Card {
     }
 }
 
-/// A pin (0x1FC5260, 0x180 bytes): its centre, velocity, orientation (its axis is the column -y), spin.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Pin {
-    pub pos: Vec3,
-    pub vel: Vec3,
-    pub rot: Mat3,
-    pub spin: Vec3,
-    /// +0x170 standing, +0x174 on the deck (not swept), +0x178 moving.
-    pub standing: bool,
-    pub on_deck: bool,
-    pub moving: bool,
-    rest: u32,
-    /// +0x17E: the clatter timer a hit sets.
-    clatter: u32,
-}
-
 /// The ball (0x1FC51E0).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Ball {
     pub pos: Vec3,
     pub vel: Vec3,
+    /// +0x30: where the frame began; +0x40 the frame's move.
+    prev: Vec3,
+    disp: Vec3,
     pub spin: Vec3,
     /// The picture's roll: angles and their speeds (radians).
     pub roll: Vec3,
@@ -493,82 +465,6 @@ fn radians(a: i32) -> f32 {
     a as f32 * std::f32::consts::TAU / 65536.0
 }
 
-/// Rotation about the unit `axis` by `angle` (Rodrigues; detmath's sine and cosine).
-fn axis_angle(axis: Vec3, angle: f32) -> Mat3 {
-    let (s, c) = angle.dsin_cos();
-    let t = 1.0 - c;
-    let Vec3 { x, y, z } = axis;
-    Mat3::from_cols(
-        Vec3::new(t * x * x + c, t * x * y + s * z, t * x * z - s * y),
-        Vec3::new(t * x * y - s * z, t * y * y + c, t * y * z + s * x),
-        Vec3::new(t * x * z + s * y, t * y * z - s * x, t * z * z + c),
-    )
-}
-
-/// `m` made orthonormal again (Gram-Schmidt from its y column: the pin's axis).
-fn orthonormal(m: Mat3) -> Mat3 {
-    let y = m.y_axis.normalize_or(Vec3::NEG_Y);
-    let x = (m.x_axis - y * m.x_axis.dot(y)).normalize_or(Vec3::X);
-    Mat3::from_cols(x, y, x.cross(y))
-}
-
-impl Pin {
-    fn racked(spot: [f32; 2], y: f32) -> Self {
-        Self { pos: Vec3::new(spot[0], y, spot[1]), vel: Vec3::ZERO, rot: Mat3::IDENTITY, spin: Vec3::ZERO, standing: true, on_deck: true, moving: false, rest: 0, clatter: 0 }
-    }
-
-    /// The pin's axis towards its head (y is down).
-    pub fn up(&self) -> Vec3 {
-        -self.rot.y_axis
-    }
-
-    /// Its base's centre (the centre stands `base` above it).
-    pub fn base(&self, base: f32) -> Vec3 {
-        self.pos - self.up() * base
-    }
-
-    /// The inverse inertia in the world (a cylinder about its axis).
-    fn inv_inertia(&self) -> Mat3 {
-        let local = Mat3::from_diagonal(Vec3::new(1.0 / PIN_INERTIA[0], 1.0 / PIN_INERTIA[1], 1.0 / PIN_INERTIA[0]));
-        self.rot * local * self.rot.transpose()
-    }
-
-    /// An impulse `j` at the point `at` (world).
-    fn push(&mut self, j: Vec3, at: Vec3) {
-        self.vel += j / PIN_MASS;
-        self.spin += self.inv_inertia() * (at - self.pos).cross(j);
-        self.moving = true;
-        self.rest = 0;
-    }
-
-    /// The velocity of its point `at`.
-    fn velocity_at(&self, at: Vec3) -> Vec3 {
-        self.vel + self.spin.cross(at - self.pos)
-    }
-
-    /// Its spheres' centres and radii.
-    fn spheres(&self, base: f32) -> [(Vec3, f32); 3] {
-        let (b, up) = (self.base(base), self.up());
-        PIN_SPHERES.map(|(h, r)| (b + up * h, r))
-    }
-}
-
-/// The impulse that stops `v` (the relative velocity at the contact) along `n` with `bounce`, and its friction,
-/// for a pin (inverse mass, inverse inertia, lever `r`) against an immovable body.
-fn contact_impulse(v: Vec3, n: Vec3, r: Vec3, inv_inertia: Mat3, inv_mass: f32, bounce: f32) -> Vec3 {
-    let vn = v.dot(n);
-    if vn >= 0.0 {
-        return Vec3::ZERO;
-    }
-    let k = inv_mass + (inv_inertia * r.cross(n)).cross(r).dot(n);
-    let jn = -(1.0 + bounce) * vn / k.max(1e-6);
-    let vt = v - n * vn;
-    let t = vt.normalize_or_zero();
-    let kt = inv_mass + (inv_inertia * r.cross(t)).cross(r).dot(t);
-    let jt = (vt.length() / kt.max(1e-6)).min(FRICTION * jn);
-    n * jn - t * jt
-}
-
 impl Bowl {
     /// A game for `players` (one or two, in turn order), from `seed`.
     pub fn new(data: &BowlData, players: Vec<Bowler>, seed: u32) -> Self {
@@ -625,11 +521,6 @@ impl Bowl {
 
     fn bowler(&self) -> Option<&Bowler> {
         self.players.get(self.current)
-    }
-
-    /// The pin's centre height above its base.
-    fn base(&self) -> f32 {
-        -self.pin_y
     }
 
     /// State 0 (0x3F00FC, 0x3E9C58): the bowler set up, the meters started, the ball in hand.
@@ -824,6 +715,7 @@ impl Bowl {
             rolling: true,
             shown: true,
             landed: false,
+            ..Ball::default()
         };
         self.speed = speed;
         self.rolled = Some(0);
@@ -857,7 +749,7 @@ impl Bowl {
         // the decision (0x3EFB00): every pin at rest and the ball gone, after 150 frames at least, 1000 at most
         let charge = matches!(self.phase, Phase::Charge(_));
         let gone = if charge { matches!(self.phase, Phase::Charge(f) if f >= CHARGE_FRAMES) } else { !self.ball.rolling };
-        let done = (gone && r + 1 >= ROLL_FRAMES.0 && self.pins.iter().all(|p| !p.moving)) || r + 1 >= ROLL_FRAMES.1;
+        let done = (gone && r + 1 >= ROLL_FRAMES.0 && !self.pins_moving()) || r + 1 >= ROLL_FRAMES.1;
         let thrown = !matches!(self.phase, Phase::Throw(f) if f <= THROW_FRAMES);
         if done && (thrown || r + 1 >= ROLL_FRAMES.1) {
             if self.replay.slow && self.replay.left > 0 {
@@ -870,29 +762,45 @@ impl Bowl {
     /// The physics' frame (0x3EED88): the ball or the runner, the pins, the spectators (true: one knocked over),
     /// the pins' sounds.
     fn physics(&mut self) -> bool {
+        // the ball's frame and each pin's touches with it, or the runner's; then each pin with the later ones, the
+        // lane and the masking
+        let charge = matches!(self.phase, Phase::Charge(_));
         let body = match self.phase {
             Phase::Charge(f) => {
                 let (at, _) = self.bowler_at();
                 let travel = self.bowler().and_then(|b| b.charge.get(f.min(CHARGE_FRAMES - 1) as usize)).copied().unwrap_or(0.0);
-                let next = self.bowler().and_then(|b| b.charge.get((f + 1).min(CHARGE_FRAMES - 1) as usize)).copied().unwrap_or(travel);
-                let speed = charge_distance(f + 1) - charge_distance(f) + next - travel;
-                Some((Vec3::new(at.x, BODY.1, at.z + travel), Vec3::new(0.0, 0.0, speed)))
+                Some(Vec3::new(at.x, BODY.1, at.z + travel))
             }
             _ => None,
         };
-        for s in 0..SUBSTEPS {
-            let dt = 1.0 / SUBSTEPS as f32;
-            if self.ball.rolling {
-                self.ball.pos += self.ball.vel * dt;
-            }
-            let hitter = match body {
-                Some((at, v)) => Some((at + v * (dt * (s + 1) as f32 - 1.0), v, 0.0, BODY.0)),
-                None => self.ball.rolling.then_some((self.ball.pos, self.ball.vel, 1.0 / BALL_MASS, BALL_RADIUS)),
-            };
-            self.pins_step(dt, hitter);
-        }
-        if self.ball.rolling {
+        let rolling = self.ball.rolling && !charge;
+        if rolling {
             self.ball_step();
+        }
+        for p in self.pins.iter_mut().filter(|p| p.on_deck) {
+            p.begin();
+            match body {
+                Some(at) => pins::body_hit(at, BODY.0, p),
+                None if rolling => pins::ball_hit(&mut self.ball, p),
+                None => {}
+            }
+        }
+        if rolling {
+            let b = &mut self.ball;
+            wall(&mut b.pos, &mut b.vel, BALL_RADIUS);
+            if b.pos.z > ROLL_ENDS {
+                b.rolling = false;
+                b.shown = false;
+            }
+        }
+        for i in 0..self.pins.len() {
+            let (a, b) = self.pins.split_at_mut(i + 1);
+            let Some(p) = a.last_mut().filter(|p| p.on_deck) else { continue };
+            for q in b.iter_mut().filter(|q| q.on_deck) {
+                pins::pin_hit(p, q);
+            }
+            pins::lane(p);
+            pins::walls(p);
         }
         // the spectators (0x3EFDB8), each one the ball hit gone for good (0x3DB860 sets its +0x85 bit 2: its script
         // hides it, 0x3DB8A8 leaves it out of the test)
@@ -910,9 +818,9 @@ impl Bowl {
                 return true;
             }
         }
-        // every pin down the first time this roll (0x3E9808, gp-0x6028): with SPECIAL EFFECTS on, the explosion's sound
+        // every pin touched the first time this roll (0x3E9808, gp-0x6028): with SPECIAL EFFECTS on, the explosion's sound
         // 0x10A8 (and the burst 0x3A2298; the scene shakes the camera, 0x35C2F8)
-        if !self.all_down && self.pins.iter().all(|p| !p.standing) {
+        if !self.all_down && self.pins.iter().all(|p| !p.untouched) {
             self.all_down = true;
             if self.effects && !self.foul {
                 self.events.push(Event::Sound(EXPLOSION));
@@ -967,7 +875,7 @@ impl Bowl {
             return rp.until < rp.t;
         }
         if rp.until == 0 {
-            if self.pins.iter().all(|p| !p.moving) {
+            if !self.pins.iter().any(Pin::moving) {
                 self.replay.until = self.replay.t;
             }
             return false;
@@ -1009,19 +917,31 @@ impl Bowl {
         self.replay.view = (pitch, yaw);
     }
 
-    /// Pin `k` counts as down (+0x170 = 0): lying on the lane, or its base off its spot.
+    /// Pin `k` counts as down: no longer on its base (+0x170 = 0).
     fn down(&self, k: usize) -> bool {
-        let (Some(p), Some(spot)) = (self.pins.get(k), self.data_rack.get(k)) else { return true };
-        let base = self.base();
-        let b = p.base(base);
-        let off = (b.x - spot[0]) * (b.x - spot[0]) + (b.z - spot[1]) * (b.z - spot[1]);
-        let lying = p.spheres(base).iter().skip(1).any(|(c, r)| c.y + r > -2.0) || p.up().y > -0.7;
-        !p.standing || lying || off > DOWN_RADIUS2
+        self.pins.get(k).is_none_or(|p| !p.standing)
+    }
+
+    /// 0x3EFB00's test: a pin still moving (0x3EF3A8, in order to the first); one that moved over 3000 from
+    /// (0, 8000) is down.
+    fn pins_moving(&mut self) -> bool {
+        for p in &mut self.pins {
+            if p.moving() {
+                if p.pos.x * p.pos.x + (p.pos.z - 8000.0) * (p.pos.z - 8000.0) > OFF_DECK2 {
+                    p.standing = false;
+                }
+                return true;
+            }
+        }
+        false
     }
 
     /// The ball's frame (0x3EC768 after the move): the fall, the touch, the hook; past the deck it drops out.
     fn ball_step(&mut self) {
         let b = &mut self.ball;
+        b.prev = b.pos;
+        b.pos += b.vel;
+        b.disp = b.vel;
         b.roll += b.roll_speed;
         b.roll = Vec3::new(wrap(b.roll.x), wrap(b.roll.y), wrap(b.roll.z));
         if b.pos.y < LANE_Y {
@@ -1036,124 +956,11 @@ impl Bowl {
             b.pos.y = LANE_Y;
             b.vel.y = if b.vel.y < BALL_GRAVITY { 0.0 } else { b.vel.y * BOUNCE };
         }
+        // the hook: kept at the old speed, or none below 20 down the lane
         let k = (b.pos.z - HOOK_START) / HOOK_LENGTH;
-        let before = b.vel.length();
+        let old = b.vel;
         b.vel += b.spin * (k * k);
-        if b.vel.z >= HOOK_KEEPS_FROM {
-            b.vel = b.vel.normalize_or_zero() * before;
-        }
-        wall(&mut b.pos, &mut b.vel, BALL_RADIUS);
-        if b.pos.z > ROLL_ENDS {
-            b.rolling = false;
-            b.shown = false;
-        }
-    }
-
-    /// The pins' sub-step: the hitter (centre, velocity, inverse mass, radius) against each pin on the deck, each
-    /// pin moved, every pair, the lane and the walls.
-    fn pins_step(&mut self, dt: f32, hitter: Option<(Vec3, Vec3, f32, f32)>) {
-        let base = self.base();
-        if let Some((c, v, inv_mass, radius)) = hitter {
-            for p in self.pins.iter_mut().filter(|p| p.on_deck) {
-                for (s, r) in p.spheres(base) {
-                    let d = s - c;
-                    let dist = d.length();
-                    if dist >= radius + r || dist <= 1e-3 {
-                        continue;
-                    }
-                    let n = d / dist;
-                    let at = c + n * radius;
-                    let rel = p.velocity_at(at) - v;
-                    let vn = rel.dot(n);
-                    p.pos += n * (radius + r - dist) * if inv_mass > 0.0 { PIN_MASS / (PIN_MASS + BALL_MASS) } else { 1.0 };
-                    if vn < 0.0 {
-                        let ra = at - p.pos;
-                        let k = 1.0 / PIN_MASS + inv_mass + (p.inv_inertia() * ra.cross(n)).cross(ra).dot(n);
-                        let j = -(1.0 + PIN_RESTITUTION) * vn / k;
-                        p.push(n * j, at);
-                        p.clatter = 5;
-                        if inv_mass > 0.0 {
-                            self.ball.vel -= n * (j * inv_mass);
-                        }
-                    }
-                }
-            }
-        }
-        for p in self.pins.iter_mut().filter(|p| p.moving && p.on_deck) {
-            p.vel.y += PIN_GRAVITY * dt;
-            p.pos += p.vel * dt;
-            let w = p.spin.length();
-            if w > 1e-6 {
-                p.rot = orthonormal(axis_angle(p.spin / w, w * dt) * p.rot);
-            }
-        }
-        // every pair
-        for i in 0..self.pins.len() {
-            for k in i + 1..self.pins.len() {
-                let (a, b) = self.pins.split_at_mut(k);
-                let (Some(p), Some(q)) = (a.get_mut(i), b.first_mut()) else { continue };
-                if !(p.on_deck && q.on_deck) || !(p.moving || q.moving) || p.pos.distance_squared(q.pos) > PIN_HEIGHT * PIN_HEIGHT * 1.5 {
-                    continue;
-                }
-                for (sp, rp) in p.spheres(base) {
-                    for (sq, rq) in q.spheres(base) {
-                        let d = sp - sq;
-                        let dist = d.length();
-                        if dist >= rp + rq || dist <= 1e-3 {
-                            continue;
-                        }
-                        let n = d / dist;
-                        let at = sq + n * rq;
-                        let fix = n * ((rp + rq - dist) / 2.0);
-                        p.pos += fix;
-                        q.pos -= fix;
-                        let rel = p.velocity_at(at) - q.velocity_at(at);
-                        let vn = rel.dot(n);
-                        if vn < 0.0 {
-                            let (ra, rb) = (at - p.pos, at - q.pos);
-                            let k = 2.0 / PIN_MASS + (p.inv_inertia() * ra.cross(n)).cross(ra).dot(n) + (q.inv_inertia() * rb.cross(n)).cross(rb).dot(n);
-                            let j = -(1.0 + PIN_RESTITUTION) * vn / k;
-                            p.push(n * j, at);
-                            q.push(-n * j, at);
-                            p.clatter = 5;
-                            q.clatter = 5;
-                        }
-                    }
-                }
-            }
-        }
-        // the lane (0x3ED338) and the deck walls (0x3EE598)
-        for p in self.pins.iter_mut().filter(|p| p.moving && p.on_deck) {
-            let (b, up) = (p.base(base), p.up());
-            let side = p.rot.x_axis;
-            let front = p.rot.z_axis;
-            let rim = [side, -side, front, -front].map(|d| b + d * BASE_RIM);
-            let mut points: Vec<(Vec3, f32)> = rim.iter().map(|&q| (q, 0.0)).collect();
-            points.extend(PIN_SPHERES.iter().map(|&(h, r)| (b + up * h, r)));
-            points.push((b + up * PIN_HEIGHT, 0.0));
-            // the deepest point lifted out once; an impulse at each point touching
-            let touching: Vec<Vec3> = points.iter().filter(|(q, r)| q.y + r > 0.0).map(|(q, _)| *q).collect();
-            let lift = points.iter().map(|(q, r)| q.y + r).fold(0.0f32, f32::max);
-            p.pos.y -= lift;
-            for q in &touching {
-                let at = Vec3::new(q.x, 0.0, q.z);
-                let j = contact_impulse(p.velocity_at(at), Vec3::NEG_Y, at - p.pos, p.inv_inertia(), 1.0 / PIN_MASS, RESTITUTION);
-                p.vel += j / PIN_MASS;
-                p.spin += p.inv_inertia() * (at - p.pos).cross(j);
-            }
-            if !touching.is_empty() {
-                p.vel *= 1.0 - 0.08 * dt;
-                p.spin *= 1.0 - 0.2 * dt;
-            }
-            let r = PIN_SPHERES[1].1;
-            wall(&mut p.pos, &mut p.vel, r);
-            // at rest: slow on the lane for a while
-            let slow = !touching.is_empty() && p.vel.length() < REST_SPEED && p.spin.length() < REST_SPIN;
-            p.rest = if slow { p.rest + 1 } else { 0 };
-            if p.rest >= REST_FRAMES * SUBSTEPS {
-                (p.moving, p.vel, p.spin) = (false, Vec3::ZERO, Vec3::ZERO);
-            }
-        }
+        b.vel = if b.vel.z < HOOK_KEEPS_FROM { old } else { b.vel * (old.length_squared() / b.vel.length_squared()).sqrt() };
     }
 
     /// The count (0x3EA4C8) once a roll is over: the fallen pins, the mark, the callout; a strike's pose.
@@ -1245,7 +1052,9 @@ impl Bowl {
         let (rack, y) = (self.data_rack.clone(), self.pin_y);
         for (k, p) in self.pins.iter_mut().enumerate() {
             let spot = rack.get(k).copied().unwrap_or_default();
-            *p = Pin { standing: fresh || p.standing, on_deck: fresh || p.standing, ..Pin::racked(spot, y) };
+            let keep = fresh || p.standing;
+            *p = Pin::racked(spot, y);
+            (p.standing, p.on_deck) = (keep, keep);
         }
         self.new_turn();
     }
@@ -1280,10 +1089,10 @@ impl Bowl {
         };
         let v3 = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
         for p in &self.pins {
-            for v in [p.pos, p.vel, p.spin, p.rot.x_axis, p.rot.y_axis, p.rot.z_axis] {
+            for v in [p.pos, p.vel, p.rate, Vec3::new(p.angles[0], p.angles[1], 0.0)] {
                 v3(v).into_iter().for_each(&mut eat);
             }
-            eat(u32::from(p.standing) | u32::from(p.on_deck) << 1 | u32::from(p.moving) << 2);
+            eat(u32::from(p.standing) | u32::from(p.on_deck) << 1 | u32::from(p.untouched) << 2);
         }
         for v in [self.ball.pos, self.ball.vel, self.ball.spin] {
             v3(v).into_iter().for_each(&mut eat);
@@ -1404,7 +1213,7 @@ mod tests {
         b.angle = angle;
         (b.spin, b.spin_speed, b.power, b.power_speed) = (spin, 0.0, power, 0.0);
         b.phase = Phase::Throw(1);
-        for _ in 0..1200 {
+        for _ in 0..4000 {
             if !matches!(b.phase, Phase::Throw(_)) {
                 break;
             }

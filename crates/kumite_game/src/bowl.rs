@@ -370,7 +370,7 @@ impl BowlScene {
 
     /// Each pin: its base (metres) and orientation; None once swept.
     pub fn pins(&self) -> Vec<Option<(Vec3, Mat3)>> {
-        (self.bowl.pins.iter()).map(|p| p.on_deck.then(|| (to_m(p.base(self.pin_base)), model_rotation(p.rot)))).collect()
+        (self.bowl.pins.iter()).map(|p| p.on_deck.then(|| (to_m(p.base(self.pin_base)), model_rotation(p.rot())))).collect()
     }
 
     /// The camera (0x3EBC98): eye and target in metres. Behind the bowler while it bowls (mode 1), after the ball

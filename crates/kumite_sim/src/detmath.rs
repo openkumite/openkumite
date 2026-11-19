@@ -11,6 +11,7 @@ pub trait DetMath: Sized + Copy {
         (self.dsin(), self.dcos())
     }
     fn datan2(self, x: Self) -> Self;
+    fn dasin(self) -> Self;
 }
 
 impl DetMath for f32 {
@@ -23,6 +24,9 @@ impl DetMath for f32 {
     fn datan2(self, x: f32) -> f32 {
         libm::atan2f(self, x)
     }
+    fn dasin(self) -> f32 {
+        libm::asinf(self)
+    }
 }
 
 impl DetMath for f64 {
@@ -34,6 +38,9 @@ impl DetMath for f64 {
     }
     fn datan2(self, x: f64) -> f64 {
         libm::atan2(self, x)
+    }
+    fn dasin(self) -> f64 {
+        libm::asin(self)
     }
 }
 
