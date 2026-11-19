@@ -308,6 +308,8 @@ struct BowlRun {
     started: Vec<ttt::Team>,
     /// The game over: TOP 5 BOWLERS with its players placed (0x3F1408), each one's place.
     top: Option<(Vec<kumite_game::bowl::Record>, Vec<Option<usize>>)>,
+    /// The game's frame it ended on (the results' fade, 0x3F1370).
+    over_at: u64,
 }
 
 impl BowlRun {
@@ -327,6 +329,7 @@ impl BowlRun {
             })
             .collect();
         self.top = Some((top, placed));
+        self.over_at = self.scene.bowl.frame;
     }
 }
 
@@ -3990,6 +3993,7 @@ impl App {
                 page: None,
                 started: started.to_vec(),
                 top: None,
+                over_at: 0,
             });
             self.screen = None;
             self.fight = None;
@@ -5669,14 +5673,14 @@ impl App {
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("bowl_hud")));
                         // (state 9, the pause or the score card, draws no HUD of the throw's; the game over its results)
                         match (&b.top, b.page) {
-                            (Some((_, placed)), None) => ttt::bowl_results(&painter, &view, art, d, &b.scene, &b.teams, placed, frames),
+                            (Some((_, placed)), None) => ttt::bowl_results(&painter, &view, art, d, &b.scene, &b.teams, placed, (frames, b.scene.bowl.frame.saturating_sub(b.over_at))),
                             (_, None) if b.pause.is_none() => ttt::bowl_hud(&painter, &view, art, d, &b.scene, frames),
                             _ => {}
                         }
                         match (b.page, b.pause) {
                             (Some(BowlPage::Top), _) => {
                                 let top = ttt::progress().bowlers.unwrap_or_else(|| b.scene.records.defaults.clone());
-                                ttt::bowl_top(&painter, &view, art, d, &b.scene, &top, None);
+                                ttt::bowl_top(&painter, &view, art, d, &b.scene, &top, None, 200);
                             }
                             (Some(BowlPage::Options(c)), _) => ttt::draw_bowl_options(&painter, &view, art, d, &b.scene, c),
                             (Some(BowlPage::Card), _) => ttt::bowl_pause_card(&painter, &view, art, d, &b.scene, frames),

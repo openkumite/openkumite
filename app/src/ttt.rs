@@ -3406,10 +3406,12 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &
 /// 64 apart; PLAYERn at (48, 116) (size 5, colour 14); WINNERS (blinking 2 / 11), LOSERS (12) or DRAW (10) right-aligned
 /// on 472 at 78 and the total at (415, 110) (size 8, the same colour); the score card from (36, 128) (0x3C59D8, the
 /// ten frames and the total); a new record's NEW RECORD! and its place, taking turns, blinking (0x3F0E28 at (123, 84)).
-// shortcut: over the hall darkened (what the PS2 shows behind it is not decoded)
-pub fn bowl_results(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, teams: &[[usize; 2]], placed: &[Option<usize>], frame: u64) {
+/// Over the hall going to black over the game's first 60 frames over (`since`, 0x3F1370: a black quad, alpha t x 128 /
+/// 60).
+#[allow(clippy::too_many_arguments)]
+pub fn bowl_results(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, teams: &[[usize; 2]], placed: &[Option<usize>], (frame, since): (u64, u64)) {
     let b = &scene.bowl;
-    Art::shade(painter, v, crate::art::FULL, [Color32::from_black_alpha(128); 4]);
+    Art::shade(painter, v, crate::art::FULL, [Color32::from_black_alpha((since.min(60) * 255 / 60) as u8); 4]);
     for (p, card) in b.cards.iter().enumerate().take(2) {
         let dy = 176.0 * p as f32;
         for (m, body) in teams.get(p).into_iter().flatten().enumerate() {
@@ -3469,7 +3471,7 @@ pub fn bowl_records(
             r.name.push(letters.get(c).copied().unwrap_or(' '));
         }
     }
-    bowl_top(painter, v, art, d, scene, &list, new);
+    bowl_top(painter, v, art, d, scene, &list, new, 255);
     chrome(painter, v, art, d, &scene.text("king", "THE KING OF IRONBOWL"), 112.0, 40.0, Some(15), 5.0);
     if cursor.is_none() {
         let h = &d.raw["help"]["band"]["rect"];
@@ -3764,8 +3766,9 @@ pub fn bowl_pause_card(painter: &egui::Painter, v: &View, art: &Art, d: &Data, s
 /// its place large at x 16 with ST / ND / RD / TH after it, the team's two faces in their frames from x 176 (52 apart),
 /// the score right-aligned on 364 (size 9) and PTS at 408, the name at 468.
 // shortcut: over the scene darkened (what the PS2 shows behind it is not decoded)
-pub fn bowl_top(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, list: &[kumite_game::bowl::Record], new: Option<usize>) {
-    Art::shade(painter, v, crate::art::FULL, [Color32::from_black_alpha(200); 4]);
+pub fn bowl_top(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, list: &[kumite_game::bowl::Record], new: Option<usize>, back: u8) {
+    // (`back`: after the results on their black, 255; from the pause over the hall darkened, not decoded there)
+    Art::shade(painter, v, crate::art::FULL, [Color32::from_black_alpha(back); 4]);
     chrome(painter, v, art, d, &scene.text("top", "TOP 5 BOWLERS"), 183.0, 64.0, Some(10), 5.0);
     for (k, r) in list.iter().enumerate().take(5) {
         let y = 135.0 + 71.0 * k as f32;
