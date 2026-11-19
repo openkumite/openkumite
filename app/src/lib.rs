@@ -441,6 +441,8 @@ struct Fight {
     reset: Option<bool>,
     /// Practice mode: its menu, dummy and attack data.
     practice: Option<practice::Practice>,
+    /// Tekken Tag's practice: its menu and dummy.
+    ttt_practice: Option<ttt::Practice>,
     /// What the fight's sounds go by (a replay's seek copies keep it).
     heard: Heard,
     /// Sound banks ("m071"), character ids and voice rows (+0x1A) of the two fighters.
@@ -1113,6 +1115,7 @@ impl App {
             rules: false,
             reset: None,
             practice,
+            ttt_practice: (mode == Some(Mode::Practice)).then(|| self.roster.ttt.as_deref().map(ttt::Practice::new)).flatten(),
             heard: Heard { last_moves, ..Default::default() },
             banks,
             characters,
@@ -1551,7 +1554,10 @@ impl App {
             || self.replays.is_some()
             || self.replay_view.is_some()
             || self.tag.as_ref().is_some_and(|t| t.pause.is_some())
-            || self.fight.as_ref().is_some_and(|f| f.pause.is_some() || f.practice.as_ref().is_some_and(|p| p.open) || matches!(f.bout.phase, Phase::MatchOver { .. }))
+            || self
+                .fight
+                .as_ref()
+                .is_some_and(|f| f.pause.is_some() || f.practice.as_ref().is_some_and(|p| p.open) || f.ttt_practice.as_ref().is_some_and(|p| p.open) || matches!(f.bout.phase, Phase::MatchOver { .. }))
     }
 
     /// The soft reset (0x8005101C): START held with SELECT pressed (nothing else held but L1 / R1) leaves a fight,
@@ -1928,6 +1934,15 @@ impl App {
         if fight.pause.is_some() {
             return;
         }
+        // Tekken Tag's practice: its menu pauses the fight
+        if let Some(open) = fight.ttt_practice.as_ref().map(|p| p.open) {
+            if let Some(audio) = self.audio.as_mut() {
+                audio.duck(open);
+            }
+            if open {
+                return;
+            }
+        }
         // practice: its menu pauses the fight (and opens by itself on the first fighting frame)
         if let Some(p) = fight.practice.as_mut() {
             p.step(fight.bout.phase == Phase::Fight);
@@ -1950,6 +1965,16 @@ impl App {
         }
         if matches!(mode, Some(Mode::TeamBattle | Mode::Ball)) && fight.bout.cpu[1].is_some() && p2_script.is_none() {
             pads[1] = Pad::default();
+        }
+        // Tekken Tag's practice dummy: its TRAINING DUMMY, the second pad (CONTROLLER), or VS CPU's CPU
+        if let (Some(p), Some(d), None) = (fight.ttt_practice.as_ref(), self.roster.ttt.as_deref(), p2_script) {
+            let f = &fight.bout.game.fight;
+            let low = f.fighters[0].current_move(&f.data).attack_mask.mask == 0x10F;
+            pads[1] = match p.dummy(d) {
+                _ if p.mode == 1 => Pad::default(),
+                "CONTROLLER" => kb2,
+                dummy => ttt::practice_pad(dummy, f.facing_right(1), low),
+            };
         }
         // the practice dummy: its TRAINING DUMMY action, the second pad (CONTROLLER) or the CPU (VS CPU)
         if let (Some(p), None) = (fight.practice.as_ref(), p2_script) {
@@ -4271,6 +4296,7 @@ impl App {
             rules: false,
             reset: None,
             practice: None,
+            ttt_practice: None,
             heard: Heard::default(),
             banks,
             characters,
@@ -5019,6 +5045,32 @@ impl App {
             }
             return true;
         }
+        // Tekken Tag's practice: START (or Esc) opens its menu, which takes the keys while open
+        if let (Some(p), Some(d)) = (fight.ttt_practice.as_mut(), self.roster.ttt.clone()) {
+            if !p.open {
+                if matches!(key, Key::Start | Key::Back) {
+                    p.open(&d);
+                }
+                return true;
+            }
+            match p.key(&d, key) {
+                ttt::PracticeAction::None => {}
+                // (VS CPU: the CPU plays the dummy at CPU LEVEL)
+                ttt::PracticeAction::Close => {
+                    let cpu = p.cpu(&d).filter(|_| p.mode == 1).map(|l| (l, 7));
+                    fight.bout.set_cpu(1, cpu);
+                }
+                ttt::PracticeAction::Reset => {
+                    self.soft_reset();
+                }
+                ttt::PracticeAction::Select => {
+                    self.fight = None;
+                    self.scene = None;
+                    self.screen = Some(Screen::Ttt(Box::new(ttt::Front::practice_select(&d))));
+                }
+            }
+            return true;
+        }
         // practice: START (or Esc) opens its menu; the menu takes the keys while open
         if let Some(p) = fight.practice.as_mut() {
             if !p.open {
@@ -5725,6 +5777,12 @@ impl App {
                             let window = ctx.content_rect();
                             let project = |m: glam::Vec3| project_point(&cam, size, window, &view, m);
                             p.draw(ctx, art, f.bout.phase == Phase::Intro, &project);
+                        }
+                        if let (Some(p), Some(d)) = (f.ttt_practice.as_ref().filter(|p| p.open), roster.ttt.as_deref()) {
+                            let view = art::Screen::fit(ctx.content_rect());
+                            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("practice"))).with_clip_rect(view.rect);
+                            let name = f.setup.as_ref().and_then(|s| roster.characters.get(s.players[0].0)).map_or("", |c| c.name.as_str());
+                            ttt::draw_practice(&painter, &view, art, d, p, name);
                         }
                         if let (Some(_), true) = (f.pause, f.rules) {
                             draw_rules(ctx, art);

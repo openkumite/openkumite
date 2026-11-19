@@ -455,9 +455,10 @@ pub struct Run {
     pub doubles: bool,
 }
 
-/// A tag battle's mode (SURVIVAL too: its records keep two members, 0x3C1620 refills both).
+/// A tag battle's mode (SURVIVAL too: its records keep two members, 0x3C1620 refills both; PRACTICE: two a side, as
+/// seen in PCSX2).
 fn tag(mode: u32) -> bool {
-    matches!(mode, ARCADE | VS | TIME_ATTACK | SURVIVAL)
+    matches!(mode, ARCADE | VS | TIME_ATTACK | SURVIVAL | PRACTICE)
 }
 fn ladder_mode(mode: u32) -> bool {
     matches!(mode, ARCADE | TIME_ATTACK | ONE_ARCADE)
@@ -881,9 +882,9 @@ impl Select {
         let p2 = matches!(mode, VS | ONE_VS);
         let side = |player: Option<usize>, k: usize| Side { player, cursor: first(k), picks: vec![], need, done: false, since: 0 };
         let mut sides = [side(Some(0), 0), side(p2.then_some(1), 1)];
-        // practice: P1 picks the dummy too
+        // practice: P1 picks the dummy's team too
         if mode == PRACTICE {
-            sides[1] = Side { player: Some(0), need: 1, ..side(Some(0), 1) };
+            sides[1] = side(Some(0), 1);
         }
         Self { mode, sides, frame: 0, done: 0, tally, cont: None }
     }
@@ -1091,6 +1092,11 @@ fn hidden(d: &Data, roster: &Roster, p: &Progress, slot: usize) -> bool {
 impl Front {
     pub fn title() -> Self {
         Self { page: Page::Title, frame: 0 }
+    }
+
+    /// Practice's select (its menu's CHARACTER SELECT).
+    pub fn practice_select(d: &Data) -> Self {
+        Self { page: Page::Select(Box::new(Select::new(PRACTICE, d, None))), frame: 0 }
     }
 
     pub fn menu() -> Self {
@@ -2865,9 +2871,15 @@ fn banner_at(painter: &egui::Painter, v: &View, art: &Art, d: &Data, b: &Value, 
 /// `line_h` lower, of the `\S[...]` alternatives only the `value`-th (gp-0x67BA).
 /// shortcut: a line wider than `wrap` is not broken (0x3DF808); the texts drawn so far fit.
 fn help_line(painter: &egui::Painter, v: &View, art: &Art, d: &Data, n: usize, value: usize) {
+    if let Some(text) = d.raw["help"]["texts"][n].as_str() {
+        help_text(painter, v, art, d, text, value);
+    }
+}
+
+/// A help line's text (with its codes) as [`help_line`] draws it.
+fn help_text(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, value: usize) {
     let h = &d.raw["help"];
     let f = &h["font"];
-    let Some(text) = h["texts"][n].as_str() else { return };
     let Some((tex, [tw, th])) = art.pic(f["picture"].as_str().unwrap_or_default()) else { return };
     let band = &h["band"];
     let r = &band["rect"];
@@ -2895,6 +2907,193 @@ fn help_line(painter: &egui::Painter, v: &View, art: &Art, d: &Data, n: usize, v
             painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, tint);
         }
         x += if ch == ' ' { num(&f["space"]) } else { num(&f["widths"][g]) };
+    }
+}
+
+/// Practice's menu (`practice`, START in a practice fight): open, the mode (FREESTYLE, VS CPU, CHAIN TRAINING, COMBO
+/// TRAINING), the cursor's row, each mode's values by row.
+#[derive(Clone, Debug, Default)]
+pub struct Practice {
+    pub open: bool,
+    pub mode: usize,
+    pub cursor: usize,
+    values: Vec<Vec<usize>>,
+}
+
+/// What a practice menu key asks of the app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PracticeAction {
+    None,
+    /// The menu closed: the dummy as set (VS CPU's CPU).
+    Close,
+    /// CHARACTER SELECT: back to practice's select.
+    Select,
+    /// RESET: the main menu (the soft reset).
+    Reset,
+}
+
+impl Practice {
+    pub fn new(d: &Data) -> Self {
+        let modes = d.raw["practice"]["modes"].as_array().cloned().unwrap_or_default();
+        Self { values: modes.iter().map(|m| m["rows"].as_array().into_iter().flatten().map(|r| int(&r["default"])).collect()).collect(), ..Self::default() }
+    }
+
+    fn rows<'a>(&self, d: &'a Data) -> &'a [Value] {
+        d.raw["practice"]["modes"][self.mode]["rows"].as_array().map_or(&[], Vec::as_slice)
+    }
+
+    /// The value of the current mode's row `label`.
+    fn value(&self, d: &Data, label: &str) -> Option<usize> {
+        let k = self.rows(d).iter().position(|r| r["label"] == label)?;
+        self.values.get(self.mode)?.get(k).copied()
+    }
+
+    /// FREESTYLE's TRAINING DUMMY (0 STAND elsewhere), by its value's name.
+    pub fn dummy<'a>(&self, d: &'a Data) -> &'a str {
+        let k = self.value(d, "TRAINING DUMMY").unwrap_or(0);
+        let row = self.rows(d).iter().find(|r| r["label"] == "TRAINING DUMMY");
+        row.and_then(|r| r["values"][k].as_str()).unwrap_or("STAND")
+    }
+
+    /// VS CPU: the CPU's difficulty (CPU LEVEL).
+    pub fn cpu(&self, d: &Data) -> Option<usize> {
+        self.value(d, "CPU LEVEL")
+    }
+
+    pub fn open(&mut self, d: &Data) {
+        sfx::play(sound(d, "decide"));
+        (self.open, self.cursor) = (true, 0);
+    }
+
+    /// A key while the menu is open: up / down the rows, left / right MODE SELECT's modes or a row's values (round),
+    /// a button takes CANCEL, CHARACTER SELECT or RESET; back closes.
+    pub fn key(&mut self, d: &Data, key: Key) -> PracticeAction {
+        let n = self.rows(d).len().max(1);
+        let modes = d.raw["practice"]["modes"].as_array().map_or(1, Vec::len).max(1);
+        let row = self.rows(d).get(self.cursor).cloned().unwrap_or_default();
+        let kind = row["kind"].as_str().unwrap_or_default();
+        match key {
+            Key::Up | Key::Down => {
+                sfx::play(sound(d, "cursor"));
+                self.cursor = (self.cursor + if key == Key::Up { n - 1 } else { 1 }) % n;
+            }
+            Key::Left | Key::Right if kind == "mode" => {
+                sfx::play(sound(d, "cursor"));
+                self.mode = (self.mode + if key == Key::Left { modes - 1 } else { 1 }) % modes;
+            }
+            Key::Left | Key::Right => {
+                let len = row["values"].as_array().map_or(0, Vec::len);
+                if let (true, Some(v)) = (len > 1, self.values.get_mut(self.mode).and_then(|m| m.get_mut(self.cursor))) {
+                    sfx::play(sound(d, "cursor"));
+                    *v = (*v + if key == Key::Left { len - 1 } else { 1 }) % len;
+                }
+            }
+            Key::Back => {
+                self.open = false;
+                return PracticeAction::Close;
+            }
+            Key::Start | Key::Button(_) => {
+                let action = match kind {
+                    "close" => PracticeAction::Close,
+                    "select" => PracticeAction::Select,
+                    "reset" => PracticeAction::Reset,
+                    _ => return PracticeAction::None,
+                };
+                sfx::play(sound(d, "decide"));
+                self.open = false;
+                return action;
+            }
+        }
+        PracticeAction::None
+    }
+}
+
+/// The practice dummy's pad by TRAINING DUMMY: standing, crouching, guarding (back), GUARD ALL / AUTO GUARD low
+/// against a low attack. shortcut: the recovery rolls, QUICK TAG OUT and SPRING FORWARD stand; upgrade: decode the
+/// dummy's code (0x506528's users).
+pub fn practice_pad(dummy: &str, facing_right: bool, low: bool) -> kumite_sim::input::Pad {
+    use kumite_sim::input::Pad;
+    let back = |p: Pad| if facing_right { Pad { left: true, ..p } } else { Pad { right: true, ..p } };
+    match dummy {
+        "CROUCH" => Pad { down: true, ..Pad::default() },
+        "STAND GUARD" => back(Pad::default()),
+        "CROUCH GUARD" => back(Pad { down: true, ..Pad::default() }),
+        "GUARD ALL" | "AUTO GUARD" => back(Pad { down: low, ..Pad::default() }),
+        _ => Pad::default(),
+    }
+}
+
+/// Practice's menu (`practice`) in the pause's window: the mode's name, its rows in their colours (the cursor's over
+/// the pause's bar, from its value's line where it has one), the values right-aligned (ON / OFF in GAME OPTIONS'
+/// default / off colours), the arrow after MODE SELECT or the cursor's value, the help line (the mode's, the row's
+/// or its value's). `name`: the player's character (COMBO DISPLAY's "%s (YOU)").
+pub fn draw_practice(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Practice, name: &str) {
+    let pr = &d.raw["practice"];
+    let rows = p.rows(d);
+    let (x0, y0, w) = (num(&pr["window"][0]), num(&pr["window"][1]), num(&pr["window"][2]));
+    let last = rows.iter().map(|r| num(&r["value_y"]).max(num(&r["y"]))).fold(0.0, f32::max);
+    let h = last + num(&pr["below"]) - y0;
+    for r in [[x0 - 10.0, y0 - 10.0, w + 20.0, 4.0], [x0 - 10.0, y0 + h + 6.0, w + 20.0, 4.0], [x0 - 10.0, y0 - 6.0, 4.0, h + 12.0], [x0 + w + 6.0, y0 - 6.0, 4.0, h + 12.0]] {
+        Art::shade(painter, v, sv(r), [Color32::from_gray(195); 4]);
+    }
+    let (top, foot) = (rgba(&pr["colour"][0]), rgba(&pr["colour"][1]));
+    Art::shade(painter, v, sv([x0 - 6.0, y0 - 6.0, w + 12.0, h + 12.0]), [top, top, foot, foot]);
+    let mode = &pr["modes"][p.mode];
+    chrome(painter, v, art, d, mode["title"].as_str().unwrap_or_default(), num(&pr["title_xy"][0]), num(&pr["title_xy"][1]), Some(int(&pr["title_colour"])), num(&pr["title_size"]));
+    let (x, size, right) = (num(&pr["x"]), num(&pr["size"]), num(&pr["value_right"]));
+    let colour = |k: &str| Some(int(&pr["colours"][k]));
+    let measure = |t: &str| chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, t, 0.0, 0.0, None, size);
+    let arrow = |ax: f32, y: f32| {
+        let pic = d.raw["menu"]["arrows"]["pictures"][1].as_str().unwrap_or_default();
+        let ah = art.pic(pic).map_or(0.0, |q| q.1[1] as f32);
+        sprite(painter, v, art, pic, ax, y - ah, Color32::WHITE);
+    };
+    for (k, r) in rows.iter().enumerate() {
+        let (label, y, on) = (r["label"].as_str().unwrap_or_default(), num(&r["y"]), k == p.cursor);
+        let vy = r["value_y"].as_f64().map_or(y, |v| v as f32);
+        let value = r["values"][p.values.get(p.mode).and_then(|m| m.get(k)).copied().unwrap_or(0)].as_str();
+        if on {
+            bar(painter, v, d, [x0, x, right], y);
+        }
+        let end = chrome(painter, v, art, d, label, x, y, if on { colour("cursor") } else { colour("item") }, size);
+        if let Some(t) = value {
+            let c = match t {
+                "ON" => colour("on"),
+                "OFF" => colour("off"),
+                _ => colour("value"),
+            };
+            chrome(painter, v, art, d, t, right - measure(t), vy, c, size);
+            for (i, l) in r["lines"].as_array().into_iter().flatten().enumerate() {
+                let l = l.as_str().unwrap_or_default().replace("%s", &name.to_uppercase());
+                chrome(painter, v, art, d, &l, right - measure(&l), vy - 21.0 * (i + 1) as f32, colour("value"), size);
+            }
+            if on {
+                arrow(right + 2.0, vy);
+            }
+        } else if on && r["kind"] == "mode" {
+            arrow(end + 2.0, y);
+        }
+    }
+    // (the mode's line, then the row's or its value's)
+    if progress().setting(d, HELP_ROW) != 0 {
+        let texts = &d.raw["help"]["texts"];
+        let r = rows.get(p.cursor).cloned().unwrap_or_default();
+        let first = rows.first().map_or(0, |m| int(&m["help"]));
+        let second = match (r["kind"].as_str(), r["value_help"].as_u64()) {
+            (Some("mode"), _) => first + 1,
+            (_, Some(base)) => {
+                let v = p.values.get(p.mode).and_then(|m| m.get(p.cursor)).copied().unwrap_or(0);
+                // (a value without its own, CONTROLLER: the row's)
+                if v < int(&r["value_helps"]) {
+                    base as usize + v
+                } else {
+                    int(&r["help"])
+                }
+            }
+            _ => int(&r["help"]),
+        };
+        let text = format!("{}\\n{}", texts[first].as_str().unwrap_or_default(), texts[second].as_str().unwrap_or_default());
+        help_text(painter, v, art, d, &text, 0);
     }
 }
 
@@ -3757,6 +3956,11 @@ mod tests {
             "records": {"defaults": {"survivors": [{"members": [0, 1], "score": 5, "name": "PAU"}, {"members": [2, 3], "score": 1, "name": "KIN"}]},
                 "letters": "ABC<=", "name_len": 3},
             "ranking": {"frames": 10},
+            "practice": {"modes": [
+                {"rows": [{"label": "MODE SELECT", "kind": "mode"}, {"label": "CANCEL", "kind": "close"},
+                    {"label": "TRAINING DUMMY", "kind": "list", "values": ["STAND", "STAND GUARD"], "default": 0}]},
+                {"rows": [{"label": "MODE SELECT", "kind": "mode"}, {"label": "CPU LEVEL", "kind": "list", "values": ["EASY", "NORMAL"], "default": 1},
+                    {"label": "RESET", "kind": "reset"}]}]},
             "volumes": {"bgm": [0, 32, 40, 48, 56, 64, 72, 80, 96, 112, 128], "se": 10},
             "options": [{"default": 1, "values": ["EASY", "NORMAL"]}, {"default": 1, "values": ["1", "2", "3"]}, {"default": 2, "values": ["30", "40", "60"]}],
         }});
@@ -4155,6 +4359,25 @@ mod tests {
             f.tick(&r, &mut seed);
         }
         assert!(matches!(f.page, Page::Title) && progress().survivors.first().is_some_and(|s| s.name == "B" && s.score == 900));
+    }
+
+    /// Practice's menu: MODE SELECT's left / right turn the modes, a row's left / right its values (round), CANCEL and
+    /// RESET take; the dummy and VS CPU's CPU as set.
+    #[test]
+    fn practice_menu_modes_and_values() {
+        let d = data();
+        let mut p = Practice::new(&d);
+        p.open(&d);
+        for k in [Key::Down, Key::Down, Key::Right] {
+            assert_eq!(p.key(&d, k), PracticeAction::None);
+        }
+        assert_eq!(p.dummy(&d), "STAND GUARD");
+        p.cursor = 0;
+        p.key(&d, Key::Left);
+        assert_eq!((p.mode, p.cpu(&d)), (1, Some(1)));
+        assert_eq!(p.key(&d, Key::Up), PracticeAction::None);
+        assert!(p.key(&d, Key::Button(0)) == PracticeAction::Reset && !p.open);
+        assert_eq!(practice_pad("CROUCH GUARD", true, false), kumite_sim::input::Pad { left: true, down: true, ..Default::default() });
     }
 
     /// The main menu's rows slide a row's height in 4 a frame; no move while they slide (0x3BD2E0).
