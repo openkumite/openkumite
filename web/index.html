@@ -211,9 +211,33 @@
   // and sounds use these (audio_web.rs), unlocked with a silent clip on the first one
   const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=';
   window.__okaudio = { music: new Audio(), sfx: Array.from({ length: 10 }, () => new Audio()) };
+  // a track from `start` s looping from `loopAt` (Tekken Tag's music, audio_web.rs): Web Audio's buffer source loops
+  // seamlessly from a point, an element only from its start
+  window.__okaudio.loop = (src, start, loopAt, looped, volume) => {
+    const a = window.__okaudio;
+    a.ctx = a.ctx || new (window.AudioContext || window.webkitAudioContext)();
+    const gain = a.ctx.createGain();
+    gain.gain.value = volume;
+    gain.connect(a.ctx.destination);
+    let node = null, stopped = false;
+    fetch(src).then(r => r.arrayBuffer()).then(b => a.ctx.decodeAudioData(b)).then(buf => {
+      if (stopped) return;
+      node = a.ctx.createBufferSource();
+      node.buffer = buf;
+      node.loop = looped;
+      node.loopStart = Math.min(loopAt, buf.duration);
+      node.loopEnd = buf.duration;
+      node.connect(gain);
+      node.start(0, Math.min(start, buf.duration));
+    }).catch(e => console.warn('music', src, e));
+    return { stop() { stopped = true; if (node) node.stop(); gain.disconnect(); }, volume(v) { gain.gain.value = v; } };
+  };
   const unlock = () => {
     if (window.__okgesture) return;
     window.__okgesture = true;
+    // (Safari on iPhone: a context made and resumed in the touch)
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) { window.__okaudio.ctx = new Ctx(); window.__okaudio.ctx.resume().catch(() => {}); }
     for (const a of [window.__okaudio.music, ...window.__okaudio.sfx]) {
       if (!a.src) { a.src = SILENT; a.play().catch(() => {}); }
     }

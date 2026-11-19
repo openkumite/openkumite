@@ -2,9 +2,11 @@
 //! a conversion kept in the browser (`kumite_fs::src`) (the same API as the native player). Browsers start sound only
 //! after the first key press or touch; some (Safari on iPhone) only on elements first played in one, so the page
 //! unlocks a music element and a pool for the sounds on the first touch (`window.__okaudio`), and those are the ones
-//! played.
+//! played. A track that starts or loops from a point of its own (Tekken Tag's) plays through Web Audio instead
+//! (`__okaudio.loop`: a buffer source, which loops seamlessly from `loopStart`).
 
-use std::path::{Path, PathBuf};
+use kumite_game::sound::Track;
+use std::path::Path;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlAudioElement;
 
@@ -19,12 +21,13 @@ fn page_elements() -> Option<(HtmlAudioElement, Vec<HtmlAudioElement>)> {
 
 pub struct Audio {
     music: Option<HtmlAudioElement>,
+    /// The Web Audio track playing (`__okaudio.loop`'s handle: `stop()`, `volume(v)`).
+    looper: Option<wasm_bindgen::JsValue>,
     /// The page's sound elements, played in turn (none: a new element a sound).
     pool: Vec<HtmlAudioElement>,
     next: usize,
-    /// The track asked for, looped or not, and whether it has started (it waits for the first key press).
-    current: Option<PathBuf>,
-    looped: bool,
+    /// The track asked for, and whether it has started (it waits for the first key press).
+    current: Option<Track>,
     started: bool,
     pub muted: bool,
     pub music_volume: f32,
@@ -49,28 +52,42 @@ fn allowed() -> bool {
 
 impl Audio {
     pub fn new() -> Option<Self> {
-        Some(Self { music: None, pool: Vec::new(), next: 0, current: None, looped: false, started: false, muted: false, music_volume: 0.55, sfx_volume: 0.9 })
+        Some(Self { music: None, looper: None, pool: Vec::new(), next: 0, current: None, started: false, muted: false, music_volume: 0.55, sfx_volume: 0.9 })
     }
 
-    /// Play `path` as music, looped or once; None stops the music.
-    pub fn music(&mut self, track: Option<(&Path, bool)>) {
-        self.music_from(track, 0.0);
-    }
-
-    /// [`Audio::music`]; shortcut: the browser's audio element loops from the start, not from `_from` (a loop point
-    /// needs Web Audio's buffer source with loopStart).
-    pub fn music_from(&mut self, track: Option<(&Path, bool)>, _from: f64) {
-        let (path, looped) = (track.map(|t| t.0), track.is_some_and(|t| t.1));
-        if self.current.as_deref() == path {
+    /// Play a track from its start, looped from its loop point or once, at its level; None stops the music.
+    pub fn music(&mut self, track: Option<&Track>) {
+        if self.current.as_ref() == track {
             return;
         }
         if let Some(m) = &self.music {
             let _ = m.pause();
         }
-        self.current = path.map(Path::to_path_buf);
-        self.looped = looped;
+        if let Some(l) = self.looper.take() {
+            call(&l, "stop", &[]);
+        }
+        self.current = track.cloned();
         self.started = false;
         self.resume();
+    }
+
+    /// The music's volume: muted, ducked, the track's level.
+    fn level(&self, ducked: bool) -> f64 {
+        let gain = self.current.as_ref().map_or(1.0, |t| t.gain);
+        if self.muted {
+            0.0
+        } else {
+            (self.music_volume * gain * if ducked { 0.3 } else { 1.0 }).clamp(0.0, 1.0) as f64
+        }
+    }
+
+    /// The music playing at a volume.
+    fn set_level(&self, v: f64) {
+        if let Some(l) = &self.looper {
+            call(l, "volume", &[v.into()]);
+        } else if let Some(m) = &self.music {
+            m.set_volume(v);
+        }
     }
 
     /// Start the asked-for track once the page may play sound (called every frame).
@@ -79,7 +96,16 @@ impl Audio {
             return;
         }
         self.started = true;
-        let Some(path) = &self.current else { return };
+        let Some(t) = self.current.clone() else { return };
+        let path = &t.file;
+        // from a point of its own: Web Audio
+        let looper = page_elements().and_then(|_| js_sys::Reflect::get(&web_sys::window()?.into(), &"__okaudio".into()).ok());
+        let looper = looper.and_then(|a| Some((js_sys::Reflect::get(&a, &"loop".into()).ok()?.dyn_into::<js_sys::Function>().ok()?, a)));
+        if let (Some((f, a)), true) = (looper, t.start > 0.0 || (t.looped && t.loop_at > 0.0)) {
+            let args = js_sys::Array::of5(&url(path).into(), &t.start.into(), &t.loop_at.into(), &t.looped.into(), &self.level(false).into());
+            self.looper = f.apply(&a, &args).ok();
+            return;
+        }
         // the page's unlocked element (its source changed), else a new one
         let page = page_elements();
         if let Some((music, pool)) = page.filter(|_| self.pool.is_empty() || self.music.is_some()) {
@@ -98,8 +124,8 @@ impl Audio {
                 Err(_) => return,
             },
         };
-        m.set_loop(self.looped);
-        m.set_volume(if self.muted { 0.0 } else { self.music_volume as f64 });
+        m.set_loop(t.looped);
+        m.set_volume(self.level(false));
         quiet(m.play());
         self.music = Some(m);
     }
@@ -136,23 +162,20 @@ impl Audio {
 
     pub fn toggle_mute(&mut self) -> bool {
         self.muted = !self.muted;
-        if let Some(m) = &self.music {
-            m.set_volume(if self.muted { 0.0 } else { self.music_volume as f64 });
-        }
+        self.set_level(self.level(false));
         self.muted
     }
 
     /// Music quieter while paused.
     pub fn duck(&mut self, ducked: bool) {
-        if let Some(m) = &self.music {
-            m.set_volume(if self.muted {
-                0.0
-            } else if ducked {
-                self.music_volume as f64 * 0.3
-            } else {
-                self.music_volume as f64
-            });
-        }
+        self.set_level(self.level(ducked));
+    }
+}
+
+/// `handle.name(args)` of a JavaScript object, its result dropped.
+fn call(handle: &wasm_bindgen::JsValue, name: &str, args: &[wasm_bindgen::JsValue]) {
+    if let Some(f) = js_sys::Reflect::get(handle, &name.into()).ok().and_then(|f| f.dyn_into::<js_sys::Function>().ok()) {
+        let _ = f.apply(handle, &args.iter().collect());
     }
 }
 

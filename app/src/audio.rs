@@ -4,6 +4,7 @@
 //! Or, for a replay made a video (`video.rs`), nothing plays: what would is noted with the game step it starts at
 //! ([`Audio::capture`]), and mixed afterwards.
 
+use kumite_game::sound::Track;
 use rodio::source::{Buffered, Source};
 use rodio::{Decoder, MixerDeviceSink, Player};
 use std::collections::HashMap;
@@ -16,8 +17,8 @@ type Clip = Buffered<Decoder<BufReader<File>>>;
 /// What the game asked to play, in capture.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// The music: a track (looped or once), or none.
-    Music(Option<(PathBuf, bool)>),
+    /// The music: a track, or none.
+    Music(Option<Track>),
     /// A one-shot sound at this volume (the effects' volume included) and speed.
     Sfx(PathBuf, f32, f32),
     /// The music quieter (or not).
@@ -38,7 +39,7 @@ pub struct Audio {
     /// Capturing instead of playing.
     pub capture: Option<Capture>,
     music: Option<Player>,
-    current: Option<PathBuf>,
+    current: Option<Track>,
     /// Decoded sound effects, kept for replay.
     cache: HashMap<PathBuf, Clip>,
     pub muted: bool,
@@ -66,43 +67,44 @@ impl Audio {
         Self { sink: None, capture: Some(Capture::default()), music: None, current: None, cache: HashMap::new(), muted: false, music_volume: 0.55, sfx_volume: 0.9 }
     }
 
-    /// Play `path` as music, looped or once (nothing changes when it is already the current track, even when a
-    /// jingle has ended); None stops the music.
-    pub fn music(&mut self, track: Option<(&Path, bool)>) {
-        self.music_from(track, 0.0);
-    }
-
-    /// [`Audio::music`], a looped track going back to `from` seconds at its end (Tekken Tag's loop points).
-    pub fn music_from(&mut self, track: Option<(&Path, bool)>, from: f64) {
-        let (path, looped) = (track.map(|t| t.0), track.is_some_and(|t| t.1));
-        if self.current.as_deref() == path {
+    /// Play a track from its start, looped from its loop point or once, at its level (nothing changes when it is
+    /// already the current track, even when a jingle has ended); None stops the music.
+    pub fn music(&mut self, track: Option<&Track>) {
+        if self.current.as_ref() == track {
             return;
         }
         if let Some(p) = self.music.take() {
             p.stop();
         }
-        self.current = path.map(Path::to_path_buf);
+        self.current = track.cloned();
         if let Some(c) = self.capture.as_mut() {
-            c.events.push((c.step, Event::Music(path.map(|p| (p.to_path_buf(), looped)))));
+            c.events.push((c.step, Event::Music(track.cloned())));
             return;
         }
-        let (Some(path), Some(sink)) = (path, self.sink.as_ref()) else { return };
-        match File::open(kumite_fs::resolve(path)).map_err(anyhow::Error::from).and_then(|f| Decoder::try_from(f).map_err(anyhow::Error::from)) {
+        let (Some(t), Some(sink)) = (track, self.sink.as_ref()) else { return };
+        match File::open(kumite_fs::resolve(&t.file)).map_err(anyhow::Error::from).and_then(|f| Decoder::try_from(f).map_err(anyhow::Error::from)) {
             Ok(src) => {
                 let player = Player::connect_new(sink.mixer());
-                player.set_volume(if self.muted { 0.0 } else { self.music_volume });
-                if looped && from > 0.0 {
-                    let src = src.buffered();
-                    player.append(src.clone());
-                    player.append(src.skip_duration(std::time::Duration::from_secs_f64(from)).repeat_infinite());
-                } else if looped {
-                    player.append(src.repeat_infinite());
-                } else {
-                    player.append(src);
+                player.set_volume(self.level(false));
+                let at = |s: f64| std::time::Duration::from_secs_f64(s.max(0.0));
+                let src = src.buffered();
+                player.append(src.clone().skip_duration(at(t.start)));
+                if t.looped {
+                    player.append(src.skip_duration(at(t.loop_at)).repeat_infinite());
                 }
                 self.music = Some(player);
             }
-            Err(e) => log::warn!("music {}: {e:#}", path.display()),
+            Err(e) => log::warn!("music {}: {e:#}", t.file.display()),
+        }
+    }
+
+    /// The music's volume: muted, ducked, the track's level.
+    fn level(&self, ducked: bool) -> f32 {
+        let gain = self.current.as_ref().map_or(1.0, |t| t.gain);
+        if self.muted {
+            0.0
+        } else {
+            self.music_volume * gain * if ducked { 0.3 } else { 1.0 }
         }
     }
 
@@ -136,7 +138,7 @@ impl Audio {
     pub fn toggle_mute(&mut self) -> bool {
         self.muted = !self.muted;
         if let Some(p) = &self.music {
-            p.set_volume(if self.muted { 0.0 } else { self.music_volume });
+            p.set_volume(self.level(false));
         }
         self.muted
     }
@@ -161,13 +163,7 @@ impl Audio {
             }
         }
         if let Some(p) = &self.music {
-            p.set_volume(if self.muted {
-                0.0
-            } else if ducked {
-                self.music_volume * 0.3
-            } else {
-                self.music_volume
-            });
+            p.set_volume(self.level(ducked));
         }
     }
 }
@@ -222,7 +218,7 @@ mod tests {
         audio.music_volume = 0.0;
         audio.sfx_volume = 0.0;
         let index: serde_json::Value = serde_json::from_slice(&kumite_fs::read(&a.join("audio/index.json")).unwrap()).unwrap();
-        audio.music(Some((&a.join("audio/music").join(index["music"][3]["file"].as_str().unwrap()), true)));
+        audio.music(Some(&Track::plain(&a.join("audio/music").join(index["music"][3]["file"].as_str().unwrap()), true)));
         audio.sfx(&a.join("audio/sfx/sys/04.wav"), 1.0, 1.0);
         audio.sfx(&a.join("audio/sfx/sys/04.wav"), 1.0, 1.0); // second play comes from the cache
         assert_eq!(audio.cache.len(), 1);

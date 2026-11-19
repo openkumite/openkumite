@@ -704,7 +704,7 @@ fn every_sound_code_in_the_table_has_a_sample() {
     // (music by character name: characters 0 and 20, roster.json's)
     let roster: serde_json::Value = kumite_sim::data::load(&a.root.join("gamedata/roster.json")).unwrap();
     let name = |id: usize| roster["characters"][id]["name"].as_str().unwrap().to_string();
-    assert!(s.music_for(&name(0)).is_some_and(|p| p.0.exists()) && s.music_for(&name(20)).is_some());
+    assert!(s.music_for(&name(0)).is_some_and(|p| p.file.exists()) && s.music_for(&name(20)).is_some());
 }
 
 fn sounds_of(a: &Assets, p1: &str, p2_human: bool) -> Vec<String> {

@@ -1064,6 +1064,10 @@ pub enum AfterMovie {
     Credits,
     /// Back to the Theater, on the same entry.
     Theater(Box<crate::theater::Theater>),
+    /// Tekken Tag: back to a page of its front end.
+    Ttt(Box<crate::ttt::Page>),
+    /// Tekken Tag: Unknown's ending (a movie): the staff roll, then a page of its front end.
+    TttRoll(Box<crate::ttt::Page>),
 }
 
 /// What the attract loop shows after the PRESENTS screen.
@@ -1132,6 +1136,12 @@ pub enum Outcome {
     TttSaved,
     /// Tekken Tag's Theater: an ending (number, the player's costume), then the Theater at this cell again.
     TttEnding(usize, usize, [usize; 2]),
+    /// Tekken Tag: a movie (video/NN.avi), then a page of its front end.
+    TttMovie(usize, Box<crate::ttt::Page>),
+    /// Tekken Tag: the staff roll alone (after Unknown's ending), then a page of its front end.
+    TttRoll(Box<crate::ttt::Page>),
+    /// Tekken Tag's Theater: the EMBU with a cast, then the Theater at this cell again.
+    TttEmbu(usize, [usize; 2]),
 }
 
 pub struct Menu {
@@ -1570,6 +1580,9 @@ impl Screen {
             // START skips a movie
             Screen::Movie(_, next) => {
                 if key == Key::Start {
+                    if let AfterMovie::TttRoll(p) = next {
+                        return Outcome::TttRoll(p.clone());
+                    }
                     *self = after_movie(next.clone(), roster);
                 }
             }
@@ -1675,6 +1688,9 @@ impl Screen {
             Screen::Results(_) | Screen::ForceResults(_) | Screen::Records(_) => {}
             Screen::Movie(m, next) => {
                 if m.tick() {
+                    if let AfterMovie::TttRoll(p) = next {
+                        return Outcome::TttRoll(p.clone());
+                    }
                     *self = after_movie(next.clone(), roster);
                 }
             }
@@ -1748,6 +1764,7 @@ fn after_movie(next: AfterMovie, roster: &Roster) -> Screen {
             None => Screen::title(),
         },
         AfterMovie::Theater(t) => Screen::Theater(t),
+        AfterMovie::Ttt(page) | AfterMovie::TttRoll(page) => Screen::Ttt(Box::new(crate::ttt::Front { page: *page, frame: 0 })),
     }
 }
 

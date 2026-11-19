@@ -48,6 +48,8 @@ const OPTION_ROWS: [usize; 3] = [0, 1, 2];
 const LAST_STAGE: u32 = 14;
 /// Frames the result and message screens stay (START skips).
 const MESSAGE_FRAMES: u32 = 360;
+/// The title's logo after its fade from white, before the attract goes on (0x3BCC88).
+const TITLE_FRAMES: u32 = 300;
 /// The VS screen's frames: the PS2 holds it while the fight loads (0x3C45B0's states 4-6), about 4 s in PCSX2.
 pub const VS_FRAMES: u32 = 240;
 /// The arcade pack's arenas (OpenKumite's ids, apart from Tekken Tag's 0-22): its stage_NN.glb is 100 + NN, its
@@ -592,6 +594,7 @@ fn ladder(d: &Data, roster: &Roster, stage: u32, pool: &[usize], players: &Team,
 const CONTINUE: u32 = 898;
 
 /// A screen of the front end.
+#[derive(Clone)]
 pub enum Page {
     Title,
     /// The main menu: the cursor, the rows' scroll (0x3BD2E0: a row's height towards 0), the frames since a key.
@@ -658,6 +661,7 @@ pub struct Side {
     pub since: u32,
 }
 
+#[derive(Clone)]
 pub struct Select {
     pub mode: u32,
     pub sides: [Side; 2],
@@ -1043,6 +1047,14 @@ impl Front {
                             sfx::play(sound(&d, "decide"));
                             return Outcome::TttEnding(e, costume, [*r, *c]);
                         }
+                        Some(Cell::Movie(m)) => {
+                            sfx::play(sound(&d, "decide"));
+                            return Outcome::TttMovie(m, Box::new(Page::Theater { cursor: [*r, *c] }));
+                        }
+                        Some(Cell::Embu(cast)) => {
+                            sfx::play(sound(&d, "decide"));
+                            return Outcome::TttEmbu(cast, [*r, *c]);
+                        }
                         Some(Cell::Music) => {
                             sfx::play(sound(&d, "decide"));
                             Some(Page::Music { cursor: 0, playing: None })
@@ -1131,6 +1143,14 @@ impl Front {
                 *frame += 1;
                 if *frame >= MESSAGE_FRAMES {
                     self.page = if *title { Page::Title } else { Page::Menu { cursor: 0, scroll: 0, idle: 0 } };
+                }
+            }
+            // the attract (0x3BCC88): the logo's 300 frames out of white, then the opening movie (the first of Theater's);
+            // shortcut: the PS2's demo fight and CHARACTER USAGE ranking between them are not done
+            Page::Title if self.frame == num(&d.raw["title"]["from_white"]) as u32 + TITLE_FRAMES => {
+                let opening = d.endings.as_ref().and_then(|e| e.raw["theater"]["extras"].as_array()?.iter().find_map(|x| x["movie"].as_u64()));
+                if let Some(m) = opening {
+                    return Outcome::TttMovie(m as usize, Box::new(Page::Title));
                 }
             }
             _ => {}
@@ -1247,7 +1267,7 @@ impl Front {
                     }
                 }
                 if let Some((_, Cell::None)) = rows.get(*r).and_then(|row| row.get(*c)) {
-                    small(painter, v, art, d, "NOT AVAILABLE: THE MOVIES AND THE EMBU ARE NOT CONVERTED", W / 2.0, 430.0, Color32::from_gray(200));
+                    small(painter, v, art, d, "NOT AVAILABLE: CONVERT THE GAME AGAIN", W / 2.0, 430.0, Color32::from_gray(200));
                 }
             }
             Page::Music { cursor, playing } => {
@@ -1279,10 +1299,13 @@ impl Front {
 enum Cell {
     /// Ending (number, the player's costume).
     Ending(usize, usize),
+    /// A movie (video/NN.avi).
+    Movie(usize),
+    /// The EMBU with a cast.
+    Embu(usize),
     Music,
     Exit,
-    /// Not playable here: a movie (the converter keeps the MPEG-2 streams as they are), Unknown's (a movie), the
-    /// embu.
+    /// Not playable here (an older conversion's EMBU).
     None,
 }
 
@@ -1292,20 +1315,24 @@ enum Cell {
 fn theater(d: &Data, seen: u64) -> Vec<Vec<(String, Cell)>> {
     let Some(e) = d.endings.as_deref() else { return vec![vec![("EXIT THEATER MENU".into(), Cell::Exit)]] };
     let t = &e.raw["theater"];
-    let unknown = e.raw["playback"]["unknown"].as_u64().unwrap_or(37) as usize;
     let mut rows: Vec<Vec<(String, Cell)>> = (0..34)
         .map(|c| {
             (0..8)
                 .filter_map(|k| {
                     let label = t["labels"][c][k].as_str()?;
                     let n = e.ending(c, k).filter(|&n| n < 64 && seen >> n & 1 == 1)?;
-                    Some((label.to_string(), if n == unknown { Cell::None } else { Cell::Ending(n, k) }))
+                    Some((label.to_string(), Cell::Ending(n, k)))
                 })
                 .collect()
         })
         .filter(|r: &Vec<_>| !r.is_empty())
         .collect();
-    rows.extend(t["extras"].as_array().into_iter().flatten().filter(|x| x["cast"].is_null()).map(|x| vec![(x["label"].as_str().unwrap_or_default().to_string(), Cell::None)]));
+    let cell = |x: &Value| match (x["movie"].as_u64(), x["scene"].as_u64()) {
+        (Some(m), _) => Cell::Movie(m as usize),
+        (_, Some(_)) if !e.embu.is_empty() => Cell::Embu(x["cast"].as_u64().unwrap_or(0) as usize),
+        _ => Cell::None,
+    };
+    rows.extend(t["extras"].as_array().into_iter().flatten().filter(|x| x["cast"].is_null()).map(|x| vec![(x["label"].as_str().unwrap_or_default().to_string(), cell(x))]));
     rows.push(vec![("MUSIC PLAYER".into(), Cell::Music)]);
     rows.push(vec![("EXIT THEATER MENU".into(), Cell::Exit)]);
     rows
@@ -2195,7 +2222,7 @@ pub fn force_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, run: &c
 
 /// A fighter's theme in Tekken Force (OpenKumite's: Tekken 3 plays the player's and the boss's, Tekken Tag's fighters
 /// have none): the music of the arena named after it (the name's first word), else the first arena's.
-pub fn theme<'a>(d: Option<&Data>, sound: &'a kumite_game::sound::SoundData, name: &str) -> Option<(&'a std::path::Path, bool)> {
+pub fn theme<'a>(d: Option<&Data>, sound: &'a kumite_game::sound::SoundData, name: &str) -> Option<&'a kumite_game::sound::Track> {
     let first = |s: &str| s.split(['-', ' ']).next().unwrap_or_default().to_lowercase();
     let arena = d?.arenas.iter().find(|a| first(&a.1) == first(name)).map_or(0, |a| a.0);
     sound.arena_music(arena)
@@ -2422,15 +2449,16 @@ mod tests {
     fn theater_lists_the_endings_seen() {
         // Paul's costumes play ending 1, Law's ending 2 (here Unknown's, a movie)
         let endings = serde_json::json!({"table": [[1, 1], [2]], "endings": [{}, {}, {}], "playback": {"unknown": 2},
-            "theater": {"labels": [["(1P)PAUL", "(2P)PAUL"], ["(1P)LAW"]], "extras": [{"label": "OPENING MOVIE"}, {"label": "EMBU2", "cast": 1}]}});
+            "theater": {"labels": [["(1P)PAUL", "(2P)PAUL"], ["(1P)LAW"]], "extras": [{"label": "OPENING MOVIE", "movie": 14}, {"label": "EMBU", "scene": 1}, {"label": "EMBU2", "cast": 1}]}});
         let e = EndingData::new(endings, &Value::Null).unwrap();
         let d = Data::load(&serde_json::json!({"front_end": {}}), &Value::Null, &serde_json::json!({}), Some(e), vec![], None, false, &Value::Null).unwrap();
         let rows = |seen| theater(&d, seen).into_iter().map(|r| r.into_iter().map(|c| (c.0, c.1)).collect::<Vec<_>>()).collect::<Vec<_>>();
-        let tail = [vec![("OPENING MOVIE".to_string(), Cell::None)], vec![("MUSIC PLAYER".into(), Cell::Music)], vec![("EXIT THEATER MENU".into(), Cell::Exit)]];
+        let tail =
+            [vec![("OPENING MOVIE".to_string(), Cell::Movie(14))], vec![("EMBU".into(), Cell::None)], vec![("MUSIC PLAYER".into(), Cell::Music)], vec![("EXIT THEATER MENU".into(), Cell::Exit)]];
         assert_eq!(rows(0), tail);
         let paul = vec![("(1P)PAUL".to_string(), Cell::Ending(1, 0)), ("(2P)PAUL".into(), Cell::Ending(1, 1))];
         assert_eq!(rows(1 << 1)[..2], [paul.clone(), tail[0].clone()]);
-        assert_eq!(rows(1 << 1 | 1 << 2)[..2], [paul, vec![("(1P)LAW".into(), Cell::None)]]);
+        assert_eq!(rows(1 << 1 | 1 << 2)[..2], [paul, vec![("(1P)LAW".into(), Cell::Ending(2, 0))]]);
         // the menu shows THEATER once an ending was seen
         assert!(!Front::items(&d, &Progress::default()).iter().any(|i| i.0 == THEATER));
     }

@@ -261,7 +261,9 @@ mod tests {
         let a = std::env::var_os("OPENKUMITE_ASSETS").map_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets"), PathBuf::from);
         let Ok(d) = kumite_fs::read(&a.join("audio/index.json")) else { return };
         let index: serde_json::Value = serde_json::from_slice(&d).unwrap();
-        for (k, v) in index["video"].as_array().into_iter().flatten().enumerate() {
+        for v in index["video"].as_array().into_iter().flatten() {
+            // (NN.avi: Tekken 3's 00-.., Tekken Tag's by their file, 14-16)
+            let k: usize = v["file"].as_str().and_then(|f| f.strip_suffix(".avi")?.parse().ok()).unwrap();
             let m = Movie::load(&a, k).unwrap();
             assert_eq!(m.avi.frames.len() as u64, v["frames"].as_u64().unwrap(), "movie {k} frames");
             assert_eq!(m.fps().round() as u64, v["fps"].as_u64().unwrap(), "movie {k} fps");

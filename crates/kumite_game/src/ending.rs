@@ -5,8 +5,13 @@
 //! are sampled at the camera's frame, clamped at their ends, so a frame is a function of its number alone. It ends
 //! at op -1, the camera path's end, or 7200 frames.
 //!
-//! Not played: the effect ops (10, 12, 15-18, 21-32: sparks, objects, show / hide [L]), the face and hand tracks
-//! (their joints are not mapped), the arenas' background characters.
+//! The EMBU (scene 1, 0x3A97B0: Theater's EMBU and EMBU2) is the same scene in a dialect of its own (0x3A9E48,
+//! table 0x519B50): a cast of six, ops 0 / 1 / 14 put a member in a slot, 2 / 3 play track a from its frame b to c
+//! (the slot is not drawn before or after), 4 takes camera path a of 22 from frame b, 5 / 6 fade from / to white,
+//! 13 starts its music; it ends at op -1 alone.
+//!
+//! Not played: the effect ops (10, 12, 15-18, 21-32; the EMBU's 7-12: sparks, objects, show / hide [L]), the face
+//! and hand tracks (their joints are not mapped), the arenas' background characters.
 
 use crate::UNITS;
 use anyhow::{bail, Context, Result};
@@ -37,6 +42,8 @@ pub struct EndingData {
     /// Character x costume -> ending (0x51B678).
     table: Vec<Vec<i32>>,
     pub endings: Vec<Descriptor>,
+    /// The EMBU's two casts as descriptors (endings.json `embu`; none in an older pack).
+    pub embu: Vec<Descriptor>,
     /// Selection (character * 8 + costume) -> model record.
     records: HashMap<usize, usize>,
 }
@@ -51,7 +58,15 @@ impl EndingData {
         let table = serde_json::from_value(raw["table"].clone()).context("endings.json: table")?;
         let endings = serde_json::from_value(raw["endings"].clone()).context("endings.json: endings")?;
         let records = roster["selections"]["entries"].as_array().into_iter().flatten().filter_map(|e| Some((e["selection"].as_u64()? as usize, e["model_record"].as_u64()? as usize))).collect();
-        Ok(Self { raw, table, endings, records })
+        let e = &raw["embu"];
+        let embu = (e["casts"].as_array().into_iter().flatten().zip(e["arenas"].as_array().into_iter().flatten()))
+            .map(|(cast, arena)| {
+                let mut d: Descriptor = serde_json::from_value(e.clone()).context("endings.json: embu")?;
+                (d.cast, d.arena) = (serde_json::from_value(cast.clone()).context("endings.json: embu casts")?, arena.as_u64().unwrap_or(0) as usize);
+                Ok(d)
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { raw, table, endings, embu, records })
     }
 
     /// The ending of `character` in `costume` (the game's costume number), if it has one.
@@ -93,21 +108,26 @@ impl Fade {
 }
 
 pub struct EndingScene {
-    pub ending: usize,
+    /// The ending (None: the EMBU).
+    pub ending: Option<usize>,
     pub arena: usize,
     /// The cast's bodies (with the ending's tracks as clips `ending_EE_K`) and their model records.
     pub characters: Vec<Arc<Character>>,
     pub records: Vec<usize>,
     script: Vec<[i32; 5]>,
-    /// Per frame: eye, target (game units, y down), H.
-    camera: Vec<[f32; 7]>,
-    /// The camera's start: (scene frame, path frame).
+    /// The camera paths (an ending's one, the EMBU's 22), per frame: eye, target (game units, y down), H.
+    cameras: Vec<Vec<[f32; 7]>>,
+    /// The camera's path and start: (scene frame, path frame).
+    path: usize,
     camera_at: (i32, i32),
     next: usize,
     /// The scene frame shown (+1 a step; -1 before the first).
     c: i32,
-    /// Per actor slot: the cast member in it and the track it plays.
+    /// Per actor slot: the cast member in it and the track it plays; the EMBU's: from scene frame s, frames b..=c.
     slots: [(Option<usize>, usize); 2],
+    ranges: [Option<(i32, i32, i32)>; 2],
+    /// The music started (the EMBU's op 13: its BGM).
+    pub music: Option<usize>,
     black: Fade,
     white: Fade,
     pub done: bool,
@@ -119,7 +139,18 @@ const MAX_FRAMES: i32 = 7200;
 impl EndingScene {
     /// Ending `ending` with the player's costume `costume` (the game's number): its cast's bodies, tracks and camera.
     pub fn new(assets: &Assets, data: &EndingData, ending: usize, costume: usize) -> Result<Self> {
-        let d = data.endings.get(ending).context("no such ending")?;
+        Self::with(assets, data, data.endings.get(ending).context("no such ending")?, Some(ending), costume)
+    }
+
+    /// The EMBU with cast `cast` (0: Theater's EMBU, 1: EMBU2's animals).
+    pub fn embu(assets: &Assets, data: &EndingData, cast: usize) -> Result<Self> {
+        let d = data.embu.get(cast).context("no EMBU in this conversion (convert the game again)")?;
+        let mut s = Self::with(assets, data, d, None, 0)?;
+        s.black = Fade::default();
+        Ok(s)
+    }
+
+    fn with(assets: &Assets, data: &EndingData, d: &Descriptor, ending: Option<usize>, costume: usize) -> Result<Self> {
         let file = |name: &str| -> Result<Vec<u8>> {
             // (a plain file name only: one with a folder in it would read outside `endings/`)
             if std::path::Path::new(name).file_name() != Some(name.as_ref()) {
@@ -140,11 +171,19 @@ impl EndingScene {
             records.push(record);
         }
         let cam = file(&d.camera)?;
-        let n = cam.get(..4).and_then(|b| b.try_into().ok()).map_or(0, u32::from_le_bytes) as usize;
-        let camera: Vec<[f32; 7]> =
-            cam.get(4..).unwrap_or_default().as_chunks::<28>().0.iter().take(n).map(|f| std::array::from_fn(|k| f32::from_le_bytes([f[4 * k], f[4 * k + 1], f[4 * k + 2], f[4 * k + 3]]))).collect();
-        if camera.is_empty() {
-            bail!("ending {ending}: an empty camera path");
+        let u32_at = |o: usize| cam.get(o..o.checked_add(4)?).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
+        // a path: u32 frames, then 7 floats a frame; the EMBU's file: u32 paths, their offsets, the paths
+        let path = |o: usize| -> Vec<[f32; 7]> {
+            let n = u32_at(o).unwrap_or(0) as usize;
+            let frames = cam.get(o + 4..).unwrap_or_default().as_chunks::<28>().0;
+            frames.iter().take(n).map(|f| std::array::from_fn(|k| f32::from_le_bytes([f[4 * k], f[4 * k + 1], f[4 * k + 2], f[4 * k + 3]]))).collect()
+        };
+        let cameras = match ending {
+            Some(_) => vec![path(0)],
+            None => (0..u32_at(0).unwrap_or(0).min(64) as usize).map(|k| path(u32_at(4 + 4 * k).unwrap_or(u32::MAX) as usize)).collect(),
+        };
+        if cameras.iter().any(Vec::is_empty) || cameras.is_empty() {
+            bail!("{}: an empty camera path", d.camera);
         }
         Ok(Self {
             ending,
@@ -152,11 +191,14 @@ impl EndingScene {
             characters,
             records,
             script: d.script.clone(),
-            camera,
+            cameras,
+            path: 0,
             camera_at: (0, 0),
             next: 0,
             c: -1,
             slots: [(None, 0); 2],
+            ranges: [None; 2],
+            music: None,
             black: Fade { from: 255, to: 255, at: 0, len: 1 },
             white: Fade::default(),
             done: false,
@@ -180,11 +222,15 @@ impl EndingScene {
         }
         self.c += 1;
         let c = self.c;
-        while let Some(&[frame, op, a, b, _]) = self.script.get(self.next) {
+        while let Some(&[frame, op, a, b, last]) = self.script.get(self.next) {
             if frame > c {
                 break;
             }
             self.next += 1;
+            if self.ending.is_none() {
+                self.embu_op(op, a, b, last);
+                continue;
+            }
             match op {
                 0 | 1 => self.slots[op as usize].0 = usize::try_from(a).ok().filter(|&m| m < self.characters.len()),
                 2 | 3 => self.slots[op as usize - 2].1 = a.max(0) as usize,
@@ -197,7 +243,36 @@ impl EndingScene {
                 _ => {}
             }
         }
-        self.done |= self.camera_frame() >= self.camera.len() || c >= MAX_FRAMES;
+        let ending = self.ending.is_some() && self.camera_frame() >= self.frames().len();
+        self.done |= ending || c >= MAX_FRAMES;
+    }
+
+    /// An EMBU record (0x3A9E48): cast member a into slot 0 / 1 (14: slot 0, as it plays), slot 0 / 1 plays track a
+    /// from frame b to `last`, camera path a from frame b, white from / to over a frames, the music, the end.
+    fn embu_op(&mut self, op: i32, a: i32, b: i32, last: i32) {
+        let c = self.c;
+        // (0x3A9E94: a member past the six is the first)
+        let member = usize::try_from(a).ok().filter(|&m| m < self.characters.len()).or(Some(0));
+        match op {
+            0 | 1 => (self.slots[op as usize].0, self.ranges[op as usize]) = (member, None),
+            14 => self.slots[0].0 = member,
+            2 | 3 => {
+                let s = op as usize - 2;
+                self.slots[s].1 = a.max(0) as usize;
+                self.ranges[s] = Some((c, b, last));
+            }
+            4 => (self.path, self.camera_at) = (usize::try_from(a).unwrap_or(0).min(self.cameras.len() - 1), (c, b)),
+            5 => self.white = Fade { from: 255, to: 0, at: c, len: a },
+            6 => self.white = Fade { from: self.white.level(c) as i32, to: 255, at: c, len: a },
+            13 => self.music = Some(1),
+            -1 => self.done = true,
+            _ => {}
+        }
+    }
+
+    /// The camera path playing.
+    fn frames(&self) -> &[[f32; 7]] {
+        self.cameras.get(self.path).map_or(&[], Vec::as_slice)
     }
 
     /// Black over the picture (fades in and out), then white (flashes), 0..=255.
@@ -210,13 +285,22 @@ impl EndingScene {
         let (m, track) = self.slots.get(s).copied()?;
         let m = m?;
         let ch = self.characters.get(m)?;
-        let clip = ch.clip(&format!("ending_{:02}_{track}", self.ending))?;
-        Some((m, ch.pose(clip, self.camera_frame(), false), Mat4::IDENTITY))
+        let (clip, frame) = match self.ending {
+            Some(e) => (ch.clip(&format!("ending_{e:02}_{track}"))?, self.camera_frame()),
+            // (the EMBU's slot is drawn only while its range plays)
+            None => {
+                let (at, from, to) = self.ranges.get(s).copied().flatten()?;
+                let f = from + self.c - at;
+                (ch.clip(&format!("embu_{track}"))?, usize::try_from(f).ok().filter(|_| f <= to)?)
+            }
+        };
+        Some((m, ch.pose(clip, frame, false), Mat4::IDENTITY))
     }
 
     /// The camera: eye and target in metres (y up), and the vertical field of view.
     pub fn camera(&self) -> (Vec3, Vec3, f32) {
-        let f = self.camera[self.camera_frame().min(self.camera.len() - 1)];
+        let path = self.frames();
+        let Some(&f) = path.get(self.camera_frame().min(path.len().saturating_sub(1))) else { return (Vec3::ZERO, Vec3::Z, 1.0) };
         let to_m = |x: f32, y: f32, z: f32| Vec3::new(x, -y, -z) / UNITS;
         // H on Tekken Tag's 512-pixel-wide screen, as its fight camera's (crate::view_camera takes Tekken 3's 368)
         let h = (f[6] * 368.0 / 512.0) as i64;

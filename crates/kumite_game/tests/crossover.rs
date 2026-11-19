@@ -395,7 +395,7 @@ fn force_under_tekken_tag() {
     for code in f["constants"]["countdown"]["codes"].as_array().unwrap().iter().chain([&f["constants"]["chicken"]["sfx"], &f["constants"]["tally"]["sfx"]]) {
         assert!(s.system(code.as_u64().unwrap() as u16).is_some_and(|x| kumite_fs::exists(&x.file)), "Force sound {code}");
     }
-    assert!(s.music(f["constants"]["final"]["bgm"].as_u64().unwrap() as usize).is_some_and(|m| kumite_fs::exists(m.0)));
+    assert!(s.music(f["constants"]["final"]["bgm"].as_u64().unwrap() as usize).is_some_and(|m| kumite_fs::exists(&m.file)));
     for player in [PAUL, JIN] {
         let r = force_stage(&a, player, false, 60 * 60 * 3);
         eprintln!(
