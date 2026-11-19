@@ -95,6 +95,6 @@ fn the_end_cameras_random_is_the_ps2s() {
     let mut c = FightCamera::new(Arc::new(CameraData::provisional().unwrap()), false, 0, true);
     c.lcg = 41;
     let x = 42u32.wrapping_mul(69069);
-    assert_eq!(c.end_random(0xE3), i64::from(x >> 16) * 0xE3 >> 16);
+    assert_eq!(c.end_random(0xE3), (i64::from(x >> 16) * 0xE3) >> 16);
     assert_eq!(c.lcg, x);
 }
