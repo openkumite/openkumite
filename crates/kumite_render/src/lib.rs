@@ -56,6 +56,10 @@ pub struct Particles<'a> {
     /// sort them back to front).
     pub flat_alpha: &'a [StaticVertex],
     pub flat_add: &'a [StaticVertex],
+    /// Textured quads as the PS2's GS draws them (Tekken Tag's arenas' particles): blended by the texture's alpha
+    /// times the colour's / adding the texture times the colour, nothing cut away (drawn last).
+    pub soft_alpha: &'a [StaticVertex],
+    pub soft_add: &'a [StaticVertex],
 }
 
 /// A captured frame: tightly packed RGBA8.
@@ -406,6 +410,8 @@ pub struct Renderer {
     line_pipeline: wgpu::RenderPipeline,
     particle_alpha: wgpu::RenderPipeline,
     particle_add: wgpu::RenderPipeline,
+    soft_alpha: wgpu::RenderPipeline,
+    soft_add: wgpu::RenderPipeline,
     /// A white texel for the untextured particles.
     white: Option<Arc<Texture>>,
     adapter_name: String,
@@ -650,6 +656,8 @@ impl Renderer {
         let particle_alpha = make("particles alpha", &static_layout, "vs_static", "fs_particle_alpha", &static_vb, false, true, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
         let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
         let particle_add = make("particles add", &static_layout, "vs_static", "fs_particle_add", &static_vb, false, true, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
+        let soft_alpha = make("particles soft alpha", &static_layout, "vs_static", "fs_particle_soft_alpha", &static_vb, false, true, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
+        let soft_add = make("particles soft add", &static_layout, "vs_static", "fs_particle_soft_add", &static_vb, false, true, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
         // shadows: opaque, depth-tested against the stage (the original sorts them behind what stands nearer), never
         // written
         let shade = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::SrcAlpha, operation: wgpu::BlendOperation::Add };
@@ -751,6 +759,8 @@ impl Renderer {
             line_pipeline,
             particle_alpha,
             particle_add,
+            soft_alpha,
+            soft_add,
             white: None,
             adapter_name,
             device_type: info.device_type,
@@ -1209,7 +1219,7 @@ impl Renderer {
             .unwrap_or_default();
         let particle_bufs: Vec<(&wgpu::RenderPipeline, wgpu::Buffer, u32)> = particles
             .map(|p| {
-                [(&self.particle_alpha, p.alpha), (&self.particle_add, p.additive)]
+                [(&self.particle_alpha, p.alpha), (&self.particle_add, p.additive), (&self.soft_alpha, p.soft_alpha), (&self.soft_add, p.soft_add)]
                     .into_iter()
                     .filter(|(_, v)| !v.is_empty())
                     .map(|(pipe, v)| (pipe, self.buffer(bytemuck::cast_slice(v), wgpu::BufferUsages::VERTEX), v.len() as u32))

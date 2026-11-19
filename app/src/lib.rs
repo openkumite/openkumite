@@ -194,6 +194,8 @@ struct Scene {
     people: Vec<Person>,
     /// And its lens flare (stages.json `flare`).
     flare: Option<Flare>,
+    /// And its weather (stages.json `weather`: smoke, steam, wisps, beacons), a frame on each 60 Hz step.
+    weather: Option<kumite_game::weather::Weather>,
     /// The eye as it was last drawn (m: what the stage's objects that face the camera turn to).
     eye: glam::Vec3,
 }
@@ -247,9 +249,9 @@ impl Flare {
 struct Person {
     character: Arc<kumite_assets::Character>,
     model: SkinnedModel,
-    place: glam::Mat4,
-    clips: Vec<usize>,
-    start: u64,
+    /// Its clip of each motion it may play, and its script as it runs.
+    clips: HashMap<usize, usize>,
+    walker: kumite_game::crowd::Walker,
 }
 
 /// The attract embu running: the scene and, per slot, a GPU mesh for every cast model.
@@ -723,20 +725,12 @@ impl Scene {
                 }
             }
         }
-        // the background characters: their clips one after another, round and round
+        // the background characters where their scripts have them
         for p in &self.people {
-            let ch = &p.character;
-            let lens: Vec<u64> = p.clips.iter().map(|&c| ch.clips.get(c).map_or(1, |c| c.frames.max(1) as u64)).collect();
-            let mut f = (frame + p.start) % lens.iter().sum::<u64>().max(1);
-            let mut clip = 0;
-            for (&c, &n) in p.clips.iter().zip(&lens) {
-                clip = c;
-                if f < n {
-                    break;
-                }
-                f -= n;
-            }
-            r.update_bones(&p.model, &ch.skin_matrices(&ch.pose(clip, f as usize, false), p.place));
+            let Some((motion, f, at, heading)) = p.walker.now() else { continue };
+            let Some(&clip) = p.clips.get(&motion) else { continue };
+            let place = glam::Mat4::from_rotation_translation(glam::Quat::from_rotation_y(heading.to_radians()), at);
+            r.update_bones(&p.model, &p.character.skin_matrices(&p.character.pose(clip, f, false), place));
         }
     }
 }
@@ -1316,6 +1310,7 @@ impl App {
             blob: None,
             people: vec![],
             flare: None,
+            weather: None,
             eye: glam::Vec3::ZERO,
         };
         // the arcade game's stage in its place, when the arcade pack has one and the setting asks for it
@@ -1327,6 +1322,7 @@ impl App {
         if arcade.is_none() {
             scene.people = self.people(r, stage);
             scene.flare = self.flare(stage);
+            scene.weather = self.stage_json(stage).and_then(|s| kumite_game::weather::Weather::new(&s["weather"]));
         }
         match arcade.unwrap_or_else(|| self.assets.stage(stage)) {
             Ok(st) => {
@@ -1399,11 +1395,11 @@ impl App {
     }
 
     /// Stage `stage`'s background characters (stages.json `people`, Tekken Tag's 0x114FC8): each one's model
-    /// `stages/stage_NN_pK.glb` with the clips of `stage_NN_mK.glb` it plays, standing at `at` (m), turned `heading`
-    /// degrees about y. One whose files are missing or bad is left out (logged).
+    /// `stages/stage_NN_pK.glb` with the clips of `stage_NN_mK.glb` it plays, run by its script
+    /// (`kumite_game::crowd`). One whose files are missing or bad is left out (logged).
     fn people(&self, r: &Renderer, stage: usize) -> Vec<Person> {
-        let json: serde_json::Value = kumite_fs::read(&self.assets.root.join("gamedata/stages.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let Some(list) = json["stages"].as_array().into_iter().flatten().find(|s| s["id"].as_u64() == Some(stage as u64)).and_then(|s| s["people"].as_array()) else { return vec![] };
+        let Some(json) = self.stage_json(stage) else { return vec![] };
+        let Some(list) = json["people"].as_array() else { return vec![] };
         let mut models: std::collections::BTreeMap<u64, Option<Arc<kumite_assets::Character>>> = Default::default();
         let mut out = vec![];
         for p in list {
@@ -1424,24 +1420,30 @@ impl App {
                 Some(Arc::new(ch))
             });
             let Some(ch) = ch.clone() else { continue };
-            let clips: Vec<usize> = motions.iter().filter_map(|m| ch.clip(&format!("stage_{stage:02}_m{m}"))).collect();
+            let clips: HashMap<usize, usize> = motions.iter().filter_map(|&m| Some((m as usize, ch.clip(&format!("stage_{stage:02}_m{m}"))?))).collect();
             if clips.is_empty() {
                 continue;
             }
-            let f = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32;
-            let at = glam::Vec3::new(f(&p["at"][0]), f(&p["at"][1]), f(&p["at"][2]));
-            let place = glam::Mat4::from_rotation_translation(glam::Quat::from_rotation_y(f(&p["heading"]).to_radians()), at);
+            // (each its own random numbers, the same each time the arena loads)
+            let walker = kumite_game::crowd::Walker::new(p, &json["walk"], out.len() as u32 + 1);
             let verts: Vec<SkinVertex> = ch.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal }).collect();
             let model = r.skinned(&verts, &ch.indices, ch.blend_from, r.texture(ch.texture.width, ch.texture.height, &ch.texture.rgba));
-            out.push(Person { character: ch, model, place, clips, start: p["start"].as_u64().unwrap_or(0) });
+            out.push(Person { character: ch, model, clips, walker });
         }
         out
     }
 
+    /// Stage `stage`'s entry of stages.json, when it has one.
+    fn stage_json(&self, stage: usize) -> Option<serde_json::Value> {
+        let mut json: serde_json::Value = kumite_fs::read(&self.assets.root.join("gamedata/stages.json")).ok().and_then(|b| serde_json::from_slice(&b).ok())?;
+        let list = json["stages"].as_array_mut()?;
+        let k = list.iter().position(|s| s["id"].as_u64() == Some(stage as u64))?;
+        Some(list.swap_remove(k))
+    }
+
     /// Stage `stage`'s lens flare (stages.json `flare`), when it has one.
     fn flare(&self, stage: usize) -> Option<Flare> {
-        let json: serde_json::Value = kumite_fs::read(&self.assets.root.join("gamedata/stages.json")).ok().and_then(|b| serde_json::from_slice(&b).ok())?;
-        let f = &json["stages"].as_array()?.iter().find(|s| s["id"].as_u64() == Some(stage as u64))?["flare"];
+        let f = &self.stage_json(stage)?["flare"];
         let n = |v: &serde_json::Value| v.as_f64().map(|x| x as f32);
         let discs = f["discs"].as_array()?.iter().filter_map(|d| Some((d[0].as_u64()? as usize, n(&d[1])?, n(&d[2])?))).collect();
         Some(Flare { sun: glam::Vec3::new(n(&f["sun"][0])?, n(&f["sun"][1])?, n(&f["sun"][2])?), strength: n(&f["strength"])?, discs })
@@ -1555,6 +1557,13 @@ impl App {
     fn step(&mut self) {
         if let Some(s) = self.scene.as_mut() {
             s.frame += 1;
+            if let Some(w) = s.weather.as_mut() {
+                w.step();
+            }
+            for p in &mut s.people {
+                let (ch, clips) = (&p.character, &p.clips);
+                p.walker.step(|m| clips.get(&m).and_then(|&c| ch.clips.get(c)).map_or(1, |c| c.frames.max(1) as i32));
+            }
         }
         // a save that failed (a full disk, the browser's storage full): the player is told, once each time
         if let Some(why) = save::take_failure() {
@@ -5299,7 +5308,7 @@ impl App {
         // the arena's background characters wherever it is drawn
         let mut models = models;
         if let (Some(s), false) = (self.scene.as_ref(), statics.is_empty()) {
-            models.extend(s.people.iter().map(|p| &p.model));
+            models.extend(s.people.iter().filter(|p| p.walker.now().is_some()).map(|p| &p.model));
         }
         // ... and its lens flare, dimmed by the fighters before the sun
         // shortcut: the fighters' roots and 0.6 m above them stand for the two points of each the PS2 tests (player
@@ -5317,9 +5326,13 @@ impl App {
         // an arcade stage's sky, behind everything
         r.backdrop = self.scene.as_ref().filter(|_| !sky.is_empty()).map_or_else(Vec::new, |s| sky_backdrop(&cam, s));
         // effect sprites, as quads facing the camera
-        let (mut p_alpha, mut p_add) = (Vec::new(), Vec::new());
+        let (mut p_alpha, mut p_add, mut soft_alpha, mut soft_add) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         if let (Some(v), true) = (self.vfx.as_ref(), self.fight.is_some() || self.embu.is_some() || self.tag.is_some()) {
             effect_quads(&v.sprites(), v.atlas(), &cam, &mut p_alpha, &mut p_add);
+            // (the arena's weather where its stage is drawn)
+            if let Some(w) = self.scene.as_ref().filter(|_| !statics.is_empty()).and_then(|s| s.weather.as_ref()) {
+                effect_quads(&w.sprites(), v.atlas(), &cam, &mut soft_alpha, &mut soft_add);
+            }
         }
         // the projection the renderer uses, for texts at 3D positions
         {
@@ -5339,7 +5352,15 @@ impl App {
             ballview::draw(b, data, &self.roster.ball_hud["court_lines"], &cam, self.frames, shade, &mut flat_alpha, &mut flat_add);
         }
         let effects_tex = self.scene.as_ref().and_then(|s| s.effects.clone());
-        let particles = effects_tex.as_deref().map(|texture| kumite_render::Particles { texture, alpha: &p_alpha, additive: &p_add, flat_alpha: &flat_alpha, flat_add: &flat_add });
+        let particles = effects_tex.as_deref().map(|texture| kumite_render::Particles {
+            texture,
+            alpha: &p_alpha,
+            additive: &p_add,
+            flat_alpha: &flat_alpha,
+            flat_add: &flat_add,
+            soft_alpha: &soft_alpha,
+            soft_add: &soft_add,
+        });
         let t = Instant::now();
         let size = r.size();
         // what the replays' list asked for (a click), and the video's options and panel

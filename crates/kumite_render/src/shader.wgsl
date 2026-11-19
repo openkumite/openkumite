@@ -334,6 +334,19 @@ fn fs_particle_alpha(i: VsOut) -> @location(0) vec4<f32> {
     return vec4(t.rgb * i.color.rgb, i.color.a);
 }
 
+// Tekken Tag's arenas' particles as the GS draws them (texture x vertex colour, ALPHA 0x44 by its alpha, or added)
+@fragment
+fn fs_particle_soft_alpha(i: VsOut) -> @location(0) vec4<f32> {
+    let t = textureSample(tex, samp, i.uv);
+    return vec4(t.rgb * i.color.rgb, t.a * i.color.a);
+}
+
+@fragment
+fn fs_particle_soft_add(i: VsOut) -> @location(0) vec4<f32> {
+    let t = textureSample(tex, samp, i.uv);
+    return vec4(t.rgb * i.color.rgb, 0.0);
+}
+
 // Tekken Tag's stage strips (the GS's ALPHA 0x48 and 0x89): lights and gloss add Cs x As; painted shadows and dirt
 // multiply what is behind by As (vertex alpha x texture alpha, 0x80 = 1).
 @fragment
