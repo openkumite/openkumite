@@ -2566,8 +2566,8 @@ fn quick_select(d: &Data, p: &Progress) -> bool {
 /// out under the plates (0x3BE8C0).
 fn draw_quick_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, mode: u32) {
     let q = &d.raw["select"]["quick"];
-    let t = &q["titles"][mode as usize];
-    chrome(painter, v, art, d, t[0].as_str().unwrap_or_default(), ((W - num(&t[1])) / 2.0).floor(), num(&q["title_y"]), Some(int(&t[2])), num(&q["title_size"]));
+    let (text, t) = (d.raw["select"]["titles"][mode as usize].as_str().unwrap_or_default(), &q["titles"][mode as usize]);
+    chrome(painter, v, art, d, text, ((W - num(&t[0])) / 2.0).floor(), num(&q["title_y"]), Some(int(&t[1])), num(&q["title_size"]));
     let (l, one) = (&q["line"], matches!(mode, ONE_ARCADE | ONE_VS));
     let points = q[if mode == TEAM { "team_lines" } else { "lines" }].as_array().cloned().unwrap_or_default();
     let on = Color32::from_white_alpha((int(&l["alpha"]) * 255 / 128).min(255) as u8);
