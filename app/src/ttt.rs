@@ -314,7 +314,7 @@ impl Progress {
 pub type Team = Vec<(usize, usize)>;
 
 /// A mode's run: who fights, the ladder, the score.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Run {
     /// The main menu id.
     pub mode: u32,

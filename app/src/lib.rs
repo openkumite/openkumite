@@ -950,15 +950,14 @@ impl App {
             }
         }
         // every match of a mode with rounds is recorded (its inputs on the bout's tape), saved as a replay at its end
-        // (shortcut: not a Tekken Tag tag battle: a replay does not keep the partners; upgrade: replays keep them)
-        let recordable = matches!(setup.as_ref().map(|s| s.mode), Some(Mode::Arcade | Mode::Versus | Mode::TeamBattle | Mode::TimeAttack | Mode::Survival | Mode::Ball | Mode::ExtraLevels))
-            && ttt.as_ref().is_none_or(|r| r.bench().is_none());
+        // (a Tekken Tag match with its run: both teams)
+        let recordable = matches!(setup.as_ref().map(|s| s.mode), Some(Mode::Arcade | Mode::Versus | Mode::TeamBattle | Mode::TimeAttack | Mode::Survival | Mode::Ball | Mode::ExtraLevels));
         self.replay_rec = None;
         if let (None, true, Some(s)) = (replaying, recordable, setup.as_ref()) {
             bout.tape = Some(Default::default());
             let params =
                 replay::MatchParams { rounds, round_frames, max_health, start_health, cpu: [bout.cpu[0].is_some(), bout.cpu[1].is_some()], interlude_check: bout.interlude_check, counters, copy_seed };
-            let game = replay::Match::Fight { setup: s.clone(), params, ladder: ladder.clone() };
+            let game = replay::Match::Fight { setup: s.clone(), params, ladder: ladder.clone(), ttt: ttt.clone() };
             self.replay_rec = Some(ReplayRec { game, online: self.net.is_some() || self.room.is_some() });
         }
         log::info!("{:?} fight {} vs {} on stage {stage} loaded in {:.0} ms", setup.as_ref().map(|s| s.mode), names[0], names[1], t.elapsed().as_secs_f32() * 1000.0);
@@ -2204,7 +2203,10 @@ impl App {
         (self.debug.paused, self.debug.speed, self.debug.free_cam) = (false, 1.0, None);
         self.replay_joins.clear();
         match game {
-            replay::Match::Fight { setup, ladder, .. } => self.load_fight(setup, ladder),
+            replay::Match::Fight { setup, ladder, ttt, .. } => {
+                self.ttt_run = ttt;
+                self.load_fight(setup, ladder);
+            }
             replay::Match::Tag { setup, stage } => {
                 self.replay_tag_stage = Some(self.tag_stage);
                 self.tag_stage = Some(stage);
@@ -2322,7 +2324,7 @@ impl App {
         let Some(v) = self.replay_view.take() else { return };
         kumite_game::bout::set_counters(v.counters_before);
         (self.debug.paused, self.debug.speed, self.debug.free_cam) = (false, 1.0, None);
-        (self.fight, self.scene, self.tag, self.force) = (None, None, None, None);
+        (self.fight, self.scene, self.tag, self.force, self.ttt_run) = (None, None, None, None, None);
         if let Some(stage) = self.replay_tag_stage.take() {
             self.tag_stage = stage;
         }
@@ -7311,6 +7313,8 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             }
             return Ok(());
         }
+        // Tekken Tag's main menu (--keys go on from it)
+        Some("ttt-menu") => app.screen = Some(Screen::Ttt(Box::new(ttt::Front::menu()))),
         // Tekken Tag's ending (--variant E, --costume N; --roll: the staff roll first), or its EMBU (--variant: the
         // cast), N frames in
         Some(which @ ("ttt-ending" | "ttt-embu")) => {
