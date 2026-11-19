@@ -958,6 +958,15 @@ pub const CONTINUE_FRAMES: u32 = 808;
 pub const CONTINUE_STEP: u32 = 90;
 const GAME_OVER_FRAMES: u32 = 120;
 
+/// Back from OpenKumite's GRAPHICS (`cursor` 1) or KEY CONFIGURATION (2) to OPTIONS: Tekken Tag's on its ADJUST
+/// DISPLAY or CONTROLLER SETUP entry.
+fn options_back(roster: &Roster, cursor: usize, difficulty: usize) -> Screen {
+    match roster.ttt {
+        Some(_) => Screen::Ttt(Box::new(crate::ttt::Front::options(cursor == 2))),
+        None => Screen::Options { frame: 0, cursor, difficulty },
+    }
+}
+
 pub enum Screen {
     Title {
         frame: u32,
@@ -1454,8 +1463,7 @@ impl Screen {
                     return o;
                 }
                 if g.done {
-                    let d = g.difficulty;
-                    *self = Screen::Options { frame: 0, cursor: 1, difficulty: d };
+                    *self = options_back(roster, 1, g.difficulty);
                 }
             }
             Screen::KeyConfig(k) => {
@@ -1463,8 +1471,7 @@ impl Screen {
                     return o;
                 }
                 if k.done {
-                    let d = k.difficulty;
-                    *self = Screen::Options { frame: 0, cursor: 2, difficulty: d };
+                    *self = options_back(roster, 2, k.difficulty);
                 }
             }
             Screen::Ttt(f) => return f.key(player, key, roster, seed),

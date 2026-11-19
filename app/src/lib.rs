@@ -383,6 +383,8 @@ struct Fight {
     pause: Option<(usize, usize)>,
     /// Ball's rules card is open (the pause menu's RULES).
     rules: bool,
+    /// Tekken Tag's RESET? window is open: YES chosen.
+    reset: Option<bool>,
     /// Practice mode: its menu, dummy and attack data.
     practice: Option<practice::Practice>,
     /// What the fight's sounds go by (a replay's seek copies keep it).
@@ -1043,6 +1045,7 @@ impl App {
             info,
             pause: None,
             rules: false,
+            reset: None,
             practice,
             heard: Heard { last_moves, ..Default::default() },
             banks,
@@ -4140,6 +4143,7 @@ impl App {
             info,
             pause: None,
             rules: false,
+            reset: None,
             practice: None,
             heard: Heard::default(),
             banks,
@@ -4911,6 +4915,16 @@ impl App {
             }
             return true;
         }
+        // Tekken Tag's pause menu (0x3B7B98): its entries and RESET?
+        if let Some(d) = self.roster.ttt.as_deref().filter(|_| fight.pause.is_some() && !ball) {
+            if ttt::pause_key(d, &mut fight.pause, &mut fight.reset, key) {
+                if let Some(a) = self.audio.as_mut() {
+                    a.duck(false);
+                }
+                self.soft_reset();
+            }
+            return true;
+        }
         // (online: no pause, the other side's fight goes on)
         let online = self.net.is_some();
         match (&mut fight.pause, key) {
@@ -5493,6 +5507,10 @@ impl App {
                         }
                         if let (Some(_), true) = (f.pause, f.rules) {
                             draw_rules(ctx, art);
+                        } else if let (Some((c, player)), Some(d), None) = (f.pause, roster.ttt.as_deref(), f.bout.game.ball.as_ref()) {
+                            let view = art::Screen::fit(ctx.content_rect());
+                            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("pause"))).with_clip_rect(view.rect);
+                            ttt::draw_pause(&painter, &view, art, d, c, player, f.reset, frames as u32);
                         } else if let Some((c, player)) = f.pause {
                             let ball = f.bout.game.ball.is_some();
                             // (no ball_items: the usual items)
