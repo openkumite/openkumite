@@ -227,6 +227,8 @@ pub struct Vfx {
     pub bursts: Vec<Burst>,
     /// The hit light: colour and frames left (0x80039F0C), and where it is.
     pub light: Option<([f32; 3], u32, Vec3)>,
+    /// The last step's landings and ground impacts (m: the roots), for an arena's leaves.
+    pub landings: Vec<Vec3>,
     /// Camera shake scripts (camera.json `shake`: pitch offsets per frame).
     scripts: Vec<Vec<i32>>,
     shake: Option<(usize, usize)>,
@@ -269,6 +271,7 @@ impl Vfx {
             particles: Vec::new(),
             bursts: Vec::new(),
             light: None,
+            landings: vec![],
             scripts,
             shake: None,
             seed: 1,
@@ -485,6 +488,7 @@ impl Vfx {
         node: &dyn Fn(usize, &str) -> Option<usize>,
     ) {
         self.advance();
+        self.landings.clear();
         let Some(data) = self.data.clone() else { return };
         for h in hits {
             let pos = h.point / UNITS;
@@ -511,7 +515,10 @@ impl Vfx {
             for e in &f.effects {
                 match *e {
                     MoveEffect::Shake(n) => self.shake = Some((n as usize, 0)),
-                    MoveEffect::GroundImpact | MoveEffect::LandingImpact => self.ground(f.root() / UNITS),
+                    MoveEffect::GroundImpact | MoveEffect::LandingImpact => {
+                        self.landings.push(f.root() / UNITS);
+                        self.ground(f.root() / UNITS);
+                    }
                     MoveEffect::AtBone { op, slot } => {
                         let Some(p) = self.slots_joints.get(slot as usize).and_then(|name| node(i, name)).and_then(|n| at(i, n)) else { continue };
                         match op {
@@ -659,6 +666,7 @@ mod tests {
             particles: vec![],
             bursts: vec![],
             light: None,
+            landings: vec![],
             scripts: vec![],
             shake: None,
             seed: 1,

@@ -2,10 +2,17 @@
 //! `objects`; the converter's EFFECTS.md 7): Nina's helicopter, which waits on its pad until it has been out of sight
 //! long enough, takes off, flies off and lands again nearby (0x3D62A0); the 40 cars and people of her lanes under the
 //! grating, kept within reach of the camera (0x3D5B58, 0x3D5E80); King's ten drifting groups of four clouds
-//! (0x3D4830, 0x3D4B18). The objects' places in their parents (metres) and brightness, by node name (`object_K`),
-//! replace what the stage's animation says. Drawn only: their own random numbers.
+//! (0x3D4830, 0x3D4B18); Law-A's lanterns swaying in the arena's wind (0x3D7AB0) and its 40 leaves, lying, blown up
+//! by a fighter's landing and falling again, with their shadows (0x3D7378, 0x3D7110). The objects' places in their
+//! parents (metres), brightness and shear, by node name (`object_K`), replace what the stage's animation says. Drawn
+//! only: their own random numbers.
 
-use glam::{EulerRot, Mat4, Quat, Vec3};
+use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
+
+/// The length of (x, z).
+fn flat_len(x: f32, z: f32) -> f32 {
+    (x * x + z * z).sqrt()
+}
 use serde_json::Value;
 
 fn f(v: &Value) -> f32 {
@@ -45,6 +52,17 @@ struct Cloud {
     members: Vec<(usize, [f32; 6])>,
 }
 
+/// A leaf (0x3D7378): its place (mm), turn (x, y, z; drawn Rx Ry Rz), state (0 lying, 1 blown up, 2 falling), its
+/// count and blow's length and push (mm a frame, x and z).
+struct Leaf {
+    at: Vec3,
+    turn: Vec3,
+    state: u8,
+    count: i32,
+    length: i32,
+    push: [f32; 2],
+}
+
 /// An arena's moving objects as they are now.
 pub struct ArenaMotion {
     heli: Option<Helicopter>,
@@ -54,14 +72,69 @@ pub struct ArenaMotion {
     l: Value,
     clouds: Vec<Cloud>,
     c: Value,
+    /// Law-A's lanterns (name, lattice size mm, heading), their wind; the leaves, their table and the light the
+    /// shadows fall along (towards it).
+    lanterns: Vec<(String, f32, f32, Vec3)>,
+    wind: Option<crate::weather::Wind>,
+    gain: f32,
+    leaves: Vec<Leaf>,
+    lv: Value,
+    light: Vec3,
     frame: u32,
     seed: u32,
 }
 
 impl ArenaMotion {
-    /// The arena's `objects` (stages.json), the helicopter's place and turn in its parent as the stage stands (m).
-    pub fn new(v: &Value, rest: impl Fn(&str) -> Option<(Vec3, Quat)>) -> Option<Self> {
-        let mut me = Self { heli: None, lanes: vec![], cars: vec![], l: v["lanes"].clone(), clouds: vec![], c: v["clouds"].clone(), frame: 0, seed: 0x1234 };
+    /// The arena's entry of stages.json (its `objects`, its light 0), an object's place in the stage as it stands
+    /// (m).
+    pub fn new(stage: &Value, rest: impl Fn(&str) -> Option<Mat4>) -> Option<Self> {
+        let v = &stage["objects"];
+        let t = &stage["lights"]["toward"][0];
+        let light = Vec3::new(f(&t[0]), f(&t[1]), f(&t[2]));
+        let mut me = Self {
+            heli: None,
+            lanes: vec![],
+            cars: vec![],
+            l: v["lanes"].clone(),
+            clouds: vec![],
+            c: v["clouds"].clone(),
+            lanterns: vec![],
+            wind: None,
+            gain: f(&v["lanterns"]["gain"]),
+            leaves: vec![],
+            lv: v["leaves"].clone(),
+            light,
+            frame: 0,
+            seed: 0x1234,
+        };
+        // Law-A's lanterns, where they stand in the stage
+        let la = &v["lanterns"];
+        for o in la["objects"].as_array().into_iter().flatten() {
+            let name = format!("object_{}", o[0].as_u64().unwrap_or(0));
+            if let Some(m) = rest(&name) {
+                me.lanterns.push((name, f(&o[1]).max(1.0), f(&o[2]), m.w_axis.truncate()));
+            }
+        }
+        if !me.lanterns.is_empty() {
+            me.wind = Some(crate::weather::Wind::new(&la["wind"]));
+        }
+        // the leaves (0x3D6BC0): within reach of the centre at random, a random heading
+        let lv = me.lv.clone();
+        for _ in 0..lv["count"].as_u64().unwrap_or(0).min(256) {
+            let heading = std::f32::consts::PI - me.rand01() * std::f32::consts::TAU;
+            let r = me.rand01() * f(&lv["reach"]);
+            let at = Quat::from_rotation_y(heading) * Vec3::new(r, 0.0, 0.0);
+            me.leaves.push(Leaf { at, turn: Vec3::new(0.0, heading, 0.0), state: 0, count: 0, length: 0, push: [0.0; 2] });
+        }
+        if me.wind.is_none() && !me.leaves.is_empty() {
+            me.wind = Some(crate::weather::Wind::new(&lv["wind"]));
+        }
+        let rest = |name: &str| {
+            rest(name).map(|m| {
+                let (_, q, at) = m.to_scale_rotation_translation();
+                (at, q)
+            })
+        };
         let h = &v["helicopter"];
         if let Some(k) = h["object"].as_u64() {
             let name = format!("object_{k}");
@@ -141,7 +214,7 @@ impl ArenaMotion {
             }
             me.clouds.push(Cloud { route, at, speed, members });
         }
-        (me.heli.is_some() || !me.cars.is_empty() || !me.clouds.is_empty()).then_some(me)
+        (me.heli.is_some() || !me.cars.is_empty() || !me.clouds.is_empty() || !me.lanterns.is_empty() || !me.leaves.is_empty()).then_some(me)
     }
 
     fn rand(&mut self) -> u32 {
@@ -153,8 +226,13 @@ impl ArenaMotion {
         (self.rand() & 0xFF_FFFF) as f32 / 16_777_216.0
     }
 
-    /// A frame on, the camera at `eye` (m) seeing through `view_proj`.
-    pub fn step(&mut self, eye: Vec3, view_proj: Mat4) {
+    /// A frame on, the camera at `eye` (m) seeing through `view_proj`, the fighters at `fighters` and the
+    /// landings of the last frame at `landings` (m).
+    pub fn step(&mut self, eye: Vec3, view_proj: Mat4, fighters: &[Vec3], landings: &[Vec3]) {
+        if let Some(w) = self.wind.as_mut() {
+            w.step();
+        }
+        self.leaves_step(fighters, landings);
         let r = [self.rand01(), self.rand01(), self.rand01(), self.rand01()];
         let coin = self.rand() & 1 == 1;
         if let Some(h) = self.heli.as_mut() {
@@ -197,6 +275,100 @@ impl ArenaMotion {
         }
     }
 
+    /// Law-A's leaves a frame on (0x3D7378).
+    fn leaves_step(&mut self, fighters: &[Vec3], landings: &[Vec3]) {
+        let lv = self.lv.clone();
+        let wrap = |a: f32| (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        let centre = if fighters.is_empty() { Vec3::ZERO } else { fighters.iter().sum::<Vec3>() / fighters.len() as f32 * 1000.0 };
+        for k in 0..self.leaves.len() {
+            let mut l = std::mem::replace(&mut self.leaves[k], Leaf { at: Vec3::ZERO, turn: Vec3::ZERO, state: 0, count: 0, length: 0, push: [0.0; 2] });
+            let wind = self.wind.as_ref().map_or(Vec3::ZERO, |w| w.at(l.at / 1000.0)) * 1000.0;
+            // a landing within 5 m and the leaf under 800 mm: blown up, harder nearer and lower
+            // shortcut: every landing at full strength (30: the PS2's is the landing's speed, player +0x122, not read)
+            for p in landings {
+                let c = *p * 1000.0;
+                let d = flat_len(l.at.x - c.x, l.at.z - c.z);
+                let (near, low, most) = (f(&lv["lift"][2]), f(&lv["lift"][1]), f(&lv["lift"][0]));
+                if d < near && l.at.y < low {
+                    let strength = 30.0;
+                    let k2 = (((near - d) / near) * ((low - l.at.y) / low)).powi(2).min(most);
+                    let away = Vec3::new(l.at.x - c.x, 0.0, l.at.z - c.z).normalize_or_zero() * (strength * 100.0 / 30.0 * k2);
+                    (l.state, l.count, l.length, l.push) = (1, 0, (strength / 30.0 * 60.0 * k2) as i32, [away.x, away.z]);
+                }
+            }
+            match l.state {
+                0 => {
+                    // lying: turned back flat (or face down) a little a frame, settling to the ground
+                    let rock = f(&lv["rock"]);
+                    let flip = |a: f32, lo: f32, hi: f32| if (a < 0.0 && a < lo) || (a >= 0.0 && a <= hi) { -rock } else { rock };
+                    l.turn.x = wrap(l.turn.x + flip(l.turn.x, f(&lv["flat"][0]), f(&lv["flat"][1])));
+                    l.turn.z = wrap(l.turn.z + flip(l.turn.z, f(&lv["flat"][0]), f(&lv["flat"][1])));
+                    if l.at.y > 0.0 {
+                        l.at.y -= f(&lv["settle"]);
+                    } else if l.at.y < 0.0 {
+                        l.at.y = 0.0;
+                    }
+                }
+                1 if l.count + 1 < l.length => {
+                    l.count += 1;
+                    let k = (l.length - l.count) as f32 / l.length.max(1) as f32;
+                    l.at += Vec3::new(l.push[0] * k, 50.0 * k, l.push[1] * k) + wind * f(&lv["blow"]);
+                    let r = [self.rand01(), self.rand01(), self.rand01()];
+                    for (a, (s, r)) in [&mut l.turn.x, &mut l.turn.y, &mut l.turn.z].into_iter().zip(lv["spin"].as_array().into_iter().flatten().zip(r)) {
+                        *a = wrap(*a + r * f(s));
+                    }
+                }
+                _ => {
+                    // falling, the flatter the slower, drifting along its heading
+                    l.state = 2;
+                    let r = [self.rand01(), self.rand01(), self.rand01()];
+                    let t = f(&lv["tumble"]);
+                    (l.turn.x, l.turn.y, l.turn.z) = (wrap(l.turn.x + r[0] * t), wrap(l.turn.y + r[1] * t), wrap(l.turn.z + r[2] * t));
+                    let tilt = |a: f32| {
+                        let a = a.abs();
+                        let a = if a > f(&lv["tilt"][0]) { f(&lv["tilt"][1]) - a } else { a };
+                        (a / f(&lv["tilt"][2])).powi(2)
+                    };
+                    let (mut fx, mut fz) = (tilt(l.turn.x), tilt(l.turn.z));
+                    let mut drop = fx * fz;
+                    if drop < f(&lv["drop"][1]) {
+                        drop = f(&lv["drop"][1]);
+                    } else if drop > f(&lv["drop"][2]) {
+                        drop = f(&lv["drop"][2]);
+                        fx += f(&lv["drop"][3]);
+                        fz += f(&lv["drop"][3]);
+                    }
+                    let v = Quat::from_rotation_y(l.turn.y) * Vec3::new(f(&lv["drift"]) * fx, -f(&lv["drop"][0]) * drop, f(&lv["drift"]) * fz);
+                    l.at += v + wind * f(&lv["blow"]);
+                    if l.at.y < f(&lv["land"]) {
+                        l.state = 0;
+                    }
+                }
+            }
+            // gone too far from the fighters: put back on the edge of reach
+            if flat_len(l.at.x - centre.x, l.at.z - centre.z) > f(&lv["reach"]) {
+                let a = std::f32::consts::PI - self.rand01() * std::f32::consts::TAU;
+                l.at = Quat::from_rotation_y(a) * Vec3::new(f(&lv["reach"]), 0.0, 0.0) + Vec3::new(centre.x, 0.0, centre.z);
+                l.state = 0;
+            }
+            self.leaves[k] = l;
+        }
+    }
+
+    /// Law-A's lanterns' shear (0x3D7AB0): each one's lattice (x, z +-s, y 0..s) has its top moved by the wind at it
+    /// (sampled at x, y, -z) times the gain, turned into its axes: a vertex moves that times its y / s.
+    pub fn shears(&self) -> Vec<(String, Vec3)> {
+        let Some(w) = self.wind.as_ref() else { return vec![] };
+        let gain = self.gain;
+        (self.lanterns.iter())
+            .map(|(name, s, heading, at)| {
+                let p = w.at(Vec3::new(at.x, at.y, -at.z)) * gain;
+                let (sin, cos) = heading.sin_cos();
+                (name.clone(), Vec3::new(cos * p.x - sin * p.z, 0.0, sin * p.x + cos * p.z) / (s / 1000.0))
+            })
+            .collect()
+    }
+
     /// The moved objects' places in their parents (m) and brightness (1 as drawn), by node name; `turn` the
     /// camera's turn about y.
     pub fn places(&self, turn: f32) -> Vec<(String, Mat4, f32)> {
@@ -225,6 +397,16 @@ impl ArenaMotion {
                     g.members.iter().find(|x| x.0 == m).map_or(Mat4::from_scale(Vec3::ZERO), |(_, a)| group * Mat4::from_translation(Vec3::new(a[4] * a[0].sin(), a[5] * a[1].sin(), 0.0) / 1000.0));
                 out.push((name, place, fade));
             }
+        }
+        // Law-A's leaves (Rx Ry Rz) and their shadows, flattened onto the ground along light 0 (0x3D7110)
+        let first = self.lv["first"].as_u64().unwrap_or(0) as usize;
+        let n = self.leaves.len();
+        let s = if self.light.y.abs() > 1e-3 { Vec3::new(-self.light.x / self.light.y, 0.0, -self.light.z / self.light.y) } else { Vec3::ZERO };
+        let flat = Mat4::from_cols(Vec4::X, Vec4::new(s.x, 0.0, s.z, 0.0), Vec4::Z, Vec4::new(0.0, 0.002, 0.0, 1.0));
+        for (k, l) in self.leaves.iter().enumerate() {
+            let m = Mat4::from_rotation_translation(Quat::from_euler(EulerRot::XYZ, l.turn.x, l.turn.y, l.turn.z), l.at / 1000.0);
+            out.push((format!("object_{}", first + k), m, 1.0));
+            out.push((format!("object_{}", first + n + k), flat * m, 1.0));
         }
         let y = f(&self.l["y"]);
         for c in &self.cars {
@@ -334,18 +516,18 @@ mod tests {
         let v = json!({"helicopter": {"object": 1, "bob": 0.0316, "wait": 600, "pitch": [0.26, 0.26], "veer": [0.52, 1.05, 0.52, 1.05],
             "rise": 450.0, "ease": 330.0, "swing": 0.0035, "top": 50000.0, "back": [0.87, 1.75], "land": [2000.0, 4000.0, 14000.0, 5000.0],
             "swing_down": 0.0005, "settle": [120.0, 30.0, 3.0, 6.0]}});
-        let mut m = ArenaMotion::new(&v, |_| Some((Vec3::new(0.0, 0.4, 14.0), Quat::IDENTITY))).unwrap();
+        let mut m = ArenaMotion::new(&json!({"objects": v}), |_| Some(Mat4::from_translation(Vec3::new(0.0, 0.4, 14.0)))).unwrap();
         // in sight: it waits
         let seen = Mat4::IDENTITY * Mat4::from_scale(Vec3::splat(0.01));
         for _ in 0..700 {
-            m.step(Vec3::ZERO, seen);
+            m.step(Vec3::ZERO, seen, &[], &[]);
         }
         assert_eq!(m.heli.as_ref().unwrap().state, 0);
         // out of sight: up after 600 frames, gone past 50 m, down and landed
         let away = Mat4::from_translation(Vec3::new(100.0, 0.0, 0.0));
         let mut states = vec![];
         for _ in 0..5000 {
-            m.step(Vec3::ZERO, away);
+            m.step(Vec3::ZERO, away, &[], &[]);
             let s = m.heli.as_ref().unwrap().state;
             if states.last() != Some(&s) {
                 states.push(s);
