@@ -10,8 +10,10 @@
 //! (the slot is not drawn before or after), 4 takes camera path a of 22 from frame b, 5 / 6 fade from / to white,
 //! 13 starts its music; it ends at op -1 alone.
 //!
+//! The hand tracks come in the body clips (the converter's format 26: the finger nodes' turns).
+//!
 //! Not played: the effect ops (10, 12, 15-18, 21-32; the EMBU's 7-12: sparks, objects, show / hide [L]), the face
-//! and hand tracks (their joints are not mapped), the arenas' background characters.
+//! track (its joints are not mapped), the arenas' background characters.
 
 use crate::UNITS;
 use anyhow::{bail, Context, Result};

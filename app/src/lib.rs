@@ -5455,7 +5455,7 @@ impl App {
                     if let (Some((roll, (black, white))), Some(d)) = (ending, roster.ttt.as_deref()) {
                         let view = art::Screen::fit(ctx.content_rect());
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("ttt_ending")));
-                        ttt::draw_ending(&painter, &view, d, roll, black, white);
+                        ttt::draw_ending(&painter, &view, art, d, roll, black, white);
                     }
                     if let Some(screen) = screen {
                         if let Some(f) = fight.filter(|_| screen.ttt_over_fight()) {
