@@ -7390,11 +7390,19 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             }
             return Ok(());
         }
-        // Tekken Tag's ranking naming a new record (--variant 1: SURVIVAL's, 4 wins; else TIME ATTACK's, 6'00"00)
+        // Tekken Tag's ranking naming a new record (--variant 1: SURVIVAL's, 4 wins; 2: GAME OVER's CHARACTER USAGE,
+        // Xiaoyu 3 picks and Eddy 1; else TIME ATTACK's, 6'00"00)
         Some("ttt-name") => {
-            let survival = std::env::args().skip_while(|a| a != "--variant").nth(1).as_deref() == Some("1");
+            let variant = std::env::args().skip_while(|a| a != "--variant").nth(1);
+            let survival = variant.as_deref() == Some("1");
             let record = ttt::Record { score: if survival { 4 } else { 21600 }, members: vec![7, 4], name: String::new() };
-            app.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::NameEntry { survival, record, letter: 0, then: Box::new(ttt::Page::Title) }, frame: 0 })));
+            let page = if variant.as_deref() == Some("2") {
+                ttt::set_progress(ttt::Progress { usage: vec![0, 0, 0, 0, 0, 0, 0, 3, 1], ..ttt::progress() });
+                ttt::Page::Records { page: 0, scroll: 0, attract: true }
+            } else {
+                ttt::Page::NameEntry { survival, record, letter: 0, then: Box::new(ttt::Page::Title) }
+            };
+            app.screen = Some(Screen::Ttt(Box::new(ttt::Front { page, frame: 0 })));
         }
         // Tekken Tag's THEATER (--variant: the endings seen, a bit each)
         Some("ttt-theater") => {

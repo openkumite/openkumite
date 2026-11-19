@@ -722,6 +722,9 @@ fn ladder(d: &Data, roster: &Roster, stage: u32, pool: &[usize], players: &Team,
     out
 }
 
+/// The ranking after GAME OVER (screen 7) until the title: 14.8 s in PCSX2.
+const RANKING_FRAMES: u32 = 880;
+
 /// CONTINUE?'s frames (0x3BA560: 9 down to 0, 100 frames a digit).
 const CONTINUE: u32 = 898;
 
@@ -1472,7 +1475,7 @@ impl Front {
                 self.frame = 0;
                 return Outcome::TttSaved;
             }
-            Page::Records { attract: true, .. } if self.frame >= MESSAGE_FRAMES => {
+            Page::Records { attract: true, .. } if self.frame >= RANKING_FRAMES => {
                 self.page = Page::Title;
                 self.frame = 0;
             }
@@ -1563,7 +1566,16 @@ impl Front {
             }
             Page::GameOver { .. } => banner_at(painter, v, art, d, &d.raw["arcade"]["continue"]["game_over"], 0),
             Page::Records { page, scroll, attract } => {
-                if *attract {
+                if *attract && d.raw["ranking"]["usage"].is_object() {
+                    // (after GAME OVER the ranking, screen 7: CHARACTER USAGE rising from its last rows to its first;
+                    // shortcut: evenly from frame 30 to 630, the PS2's pace and the arena behind not decoded)
+                    let rows: Vec<Record> = record_rows(d, progress, 0).into_iter().map(|(members, score, name)| Record { score, members, name }).collect();
+                    let r = &d.raw["ranking"]["rows"][2];
+                    let span = num(&r["dy"]) * rows.len().saturating_sub(int(&r["shown"])) as f32;
+                    let rise = span * (1.0 - self.frame.saturating_sub(30) as f32 / 600.0).max(0.0);
+                    draw_ranking(painter, v, art, d, 2, &rows, (usize::MAX, 0), rise, self.frame);
+                    return;
+                } else if *attract {
                     image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], Color32::WHITE);
                 } else {
                     options_backdrop(painter, v, art, d, num(&d.raw["menu"]["dim"]));
@@ -1583,7 +1595,7 @@ impl Front {
                 }
                 list.insert(at, shown);
                 list.truncate(RECORDS);
-                draw_ranking(painter, v, art, d, usize::from(*survival), &list, (at, typed), self.frame);
+                draw_ranking(painter, v, art, d, usize::from(*survival), &list, (at, typed), 0.0, self.frame);
             }
             Page::Message { lines, .. } => {
                 backdrop(painter, v, art);
@@ -1912,7 +1924,7 @@ fn draw_records(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
 /// time or the wins, the name; the entry's row over its band, the place being named underlined (red to white), the
 /// seconds left. shortcut: the rows' slide and the arena behind are not done; upgrade: decode 0x3C8A88's steps.
 #[allow(clippy::too_many_arguments)]
-fn draw_ranking(painter: &egui::Painter, v: &View, art: &Art, d: &Data, kind: usize, list: &[Record], (entry, typed): (usize, usize), frame: u32) {
+fn draw_ranking(painter: &egui::Painter, v: &View, art: &Art, d: &Data, kind: usize, list: &[Record], (entry, typed): (usize, usize), rise: f32, frame: u32) {
     let rk = &d.raw["ranking"];
     let p = |v: &Value| [num(&v[0]), num(&v[1])];
     let [bx, by] = p(&rk["banner_xy"]);
@@ -1922,13 +1934,29 @@ fn draw_ranking(painter: &egui::Painter, v: &View, art: &Art, d: &Data, kind: us
     let clip = painter.with_clip_rect(Rect::from_min_max(v.pos(0.0, top), v.pos(SCREEN_W, top + h)));
     let rows = &rk["rows"][kind];
     let (dy, y0, n) = (num(&rows["dy"]), num(&rows["first"]), int(&rows["shown"]).max(1));
-    let first = if entry < 2 { 0 } else { (entry - 2).min(list.len().saturating_sub(n)) };
+    // (a list without an entry: every row,  up)
+    let (first, n) = if entry >= list.len() {
+        (0, list.len())
+    } else if entry < 2 {
+        (0, n)
+    } else {
+        ((entry - 2).min(list.len().saturating_sub(n)), n)
+    };
     let colour = |k: &str| Some(int(&rk["colours"][k]));
     let measure = |text: &str, size: f32| chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, text, 0.0, 0.0, None, size);
     for (k, r) in list.iter().enumerate().skip(first).take(n) {
-        let y = y0 + dy * (k - first) as f32;
+        let y = y0 + dy * (k - first) as f32 - rise;
+        if y < c0 || y - dy > c1 {
+            continue;
+        }
         let on = k == entry;
-        let c = if on { colour("entry") } else { colour("row") };
+        let c = if on {
+            colour("entry")
+        } else if kind == 2 {
+            Some(int(&rk["usage"]["rank_colour"]))
+        } else {
+            colour("row")
+        };
         if on {
             let b = &rk["band"];
             Art::shade(&clip, v, sv([0.0, y - num(&b["h"]), W, num(&b["h"])]), [rgba(&b["colour"]); 4]);
@@ -1943,16 +1971,34 @@ fn draw_ranking(painter: &egui::Painter, v: &View, art: &Art, d: &Data, kind: us
             _ => 3,
         };
         chrome(&clip, v, art, d, d.raw["records"]["suffixes"][suffix].as_str().unwrap_or_default(), end, y + num(&rank["suffix_dy"]), c, num(&rank["suffix_size"]));
-        // (the second member's face first, the first's over it; then their name plates)
-        let fs = num(&rk["face_size"]);
+        // (the second member's face first, the first's over it; then their name plates; CHARACTER USAGE one of each)
+        let (fs, u) = (num(&rk["face_size"]), &rk["usage"]);
+        let place = |key: &str, one: &str, m: usize| if kind == 2 { p(&u[one]) } else { p(&rk[key][m]) };
         for (m, body) in [1, 0].into_iter().filter_map(|m| Some((m, *r.members.get(m)?))) {
-            let [fx, fy] = p(&rk["faces"][m]);
+            let [fx, fy] = place("faces", "face", m);
             sprite(&clip, v, art, rk["face_frame"].as_str().unwrap_or_default(), fx - 2.0, y + fy - 2.0, Color32::WHITE);
             image(&clip, v, art, &d.picture(&["select", "faces", &body.to_string()]), [fx, y + fy, fs, fs], Color32::WHITE);
         }
         for (m, &body) in r.members.iter().enumerate().take(2) {
-            let [px, py] = p(&rk["plates"][m]);
-            sprite(&clip, v, art, &d.picture(&["hud", "plates", &body.to_string(), "picture"]), px, y + py, Color32::WHITE);
+            let [px, py] = place("plates", "plate", m);
+            // (0x3CF1E8: less the plate's own x)
+            let plate = &d.raw["hud"]["plates"][body];
+            sprite(&clip, v, art, plate["picture"].as_str().unwrap_or_default(), px - num(&plate["x"]), y + py, Color32::WHITE);
+        }
+        if kind == 2 {
+            // (0x3C7530: the bar in the character's two colours; 0x3C74A8: the share, its tenth smaller)
+            let (b, s) = (&u["bar"], &u["share"]);
+            let w = num(&b["w"]) * r.score.min(1000) as f32 / 1000.0;
+            let cs = &b["colours"][r.members.first().copied().unwrap_or(0)];
+            let rgb = |o: usize| Color32::from_rgb(int(&cs[o]) as u8, int(&cs[o + 1]) as u8, int(&cs[o + 2]) as u8);
+            if w > 0.0 {
+                Art::shade(&clip, v, sv([num(&b["x"]), y + num(&b["dy"]), w, num(&b["h"])]), [rgb(0), rgb(3), rgb(0), rgb(3)]);
+            }
+            let sc = Some(int(&s["colour"]));
+            let (whole, small) = if r.score >= 1000 { ("100".to_string(), "%".to_string()) } else { (format!("{:2}", r.score / 10), format!(".{}%", r.score % 10)) };
+            let end = chrome(&clip, v, art, d, &whole, num(&s["x"]), y + num(&s["dy"]), sc, 10.0);
+            chrome(&clip, v, art, d, &small, end, y + num(&s["small_dy"]), sc, num(&s["small_size"]));
+            continue;
         }
         if kind == 0 {
             let t = &rk["time"];
