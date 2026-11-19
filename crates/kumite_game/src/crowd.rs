@@ -236,6 +236,16 @@ impl Walker {
     }
 
     /// What it shows now: its motion, the frame of it, where it stands and its heading (degrees); None while unseen.
+    /// Where it first stands (m, the arena's axes).
+    pub fn home(&self) -> Vec3 {
+        self.at
+    }
+
+    /// Gone for good (Tekken Bowl's spectator the ball hit: +0x85 bit 2, 0x3DB860).
+    pub fn leave(&mut self) {
+        self.gone = true;
+    }
+
     pub fn now(&self) -> Option<(usize, usize, Vec3, f32)> {
         (!self.gone && self.wait <= 0).then_some((self.motion, self.frame.max(0) as usize, self.pos, self.heading + self.turn))
     }

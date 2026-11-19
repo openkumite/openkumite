@@ -466,7 +466,9 @@ pub struct Bowl {
     pub replay: Replay,
     data_rack: Vec<[f32; 2]>,
     pin_y: f32,
-    people: Vec<[f32; 2]>,
+    pub people: Vec<[f32; 2]>,
+    /// The spectators the ball hit (their places in `people`, bowl.json `spectators.people`).
+    pub knocked: Vec<usize>,
     pub callouts: Callouts,
     standing_before: [bool; 10],
     /// The roll's mark, its pins and the next ball once counted.
@@ -593,6 +595,7 @@ impl Bowl {
             data_rack: rack,
             pin_y,
             people,
+            knocked: Vec::new(),
             callouts: data.callouts.clone(),
             standing_before: [true; 10],
             counted: None,
@@ -883,10 +886,14 @@ impl Bowl {
         if self.ball.rolling {
             self.ball_step();
         }
-        // the spectators (0x3EFDB8)
+        // the spectators (0x3EFDB8), each one the ball hit gone for good (0x3DB860 sets its +0x85 bit 2: its script
+        // hides it, 0x3DB8A8 leaves it out of the test)
         if self.ball.rolling {
             let p = self.ball.pos;
-            if let Some(&[x, _]) = self.people.iter().find(|q| (q[0] - p.x) * (q[0] - p.x) + (q[1] - p.z) * (q[1] - p.z) < SPECTATOR_RADIUS2) {
+            let near = |q: &[f32; 2]| (q[0] - p.x) * (q[0] - p.x) + (q[1] - p.z) * (q[1] - p.z) < SPECTATOR_RADIUS2;
+            if let Some(k) = (0..self.people.len()).find(|k| !self.knocked.contains(k) && self.people.get(*k).is_some_and(near)) {
+                let x = self.people.get(k).map_or(0.0, |q| q[0]);
+                self.knocked.push(k);
                 self.ball.rolling = false;
                 self.ball.shown = false;
                 self.ko_side = x;
@@ -1270,6 +1277,7 @@ impl Bowl {
         }
         [self.x.to_bits(), self.angle as u32, self.spin.to_bits(), self.power.to_bits(), self.seed, self.current as u32].into_iter().for_each(&mut eat);
         self.players.iter().for_each(|p| eat(u32::from(p.left)));
+        self.knocked.iter().for_each(|&k| eat(k as u32));
         h
     }
 }
@@ -1523,7 +1531,7 @@ mod tests {
         while matches!(b.phase, Phase::Throw(_)) {
             b.step(In::default());
         }
-        assert_eq!((b.phase, b.callout.as_deref()), (Phase::Ko(0), Some("K.O.")));
+        assert_eq!((b.phase, b.callout.as_deref(), b.knocked.as_slice()), (Phase::Ko(0), Some("K.O."), &[0][..]));
         while matches!(b.phase, Phase::Ko(_)) {
             b.step(In::default());
         }
