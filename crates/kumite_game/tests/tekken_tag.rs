@@ -13,6 +13,8 @@ use kumite_sim::input::Pad;
 /// Paul's and Lei's first models (movesets/index.json).
 const PAUL: usize = 345;
 const LEI: usize = 372;
+/// Xiaoyu's first model.
+const XIAOYU: usize = 432;
 /// Paul's jab (his alias for 1).
 const JAB: usize = 346;
 
@@ -524,6 +526,45 @@ fn king_throws_canned_and_delays_inputs() {
     eprintln!("King NORMAL L7 {:?}, ULTRA HARD L0 {:?}, HARD L0 {:?}", normal.stats, ultra.stats, hard.stats);
     assert!(normal.stats[1] > 0, "a canned throw");
     assert!(ultra.stats[2] > 0 && hard.stats[2] == 0, "delayed inputs with P74 only");
+}
+
+/// Lei at arcade stage 1 (NORMAL level 0) against Xiaoyu over ten matches: (damage a fight minute, the fight steps
+/// of each match); side 0 stands (`hold`: off) or holds back. The match's seed starts each CPU on its own draws.
+fn stage_one(a: &Assets, hold: bool, seeds: impl Iterator<Item = u32>) -> (u32, Vec<Vec<u64>>) {
+    let (mut damage, mut steps, mut hashes) = (0, 0, Vec::new());
+    for seed in seeds {
+        let mut g = Game::load(a, [XIAOYU, LEI]).unwrap();
+        g.copy_seed = seed;
+        let mut b = Bout::new(g, kumite_game::ai_data(a).unwrap(), 2, false);
+        b.set_cpu(1, Some((1, 0)));
+        let mut h = Vec::new();
+        for _ in 0..4600 {
+            let back = b.game.fight.facing_right(0);
+            b.step([Pad { left: hold && back, right: hold && !back, ..Pad::default() }, Pad::default()]);
+            h.push(b.game.state_hash());
+            if b.phase == Phase::Fight {
+                steps += 1;
+                damage += b.game.fight.hits.iter().filter(|h| h.attacker == 1 && !h.blocked).map(|h| h.damage).sum::<i32>() as u32;
+            }
+        }
+        hashes.push(h);
+    }
+    (damage * 3600 / steps.max(1), hashes)
+}
+
+/// The arcade's first CPU against a fighter who stands still, as measured on the PS2 (PCSX2, NORMAL level 0, Lei and
+/// Julia: about 195 damage a fight minute, a K.O. in 31-36 s; against one holding back 38). With each match on its
+/// own draws these ten land 136 (one fixed stream gave every match the same poor opening, 68; matches vary from about
+/// 100 to 230), more against a still fighter than one holding back, and a seed replays the same.
+#[test]
+fn the_first_cpu_beats_a_still_fighter_as_the_ps2_does() {
+    let Some(a) = assets() else { return };
+    let ((idle, runs), (back, _)) = (stage_one(&a, false, (0..10).map(|k| k * 11)), stage_one(&a, true, (0..10).map(|k| k * 11)));
+    eprintln!("damage a minute: still {idle}, holding back {back}");
+    assert!((120..=300).contains(&idle), "against a still fighter {idle} (PS2 about 195)");
+    assert!(back < idle, "holding back takes less ({back})");
+    assert!(runs.windows(2).any(|w| w[0] != w[1]), "the matches differ");
+    assert_eq!(runs[3], stage_one(&a, false, [33].into_iter()).1[0], "a seed replays the same");
 }
 
 /// Each frame of an ending: the scene frame, the camera, each slot's cast member and root, the fades.
