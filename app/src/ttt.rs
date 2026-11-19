@@ -809,19 +809,21 @@ impl Select {
         self.frame += 1;
         // the timer out (`select.timer`, 0x3C9888): each side still picking takes what its cursor is on, else RANDOM's
         // character (shortcut: what the original does then is not decoded), in a costume of a button drawn at random
-        // (0x3CA070: rand() % 5 of square, triangle, a tag button, cross, circle)
+        // (0x3CA070: rand() % 5 of square, triangle, a tag button, cross, circle); all its picks on that frame, as the
+        // PS2 does
         if d.raw["select"]["timer"]["frames"].as_u64().is_some_and(|t| u64::from(self.frame) >= t) {
             let random = d.slots.iter().position(|s| s.character.is_none()).unwrap_or(0);
             for k in 0..2 {
-                if self.sides[k].player.is_none() || self.sides[k].done {
-                    continue;
+                while self.sides[k].player.is_some() && !self.sides[k].done {
+                    let button = pick(&[0x80, 0x10, 0x04, 0x40, 0x20], seed).unwrap_or(0x80) as u32;
+                    if self.take(k, button, d, roster, progress).is_none() {
+                        self.sides[k].cursor = random;
+                        if self.take(k, button, d, roster, progress).is_none() {
+                            break;
+                        }
+                    }
+                    self.sides[k].done |= self.mode == TEAM;
                 }
-                let button = pick(&[0x80, 0x10, 0x04, 0x40, 0x20], seed).unwrap_or(0x80) as u32;
-                if self.take(k, button, d, roster, progress).is_none() {
-                    self.sides[k].cursor = random;
-                    let _ = self.take(k, button, d, roster, progress);
-                }
-                self.sides[k].done |= self.mode == TEAM && !self.sides[k].picks.is_empty();
             }
         }
         let ready = self.sides.iter().all(|s| s.player.is_none() || s.done);
@@ -2350,11 +2352,9 @@ mod tests {
             s.frame = 18;
         }
         assert_eq!((f.music(Some(&d)), f.music(None)), (Some(0), None));
-        // 2400 frames: a pick a frame, the cursor's character then RANDOM's (the cursor's is taken)
+        // 2400 frames: both picks on one frame, the cursor's character then RANDOM's (the cursor's is taken)
         let mut s = Select::new(ARCADE, &d, None);
         assert!((1..2400).all(|_| s.tick(&d, &r, &p, &mut seed).is_none()) && s.sides[0].picks.is_empty());
-        s.tick(&d, &r, &p, &mut seed);
-        assert_eq!(s.sides[0].picks.len(), 1);
         s.tick(&d, &r, &p, &mut seed);
         assert!(s.sides[0].done && s.sides[0].picks.len() == 2);
     }
