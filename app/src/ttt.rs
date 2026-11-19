@@ -281,8 +281,10 @@ pub struct Progress {
     /// 200-point game (+0x202, JUKEBOX's), a 300 (+0x204).
     pub bowlers: Option<Vec<kumite_game::bowl::Record>>,
     pub bowl_bonus: [bool; 2],
-    /// BOWLING OPTIONS' HELP MESSAGES and SPECIAL EFFECTS set OFF (+0x1FE, +0x200: both ON at first).
+    /// BOWLING OPTIONS' HELP MESSAGES and SPECIAL EFFECTS set OFF (+0x1FE, +0x200: both ON at first); the JUKEBOX's
+    /// track (the music player's list, 0x455D80; None: OFF, the hall's own).
     pub bowl_off: [bool; 2],
+    pub jukebox: Option<usize>,
     /// Tekken Force's keys and hi-score here (apart from Tekken 3's records).
     pub force_keys: u32,
     pub force_hiscore: u32,
@@ -319,6 +321,7 @@ static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress {
     bowlers: None,
     bowl_bonus: [false; 2],
     bowl_off: [false; 2],
+    jukebox: None,
     force_keys: 0,
     force_hiscore: 0,
     settings: Vec::new(),
@@ -3435,6 +3438,11 @@ pub fn bowl_results(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scen
     }
 }
 
+/// The JUKEBOX's track (a BGM id) for Tekken Bowl's music, when one is chosen.
+pub fn jukebox(d: &Data) -> Option<usize> {
+    progress().jukebox.and_then(|k| music(d).get(k).map(|m| m.0))
+}
+
 /// The name entry's letters (`records.letters`, 0x3D0450's: "<" takes the last back, "=" ends).
 pub fn record_letters(d: &Data) -> Vec<char> {
     d.raw["records"]["letters"].as_str().unwrap_or_default().chars().collect()
@@ -3648,20 +3656,31 @@ fn bowl_callout(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &
 /// (BONUS AT 200 PTS until a 200 game unlocks the JUKEBOX), EXIT. Up / down move the cursor (past the bonus row while
 /// it is locked), left / right switch the one at it, a button on EXIT or START leave (true). The switches are kept in
 /// the save (block 0x46BC70 +0x1FE, +0x200; both ON at first, 0x3F20E8).
-// shortcut: the JUKEBOX's track choice (0x455D80's list) is not here: the row stays BONUS AT 200 PTS
+/// Once a 200 game unlocked it (+0x202) the bonus row is the JUKEBOX: left / right go round the music player's tracks
+/// and OFF.
 pub fn bowl_options_key(d: &Data, cursor: &mut usize, key: Key) -> bool {
     let mut p = progress();
+    let juke = p.bowl_bonus[0];
     match key {
         Key::Up | Key::Down => {
             sfx::play(sound(d, "cursor"));
-            // (0 HELP MESSAGES, 1 SPECIAL EFFECTS, 3 EXIT)
-            let rows = [0, 1, 3];
+            // (0 HELP MESSAGES, 1 SPECIAL EFFECTS, 2 JUKEBOX once unlocked, 3 EXIT)
+            let rows: &[usize] = if juke { &[0, 1, 2, 3] } else { &[0, 1, 3] };
             let k = rows.iter().position(|r| r == cursor).unwrap_or(0);
             *cursor = rows[(k + if key == Key::Up { rows.len() - 1 } else { 1 }) % rows.len()];
         }
         Key::Left | Key::Right if *cursor < 2 => {
             sfx::play(sound(d, "cursor"));
             p.bowl_off[*cursor] = !p.bowl_off[*cursor];
+            set_progress(p);
+        }
+        Key::Left | Key::Right if *cursor == 2 && juke => {
+            sfx::play(sound(d, "cursor"));
+            // (the tracks, then OFF)
+            let n = music(d).len() + 1;
+            let at = p.jukebox.unwrap_or(n - 1);
+            let at = (at + if key == Key::Left { n - 1 } else { 1 }) % n;
+            p.jukebox = (at + 1 < n).then_some(at);
             set_progress(p);
         }
         Key::Start | Key::Back => return true,
@@ -3705,13 +3724,27 @@ pub fn draw_bowl_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
         let end = chrome(painter, v, art, d, label, 155.0, y, Some(if cursor == k { 11 } else { 5 }), 4.0);
         chrome(painter, v, art, d, if on { "ON" } else { "OFF" }, end, y, Some(if on { 16 } else { 12 }), 4.0);
     }
-    chrome(painter, v, art, d, &scene.text("bonus", "BONUS AT 200 PTS"), 155.0, 240.0, Some(17), 4.0);
+    if progress().bowl_bonus[0] {
+        // JUKEBOX: its track (OFF: none), the arrows either side under the cursor
+        let name = progress().jukebox.and_then(|k| music(d).get(k).map(|m| m.1.clone())).unwrap_or_else(|| "OFF".into());
+        if cursor == 2 {
+            bar(298.0, 240.0);
+            let left = d.raw["menu"]["arrows"]["pictures"][0].as_str().unwrap_or_default();
+            sprite(painter, v, art, left, 296.0, 240.0 - ah, Color32::WHITE);
+            sprite(painter, v, art, arrow, 475.0, 240.0 - ah, Color32::WHITE);
+        }
+        let label = scene.text("jukebox", "JUKEBOX: ");
+        let end = chrome(painter, v, art, d, label.split('%').next().unwrap_or_default(), 155.0, 240.0, Some(if cursor == 2 { 11 } else { 5 }), 4.0);
+        chrome(painter, v, art, d, &name, end, 240.0, Some(17), 4.0);
+    } else {
+        chrome(painter, v, art, d, &scene.text("bonus", "BONUS AT 200 PTS"), 155.0, 240.0, Some(17), 4.0);
+    }
     if cursor == 3 {
         bar(70.0, 260.0);
     }
     chrome(painter, v, art, d, &scene.text("exit", "EXIT"), 155.0, 260.0, Some(if cursor == 3 { 11 } else { 5 }), 4.0);
-    if cursor < 2 {
-        help_line(painter, v, art, d, 106 + cursor, usize::from(!off[cursor]));
+    if cursor < 3 {
+        help_line(painter, v, art, d, 106 + cursor, usize::from(!off.get(cursor).copied().unwrap_or(false)));
     }
 }
 

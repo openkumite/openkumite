@@ -3968,7 +3968,9 @@ impl App {
             // the pin deck's machinery, where the arena's object table puts it (an older pack has none)
             let _ = add(&scene.deck_model, &mut stage);
             if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
-                audio.music(sound.arena_music(kumite_game::bowl::ARENA));
+                // (the JUKEBOX's track, else the hall's)
+                let juke = self.roster.ttt.as_deref().and_then(ttt::jukebox).and_then(|id| sound.music(id));
+                audio.music(juke.or(sound.arena_music(kumite_game::bowl::ARENA)));
             }
             log::info!("Tekken Bowl: {} player(s)", players.len());
             self.scene = Some(stage);
@@ -4932,8 +4934,14 @@ impl App {
                 (Some(BowlPage::Records(None)), Key::Start | Key::Button(_) | Key::Back) => self.end_bowl(),
                 (Some(BowlPage::Records(None)), _) => {}
                 (Some(BowlPage::Options(c)), _) => {
+                    let before = ttt::jukebox(&d);
                     if ttt::bowl_options_key(&d, c, key) {
                         b.page = None;
+                    }
+                    // (the JUKEBOX's track plays at once)
+                    let now = ttt::jukebox(&d);
+                    if let (true, Some(audio), Some(sound)) = (now != before, self.audio.as_mut(), self.sound.as_ref()) {
+                        audio.music(now.and_then(|id| sound.music(id)).or(sound.arena_music(kumite_game::bowl::ARENA)));
                     }
                 }
                 (None, Key::Button(_)) if b.reset.is_none() && matches!(item, Some(4 | 5)) => {
