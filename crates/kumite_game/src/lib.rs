@@ -97,6 +97,18 @@ impl Animations for FighterAnims<'_> {
             self.own.root_of(anim, frame)
         }
     }
+
+    fn volumes(&self, f: &kumite_sim::Fighter, gd: &kumite_sim::GameData) -> Option<BodyVolumes> {
+        if self.own.bones.is_empty() {
+            return None;
+        }
+        let partner = f.current.bank == kumite_sim::data::Bank::Partner;
+        let other = if partner { self.other } else { self.own };
+        let (anim, frame) = f.animation(gd);
+        let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw };
+        let (pose, place) = shown_pose(self.own, other, &shown);
+        Some(volumes(self.own, &pose, place))
+    }
 }
 
 /// What one fighter showed on one frame: enough to pose and place it again (the replay's record).

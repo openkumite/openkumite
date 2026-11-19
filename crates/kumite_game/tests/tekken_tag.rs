@@ -30,7 +30,7 @@ struct Run {
 fn run(a: &Assets) -> Run {
     let mut b = Bout::new(Game::load(a, [PAUL, LEI]).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
     // Paul: a jab from the start, walk in, a jab; Lei walks in (no guard while walking)
-    let p1 = parse_script("n*20,1,n*60,f*30,n*10,1,n*60").unwrap();
+    let p1 = parse_script("n*4,1,n*76,f*30,n*10,1,n*60").unwrap();
     let p2 = parse_script("n*20,b*400").unwrap();
     let mut r = Run { hashes: Vec::new(), alias: Vec::new(), health: Vec::new(), round: Vec::new(), ko: false };
     for _ in 0..600 {
@@ -69,7 +69,7 @@ fn paul_against_lei() {
     // Lei's health: the default life (140) times his percent (108)
     assert_eq!(r.health[0], 151);
     // the jab from the start distance whiffs
-    assert!(r.alias[20..40].contains(&JAB), "the first jab: {:?}", &r.alias[20..40]);
+    assert!(r.alias[4..24].contains(&JAB), "the first jab: {:?}", &r.alias[4..24]);
     assert_eq!(r.health[80], 151, "the jab from afar whiffs");
     // walked in, the jab lands for 5
     assert!(r.alias[120..140].contains(&JAB), "the second jab: {:?}", &r.alias[120..140]);
@@ -79,6 +79,34 @@ fn paul_against_lei() {
     let second = r.round.iter().position(|&n| n == 2).expect("round 2");
     assert_eq!(r.health[second + 1], 151);
     assert_eq!(r.hashes, run(&a).hashes, "the same pads, the same match");
+}
+
+/// Xiaoyu's jab at Lei standing `gap` away: did it reach him (a hit or a block)?
+fn xiaoyu_jab_reaches(a: &Assets, gap: f32) -> bool {
+    let mut b = Bout::new(Game::load(a, [XIAOYU, LEI]).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let f = &mut b.game.fight.fighters;
+    let along = (f[1].position - f[0].position).normalize();
+    f[1].position = f[0].position + along * gap;
+    let mut reached = false;
+    for k in 0..20 {
+        b.step([if k < 3 { parse_script("1").unwrap()[0] } else { Pad::default() }, Pad::default()]);
+        reached |= b.game.fight.hits.iter().any(|h| h.attacker == 0);
+    }
+    reached
+}
+
+/// A strike is tested in the pose of its frame (the PS2's strike segments at the active frame end at the bones it
+/// shows then, PCSX2): Xiaoyu's jab, at full reach only on its active frame 8, reaches Lei from 1450 (the pose of
+/// frame 7, 1300).
+#[test]
+fn a_strike_reaches_in_the_pose_of_its_frame() {
+    let Some(a) = assets() else { return };
+    let reach = (24..32).map(|k| k as f32 * 50.0).take_while(|&g| xiaoyu_jab_reaches(&a, g)).last();
+    eprintln!("Xiaoyu's jab reaches Lei from {reach:?}");
+    assert_eq!(reach, Some(1450.0), "the jab's full reach");
 }
 
 /// King's first model.
@@ -412,7 +440,7 @@ struct CpuRun {
     starts: [u32; 2],
     fight: u32,
     turned: u32,
-    /// Side 0's CPU: string follow-ups, canned throws, delayed inputs.
+    /// The first CPU's: string follow-ups, canned throws, delayed inputs.
     stats: [u32; 3],
 }
 
@@ -450,7 +478,7 @@ fn cpu_run_of(a: &Assets, models: [usize; 2], cpu: [Option<(usize, usize)>; 2], 
         }
     }
     r.wins = b.wins;
-    if let Some(ai) = &b.cpu[0] {
+    if let Some(ai) = b.cpu.iter().flatten().next() {
         r.stats = [ai.strings, ai.canned, ai.delayed];
     }
     r
@@ -521,11 +549,12 @@ fn strings_go_on_from_normal_level_4() {
 #[test]
 fn king_throws_canned_and_delays_inputs() {
     let Some(a) = assets() else { return };
-    let (normal, ultra, hard) =
-        (cpu_run_of(&a, [KING, LEI], [Some((1, 7)), None], 9000, 2), cpu_run_of(&a, [KING, LEI], [Some((4, 0)), None], 40000, 5), cpu_run_of(&a, [KING, LEI], [Some((2, 0)), None], 15000, 2));
-    eprintln!("King NORMAL L7 {:?}, ULTRA HARD L0 {:?}, HARD L0 {:?}", normal.stats, ultra.stats, hard.stats);
+    let (normal, hard) = (cpu_run_of(&a, [KING, LEI], [Some((1, 7)), None], 9000, 2), cpu_run_of(&a, [KING, LEI], [Some((2, 0)), None], 15000, 2));
+    // (rare: a few a match)
+    let ultra = cpu_run_of(&a, [LEI, KING], [None, Some((4, 0))], 60000, 9).stats[2];
+    eprintln!("King NORMAL L7 {:?}, ULTRA HARD L0 delays {ultra}, HARD L0 {:?}", normal.stats, hard.stats);
     assert!(normal.stats[1] > 0, "a canned throw");
-    assert!(ultra.stats[2] > 0 && hard.stats[2] == 0, "delayed inputs with P74 only");
+    assert!(ultra > 0 && hard.stats[2] == 0, "delayed inputs with P74 only");
 }
 
 /// Lei at arcade stage 1 (NORMAL level 0) against Xiaoyu over ten matches: (damage a fight minute, the fight steps
