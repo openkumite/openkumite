@@ -15,7 +15,7 @@
 //! CURSOR, QUICK SELECT, CHICKEN MARKING, SPEAKER OUT and the volumes are kept but not played by).
 //!
 //! Not decoded, OpenKumite's own: the VS screen's code (laid out as the PS2 shows it), which button gives which
-//! costume, Theater's layout, the staff roll's fonts.
+//! costume, Theater's layout.
 
 use crate::art::{additive, Art, Screen as View, SCREEN_H, SCREEN_W};
 use crate::menu::{lcg, sfx, FightSetup, Key, Mode, Outcome, Roster};
@@ -1642,47 +1642,87 @@ fn theater(d: &Data, seen: u64) -> Vec<Vec<(String, Cell)>> {
     rows
 }
 
-/// The staff roll's lines (0x51B880, after its two cards; the logos 0xAB / 0xAC are not drawn): each text and whether
-/// a heading; of an alternative pair the first (the one until Tekken Bowl is unlocked, which is not here yet).
-fn roll_lines(e: &EndingData) -> Vec<(String, bool)> {
-    let r = &e.raw["staff_roll"];
-    let cards = r["cards"].as_array().into_iter().flatten().flat_map(|c| [(c.as_str().unwrap_or_default().to_string(), true), (String::new(), false)]);
+/// The staff roll's lines (0x51B880) to its end mark (a negative colour): each kind, text and colour; of an
+/// alternative pair the first (the one until Tekken Bowl is unlocked, 0x3BFEB0, which is not here yet).
+fn roll_lines(e: &EndingData) -> Vec<(u64, &str, usize)> {
     let mut alt = false;
-    let lines = r["lines"].as_array().into_iter().flatten().filter(|l| {
-        let (a, was) = (l["alternative"] == true, alt);
-        alt = a;
-        !(a && was)
-    });
-    cards.chain(lines.map(|l| (l["text"].as_str().unwrap_or_default().to_string(), l["font"] == 7))).collect()
+    let lines = e.raw["staff_roll"]["lines"].as_array().into_iter().flatten().take_while(|l| l["font"].as_u64().is_some_and(|f| f < 0x8000));
+    lines
+        .filter(|l| {
+            let (a, was) = (l["alternative"] == true, alt);
+            alt = a;
+            !(a && was)
+        })
+        .map(|l| (l["kind"].as_u64().unwrap_or(0), l["text"].as_str().unwrap_or_default(), l["font"].as_u64().unwrap_or(5) as usize))
+        .collect()
 }
 
-/// The staff roll's start, line spacing and speed (px, px a frame).
+/// The staff roll's start, the px a line waits for and the speed (px, px a frame).
 fn roll_metrics(e: &EndingData) -> (f32, f32, f32) {
     let r = &e.raw["staff_roll"];
     (r["start_y"].as_f64().unwrap_or(480.0) as f32, r["line_px"].as_f64().unwrap_or(32.0) as f32, r["scroll_px"].as_f64().unwrap_or(1.5).max(0.1) as f32)
 }
 
-/// The staff roll's length in frames: until its last line has gone off the top.
-pub fn roll_frames(e: &EndingData) -> u32 {
-    let (y, line, speed) = roll_metrics(e);
-    ((y + line * (roll_lines(e).len() + 1) as f32) / speed) as u32
+/// A card's states 2-7 (0x3AC018): 171 frames each (a 170-frame timer to -1), three a card after state 1's frame.
+const CARD_STATE: u32 = 171;
+/// The first line's frame (state 8).
+const LINES_FROM: u32 = 1 + 6 * CARD_STATE;
+
+/// The frames between two lines: a line each time the timer passes 32 px at 1.5 a frame (22: it restarts from 0,
+/// so the lines are 33 px apart).
+fn line_frames(e: &EndingData) -> u32 {
+    let (_, line, speed) = roll_metrics(e);
+    (line / speed).ceil() as u32
 }
 
-/// An ending's overlay: the scene's fades (black, then white), and the staff roll at its frame `roll` (0x3AC018: the
-/// lines rise from y 480 at 1.5 px a frame, 32 px apart; the fonts are egui's).
-pub fn draw_ending(painter: &egui::Painter, v: &View, d: &Data, roll: Option<u32>, black: u8, white: u8) {
+/// The frame the lines stop on: the end mark's, then 139 frames on (state 10: to 0xD000 at 0x180 a frame).
+fn roll_still(e: &EndingData) -> u32 {
+    LINES_FROM + line_frames(e) * roll_lines(e).len().saturating_sub(1) as u32 + 140
+}
+
+/// The staff roll's length in frames: the lines stand still for 210 (state 11).
+pub fn roll_frames(e: &EndingData) -> u32 {
+    roll_still(e) + 210
+}
+
+/// An ending's overlay: the scene's fades (black, then white), and the staff roll at its frame `roll` (0x3AC018): the
+/// cards "TEKKEN TAG TOURNAMENT" and "NAMCO PRODUCTION STAFF" (0x3ABEC0, 0x3ABF18: the chrome font at size 5 in
+/// colour 11, centred, foot at y 200), each from black over 171 frames (0x3A67D0) and from its 343rd frame to black
+/// over 171 / 172 (0x3A6770); then the lines (size 4 in their colour; x by kind, 0x3ABF70: 0 from 48, 1 from 304, 2
+/// ending at 608, 3 and 4 centred) rising from y 480 at 1.5 px a frame.
+pub fn draw_ending(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roll: Option<u32>, black: u8, white: u8) {
     // (the whole window: the scene fills it)
     painter.rect_filled(painter.clip_rect(), 0.0, Color32::from_black_alpha(black));
     painter.rect_filled(painter.clip_rect(), 0.0, Color32::from_white_alpha(white));
     let (Some(f), Some(e)) = (roll, d.endings.as_deref()) else { return };
-    let (y0, line, speed) = roll_metrics(e);
-    for (k, (text, heading)) in roll_lines(e).iter().enumerate() {
-        let y = y0 + line * k as f32 - speed * f as f32;
-        if (-line..H).contains(&y) {
-            let [x, y, _, h] = sv([W / 2.0, y, 0.0, if *heading { 17.0 } else { 14.0 }]);
-            let c = if *heading { Color32::from_rgb(255, 214, 120) } else { Color32::WHITE };
-            painter.text(v.pos(x, y), egui::Align2::CENTER_TOP, text, egui::FontId::proportional(h * v.rect.height() / SCREEN_H), c);
+    let width = |text: &str, size: f32| chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, text, 0.0, 0.0, None, size);
+    if f < LINES_FROM {
+        let card = f / (3 * CARD_STATE);
+        let text = e.raw["staff_roll"]["cards"][card as usize].as_str().unwrap_or_default();
+        chrome(painter, v, art, d, text, (W - width(text, 5.0)) / 2.0, 200.0, Some(11), 5.0);
+        let t = f - card * 3 * CARD_STATE;
+        let level = match t {
+            t if t < CARD_STATE => 1.0 - t as f32 / CARD_STATE as f32,
+            t => (t.saturating_sub(2 * CARD_STATE) as f32 / (CARD_STATE + card) as f32).min(1.0),
+        };
+        painter.rect_filled(painter.clip_rect(), 0.0, Color32::from_black_alpha((level * 255.0) as u8));
+        return;
+    }
+    let (y0, _, speed) = roll_metrics(e);
+    let (each, still) = (line_frames(e), roll_still(e));
+    for (k, (kind, text, colour)) in roll_lines(e).into_iter().enumerate() {
+        let Some(t) = f.min(still).checked_sub(LINES_FROM + each * k as u32) else { break };
+        let y = (y0 - speed * t as f32).floor();
+        if !(0.0..H + 32.0).contains(&y) || text.is_empty() {
+            continue;
         }
+        let x = match kind {
+            0 => 48.0,
+            1 => 304.0,
+            2 => 608.0 - width(text, 4.0),
+            _ => (W - width(text, 4.0)) / 2.0,
+        };
+        chrome(painter, v, art, d, text, x, y, Some(colour), 4.0);
     }
 }
 
@@ -3192,6 +3232,17 @@ mod tests {
         assert_eq!(rows(1 << 1 | 1 << 2)[..2], [paul, vec![("(1P)LAW".into(), Cell::Ending(2, 0))]]);
         // the menu shows THEATER once an ending was seen
         assert!(!Front::items(&d, &Progress::default()).iter().any(|i| i.0 == THEATER));
+    }
+
+    #[test]
+    fn staff_roll_lines_and_length() {
+        // a heading, an alternative pair (the first shows), a name, the end mark, a line past it
+        let line = |kind: u32, text: &str, font: u32, alt: bool| serde_json::json!({"kind": kind, "text": text, "font": font, "alternative": alt});
+        let lines = [line(0, "A", 7, false), line(0, "SECRET", 7, true), line(0, "BOWL", 7, true), line(1, "B", 5, false), line(2, "", 65535, false), line(1, "C", 5, false)];
+        let e = EndingData::new(serde_json::json!({"table": [], "endings": [], "staff_roll": {"lines": lines}}), &Value::Null).unwrap();
+        assert_eq!(roll_lines(&e), [(0, "A", 7), (0, "SECRET", 7), (1, "B", 5)]);
+        // the cards' 1027 frames, a line each 22, 140 to stop, 210 still
+        assert_eq!(roll_frames(&e), 1027 + 2 * 22 + 140 + 210);
     }
 
     #[test]

@@ -10,8 +10,13 @@
 //! (the slot is not drawn before or after), 4 takes camera path a of 22 from frame b, 5 / 6 fade from / to white,
 //! 13 starts its music; it ends at op -1 alone.
 //!
-//! Not played: the effect ops (10, 12, 15-18, 21-32; the EMBU's 7-12: sparks, objects, show / hide [L]), the face
-//! and hand tracks (their joints are not mapped), the arenas' background characters.
+//! The hand tracks come in the body clips (the converter's format 26: the finger nodes' turns).
+//!
+//! Ops 17 / 18 throw 0x3A2758's bursts from an actor's node (see [`Burst`]).
+//!
+//! Not played: the other effect ops (10, 12, 15, 16, 21-32; the EMBU's 7-12: the characters' own effects, objects,
+//! show / hide [L]), ops 17 / 18 at nodes 0x4000-0x4002 (an arena object's matrix, 20 objects 0x3ACCD0), the face
+//! track (its joints are not mapped), the arenas' background characters.
 
 use crate::UNITS;
 use anyhow::{bail, Context, Result};
@@ -107,6 +112,18 @@ impl Fade {
     }
 }
 
+/// A burst ops 17 / 18 threw this frame (0x3A2758): its kind (0 the hit spark, 1 set 3's, 2 the guard's, 3 the dust),
+/// where (metres), the way it turns to, whether it is dust more than 500 mm up (3 particles, not the arena's), its spin
+/// (radians a frame).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Burst {
+    pub kind: usize,
+    pub pos: Vec3,
+    pub dir: Option<Vec3>,
+    pub high: bool,
+    pub spin: f32,
+}
+
 pub struct EndingScene {
     /// The ending (None: the EMBU).
     pub ending: Option<usize>,
@@ -128,6 +145,8 @@ pub struct EndingScene {
     ranges: [Option<(i32, i32, i32)>; 2],
     /// The music started (the EMBU's op 13: its BGM).
     pub music: Option<usize>,
+    /// The bursts thrown this frame.
+    pub bursts: Vec<Burst>,
     black: Fade,
     white: Fade,
     pub done: bool,
@@ -199,6 +218,7 @@ impl EndingScene {
             slots: [(None, 0); 2],
             ranges: [None; 2],
             music: None,
+            bursts: Vec::new(),
             black: Fade { from: 255, to: 255, at: 0, len: 1 },
             white: Fade::default(),
             done: false,
@@ -221,6 +241,7 @@ impl EndingScene {
             return;
         }
         self.c += 1;
+        self.bursts.clear();
         let c = self.c;
         while let Some(&[frame, op, a, b, last]) = self.script.get(self.next) {
             if frame > c {
@@ -239,6 +260,22 @@ impl EndingScene {
                 6 => self.white = Fade { from: self.white.level(c) as i32, to: 255, at: c, len: a },
                 19 => self.black = Fade { from: self.black.level(c) as i32, to: 0, at: c, len: a },
                 20 => self.black = Fade { from: self.black.level(c) as i32, to: 255, at: c, len: a },
+                // kind a >> 1 at slot a & 1's node b, turned away from the other slot's node c (0x3AB504)
+                17 => {
+                    let s = (a & 1) as usize;
+                    if let (Some(p), Some(q)) = (self.node_at(s, b), self.node_at(1 - s, last)) {
+                        self.bursts.push(Burst { kind: (a as usize >> 1) & 3, pos: p, dir: Some(p - q), high: false, spin: 0.0 });
+                    }
+                }
+                // the dust at slot a & 1's node b (0x62: its place on the floor), spinning c x 2 pi / 4096 a frame
+                // (0x3AB644)
+                18 => {
+                    let s = (a & 1) as usize;
+                    let at = if b == 0x62 { self.node_at(s, 0).map(|p| (p * Vec3::new(1.0, 0.0, 1.0), false)) } else { self.node_at(s, b).map(|p| (p, p.y * UNITS > 500.0)) };
+                    if let Some((pos, high)) = at {
+                        self.bursts.push(Burst { kind: 3, pos, dir: None, high, spin: last as f32 * std::f32::consts::TAU / 4096.0 });
+                    }
+                }
                 -1 => self.done = true,
                 _ => {}
             }
@@ -295,6 +332,12 @@ impl EndingScene {
             }
         };
         Some((m, ch.pose(clip, frame, false), Mat4::IDENTITY))
+    }
+
+    /// Slot `s`'s node `n` (the game's numbering, the model's nodes') in metres; none for an empty slot or 0x4000 up.
+    fn node_at(&self, s: usize, n: i32) -> Option<Vec3> {
+        let (_, pose, place) = self.pose(s)?;
+        Some(place.transform_point3(pose.get(usize::try_from(n).ok()?)?.w_axis.truncate()))
     }
 
     /// The camera: eye and target in metres (y up), and the vertical field of view.

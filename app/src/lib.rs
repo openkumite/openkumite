@@ -3752,6 +3752,9 @@ impl App {
         stage.models.clear();
         let models = s.characters.iter().zip(&s.records).map(|(c, &record)| skinned_character(&r, c, record)).collect();
         (self.scene, self.renderer) = (Some(stage), Some(r));
+        let mut vfx = kumite_game::vfx::Vfx::new(&self.assets);
+        vfx.set_stage(s.arena);
+        self.vfx = Some(vfx);
         Some((s, models))
     }
 
@@ -3789,6 +3792,12 @@ impl App {
             }
             (_, Some(s)) if !s.done && !skip => {
                 s.step();
+                if let Some(v) = self.vfx.as_mut() {
+                    v.tick();
+                    for b in &s.bursts {
+                        v.burst_at(b.kind, b.pos, b.dir, b.high, b.spin);
+                    }
+                }
                 // (the EMBU starts its music from its script)
                 if let (Some(bgm), Some(audio), Some(sound)) = (s.music.take(), self.audio.as_mut(), self.sound.as_ref()) {
                     audio.music(sound.music(bgm));
@@ -5327,11 +5336,12 @@ impl App {
         r.backdrop = self.scene.as_ref().filter(|_| !sky.is_empty()).map_or_else(Vec::new, |s| sky_backdrop(&cam, s));
         // effect sprites, as quads facing the camera
         let (mut p_alpha, mut p_add, mut soft_alpha, mut soft_add) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        if let (Some(v), true) = (self.vfx.as_ref(), self.fight.is_some() || self.embu.is_some() || self.tag.is_some()) {
-            effect_quads(&v.sprites(), v.atlas(), &cam, &mut p_alpha, &mut p_add);
+        if let (Some(v), true) = (self.vfx.as_ref(), self.fight.is_some() || self.embu.is_some() || self.tag.is_some() || self.ttt_ending.as_ref().is_some_and(|e| e.scene.is_some())) {
+            // (Tekken Tag's dust: blended at its texture's alpha, as the arenas' soft particles)
+            effect_quads(&v.sprites(), v.atlas(), &cam, &mut p_alpha, &mut p_add, &mut soft_alpha);
             // (the arena's weather where its stage is drawn)
             if let Some(w) = self.scene.as_ref().filter(|_| !statics.is_empty()).and_then(|s| s.weather.as_ref()) {
-                effect_quads(&w.sprites(), v.atlas(), &cam, &mut soft_alpha, &mut soft_add);
+                effect_quads(&w.sprites(), v.atlas(), &cam, &mut soft_alpha, &mut soft_add, &mut Vec::new());
             }
         }
         // the projection the renderer uses, for texts at 3D positions
@@ -5455,7 +5465,7 @@ impl App {
                     if let (Some((roll, (black, white))), Some(d)) = (ending, roster.ttt.as_deref()) {
                         let view = art::Screen::fit(ctx.content_rect());
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("ttt_ending")));
-                        ttt::draw_ending(&painter, &view, d, roll, black, white);
+                        ttt::draw_ending(&painter, &view, art, d, roll, black, white);
                     }
                     if let Some(screen) = screen {
                         if let Some(f) = fight.filter(|_| screen.ttt_over_fight()) {
@@ -6369,7 +6379,7 @@ fn sky_backdrop(cam: &Camera, scene: &Scene) -> Vec<(Arc<kumite_render::Texture>
 }
 
 /// Effect sprites as triangles: camera-facing quads, or quads flat on the floor (turned by their angle).
-fn effect_quads(sprites: &[kumite_game::vfx::Sprite], (cols, rows): (u32, u32), cam: &Camera, alpha: &mut Vec<StaticVertex>, add: &mut Vec<StaticVertex>) {
+fn effect_quads(sprites: &[kumite_game::vfx::Sprite], (cols, rows): (u32, u32), cam: &Camera, alpha: &mut Vec<StaticVertex>, add: &mut Vec<StaticVertex>, blend: &mut Vec<StaticVertex>) {
     use kumite_game::vfx::Blend;
     let forward = (cam.target - cam.eye).normalize_or_zero();
     let right = forward.cross(glam::Vec3::Y).normalize_or_zero();
@@ -6391,7 +6401,11 @@ fn effect_quads(sprites: &[kumite_game::vfx::Sprite], (cols, rows): (u32, u32), 
         }
         let corner = |dx: f32, dy: f32, u: f32, v: f32| StaticVertex { pos: (pos + right * dx * h + up * dy * h).to_array(), uv: [u, v], color: s.color };
         let quad = [corner(-1.0, 1.0, u0, v0), corner(1.0, 1.0, u1, v0), corner(-1.0, -1.0, u0, v1), corner(1.0, -1.0, u1, v1)];
-        let out = if s.blend == Blend::Add { &mut *add } else { &mut *alpha };
+        let out = match s.blend {
+            Blend::Add => &mut *add,
+            Blend::Half => &mut *alpha,
+            Blend::Alpha => &mut *blend,
+        };
         out.extend([quad[0], quad[2], quad[1], quad[1], quad[2], quad[3]]);
     }
 }
