@@ -34,6 +34,8 @@ struct Json {
 #[derive(Deserialize)]
 struct JsonFighterCams {
     ids: Vec<[i64; 2]>,
+    #[serde(default)]
+    rows: Vec<[i64; 3]>,
     lists: Vec<Vec<JsonFighterEntry>>,
 }
 #[derive(Deserialize)]
@@ -288,7 +290,9 @@ pub struct Director {
     /// The per-fighter situation cameras (0x3943A8): by camera id its list (0x12C on), a list's entries (cumulative
     /// weight of 4096, as 0x3941F0 leaves them; the first of its three scripts, the one a move's id takes).
     fighter_ids: Vec<(i64, usize)>,
-    fighter_lists: Vec<Vec<(i64, [i64; 16])>>,
+    fighter_lists: Vec<Vec<(i64, [[i64; 16]; 3])>>,
+    /// The rows by character and alias (0x509820): [character, alias, list], read when the other fighter is down.
+    fighter_rows: Vec<[i64; 3]>,
 }
 #[derive(Debug)]
 struct Situation {
@@ -346,7 +350,7 @@ impl Director {
             lists[list.id] = Some(CamList { split, entries });
         }
         let situations = s.entries.iter().map(|e| Situation { in_frames: e.in_frames, hold: e.field_1, pitch: e.pitch, yaw: e.yaw_offset }).collect();
-        let (mut fighter_ids, mut fighter_lists) = (Vec::new(), Vec::new());
+        let (mut fighter_ids, mut fighter_lists, mut fighter_rows) = (Vec::new(), Vec::new(), Vec::new());
         if let Some(f) = f {
             for list in f.lists {
                 let total: i64 = list.iter().map(|e| e.weight).sum();
@@ -354,13 +358,15 @@ impl Director {
                 let mut entries = Vec::new();
                 for e in list {
                     sum += e.weight;
-                    entries.push(((sum << 12) / total.max(1), e.scripts.first().copied().unwrap_or([-1; 16])));
+                    let script = |k: usize| e.scripts.get(k).copied().unwrap_or([-1; 16]);
+                    entries.push(((sum << 12) / total.max(1), [script(0), script(1), script(2)]));
                 }
                 fighter_lists.push(entries);
             }
             fighter_ids = f.ids.iter().filter_map(|&[id, list]| Some((id, usize::try_from(list - 0x12C).ok()?))).collect();
+            fighter_rows = f.rows;
         }
-        Ok(Self { situations, lists, motions: m.motions, fighter_ids, fighter_lists })
+        Ok(Self { situations, lists, motions: m.motions, fighter_ids, fighter_lists, fighter_rows })
     }
 }
 
@@ -732,6 +738,11 @@ pub struct Actor {
     pub release: bool,
     /// Its move's flags bits 20-21 (2: a per-fighter camera freezes on it, 0x394A40).
     pub follow: i64,
+    /// Down for the round (+0x131, set by the damage that K.O.s it, 0x372414 / 0x37271C); its character (+0x28)
+    /// and its move's alias (+0x10C).
+    pub ko: bool,
+    pub character: i64,
+    pub alias: i64,
 }
 
 /// Tekken Tag's director block (CAM 0x433330).
@@ -1146,9 +1157,11 @@ impl FightCamera {
     }
 
     /// 0x38DEA0 / 0x3943A8: a per-fighter camera, once a move: a fighter's move with camera id 0x23-0x66 picks a
-    /// script from its list (rand & 0xFFF) about the other fighter; the script's kind sets the state, its frames the
-    /// count, its blend in the blend. shortcut: as when the other's +0x131 is clear (unknown): not ids 0x1C-0x20 nor
-    /// the rows by character and motion (0x509820), and kinds 9 / 17 look at the root, not +0x39C.
+    /// script from its list (rand & 0xFFF) about the other fighter; once the other is down (K.O.) also ids 0x1C-0x20
+    /// and the rows by the mover's character and alias (0x509820); kind 4 of ids 0x23-0x66 only on a fighter down.
+    /// The script's kind sets the state, its frames the count, its blend in the blend. shortcut: a row's script by
+    /// +0x13A / +0x13B (set by the damage function, not decoded) is its first; the point +0x39C kept at the K.O. is
+    /// the root.
     fn fighter_start(&mut self, dir: &Director, orient: [bool; 2]) -> bool {
         if self.cam.used.iter().any(Option::is_some) {
             return false;
@@ -1156,13 +1169,18 @@ impl FightCamera {
         let a = self.actors;
         for it in 0..2 {
             let (o, m) = (&a[it], &a[1 - it]);
-            if !(0x23..=0x66).contains(&m.cam) {
-                continue;
-            }
-            let Some(list) = dir.fighter_ids.iter().find(|e| e.0 == m.cam).and_then(|e| dir.fighter_lists.get(e.1)) else { continue };
+            let by_id = (0x23..=0x66).contains(&m.cam) || (o.ko && (0x1C..=0x20).contains(&m.cam));
+            let list = if by_id {
+                dir.fighter_ids.iter().find(|e| e.0 == m.cam).map(|e| e.1)
+            } else if o.ko {
+                dir.fighter_rows.iter().find(|r| r[0] == m.character && r[1] == m.alias).and_then(|r| usize::try_from(r[2] - 0x12C).ok())
+            } else {
+                None
+            };
+            let Some(list) = list.and_then(|k| dir.fighter_lists.get(k)) else { continue };
             let r = self.rand() & 0xFFF;
-            let Some(&(_, script)) = list.iter().find(|e| e.0 >= r) else { return false };
-            if script[0] == -1 {
+            let Some(&(_, [script, ..])) = list.iter().find(|e| e.0 >= r) else { return false };
+            if script[0] == -1 || (0x23..=0x66).contains(&m.cam) && script[0] == 4 && !o.ko {
                 return false;
             }
             let (kind, frames, blend) = (script[0], script[1], script[2]);

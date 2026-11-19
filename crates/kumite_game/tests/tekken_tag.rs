@@ -424,6 +424,36 @@ fn a_move_has_its_per_fighter_camera() {
     assert_eq!(Some(seen), run());
 }
 
+/// Once the other fighter is down (+0x131) a mover's alias picks its row's camera (0x509820: Paul's alias 370, list
+/// 0x12C); standing, none.
+#[test]
+fn a_finishing_move_has_its_camera_once_the_other_is_down() {
+    let Some(a) = assets() else { return };
+    let run = |down: bool| {
+        let mut g = Game::load(&a, [PAUL, LEI]).unwrap();
+        g.camera.data().director.as_ref()?;
+        if !a.gamedata::<serde_json::Value>("camera.json").is_ok_and(|c| c["fighter_cameras"]["rows"].is_array()) {
+            return None;
+        }
+        for _ in 0..60 {
+            g.step([Pad::default(); 2]);
+        }
+        if down {
+            g.fight.fighters[1].health = 0;
+        }
+        g.fight.fighters[0].play_alias(370);
+        let mut states = Vec::new();
+        for _ in 0..3 {
+            g.step([Pad::default(); 2]);
+            states.push(g.camera.special());
+        }
+        Some(states)
+    };
+    let (Some(down), Some(up)) = (run(true), run(false)) else { return };
+    assert!(down.iter().any(|s| (7..=15).contains(s)), "{down:?}");
+    assert!(up.iter().all(|&s| s == 1), "{up:?}");
+}
+
 /// The K.O. replay runs on Tekken Tag's own shots (0x3D0748): a still eye per pass, a new one each pass; the same
 /// each time.
 #[test]
