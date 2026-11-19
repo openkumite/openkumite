@@ -76,7 +76,7 @@ Tekken 3's data never goes through it. The whole move and cancel tables are the 
 - Other property ops (hand poses, sounds' numbers, camera scripts); air recovery and the missing-move fallback
   alias are unknown.
 - Ogre's bone 0x13 and projectile bones 0x18 / 0x19 give no strike segment.
-- The AI (no ai.json: a CPU does little), the losers' end motions, the team-lose shot (arcade).
+- The AI (no ai.json: a CPU does little; SURVIVAL without ai.json `survival` plays the DIFFICULTY option's level 0), the losers' end motions, the team-lose shot (arcade).
 
 ## The game
 
@@ -126,6 +126,9 @@ the timer's digits, STAGE n / FINAL, the partner's bar), CONTINUE? 9..0 (898 fra
 OPTIONS (DIFFICULTY LEVEL, FIGHT COUNT, ROUND TIME: kept in the save). Arcade, Time Attack and 1 ON 1: eight fights,
 1-6 from the CPU pool (one a pair of 0x5207F0), 7 the rival team in Ogre's arena, 8 Unknown alone, one round, in hers.
 Team Battle: one match a member, the winner stays with 15 % back. Survival: one round a fight, the health carried.
+The CPU's profile (0x380120): the DIFFICULTY option's (all five) at the fight's number as the level (fight n: level n -
+1, seen in PCSX2), TIME ATTACK at NORMAL, SURVIVAL by the streak (ai.json `survival`, converter format 18); its
+random draws start from the match's seed (Tekken Tag's rand() runs on through the front end).
 The save (`openkumite_save_ttt.json`, `ttt`): the unlock stage (0x440818: a clear with a new ending or 50 matches
 advance it), points, the endings seen (`seen`, a bit per ending), options.
 
