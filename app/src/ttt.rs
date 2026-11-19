@@ -3741,10 +3741,35 @@ pub fn bowl_records(
     bowl_top(painter, v, art, d, scene, &list, new, 255);
     chrome(painter, v, art, d, &scene.text("king", "THE KING OF IRONBOWL"), 112.0, 40.0, Some(15), 5.0);
     if cursor.is_none() {
-        let h = &d.raw["help"]["band"]["rect"];
-        Art::shade(painter, v, sv([num(&h[0]), 419.0, num(&h[2]), 48.0]), [rgba(&d.raw["help"]["band"]["colour"]); 4]);
-        chrome(painter, v, art, d, "EXIT:START", 72.0, 440.0, Some(5), 4.0);
+        exit_start(painter, v, art, d);
     }
+}
+
+/// EXIT:START on the help band (y 419).
+fn exit_start(painter: &egui::Painter, v: &View, art: &Art, d: &Data) {
+    let h = &d.raw["help"]["band"]["rect"];
+    Art::shade(painter, v, sv([num(&h[0]), 419.0, num(&h[2]), 48.0]), [rgba(&d.raw["help"]["band"]["colour"]); 4]);
+    chrome(painter, v, art, d, "EXIT:START", 72.0, 440.0, Some(5), 4.0);
+}
+
+/// TOP 5 BOWLERS from the Bowl pause (0x3F3118): over the hall as it stands, with no shade of its own; the row under
+/// the cursor lit by the band (0x3F2A38) before the list (0x3F2D00), THE KING OF IRONBOWL above, the help line 109
+/// (or EXIT:START with the help off).
+// shortcut: a button on a row opens its score card on the PS2 (0x3F25D8); records keep no card here, so it does nothing
+pub fn bowl_pause_top(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, list: &[kumite_game::bowl::Record], cursor: usize) {
+    record_band(painter, v, 135.0 + 71.0 * cursor as f32);
+    bowl_top(painter, v, art, d, scene, list, None, 0);
+    chrome(painter, v, art, d, &scene.text("king", "THE KING OF IRONBOWL"), 112.0, 40.0, Some(15), 5.0);
+    if progress().setting(d, HELP_ROW) != 0 {
+        help_line(painter, v, art, d, 109, 0);
+    } else {
+        exit_start(painter, v, art, d);
+    }
+}
+
+/// A record's band (0x3F2A38): the width of the screen, 63 high above `y`, grey 128 at alpha 0x40 (half).
+fn record_band(painter: &egui::Painter, v: &View, y: f32) {
+    Art::shade(painter, v, sv([0.0, y - 63.0, W, 63.0]), [Color32::from_rgba_unmultiplied(128, 128, 128, 128); 4]);
 }
 
 /// A score card as the PS2 draws it (0x3C59D8): a row a player (68 high, the second's 46), of pieces of file 130 each
@@ -4032,9 +4057,8 @@ pub fn bowl_pause_card(painter: &egui::Painter, v: &View, art: &Art, d: &Data, s
 /// TOP 5 BOWLERS (the Bowl pause's entry 4, 0x3F2D00): the title at (183, 64); a record every 71 from y 135 (0x3F2AC0):
 /// its place large at x 16 with ST / ND / RD / TH after it, the team's two faces in their frames from x 176 (52 apart),
 /// the score right-aligned on 364 (size 9) and PTS at 408, the name at 468.
-// shortcut: over the scene darkened (what the PS2 shows behind it is not decoded)
 pub fn bowl_top(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, list: &[kumite_game::bowl::Record], new: Option<usize>, back: u8) {
-    // (`back`: after the results on their black, 255; from the pause over the hall darkened, not decoded there)
+    // (`back`: after the results on their black, 255; from the pause over the hall, 0)
     Art::shade(painter, v, crate::art::FULL, [Color32::from_black_alpha(back); 4]);
     chrome(painter, v, art, d, &scene.text("top", "TOP 5 BOWLERS"), 183.0, 64.0, Some(10), 5.0);
     for (k, r) in list.iter().enumerate().take(5) {
@@ -4042,7 +4066,7 @@ pub fn bowl_top(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &
         // (the new record: its row's band, colour 11)
         let lit = new == Some(k);
         if lit {
-            Art::shade(painter, v, sv([0.0, y - 63.0, W, 63.0]), [Color32::from_rgba_unmultiplied(128, 128, 128, 128); 4]);
+            record_band(painter, v, y);
         }
         let (c, score_c) = if lit { (11, 11) } else { (15, 21) };
         let end = chrome(painter, v, art, d, &format!("{:2}", k + 1), 16.0, y - 27.0, Some(c), 10.0);
