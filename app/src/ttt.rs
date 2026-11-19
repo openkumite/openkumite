@@ -8,10 +8,14 @@
 //! lightning, frame, pulsing cursors, RANDOM's roll, timer and plates, its 3D characters standing and posing), in frames.
 //!
 //! The fight HUD is the PS2's (FRONTEND.md 4): the tag bars, plates, lamps, timer, the ladder's STAGE and time, the
-//! round's texts in the chrome font as its printf lays them out.
+//! round's texts in the chrome font as its printf lays them out. The pause menu, OPTIONS and GAME OPTIONS are the
+//! PS2's with their help line (FRONTEND.md 8); OPTIONS' CONTROLLER SETUP and ADJUST DISPLAY open OpenKumite's KEY
+//! CONFIGURATION and GRAPHICS. GAME OPTIONS keeps every value; of them the fights read DIFFICULTY LEVEL, FIGHT COUNT,
+//! ROUND TIME, CHARACTER CHANGE AT CONTINUE, and the menus HELP MESSAGES (shortcut: GUARD DAMAGE, CHARACTER SELECT
+//! CURSOR, QUICK SELECT, CHICKEN MARKING, SPEAKER OUT and the volumes are kept but not played by).
 //!
 //! Not decoded, OpenKumite's own: the VS screen's code (laid out as the PS2 shows it), which button gives which
-//! costume, the option and Theater screens' layout, the staff roll's fonts.
+//! costume, Theater's layout, the staff roll's fonts.
 
 use crate::art::{additive, Art, Screen as View, SCREEN_H, SCREEN_W};
 use crate::menu::{lcg, sfx, FightSetup, Key, Mode, Outcome, Roster};
@@ -42,8 +46,20 @@ pub const FORCE: u32 = 0x101;
 const OPTIONS: u32 = 11;
 /// Armor King's character id.
 const ARMOR_KING: usize = 26;
-/// OPTIONS' rows the engine plays (the config's DIFFICULTY LEVEL, FIGHT COUNT, ROUND TIME), then EXIT.
+/// The options the fights read (the config's DIFFICULTY LEVEL, FIGHT COUNT, ROUND TIME).
 const OPTION_ROWS: [usize; 3] = [0, 1, 2];
+/// OPTIONS' entries (0x439CC8): GAME OPTIONS, CONTROLLER SETUP, RECORDS, ADJUST DISPLAY, MEMORY CARD(PS2), EXIT.
+const OPT_GAME: usize = 0;
+const OPT_CONTROLLER: usize = 1;
+const OPT_RECORDS: usize = 2;
+const OPT_DISPLAY: usize = 3;
+const OPT_MEMORY_CARD: usize = 4;
+/// GAME OPTIONS' row of OpenKumite's ARCADE ARENAS (with the arcade pack), before DEFAULT.
+const ARCADE_ROW: usize = usize::MAX;
+/// GAME OPTIONS' CHARACTER CHANGE AT CONTINUE row.
+const CHANGE_ROW: usize = 3;
+/// GAME OPTIONS' HELP MESSAGES row.
+const HELP_ROW: usize = 8;
 /// The last unlock stage (FRONTEND.md 7).
 const LAST_STAGE: u32 = 14;
 /// Frames the result and message screens stay (START skips).
@@ -264,12 +280,46 @@ pub struct Progress {
     /// Tekken Force's keys and hi-score here (apart from Tekken 3's records).
     pub force_keys: u32,
     pub force_hiscore: u32,
+    /// The other GAME OPTIONS (rows 3.., CHARACTER CHANGE AT CONTINUE to SE VOLUME) as set (missing: the defaults).
+    pub settings: Vec<usize>,
+    /// RECORDS (0x440D50): the picks of each character (by id), TIME ATTACK's best times, SURVIVAL's most wins.
+    pub usage: Vec<u32>,
+    pub times: Vec<Record>,
+    pub survivors: Vec<Record>,
+    /// The main menu's entries entered once (a bit by mode; config +0x24): an unlocked one blinks until then.
+    pub entered: u32,
 }
+
+/// A TIME ATTACK (frames) or SURVIVAL (wins) record: the team's character ids and the name entered.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Record {
+    pub score: u32,
+    pub members: Vec<usize>,
+    pub name: String,
+}
+
+/// The records kept of each (TIME ATTACK's table 0x440D58 holds 10; shortcut: SURVIVAL's count is not decoded).
+const RECORDS: usize = 10;
 
 /// The save's progress as last loaded or changed (the menus read it; the app keeps it in the save), as the
 /// DIFFICULTY of the Tekken 3 menus.
-static PROGRESS: std::sync::Mutex<Progress> =
-    std::sync::Mutex::new(Progress { stage: 0, points: 0, seen: 0, options: None, arcade_off: false, bowlers: None, bowl_bonus: [false; 2], force_keys: 0, force_hiscore: 0 });
+static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress {
+    stage: 0,
+    points: 0,
+    seen: 0,
+    options: None,
+    arcade_off: false,
+    bowlers: None,
+    bowl_bonus: [false; 2],
+    force_keys: 0,
+    force_hiscore: 0,
+    settings: Vec::new(),
+    usage: Vec::new(),
+    times: Vec::new(),
+    survivors: Vec::new(),
+    entered: 0,
+});
 
 pub fn progress() -> Progress {
     PROGRESS.lock().map_or_else(|e| e.into_inner().clone(), |p| p.clone())
@@ -285,6 +335,31 @@ pub fn set_progress(p: Progress) {
 impl Progress {
     pub fn options(&self, d: &Data) -> [usize; 3] {
         self.options.unwrap_or_else(|| OPTION_ROWS.map(|r| d.option(r).0))
+    }
+
+    /// Where `r` would stand among SURVIVAL's (`survival`: most wins first) or TIME ATTACK's records (fastest first);
+    /// None: not among them.
+    pub fn rank(&self, survival: bool, r: &Record) -> Option<usize> {
+        let list = if survival { &self.survivors } else { &self.times };
+        let at = list.iter().position(|o| if survival { r.score > o.score } else { r.score < o.score }).unwrap_or(list.len());
+        (at < RECORDS && (r.score > 0 || !survival)).then_some(at)
+    }
+
+    /// Keep `r` among the records.
+    pub fn record(&mut self, survival: bool, r: Record) {
+        if let Some(at) = self.rank(survival, &r) {
+            let list = if survival { &mut self.survivors } else { &mut self.times };
+            list.insert(at, r);
+            list.truncate(RECORDS);
+        }
+    }
+
+    /// GAME OPTIONS row `row`'s value as set, else its default.
+    pub fn setting(&self, d: &Data, row: usize) -> usize {
+        match row {
+            0..=2 => self.options(d)[row],
+            _ => self.settings.get(row - 3).copied().unwrap_or_else(|| d.option(row).0),
+        }
     }
 
     /// A match finished: a play point (shortcut: one a match; the per-match value 0x35AE14 is not decoded); 50 make
@@ -403,6 +478,11 @@ impl Run {
         !self.humans[k] && self.mode != PRACTICE
     }
 
+    /// The player's character ids.
+    fn members(&self, roster: &Roster) -> Vec<usize> {
+        self.teams[0].iter().filter_map(|p| roster.characters.get(p.0)).map(|c| c.id).collect()
+    }
+
     /// The arcade ladder's STAGE (1..8).
     pub fn stage_number(&self) -> Option<u32> {
         ladder_mode(self.mode).then_some(self.fight as u32 + 1)
@@ -456,7 +536,11 @@ impl Run {
                 if up {
                     lines.push(unlocked(d, roster, progress.stage));
                 }
-                let page = Page::Message { lines, frame: 0, title: true };
+                let mut page = Page::Message { lines, frame: 0, title: true };
+                let record = Record { score: self.frames, members: self.members(roster), name: String::new() };
+                if self.mode == TIME_ATTACK && progress.rank(false, &record).is_some() {
+                    page = Page::NameEntry { survival: false, record, letter: 0, then: Box::new(page) };
+                }
                 match ending {
                     Some((e, costume)) => Next::Ending(e, costume, page),
                     None => Next::Screen(page),
@@ -472,15 +556,22 @@ impl Run {
                 Next::Screen(Page::Continue { run: Box::new(self), countdown: CONTINUE })
             }
             SURVIVAL if won => {
+                // the player's 15 % of its full health back, as Team Battle's winner (0x3C1620, mode 4)
                 self.wins[0] += 1;
-                self.health[0] = Some(health[0]);
+                let refill = d.raw["team_battle"]["refill_percent"].as_i64().unwrap_or(15) as i32;
+                self.health[0] = Some((health[0] + max[0] / 100 * refill).min(max[0]));
                 self.teams[1] = cpu_team(d, roster, progress.stage, &self.teams[0], 1, false, seed);
                 self.stage = pick(&d.pool(progress), seed).unwrap_or(self.stage);
                 Next::Fight(Box::new(self))
             }
             SURVIVAL => {
                 progress.played(d, None);
-                Next::Screen(Page::Message { lines: vec!["SURVIVAL".into(), format!("WINS {}", self.wins[0])], frame: 0, title: false })
+                let page = Page::Message { lines: vec!["SURVIVAL".into(), format!("WINS {}", self.wins[0])], frame: 0, title: false };
+                let record = Record { score: self.wins[0], members: self.members(roster), name: String::new() };
+                if progress.rank(true, &record).is_some() {
+                    return Next::Screen(Page::NameEntry { survival: true, record, letter: 0, then: Box::new(page) });
+                }
+                Next::Screen(page)
             }
             TEAM => {
                 // the loser's next member comes in; the winner stays, 15 % of its full health back (0x3C1620)
@@ -611,11 +702,17 @@ pub enum Page {
         scroll: i32,
         idle: u32,
     },
+    /// OPTIONS (screen 9): its entries' cursor.
     Options {
         cursor: usize,
-        values: [usize; 3],
-        /// ARCADE ARENAS on.
+    },
+    /// GAME OPTIONS: the cursor (on `game_rows`), every option's value, OpenKumite's ARCADE ARENAS on, DEFAULT's YES /
+    /// NO open (YES chosen).
+    GameOptions {
+        cursor: usize,
+        values: Vec<usize>,
         arcade: bool,
+        reset: Option<bool>,
     },
     Select(Box<Select>),
     /// The VS modes' arena (OpenKumite's): RANDOM, Tekken Tag's, the arcade pack's.
@@ -628,8 +725,7 @@ pub enum Page {
         run: Box<Run>,
         countdown: u32,
     },
-    /// GAME OVER (0x35B0E4) over the fight's scene, then the title. shortcut: the CHARACTER USAGE ranking the PS2 shows
-    /// between them (screen 7) is not done.
+    /// GAME OVER (0x35B0E4) over the fight's scene, then the CHARACTER USAGE ranking (screen 7), then the title.
     GameOver {
         frame: u32,
     },
@@ -638,6 +734,21 @@ pub enum Page {
         lines: Vec<String>,
         frame: u32,
         title: bool,
+    },
+    /// RECORDS (0x3B2978): the page (CHARACTER USAGE, GREATEST SURVIVORS, TIME ATTACK), the first row shown;
+    /// `attract`: after GAME OVER, CHARACTER USAGE for a while, then the title.
+    Records {
+        page: usize,
+        scroll: usize,
+        attract: bool,
+    },
+    /// A new record's name entry: the record (its name so far), the letter under the cursor of `records.letters`,
+    /// then `then`.
+    NameEntry {
+        survival: bool,
+        record: Record,
+        letter: usize,
+        then: Box<Page>,
     },
     /// THEATER (screen 0xC): its rows and cells, the cursor's [row, cell].
     Theater {
@@ -677,6 +788,8 @@ pub struct Select {
     pub done: u32,
     /// VS: the tally so far.
     pub tally: Option<[u32; 2]>,
+    /// CONTINUE with CHARACTER CHANGE AT CONTINUE: the run the picks go on with.
+    pub cont: Option<Box<Run>>,
 }
 
 impl Select {
@@ -696,7 +809,7 @@ impl Select {
         if mode == PRACTICE {
             sides[1] = Side { player: Some(0), need: 1, ..side(Some(0), 1) };
         }
-        Self { mode, sides, frame: 0, done: 0, tally }
+        Self { mode, sides, frame: 0, done: 0, tally, cont: None }
     }
 
     /// The side `player`'s keys move now.
@@ -789,9 +902,9 @@ impl Select {
                 side.done = true;
             }
             Key::Button(_) | Key::Start => {
-                // (the pad's raw bits as 0x3C9ED8 reads them: square, triangle, cross, circle, START)
+                // (the pad's raw bits as 0x3C9ED8 reads them: square, triangle, cross, circle, a shoulder, START)
                 let button = match key {
-                    Key::Button(b) => [0x80, 0x10, 0x40, 0x20].get(b).copied()?,
+                    Key::Button(b) => [0x80, 0x10, 0x40, 0x20, 0x04].get(b).copied()?,
                     _ => 0x800,
                 };
                 self.take(s, button, d, roster, progress)?;
@@ -880,6 +993,10 @@ impl Select {
         if self.done < int(&d.raw["select"]["done"]).max(1) as u32 {
             return None;
         }
+        if let Some(mut run) = self.cont.take() {
+            run.teams[0] = self.sides[0].picks.clone();
+            return Some(*run);
+        }
         let teams = [self.sides[0].picks.clone(), if self.sides[1].player.is_some() { self.sides[1].picks.clone() } else { vec![] }];
         let mut run = Run::new(d, roster, progress, self.mode, teams, seed);
         if let Some(t) = self.tally {
@@ -902,6 +1019,16 @@ impl Front {
 
     pub fn menu() -> Self {
         Self { page: Page::Menu { cursor: 0, scroll: 0, idle: 0 }, frame: 0 }
+    }
+
+    /// OPTIONS on CONTROLLER SETUP (`controller`) or ADJUST DISPLAY: back from OpenKumite's screens standing for them.
+    pub fn options(controller: bool) -> Self {
+        Self { page: Page::Options { cursor: if controller { OPT_CONTROLLER } else { OPT_DISPLAY } }, frame: 0 }
+    }
+
+    /// The main menu with its cursor on `mode`'s entry.
+    fn menu_at(d: &Data, p: &Progress, mode: u32) -> Page {
+        Page::Menu { cursor: Self::items(d, p).iter().position(|i| i.0 == mode).unwrap_or(0), scroll: 0, idle: 0 }
     }
 
     /// The main menu's entries: of the locked ones, THEATER once an ending was seen (0x3BFED8), TEKKEN BOWL once the
@@ -952,9 +1079,14 @@ impl Front {
                     }
                     Key::Start | Key::Button(_) => {
                         sfx::play(sound(&d, "decide"));
+                        // (a newly opened entry no longer blinks once entered: config +0x24, 0x3BFE78)
+                        if let Some(&(m, _)) = items.get(*cursor).filter(|i| i.0 < 32) {
+                            progress.entered |= 1 << m;
+                            set_progress(progress.clone());
+                        }
                         match items.get(*cursor).map(|i| i.0) {
                             Some(u32::MAX) => return Outcome::Exit,
-                            Some(OPTIONS) => Some(Page::Options { cursor: 0, values: progress.options(&d), arcade: !progress.arcade_off }),
+                            Some(OPTIONS) => Some(Page::Options { cursor: 0 }),
                             Some(THEATER) => Some(Page::Theater { cursor: [0, 0] }),
                             Some(m) => Some(Page::Select(Box::new(Select::new(m, &d, None)))),
                             None => None,
@@ -964,37 +1096,113 @@ impl Front {
                     _ => None,
                 }
             }
-            Page::Options { cursor, values, arcade } => match key {
-                Key::Up | Key::Down => {
-                    sfx::play(sound(&d, "cursor"));
-                    let rows = option_rows(&d);
-                    *cursor = (*cursor + if key == Key::Up { rows } else { 1 }) % (rows + 1);
-                    None
+            // (0x3B19B0: the entries round, sound 3; a choice sound 5; back to the main menu)
+            Page::Options { cursor } => {
+                let n = d.raw["options_menu"]["items"].as_array().map_or(0, Vec::len).max(1);
+                match key {
+                    Key::Up | Key::Down => {
+                        sfx::play(sound(&d, "cursor"));
+                        *cursor = (*cursor + if key == Key::Up { n - 1 } else { 1 }) % n;
+                        None
+                    }
+                    Key::Start | Key::Button(_) => match *cursor {
+                        OPT_GAME => {
+                            sfx::play(sound(&d, "decide"));
+                            let values = (0..option_count(&d)).map(|r| progress.setting(&d, r)).collect();
+                            Some(Page::GameOptions { cursor: 0, values, arcade: !progress.arcade_off, reset: None })
+                        }
+                        // (OpenKumite's KEY CONFIGURATION and GRAPHICS stand for the PS2's pages)
+                        OPT_CONTROLLER => {
+                            sfx::play(sound(&d, "decide"));
+                            return Outcome::OpenKeyConfig(crate::menu::difficulty());
+                        }
+                        OPT_DISPLAY => {
+                            sfx::play(sound(&d, "decide"));
+                            return Outcome::OpenGraphics(crate::menu::difficulty());
+                        }
+                        OPT_RECORDS => {
+                            sfx::play(sound(&d, "decide"));
+                            Some(Page::Records { page: 0, scroll: 0, attract: false })
+                        }
+                        OPT_MEMORY_CARD => None,
+                        c if c + 1 < n => None,
+                        _ => Some(Self::menu_at(&d, progress, OPTIONS)),
+                    },
+                    Key::Back => {
+                        sfx::play(sound(&d, "cancel"));
+                        Some(Self::menu_at(&d, progress, OPTIONS))
+                    }
+                    _ => None,
                 }
-                // ARCADE ARENAS (OpenKumite's, with the arcade pack): on or off
-                Key::Left | Key::Right if *cursor == OPTION_ROWS.len() && option_rows(&d) > OPTION_ROWS.len() => {
-                    sfx::play(sound(&d, "cursor"));
-                    *arcade = !*arcade;
-                    None
+            }
+            Page::GameOptions { cursor, values, arcade, reset } => {
+                let rows = game_rows(&d);
+                let row = rows.get(*cursor).copied().unwrap_or(ARCADE_ROW);
+                let o = &d.raw["options"][row];
+                let kind = int(&o["kind"]);
+                match (reset.as_mut(), key) {
+                    // DEFAULT's YES / NO
+                    (Some(yes), Key::Left | Key::Right) => {
+                        sfx::play(sound(&d, "cursor"));
+                        *yes = !*yes;
+                        None
+                    }
+                    (Some(yes), Key::Start | Key::Button(_) | Key::Back) => {
+                        if *yes && key != Key::Back {
+                            sfx::play(sound(&d, "decide"));
+                            *values = (0..values.len()).map(|r| d.option(r).0).collect();
+                            *arcade = true;
+                        } else {
+                            sfx::play(sound(&d, "cancel"));
+                        }
+                        *reset = None;
+                        None
+                    }
+                    (None, Key::Up | Key::Down) => {
+                        sfx::play(sound(&d, "cursor"));
+                        let n = rows.len().max(1);
+                        *cursor = (*cursor + if key == Key::Up { n - 1 } else { 1 }) % n;
+                        None
+                    }
+                    (None, Key::Left | Key::Right) if row == ARCADE_ROW => {
+                        sfx::play(sound(&d, "cursor"));
+                        *arcade = !*arcade;
+                        None
+                    }
+                    // (a list goes round; a number 0-10 stops at its ends)
+                    (None, Key::Left | Key::Right) if row < values.len() && kind != 2 => {
+                        let v = &mut values[row];
+                        let n = d.option(row).1.len();
+                        let next = match (kind, key) {
+                            (1, Key::Left) => v.saturating_sub(1),
+                            (1, _) => (*v + 1).min(10),
+                            (_, Key::Left) => (*v + n.max(1) - 1) % n.max(1),
+                            _ => (*v + 1) % n.max(1),
+                        };
+                        if next != *v {
+                            sfx::play(sound(&d, "cursor"));
+                            *v = next;
+                        }
+                        None
+                    }
+                    (None, Key::Start | Key::Button(_)) if kind == 2 && *cursor + 1 < rows.len() => {
+                        sfx::play(sound(&d, "cursor"));
+                        *reset = Some(false);
+                        None
+                    }
+                    // EXIT (or back): kept in the save
+                    (None, Key::Start | Key::Button(_) | Key::Back) if key == Key::Back || kind == 2 => {
+                        sfx::play(sound(&d, "cancel"));
+                        progress.options = Some(OPTION_ROWS.map(|r| values.get(r).copied().unwrap_or(0)));
+                        progress.settings = values.iter().skip(OPTION_ROWS.len()).copied().collect();
+                        progress.arcade_off = !*arcade;
+                        set_progress(progress.clone());
+                        self.page = Page::Options { cursor: OPT_GAME };
+                        return Outcome::TttSaved;
+                    }
+                    _ => None,
                 }
-                Key::Left | Key::Right if *cursor < OPTION_ROWS.len() => {
-                    sfx::play(sound(&d, "cursor"));
-                    let n = d.option(OPTION_ROWS[*cursor]).1.len().max(1);
-                    values[*cursor] = (values[*cursor] + if key == Key::Left { n - 1 } else { 1 }) % n;
-                    None
-                }
-                // EXIT (or back): kept in the save
-                Key::Start | Key::Button(_) | Key::Back if key == Key::Back || *cursor == option_rows(&d) => {
-                    sfx::play(sound(&d, "cancel"));
-                    progress.options = Some(*values);
-                    progress.arcade_off = !*arcade;
-                    set_progress(progress.clone());
-                    let at = Self::items(&d, progress).iter().position(|i| i.0 == OPTIONS).unwrap_or(0);
-                    self.page = Page::Menu { cursor: at, scroll: 0, idle: 0 };
-                    return Outcome::TttSaved;
-                }
-                _ => None,
-            },
+            }
             Page::Select(s) => s.key(player, key, &d, roster, progress),
             Page::Stage { run, cursor } => {
                 let n = stage_list(&d).len().max(1);
@@ -1019,10 +1227,15 @@ impl Front {
                 }
             }
             Page::Continue { run, countdown } => match key {
-                // START continues the same fight; a face button skips 100 frames
+                // START continues the same fight, through the select with CHARACTER CHANGE AT CONTINUE (row 3) YES
+                // (0x3BA560); a face button skips 100 frames
                 Key::Start => {
                     sfx::play(sound(&d, "start"));
-                    return Outcome::TttFight(run.clone());
+                    if progress.setting(&d, CHANGE_ROW) == 1 {
+                        Some(Page::Select(Box::new(Select { cont: Some(run.clone()), ..Select::new(run.mode, &d, None) })))
+                    } else {
+                        return Outcome::TttFight(run.clone());
+                    }
                 }
                 Key::Button(_) => {
                     *countdown = countdown.saturating_sub(100);
@@ -1035,6 +1248,62 @@ impl Front {
                 _ => None,
             },
             Page::GameOver { .. } => None,
+            // (left / right the page, up / down the rows; back to OPTIONS, or after GAME OVER to the title)
+            Page::Records { page, scroll, attract } => match key {
+                _ if *attract => matches!(key, Key::Start | Key::Button(_)).then_some(Page::Title),
+                Key::Left | Key::Right => {
+                    sfx::play(sound(&d, "cursor"));
+                    *page = (*page + if key == Key::Left { 2 } else { 1 }) % 3;
+                    *scroll = 0;
+                    None
+                }
+                Key::Up | Key::Down => {
+                    let max = record_rows(progress, *page).len().saturating_sub(RECORD_ROWS);
+                    let next = if key == Key::Up { scroll.saturating_sub(1) } else { (*scroll + 1).min(max) };
+                    if next != *scroll {
+                        sfx::play(sound(&d, "cursor"));
+                        *scroll = next;
+                    }
+                    None
+                }
+                Key::Start | Key::Button(_) | Key::Back => {
+                    sfx::play(sound(&d, "cancel"));
+                    Some(Page::Options { cursor: OPT_RECORDS })
+                }
+            },
+            // (0x3D0450: the letters go round; a button takes the one under the cursor, "<" takes the last back,
+            // "=" or the last letter ends; START ends)
+            Page::NameEntry { survival, record, letter, then } => {
+                let letters: Vec<char> = d.raw["records"]["letters"].as_str().unwrap_or_default().chars().collect();
+                let n = letters.len().max(1);
+                let mut done = key == Key::Start;
+                match (key, letters.get(*letter)) {
+                    (Key::Left | Key::Right | Key::Up | Key::Down, _) => {
+                        sfx::play(sound(&d, "cursor"));
+                        *letter = (*letter + if matches!(key, Key::Left | Key::Down) { n - 1 } else { 1 }) % n;
+                    }
+                    (Key::Button(_) | Key::Back, Some('<')) | (Key::Back, _) => {
+                        sfx::play(sound(&d, "cancel"));
+                        record.name.pop();
+                    }
+                    (Key::Button(_), Some('=')) => done = true,
+                    (Key::Button(_), Some(&c)) => {
+                        sfx::play(sound(&d, "pick"));
+                        record.name.push(c);
+                        done = record.name.chars().count() >= int(&d.raw["records"]["name_len"]).max(1);
+                    }
+                    _ => {}
+                }
+                if !done {
+                    return Outcome::None;
+                }
+                sfx::play(sound(&d, "decide"));
+                progress.record(*survival, record.clone());
+                set_progress(progress.clone());
+                self.page = std::mem::replace(then.as_mut(), Page::Title);
+                self.frame = 0;
+                return Outcome::TttSaved;
+            }
             Page::Theater { cursor } => {
                 let rows = theater(&d, progress.seen);
                 let [r, c] = cursor;
@@ -1120,6 +1389,15 @@ impl Front {
             }
             Page::Select(s) => {
                 if let Some(run) = s.tick(&d, roster, progress, seed) {
+                    // CHARACTER USAGE: each of the players' picks
+                    let mut p = progress.clone();
+                    for c in run.teams.iter().zip(run.humans).filter(|t| t.1).flat_map(|t| t.0).filter_map(|m| roster.characters.get(m.0)) {
+                        if p.usage.len() <= c.id {
+                            p.usage.resize(c.id + 1, 0);
+                        }
+                        p.usage[c.id] += 1;
+                    }
+                    set_progress(p);
                     if run.mode == FORCE {
                         return Outcome::StartForce(run.teams[0].first().copied().unwrap_or((0, 0)), run.options[0].min(2));
                     }
@@ -1144,9 +1422,15 @@ impl Front {
             }
             Page::GameOver { frame } => {
                 *frame += 1;
+                // then the CHARACTER USAGE ranking, as the PS2 shows it
                 if *frame >= int(&d.raw["arcade"]["continue"]["game_over"]["frames"]) as u32 {
-                    self.page = Page::Title;
+                    self.page = Page::Records { page: 0, scroll: 0, attract: true };
+                    self.frame = 0;
                 }
+            }
+            Page::Records { attract: true, .. } if self.frame >= MESSAGE_FRAMES => {
+                self.page = Page::Title;
+                self.frame = 0;
             }
             Page::Message { frame, title, .. } => {
                 *frame += 1;
@@ -1196,27 +1480,17 @@ impl Front {
                     Art::shade(painter, v, sv([0.0, 0.0, W, H]), [Color32::from_rgba_unmultiplied(255, 255, 255, a); 4]);
                 }
             }
-            Page::Menu { cursor, scroll, .. } => draw_menu(painter, v, art, d, &Self::items(d, progress), *cursor, *scroll, self.frame),
-            Page::Options { cursor, values, arcade } => {
-                // the logo dimmed (0x3B4B20: 0x3C4868 a step a frame down to `dim`)
+            Page::Menu { cursor, scroll, .. } => draw_menu(painter, v, art, d, &Self::items(d, progress), *cursor, *scroll, self.frame, progress.entered),
+            // (the logo dimmed: 0x3B4B20, 0x3C4868 a step a frame down to `dim`)
+            Page::Options { cursor } => {
                 let m = &d.raw["menu"];
                 let level = (128.0 - num(&m["logo_step"]) * self.frame as f32).max(num(&m["dim"]));
                 image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(level).0);
-                font(painter, v, art, d, "OPTIONS", W / 2.0, 40.0, 0.6, Color32::WHITE);
-                let mut rows: Vec<(&str, &str)> = OPTION_ROWS
-                    .iter()
-                    .enumerate()
-                    .map(|(k, &row)| (d.raw["options"][row]["label"].as_str().unwrap_or_default(), d.raw["options"][row]["values"][values[k]].as_str().unwrap_or_default().trim()))
-                    .collect();
-                rows.extend((option_rows(d) > OPTION_ROWS.len()).then_some(("ARCADE ARENAS", if *arcade { "ON" } else { "OFF" })));
-                for (k, (label, value)) in rows.iter().enumerate() {
-                    let c = if k == *cursor { Color32::WHITE } else { Color32::from_gray(150) };
-                    let y = 130.0 + 40.0 * k as f32;
-                    font(painter, v, art, d, label, 200.0, y, 0.35, c);
-                    font(painter, v, art, d, value, 500.0, y, 0.35, c);
-                }
-                let c = if *cursor == rows.len() { Color32::WHITE } else { Color32::from_gray(150) };
-                font(painter, v, art, d, "EXIT", W / 2.0, 130.0 + 40.0 * rows.len() as f32, 0.35, c);
+                draw_options(painter, v, art, d, progress, *cursor);
+            }
+            Page::GameOptions { cursor, values, arcade, reset } => {
+                image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(num(&d.raw["menu"]["dim"])).0);
+                draw_game_options(painter, v, art, d, *cursor, values, *arcade, *reset);
             }
             Page::Stage { cursor, .. } => {
                 backdrop(painter, v, art);
@@ -1244,6 +1518,25 @@ impl Front {
                 chrome(painter, v, art, d, &text, num(&c["x"]), num(&c["y"]), None, 10.0);
             }
             Page::GameOver { .. } => banner_at(painter, v, art, d, &d.raw["arcade"]["continue"]["game_over"], 0),
+            Page::Records { page, scroll, attract } => {
+                let level = if *attract { 128.0 } else { num(&d.raw["menu"]["dim"]) };
+                image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(level).0);
+                draw_records(painter, v, art, d, roster, progress, *page, *scroll, self.frame, !*attract);
+            }
+            Page::NameEntry { record, letter, .. } => {
+                backdrop(painter, v, art);
+                let r = &d.raw["records"];
+                let text = r["new_record"].as_str().unwrap_or_default();
+                let w = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, text, 0.0, 0.0, None, 10.0);
+                chrome(painter, v, art, d, text, (W - w) / 2.0, 150.0, Some(int(&r["pages"][2]["colour"])), 10.0);
+                // (OpenKumite's layout: the letters so far, then the cursor's blinking)
+                let letters: Vec<char> = r["letters"].as_str().unwrap_or_default().chars().collect();
+                let mut name = record.name.clone();
+                if self.frame & 0x10 == 0 {
+                    name.push(letters.get(*letter).copied().unwrap_or(' '));
+                }
+                chrome(painter, v, art, d, &name, W / 2.0 - 60.0, 260.0, Some(11), 10.0);
+            }
             Page::Message { lines, .. } => {
                 backdrop(painter, v, art);
                 // (a long one, Tekken Bowl's results, closer and smaller)
@@ -1408,8 +1701,228 @@ fn stage_list(d: &Data) -> Vec<(Option<usize>, String)> {
 }
 
 /// OPTIONS' rows: the game's, then ARCADE ARENAS with the arcade pack.
-fn option_rows(d: &Data) -> usize {
-    OPTION_ROWS.len() + usize::from(!d.arcade.is_empty())
+/// The options with a value (`options` of kind 0 or 1).
+fn option_count(d: &Data) -> usize {
+    d.raw["options"].as_array().map_or(0, |o| o.iter().take_while(|o| int(&o["kind"]) != 2).count())
+}
+
+/// GAME OPTIONS' rows: the options by number, ARCADE ARENAS (OpenKumite's, with the arcade pack), then DEFAULT and
+/// EXIT.
+fn game_rows(d: &Data) -> Vec<usize> {
+    let n = d.raw["options"].as_array().map_or(0, Vec::len);
+    let k = option_count(d);
+    (0..k).chain((!d.arcade.is_empty()).then_some(ARCADE_ROW)).chain(k..n).collect()
+}
+
+/// A title of `options_menu` (`title`, `title_xy`, `title_size`, `title_colour`).
+fn title(painter: &egui::Painter, v: &View, art: &Art, d: &Data, t: &Value) {
+    let m = &d.raw["options_menu"];
+    let size = t["title_size"].as_f64().map_or(num(&m["title_size"]), |s| s as f32);
+    chrome(painter, v, art, d, t["title"].as_str().unwrap_or_default(), num(&t["title_xy"][0]), num(&t["title_xy"][1]), Some(int(&m["title_colour"])), size);
+}
+
+/// OPTIONS (0x3B19B0, `options_menu`): the title, the entries `item_dy` apart, each over its `line` (the cursor's
+/// white, over the green `band`), in their colours (MEMORY CARD(PS2) in the unavailable one: OpenKumite saves by
+/// itself), the cursor entry's help line.
+fn draw_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Progress, cursor: usize) {
+    let m = &d.raw["options_menu"];
+    title(painter, v, art, d, m);
+    let (x, y0, dy, size) = (num(&m["item_xy"][0]), num(&m["item_xy"][1]), num(&m["item_dy"]), num(&m["size"]));
+    let (line, band) = (&m["line"], &m["band"]);
+    for (k, label) in m["items"].as_array().into_iter().flatten().enumerate() {
+        let y = y0 + dy * k as f32;
+        if k == cursor {
+            let (on, [b0, b1, b2], [t, b]) = (rgba(&band["colour"]), [0, 1, 2].map(|i| num(&band["x"][i])), [num(&band["y"][0]), num(&band["y"][1])]);
+            Art::shade(painter, v, sv([b0, y + t, b1 - b0, b - t]), [Color32::TRANSPARENT, on, Color32::TRANSPARENT, on]);
+            Art::shade(painter, v, sv([b1, y + t, b2 - b1, b - t]), [on, Color32::TRANSPARENT, on, Color32::TRANSPARENT]);
+        }
+        let (l0, l1, t, b) = (num(&line["x"][0]), num(&line["x"][1]), num(&line["y"][0]), num(&line["y"][1]));
+        let on = rgba(if k == cursor { &line["cursor"] } else { &line["colour"] });
+        Art::shade(painter, v, sv([l0, y + t, l1 - l0, b - t]), [on, Color32::TRANSPARENT, on, Color32::TRANSPARENT]);
+        let colour = match k {
+            _ if k == cursor => int(&m["colours"]["cursor"]),
+            OPT_MEMORY_CARD => int(&m["game"]["colours"]["off"]),
+            _ => int(&m["colours"]["item"]),
+        };
+        chrome(painter, v, art, d, label.as_str().unwrap_or_default(), x, y, Some(colour), size);
+    }
+    if p.setting(d, HELP_ROW) != 0 {
+        help_line(painter, v, art, d, int(&m["help"]) + cursor, 0);
+    }
+}
+
+/// RECORDS' rows shown at once.
+const RECORD_ROWS: usize = 6;
+
+/// A RECORDS page's rows: CHARACTER USAGE (each character picked: its id, its per-mille of the picks), GREATEST
+/// SURVIVORS, TIME ATTACK.
+fn record_rows(p: &Progress, page: usize) -> Vec<(Vec<usize>, u32, String)> {
+    match page {
+        0 => {
+            let total: u32 = p.usage.iter().sum();
+            let mut rows: Vec<(Vec<usize>, u32, String)> = p.usage.iter().enumerate().filter(|u| *u.1 > 0).map(|(c, &n)| (vec![c], n * 1000 / total.max(1), String::new())).collect();
+            rows.sort_by_key(|a| std::cmp::Reverse(a.1));
+            rows
+        }
+        1 => p.survivors.iter().map(|r| (r.members.clone(), r.score, r.name.clone())).collect(),
+        _ => p.times.iter().map(|r| (r.members.clone(), r.score, r.name.clone())).collect(),
+    }
+}
+
+/// RECORDS (0x3B2978, `records`): the title; the page's name between its arrows (blinking every `arrows_blink`
+/// frames); `rows` rows `row_dy` apart, each over a bar in the page's colour (0x3B15F8): the rank and its suffix
+/// (0x3B1EC8), the faces (0x3CE318, 40 x 42), then CHARACTER USAGE's name and share "%3d.%1d%", SURVIVORS' wins and
+/// WIN(S) and name, TIME ATTACK's time and name, at the page's `columns`; the arrows of more rows above and below
+/// (0x3B1F78); the page's help line.
+#[allow(clippy::too_many_arguments)]
+fn draw_records(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &Roster, p: &Progress, page: usize, scroll: usize, frame: u32, help: bool) {
+    let r = &d.raw["records"];
+    let pg = &r["pages"][page];
+    title(painter, v, art, d, r);
+    let py = num(&r["page_y"]);
+    chrome(painter, v, art, d, pg["title"].as_str().unwrap_or_default(), num(&pg["x"]), py, Some(int(&pg["colour"])), num(&r["page_size"]));
+    let arrow = |k: usize, x: f32, y: f32| {
+        let pic = d.raw["menu"]["arrows"]["pictures"][k].as_str().unwrap_or_default();
+        let h = art.pic(pic).map_or(0.0, |p| p.1[1] as f32);
+        sprite(painter, v, art, pic, x, y - h, Color32::WHITE);
+    };
+    if frame / int(&r["arrows_blink"]).max(1) as u32 % 2 == 1 {
+        arrow(0, num(&r["arrows_x"][0]), py);
+        arrow(1, num(&r["arrows_x"][1]), py);
+    }
+    let rows = record_rows(p, page);
+    let col = |k: usize, key: &str| num(&pg["columns"][k][key]);
+    let colour = |k: usize| Some(int(&pg["columns"][k]["colour"]));
+    let (y0, dy, bar_w) = (num(&r["row_y"]), num(&r["row_dy"]), num(&r["bar_w"]));
+    for (k, (members, score, name)) in rows.iter().enumerate().skip(scroll).take(RECORD_ROWS) {
+        let y = y0 + dy * (k - scroll) as f32;
+        let on = rgba(&pg["bar"]);
+        let (b, x) = (&d.raw["pause"]["bar"], num(&d.raw["options_menu"]["game"]["row_xy"][0]));
+        let (t, h) = (num(&b["y"][0]), num(&b["y"][1]) - num(&b["y"][0]));
+        Art::shade(painter, v, sv([0.0, y + 2.0 + t, x, h]), [Color32::TRANSPARENT, on, Color32::TRANSPARENT, on]);
+        Art::shade(painter, v, sv([x, y + 2.0 + t, bar_w, h]), [on, Color32::TRANSPARENT, on, Color32::TRANSPARENT]);
+        let rank = k + 1;
+        let suffix = match rank % 10 {
+            1 if rank != 11 => 0,
+            2 if rank != 12 => 1,
+            3 if rank != 13 => 2,
+            _ => 3,
+        };
+        let end = chrome(painter, v, art, d, &format!("{rank:2}"), num(&r["rank_x"]), y - 4.0, Some(int(&pg["colour"])), 5.0);
+        chrome(painter, v, art, d, r["suffixes"][suffix].as_str().unwrap_or_default(), end, y, Some(11), 4.0);
+        for (m, &c) in members.iter().enumerate().take(2) {
+            let fx = num(&r["faces_x"][m]);
+            image(painter, v, art, &d.picture(&["select", "faces", &c.to_string()]), [fx, y - 46.0, 40.0, 42.0], Color32::WHITE);
+        }
+        match page {
+            0 => {
+                let n = members.first().and_then(|&c| roster.by_id(c)).map_or(String::new(), |c| c.name.to_uppercase());
+                chrome(painter, v, art, d, &n, col(0, "x"), y + col(0, "dy"), colour(0), col(0, "size"));
+                chrome(painter, v, art, d, &format!("{:3}.{}%", score / 10, score % 10), col(1, "x"), y + col(1, "dy"), colour(1), col(1, "size"));
+            }
+            1 => {
+                chrome(painter, v, art, d, &format!("{:3}", (*score).min(999)), col(0, "x"), y + col(0, "dy"), colour(0), col(0, "size"));
+                chrome(painter, v, art, d, if *score >= 2 { "WINS" } else { "WIN" }, col(1, "x"), y + col(1, "dy"), colour(1), col(1, "size"));
+                chrome(painter, v, art, d, name, col(2, "x"), y + col(2, "dy"), colour(2), col(2, "size"));
+            }
+            _ => {
+                chrome(painter, v, art, d, &clock(*score), col(0, "x"), y + col(0, "dy"), colour(0), col(0, "size"));
+                chrome(painter, v, art, d, name, col(1, "x"), y + col(1, "dy"), colour(1), col(1, "size"));
+            }
+        }
+    }
+    if help && p.setting(d, HELP_ROW) != 0 {
+        help_line(painter, v, art, d, int(&r["help"]) + page, 0);
+    }
+}
+
+/// The cursor's bar (0x3B15F8; the pause's `bar` colour): from `x0` (nothing) to `x1` (its colour) to `x2` (nothing),
+/// `bar.y` about the foot `y`.
+fn bar(painter: &egui::Painter, v: &View, d: &Data, [x0, x1, x2]: [f32; 3], y: f32) {
+    let b = &d.raw["pause"]["bar"];
+    let (on, t, h) = (rgba(&b["colour"]), num(&b["y"][0]), num(&b["y"][1]) - num(&b["y"][0]));
+    Art::shade(painter, v, sv([x0, y + t, x1 - x0, h]), [Color32::TRANSPARENT, on, Color32::TRANSPARENT, on]);
+    Art::shade(painter, v, sv([x1, y + t, x2 - x1, h]), [on, Color32::TRANSPARENT, on, Color32::TRANSPARENT]);
+}
+
+/// GAME OPTIONS (0x3B42A0, `options_menu.game`): the title; a row each `row_dy` apart, "LABEL:" then its value in
+/// `default`'s colour while at its default, else `value`'s (a number 0 as OFF); the cursor's label gold over its bar,
+/// the arrows towards the values it can go to (a list's both, a two-value list's right one only); DEFAULT's YES / NO
+/// once taken; the cursor row's help line with its value's alternative. OpenKumite's ARCADE ARENAS is a row of its
+/// own before DEFAULT.
+#[allow(clippy::too_many_arguments)]
+fn draw_game_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data, cursor: usize, values: &[usize], arcade: bool, reset: Option<bool>) {
+    let g = &d.raw["options_menu"]["game"];
+    title(painter, v, art, d, g);
+    let size = num(&d.raw["options_menu"]["size"]);
+    let (x, y0, dy) = (num(&g["row_xy"][0]), num(&g["row_xy"][1]), num(&g["row_dy"]));
+    let colour = |k: &str| Some(int(&g["colours"][k]));
+    let arrow = |right: bool, ax: f32, y: f32| {
+        let pic = d.raw["menu"]["arrows"]["pictures"][usize::from(right)].as_str().unwrap_or_default();
+        let h = art.pic(pic).map_or(0.0, |p| p.1[1] as f32);
+        sprite(painter, v, art, pic, ax, y - h, Color32::WHITE);
+    };
+    for (k, &row) in game_rows(d).iter().enumerate() {
+        let y = y0 + dy * k as f32;
+        let o = &d.raw["options"][row];
+        let (label, kind) = if row == ARCADE_ROW { ("ARCADE ARENAS", 0) } else { (o["label"].as_str().unwrap_or_default(), int(&o["kind"])) };
+        let on = k == cursor;
+        if kind == 2 {
+            // (DEFAULT in the default's colour)
+            let c = if on {
+                colour("cursor")
+            } else if k + 1 < game_rows(d).len() {
+                colour("default")
+            } else {
+                colour("label")
+            };
+            if on {
+                let end = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, label, x, y, None, size);
+                bar(painter, v, d, [0.0, x, end + num(&g["bar_past"])], y);
+            }
+            chrome(painter, v, art, d, label, x, y, c, size);
+            if let (true, Some(yes)) = (on, reset) {
+                let (yes_c, no_c) = if yes { (colour("cursor"), colour("off")) } else { (colour("off"), colour("cursor")) };
+                let end = chrome(painter, v, art, d, "YES  ", num(&g["yes_no_x"]), y, yes_c, size);
+                chrome(painter, v, art, d, "NO", end, y, no_c, size);
+                arrow(!yes, num(&o["arrows"][usize::from(!yes)]), y);
+            }
+            continue;
+        }
+        let (value, default) = if row == ARCADE_ROW {
+            (usize::from(arcade), 1)
+        } else {
+            let default = d.option(row).0;
+            (values.get(row).copied().unwrap_or(default), default)
+        };
+        let text = match (row, kind) {
+            (ARCADE_ROW, _) => ["OFF", "ON"][value.min(1)].to_string(),
+            (_, 1) if value == 0 => " OFF".into(),
+            (_, 1) => format!(" {value}"),
+            _ => o["values"][value].as_str().unwrap_or_default().to_string(),
+        };
+        let head = format!("{label}:");
+        let end = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, &head, x, y, None, size);
+        if on {
+            bar(painter, v, d, [0.0, x, end + num(&g["bar_past"])], y);
+        }
+        chrome(painter, v, art, d, &head, x, y, if on { colour("cursor") } else { colour("label") }, size);
+        let value_end = chrome(painter, v, art, d, &text, end, y, if value == default { colour("default") } else { colour("value") }, size);
+        if on {
+            let [l, r] = [num(&o["arrows"][0]), num(&o["arrows"][1])];
+            let (l, r) = if row == ARCADE_ROW { (-1.0, value_end + 2.0) } else { (l, r) };
+            if l >= 0.0 && (kind == 0 || value > 0) {
+                arrow(false, l, y);
+            }
+            if r >= 0.0 && (kind == 0 || value < 10) {
+                arrow(true, r, y);
+            }
+        }
+    }
+    let row = game_rows(d).get(cursor).copied().unwrap_or(ARCADE_ROW);
+    if row != ARCADE_ROW && values.get(HELP_ROW).is_none_or(|&h| h != 0) {
+        help_line(painter, v, art, d, int(&g["help"]) + row, values.get(row).copied().unwrap_or(0));
+    }
 }
 
 /// Tekken Tag's 640 x 448 rectangle in the 368 x 480 one the screens draw on.
@@ -1462,9 +1975,10 @@ fn lit(painter: &egui::Painter, v: &View, art: &Art, file: &str, r: [f32; 4], le
 
 /// The main menu (0x3BD2E0): the logo, `rows` rows about the cursor, `row_h` apart and `scroll` off, each in its text
 /// colour, clipped to `clip` under the black fades; the band behind the cursor's row, its alpha up `alpha_step` a
-/// frame; the arrows on its sides, blinking every `period` frames once the band is whole.
+/// frame; the arrows on its sides, blinking every `period` frames once the band is whole. An unlocked entry not yet
+/// entered (`entered`) blinks colour 9 every 4 frames.
 #[allow(clippy::too_many_arguments)]
-fn draw_menu(painter: &egui::Painter, v: &View, art: &Art, d: &Data, items: &[(u32, String)], cursor: usize, scroll: i32, frame: u32) {
+fn draw_menu(painter: &egui::Painter, v: &View, art: &Art, d: &Data, items: &[(u32, String)], cursor: usize, scroll: i32, frame: u32, entered: u32) {
     let m = &d.raw["menu"];
     image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], Color32::WHITE);
     let band = &m["band"];
@@ -1485,7 +1999,8 @@ fn draw_menu(painter: &egui::Painter, v: &View, art: &Art, d: &Data, items: &[(u
         let Some((mode, label)) = items.get((cursor + n * rows + k - rows / 2) % n) else { continue };
         // (the row's y is the text's foot; OpenKumite's entries take OPTIONS' colour)
         let y = num(&m["y"]) + num(&m["row_h"]) * k as f32 + scroll as f32 - TEXT_H;
-        let colour = colour_of(*mode).or_else(|| colour_of(OPTIONS));
+        let new = *mode < 32 && entered >> mode & 1 == 0 && m["items"].as_array().into_iter().flatten().any(|i| int(&i["mode"]) as u32 == *mode && i["locked"] == true);
+        let colour = if new && frame / 4 % 2 == 1 { Some(9) } else { colour_of(*mode).or_else(|| colour_of(OPTIONS)) };
         font_in(&clip, v, art, d, colour, label, W / 2.0, y, TEXT_SCALE, Color32::WHITE);
     }
     for (k, f) in m["fades"].as_array().into_iter().flatten().enumerate() {
@@ -1969,10 +2484,11 @@ impl TagHud {
 /// printf size `size` (10 the glyphs' own), each glyph `fonts.big.advance` on (an A `kern_a` further left), in text
 /// colour `colour`.
 #[allow(clippy::too_many_arguments)]
-fn chrome(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, colour: Option<usize>, size: f32) {
+/// Returns the x it ends at.
+fn chrome(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, colour: Option<usize>, size: f32) -> f32 {
     let f = &d.raw["fonts"]["big"];
     let rows: Vec<&str> = f["rows"].as_array().into_iter().flatten().filter_map(|r| r.as_str()).collect();
-    let Some((tex, [tw, th])) = art.pic(colour.and_then(|c| f["colours"][c].as_str()).or(f["picture"].as_str()).unwrap_or_default()) else { return };
+    let Some((tex, [tw, th])) = art.pic(colour.and_then(|c| f["colours"][c].as_str()).or(f["picture"].as_str()).unwrap_or_default()) else { return x };
     let (gw, gh, s) = (num(&f["glyph"][0]).max(1.0), num(&f["glyph"][1]).max(1.0), size / 10.0);
     let (per_row, top) = (rows.first().map_or(1, |r| r.chars().count()), y + num(&f["foot_dy"]));
     let mut at = x;
@@ -1990,6 +2506,7 @@ fn chrome(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x:
         let (r, k) = place.unwrap_or((0, 0));
         at += num(&f["advance"][r * per_row + k]) * s;
     }
+    at
 }
 
 /// A round text of `hud.banners` (its format with `n`).
@@ -2001,6 +2518,173 @@ fn banner(painter: &egui::Painter, v: &View, art: &Art, d: &Data, key: &str, n: 
 fn banner_at(painter: &egui::Painter, v: &View, art: &Art, d: &Data, b: &Value, n: u32) {
     let text = crate::art::printf(b["text"].as_str().unwrap_or_default(), &[n]);
     chrome(painter, v, art, d, &text, num(&b["x"]), num(&b["y"]), Some(int(&b["colour"])), b["size"].as_f64().map_or(10.0, |s| s as f32));
+}
+
+/// The help line (0x3E5268 -> 0x3E06A0, roster.json `front_end.help`): the dark band (0x3DBCF0), then help text `n`
+/// in the help font from (`x`, `y`) at colour `level`, each glyph its `widths` on (a space `space`), `\n` a line
+/// `line_h` lower, of the `\S[...]` alternatives only the `value`-th (gp-0x67BA).
+/// shortcut: a line wider than `wrap` is not broken (0x3DF808); the texts drawn so far fit.
+fn help_line(painter: &egui::Painter, v: &View, art: &Art, d: &Data, n: usize, value: usize) {
+    let h = &d.raw["help"];
+    let f = &h["font"];
+    let Some(text) = h["texts"][n].as_str() else { return };
+    let Some((tex, [tw, th])) = art.pic(f["picture"].as_str().unwrap_or_default()) else { return };
+    let band = &h["band"];
+    let r = &band["rect"];
+    Art::shade(painter, v, sv([num(&r[0]), num(&r[1]), num(&r[2]), num(&r[3])]), [rgba(&band["colour"]); 4]);
+    let (gw, gh, cols, first) = (num(&f["glyph"][0]), num(&f["glyph"][1]), int(&f["columns"]).max(1), int(&f["first"]) as u32);
+    let tint = ps2(num(&h["level"])).0;
+    let (mut x, mut y, mut alt, mut chars) = (num(&h["x"]), num(&h["y"]), -1i64, text.chars());
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('n') => (x, y) = (num(&h["x"]), y + num(&f["line_h"])),
+                Some('S') => alt += 1,
+                _ => {}
+            }
+            continue;
+        }
+        if alt >= 0 && alt != value as i64 {
+            continue;
+        }
+        let g = (ch as u32).saturating_sub(first) as usize;
+        if ch != ' ' {
+            let (u, w) = ((g % cols) as f32 * gw / tw as f32, (g / cols) as f32 * gh / th as f32);
+            let uv = Rect::from_min_max(Pos2::new(u, w), Pos2::new(u + gw / tw as f32, w + gh / th as f32));
+            let [rx, ry, rw, rh] = sv([x, y, gw, gh]);
+            painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, tint);
+        }
+        x += if ch == ' ' { num(&f["space"]) } else { num(&f["widths"][g]) };
+    }
+}
+
+/// A PS2 RGBA `[r, g, b, a]` (alpha 0x80 opaque).
+fn rgba(c: &Value) -> Color32 {
+    let k = |i: usize| int(&c[i]).min(255) as u8;
+    Color32::from_rgba_unmultiplied(k(0), k(1), k(2), (int(&c[3]) * 255 / 128).min(255) as u8)
+}
+
+/// The pause menu's entries (0x3B7B98: `front_end.pause.items` by number): CANCEL, RESET, COMMAND LIST, ADJUST
+/// DISPLAY, CONTROLLER SETUP. SCREEN CAPTURE (3) shows once the Gallery is open, the Bowl's two (4, 5) only in Tekken
+/// Bowl: neither is here (no Gallery; Tekken Bowl's pause is its own).
+pub const PAUSE_ITEMS: [usize; 5] = [0, 1, 2, 6, 7];
+
+/// The pause entries OpenKumite does not have, drawn in the game's colour for one unavailable (`colours.off`).
+/// shortcut: COMMAND LIST (no move list), ADJUST DISPLAY and CONTROLLER SETUP (OpenKumite's GRAPHICS and KEY
+/// CONFIGURATION are in OPTIONS) do nothing in a fight.
+fn pause_off(item: usize) -> bool {
+    matches!(item, 2 | 6 | 7)
+}
+
+/// What a key does to the pause menu (0x3B7B98): up / down move the cursor round the entries (sound 3); a button takes
+/// the entry (CANCEL closes, sound 3; RESET opens RESET?, sound 3); START and back close it. RESET? (`reset`: YES
+/// chosen): left / right choose (sound 3); a button takes it (YES: the reset, sound 4; NO: back to the entries, sound
+/// 3); START and back close it. True: the game is reset.
+pub fn pause_key(d: &Data, pause: &mut Option<(usize, usize)>, reset: &mut Option<bool>, key: Key) -> bool {
+    let Some((cursor, _)) = pause.as_mut() else { return false };
+    let n = PAUSE_ITEMS.len();
+    match (reset.as_mut(), key) {
+        (Some(yes), Key::Left | Key::Right) => {
+            sfx::play(sound(d, "cursor"));
+            *yes = !*yes;
+        }
+        (Some(true), Key::Button(_)) => {
+            sfx::play(sound(d, "start"));
+            (*pause, *reset) = (None, None);
+            return true;
+        }
+        (Some(_), Key::Button(_) | Key::Start | Key::Back) => {
+            sfx::play(sound(d, "cursor"));
+            *reset = None;
+        }
+        (None, Key::Up | Key::Down) => {
+            sfx::play(sound(d, "cursor"));
+            *cursor = (*cursor + if key == Key::Up { n - 1 } else { 1 }) % n;
+        }
+        (None, Key::Button(_)) => match PAUSE_ITEMS.get(*cursor) {
+            Some(0) => {
+                sfx::play(sound(d, "cursor"));
+                *pause = None;
+            }
+            Some(1) => {
+                sfx::play(sound(d, "cursor"));
+                *reset = Some(false);
+            }
+            _ => {}
+        },
+        (None, Key::Start | Key::Back) => {
+            sfx::play(sound(d, "cursor"));
+            *pause = None;
+        }
+        _ => {}
+    }
+    false
+}
+
+/// The pause menu as the PS2 draws it (0x3B7B98, `front_end.pause`): the window (0x3DC768: navy over the scene in a
+/// grey frame, 8 out), "PAUSE Pn" in the chrome font while the frame's 0x30 bits are on, the entries `item_dy` apart
+/// (the cursor's in `colours.cursor` over its bar, 0x3BB680: green fading out to the right, `bar.dx` past the text),
+/// the cursor entry's help line (HELP MESSAGES on); or RESET? alone with YES / NO (the chosen gold, the other grey), the arrow towards
+/// the choice and its help line.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_pause(painter: &egui::Painter, v: &View, art: &Art, d: &Data, cursor: usize, player: usize, reset: Option<bool>, frame: u32) {
+    let p = &d.raw["pause"];
+    let help = progress().setting(d, HELP_ROW) != 0;
+    let window = |r: &Value| {
+        let [x, y, w, h] = [num(&r[0]), num(&r[1]), num(&r[2]), num(&r[3])];
+        // (the frame 4 wide, 10 out)
+        for r in [[x - 10.0, y - 10.0, w + 20.0, 4.0], [x - 10.0, y + h + 6.0, w + 20.0, 4.0], [x - 10.0, y - 6.0, 4.0, h + 12.0], [x + w + 6.0, y - 6.0, 4.0, h + 12.0]] {
+            Art::shade(painter, v, sv(r), [Color32::from_gray(195); 4]);
+        }
+        Art::shade(painter, v, sv([x - 6.0, y - 6.0, w + 12.0, h + 12.0]), [rgba(&p["colour"]); 4]);
+    };
+    let size = num(&p["size"]);
+    let colour = |k: &str| Some(int(&p["colours"][k]));
+    if let Some(yes) = reset {
+        let r = &p["reset"];
+        window(&r["window"]);
+        chrome(painter, v, art, d, r["text"].as_str().unwrap_or_default(), num(&r["xy"][0]), num(&r["xy"][1]), Some(int(&r["colour"])), size);
+        let (yes_c, no_c) = if yes { (colour("cursor"), colour("off")) } else { (colour("off"), colour("cursor")) };
+        let (x, y) = (num(&r["yes_no_xy"][0]), num(&r["yes_no_xy"][1]));
+        let end = chrome(painter, v, art, d, &format!("{}  ", r["yes_no"][0].as_str().unwrap_or_default()), x, y, yes_c, size);
+        chrome(painter, v, art, d, r["yes_no"][1].as_str().unwrap_or_default(), end, y, no_c, size);
+        // (the printf's "{" / "}" in its default font: the main menu's arrows, as the PS2 shows them)
+        let arrow = d.raw["menu"]["arrows"]["pictures"][usize::from(!yes)].as_str().unwrap_or_default();
+        let ah = art.pic(arrow).map_or(0.0, |p| p.1[1] as f32);
+        sprite(painter, v, art, arrow, num(&r["arrow_xy"][0]), num(&r["arrow_xy"][1]) - ah, Color32::WHITE);
+        if help {
+            help_line(painter, v, art, d, int(&r["help"]), 0);
+        }
+        return;
+    }
+    window(&p["window"]);
+    if frame & 0x30 != 0 {
+        let text = crate::art::printf(p["header"].as_str().unwrap_or_default(), &[player as u32 + 1]);
+        chrome(painter, v, art, d, &text, num(&p["header_xy"][0]), num(&p["header_xy"][1]), Some(0), num(&p["header_size"]));
+    }
+    let (x, y0, dy) = (num(&p["item_xy"][0]), num(&p["item_xy"][1]), num(&p["item_dy"]));
+    for (k, &item) in PAUSE_ITEMS.iter().enumerate() {
+        let label = p["items"][item].as_str().unwrap_or_default();
+        let y = y0 + dy * k as f32;
+        if k == cursor {
+            // (the text measured first, as the printf's %T)
+            let bar = &p["bar"];
+            let w = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, label, x, y, None, size) - x + num(&bar["dx"]);
+            let (on, b0, b1) = (rgba(&bar["colour"]), num(&bar["y"][0]), num(&bar["y"][1]));
+            Art::shade(painter, v, sv([x, y + b0, w, b1 - b0]), [on, Color32::TRANSPARENT, on, Color32::TRANSPARENT]);
+        }
+        let c = if k == cursor {
+            colour("cursor")
+        } else if pause_off(item) {
+            colour("off")
+        } else {
+            colour("item")
+        };
+        chrome(painter, v, art, d, label, x, y, c, size);
+    }
+    if help {
+        help_line(painter, v, art, d, int(&p["help"]) + PAUSE_ITEMS.get(cursor).copied().unwrap_or(0), 0);
+    }
 }
 
 /// The fight HUD (0x3C2F40, 0x3C23F0, 0x3C1F08, 0x3BC540; FRONTEND.md 4): per side the bar of the member in back
@@ -2587,7 +3271,7 @@ mod tests {
         let (mut p, mut seed) = (Progress::default(), 5);
         // without the arcade pack: Tekken Tag's fight arenas (not Tekken Bowl's, 20, nor 21, 22), no ARCADE ARENAS row
         assert_eq!(d.pool(&p), (0..20).collect::<Vec<_>>());
-        assert_eq!((option_rows(&d), stage_list(&d).len()), (3, 21));
+        assert_eq!((game_rows(&d).contains(&ARCADE_ROW), stage_list(&d).len()), (false, 21));
         // with it: its 13 arenas and the hidden one, ids of their own, its files, the music
         d.arcade = (ARCADE_ARENA..ARCADE_ARENA + 13).chain([ARCADE_HIDDEN]).map(|id| (id, format!("T{id}"))).collect();
         let pool = d.pool(&p);
@@ -2601,7 +3285,7 @@ mod tests {
         assert_eq!(d.pool(&p).len(), 20);
         assert!((0..200).all(|_| Run::new(&d, &roster(), &p, SURVIVAL, [vec![(0, 0)], vec![]], &mut seed).stage < ARCADE_ARENA));
         let list = stage_list(&d);
-        assert_eq!((option_rows(&d), list.len(), list[0].0, list[1].0, list[21].0, list[34].0), (4, 35, None, Some(0), Some(100), Some(ARCADE_HIDDEN)));
+        assert_eq!((game_rows(&d).contains(&ARCADE_ROW), list.len(), list[0].0, list[1].0, list[21].0, list[34].0), (true, 35, None, Some(0), Some(100), Some(ARCADE_HIDDEN)));
         // VS: the select's run waits on the stage select; a pick there is the fight's arena
         let (r, d) = (roster(), Arc::new(d));
         let mut s = Select::new(VS, &d, None);
@@ -2697,12 +3381,47 @@ mod tests {
         // a character with a third, fourth and fifth costume
         r.characters[0].costumes = vec![10, 20, 30, 40, 50];
         r.costume_of.extend([(30, 2), (40, 3), (50, 4)]);
-        assert_eq!([Key::Button(1), Key::Button(3), Key::Start].map(|k| picked(k, &r)), [Some(2), Some(3), Some(4)]);
+        assert_eq!([Key::Button(1), Key::Button(3), Key::Start, Key::Button(4)].map(|k| picked(k, &r)), [Some(2), Some(3), Some(4), Some(4)]);
         let mut s = Select::new(VS, &d, None);
         s.sides[1].cursor = 0;
         s.key(0, Key::Button(0), &d, &r, &p);
         s.key(1, Key::Button(0), &d, &r, &p);
         assert_eq!((s.sides[0].picks[0], s.sides[1].picks[0]), ((0, 0), (0, 2)));
+    }
+
+    /// The pause menu: the cursor goes round its five entries; RESET opens RESET? on NO, left takes YES, a button
+    /// resets; CANCEL closes.
+    #[test]
+    fn pause_reset_asks_first() {
+        let d = data();
+        let (mut pause, mut reset) = (Some((0, 0)), None);
+        assert!(!pause_key(&d, &mut pause, &mut reset, Key::Up));
+        assert_eq!(pause, Some((PAUSE_ITEMS.len() - 1, 0)));
+        pause = Some((1, 0));
+        assert!(!pause_key(&d, &mut pause, &mut reset, Key::Button(0)));
+        assert_eq!(reset, Some(false));
+        pause_key(&d, &mut pause, &mut reset, Key::Left);
+        assert!(pause_key(&d, &mut pause, &mut reset, Key::Button(0)));
+        assert_eq!((pause, reset), (None, None));
+        pause = Some((0, 1));
+        pause_key(&d, &mut pause, &mut reset, Key::Button(0));
+        assert_eq!(pause, None);
+    }
+
+    /// Records: TIME ATTACK fastest first, SURVIVAL most wins first (none for 0 wins), ten of each.
+    #[test]
+    fn records_keep_the_best_ten() {
+        let mut p = Progress::default();
+        let r = |score: u32| Record { score, members: vec![7], name: "ABC".into() };
+        for t in [500, 300, 400] {
+            p.record(false, r(t));
+        }
+        assert_eq!(p.times.iter().map(|t| t.score).collect::<Vec<_>>(), [300, 400, 500]);
+        assert_eq!(p.rank(true, &r(0)), None);
+        for w in 1..=12 {
+            p.record(true, r(w));
+        }
+        assert_eq!((p.survivors.len(), p.survivors[0].score, p.rank(true, &r(2))), (RECORDS, 12, None));
     }
 
     /// The main menu's rows slide a row's height in 4 a frame; no move while they slide (0x3BD2E0).
