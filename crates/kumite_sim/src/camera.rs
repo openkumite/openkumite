@@ -25,6 +25,45 @@ struct Json {
     arena_projection: Option<JsonArenas>,
     team_intro: Option<TeamIntro>,
     replay_shots: Option<ReplayShots>,
+    win_pose: Option<WinCam>,
+    situation_presets: Option<JsonSituations>,
+    move_camera_lists: Option<JsonLists>,
+    camera_motions: Option<JsonMotions>,
+}
+#[derive(Deserialize)]
+struct JsonSituations {
+    entries: Vec<JsonSituation>,
+}
+#[derive(Deserialize)]
+struct JsonSituation {
+    in_frames: i64,
+    /// The blend back's length.
+    field_1: i64,
+    pitch: [i64; 4],
+    yaw_offset: [i64; 4],
+}
+#[derive(Deserialize)]
+struct JsonLists {
+    lists: Vec<JsonList>,
+}
+#[derive(Deserialize)]
+struct JsonList {
+    id: usize,
+    entries: Vec<JsonEntry>,
+}
+#[derive(Deserialize)]
+struct JsonEntry {
+    flags: u16,
+    weight: i16,
+    #[serde(rename = "type")]
+    kind: u8,
+    value: i64,
+    mirrored_type: u8,
+    mirrored_value: i64,
+}
+#[derive(Deserialize)]
+struct JsonMotions {
+    motions: Vec<CamMotion>,
 }
 #[derive(Deserialize)]
 struct JsonArenas {
@@ -35,6 +74,12 @@ struct JsonArena {
     h: i64,
     h_min: i64,
     h_max: i64,
+    /// Tekken Tag's arena variant (CAM+0xB4).
+    #[serde(default)]
+    variant: i64,
+    /// Tekken Tag's dolly flag (CAM+0xB0): a camera motion's zoom made a dolly.
+    #[serde(default)]
+    dolly: i64,
 }
 #[derive(Deserialize)]
 struct JsonTables {
@@ -55,6 +100,9 @@ struct JsonFight {
     dead_zone_px: Option<i64>,
     vertical_keep_px: Option<i64>,
     centre_drop: Option<i64>,
+    /// Slot 1's: pitched up, and its lift per unit a low top fighter is under 1000 (in 640ths).
+    centre_drop_pitched_up: Option<i64>,
+    slot1_lift: Option<i64>,
     yaw: Option<JsonYaw>,
 }
 #[derive(Deserialize)]
@@ -202,6 +250,88 @@ pub struct PairMember {
     pub facing: i64,
 }
 
+/// Tekken Tag's win pose camera (camera.json `win_pose`, 0x35BB58): Tekken 3's camera A placed by the arena's light 0.
+#[derive(Deserialize, Clone, Debug)]
+pub struct WinCam {
+    arc_from: i64,
+    arc_range: i64,
+    distance_per_h: [i64; 2],
+    radius_add: i64,
+    eye_y: i64,
+    light_yaw: Vec<i64>,
+    /// This arena's (set by [`CameraData::for_arena`]).
+    #[serde(skip)]
+    light: i64,
+}
+
+/// Tekken Tag's special cameras (0x38C1E8): situation types 1-30 (0x508908), the camera lists by move camera id
+/// (0x434C78, after the boot's 0x393898) and the camera motions of disc file 12.
+#[derive(Debug)]
+pub struct Director {
+    situations: Vec<Situation>,
+    lists: Vec<Option<CamList>>,
+    motions: Vec<CamMotion>,
+}
+#[derive(Debug)]
+struct Situation {
+    in_frames: i64,
+    hold: i64,
+    pitch: [i64; 4],
+    yaw: [i64; 4],
+}
+/// A camera list: `split` the cumulative weight before the first entry flagged 0x10 (4096 none), the entries.
+#[derive(Debug)]
+struct CamList {
+    split: i64,
+    entries: Vec<CamEntry>,
+}
+/// An entry: its cumulative weight (of 4096), the camera (CAM+0x58: a situation type > 0, a motion < 0, none 0)
+/// and the one when mirrored, and whether it mirrors its camera (flags & 3 = 1 with both the same).
+#[derive(Debug)]
+struct CamEntry {
+    weight: i64,
+    camera: [i64; 2],
+    mirror: bool,
+}
+/// A camera motion: the flag byte, then per frame the eye (from the target), the target, the fight camera's share
+/// (128 = all) and the H it was made for.
+#[derive(Deserialize, Debug)]
+pub struct CamMotion {
+    flag: u8,
+    frames: Vec<[i64; 8]>,
+}
+
+impl Director {
+    /// The lists as the boot leaves them (0x393898): weights cumulative, of 4096; the split before the first entry
+    /// flagged 0x10 (none at the first); flags & 3 = 1 with two cameras made 2.
+    fn new(s: JsonSituations, l: JsonLists, m: JsonMotions) -> Result<Self> {
+        let camera = |kind: u8, value: i64| match kind {
+            1 => value,
+            2 => -value,
+            _ => 0,
+        };
+        let mut lists: Vec<Option<CamList>> = (0..0x134).map(|_| None).collect();
+        for list in l.lists {
+            let total: i64 = list.entries.iter().map(|e| i64::from(e.weight)).sum();
+            anyhow::ensure!(total > 0 && list.id < lists.len(), "camera.json: camera list {:#x}", list.id);
+            let (mut sum, mut split) = (0, None);
+            let mut entries = Vec::new();
+            for e in &list.entries {
+                if e.flags & 0x10 != 0 && split.is_none() && sum > 0 {
+                    split = Some(sum);
+                }
+                sum += i64::from(e.weight);
+                let cameras = [camera(e.kind, e.value), camera(e.mirrored_type, e.mirrored_value)];
+                entries.push(CamEntry { weight: (sum << 12) / total, camera: cameras, mirror: e.flags & 3 == 1 && cameras[0] == cameras[1] });
+            }
+            let split = split.map_or(0x1000, |v| (v << 12) / total);
+            lists[list.id] = Some(CamList { split, entries });
+        }
+        let situations = s.entries.iter().map(|e| Situation { in_frames: e.in_frames, hold: e.field_1, pitch: e.pitch, yaw: e.yaw_offset }).collect();
+        Ok(Self { situations, lists, motions: m.motions })
+    }
+}
+
 /// Tekken Tag's K.O. replay shots (camera.json `replay_shots`, 0x3D0748).
 #[derive(Deserialize, Clone, Debug)]
 pub struct ReplayShots {
@@ -249,11 +379,19 @@ pub struct CameraData {
     pub centre_drop: i64,
     /// (camera id, yaw speed cap) of the moves that cap it, by id.
     pub move_caps: Vec<(i64, i64)>,
-    /// Per arena: H, its clamp; the depth H * n / d.
-    arenas: Vec<[i64; 3]>,
+    /// Slot 1's centre drop when pitched up, and its lift (0x38FD90).
+    centre_drop_up: i64,
+    slot1_lift: i64,
+    /// Per arena: H, its clamp, the variant, the dolly flag; the depth H * n / d.
+    arenas: Vec<[i64; 5]>,
+    /// This arena's variant and dolly flag (Tekken Tag's CAM+0xB4 / +0xB0, set by [`CameraData::for_arena`]).
+    pub variant: bool,
+    dolly: bool,
     distance_per_h: Option<[i64; 2]>,
     pub team_intro: Option<TeamIntro>,
     pub replay_shots: Option<ReplayShots>,
+    pub win: Option<WinCam>,
+    pub director: Option<Arc<Director>>,
 }
 
 impl CameraData {
@@ -318,6 +456,10 @@ impl CameraData {
         let blend = j.intro.blend_frames.unwrap_or(16);
         anyhow::ensure!(blend > 0 && j.intro.ease_frames.is_none_or(|e| e > 0), "camera.json: intro frames must be positive");
         anyhow::ensure!(j.screen_width.is_none_or(|w| w > 0), "camera.json: screen_width must be positive");
+        let director = match (j.situation_presets, j.move_camera_lists, j.camera_motions) {
+            (Some(s), Some(l), Some(m)) => Some(Arc::new(Director::new(s, l, m)?)),
+            _ => None,
+        };
         Ok(Self {
             sin,
             gsqrt_table,
@@ -339,22 +481,31 @@ impl CameraData {
             dead_zone_px: f.dead_zone_px.unwrap_or(48),
             keep_px: f.vertical_keep_px.unwrap_or(112),
             centre_drop: f.centre_drop.unwrap_or(100),
+            centre_drop_up: f.centre_drop_pitched_up.unwrap_or(128),
+            slot1_lift: f.slot1_lift.unwrap_or(368),
             move_caps,
-            arenas: j.arena_projection.map_or_else(Vec::new, |a| a.rows.iter().map(|r| [r.h, r.h_min, r.h_max]).collect()),
+            arenas: j.arena_projection.map_or_else(Vec::new, |a| a.rows.iter().map(|r| [r.h, r.h_min, r.h_max, r.variant, r.dolly]).collect()),
+            variant: false,
+            dolly: false,
             distance_per_h: f.distance_per_h,
             team_intro: j.team_intro,
             replay_shots: j.replay_shots,
+            win: j.win_pose,
+            director,
         })
     }
 
     /// The camera of arena `arena` (0x38DBC0 at the round reset): its H, the clamp, the depth from H; None for a game
     /// with one projection (Tekken 3).
     pub fn for_arena(&self, arena: usize) -> Option<Self> {
-        let &[h, lo, hi] = self.arenas.get(arena)?;
+        let &[h, lo, hi, variant, dolly] = self.arenas.get(arena)?;
         let mut d = self.clone();
-        (d.h, d.h_range) = (h, [lo, hi]);
+        (d.h, d.h_range, d.variant, d.dolly) = (h, [lo, hi], variant != 0, dolly != 0);
         if let Some([n, den]) = self.distance_per_h {
             d.distance = tdiv(h * n, den);
+        }
+        if let Some(w) = d.win.as_mut() {
+            w.light = w.light_yaw.get(arena).copied().unwrap_or(0);
         }
         Some(d)
     }
@@ -529,6 +680,80 @@ pub struct View {
     pub roll: i64,
 }
 
+/// What Tekken Tag's director (0x38C1E8) reads of a fighter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Actor {
+    /// +0xE0: 1 throwing, -1 thrown, 0 neither.
+    pub throw: i64,
+    /// The current move (+0xC0): any value that changes with it.
+    pub mv: u64,
+    /// Its camera id (flags >> 23).
+    pub cam: i64,
+    /// Facing, 4096 a turn (+0x1A / 16).
+    pub facing: i64,
+    /// The position (+0x4) and the root (+0x51C), game space.
+    pub at: [i64; 3],
+    pub root: [i64; 3],
+    /// Frames to its move's last throw-end mark (0x393CB8: op 0x0C as the thrower, 0x0D as the victim), -1 none.
+    pub marks: [i64; 2],
+    /// Its move's posture word has 0x400000 (the throw lets go).
+    pub release: bool,
+}
+
+/// Tekken Tag's director block (CAM 0x433330).
+#[derive(Clone, Copy, Debug)]
+struct Cam {
+    /// +0x0: 1 the fight camera, 2 slot 1 held, 3 / 4 the blend to / from it, 5 the S-curve from slot 4, 6 a motion.
+    state: u8,
+    /// +0x38 the delay (a motion: -1 to start, -2 started, -3 under way); +0x3C / +0x40 a blend's count and length.
+    delay: i64,
+    n: i64,
+    len: i64,
+    /// +0x44 the throw latch, +0x30 the thrower's side, +0x34 the orientation, +0x48 a cut.
+    latch: i64,
+    side: usize,
+    orient: bool,
+    cut: bool,
+    /// +0x58 the camera (a situation type > 0, a motion < 0, none 0), +0x5C its list entry, +0x60 the move that
+    /// set it (and its camera id).
+    camera: i64,
+    entry: usize,
+    trigger: (u64, i64),
+    /// +0x64 / +0x68 slot 1's pitch and yaw (<< 6; a motion's yaw, 4096 a turn); a motion's frame (+0x84), anchor
+    /// (+0x8C) and mirror (+0xA0); +0xB8 a motion started by a throw's next part.
+    pitch: i64,
+    yaw: i64,
+    frame: usize,
+    anchor: [i64; 3],
+    mirror: bool,
+    chained: bool,
+}
+
+impl Cam {
+    /// 0x38C0F0.
+    fn new() -> Self {
+        Self {
+            state: 1,
+            delay: -1,
+            n: -1,
+            len: -1,
+            latch: -1,
+            side: 0,
+            orient: false,
+            cut: false,
+            camera: 0,
+            entry: 0,
+            trigger: (0, 0),
+            pitch: 0,
+            yaw: 0,
+            frame: 0,
+            anchor: [0; 3],
+            mirror: false,
+            chained: false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct FightCamera {
     data: Arc<CameraData>,
@@ -550,6 +775,12 @@ pub struct FightCamera {
     intro_base: Key,
     replay: Option<Replay>,
     pub view: View,
+    /// Tekken Tag's director: the fighters as it reads them (set before each step), its block, slot 1's lift
+    /// (gp-0x6FA8) and its random stream (libc rand's, carried from round to round).
+    pub actors: [Actor; 2],
+    cam: Cam,
+    lift: i64,
+    pub seed: u32,
 }
 
 /// The replay camera's block (0x800A04C8): distance, yaw and its sweeping offset (both kept in 16 bits, as the
@@ -593,11 +824,20 @@ impl FightCamera {
             intro_base: Key::default(),
             replay: None,
             view: View::default(),
+            actors: [Actor::default(); 2],
+            cam: Cam::new(),
+            lift: 0,
+            seed: 0,
         }
     }
 
     pub fn data(&self) -> &Arc<CameraData> {
         &self.data
+    }
+
+    /// Tekken Tag's director state (CAM+0): 1 the fight camera, 2-5 a situation's, 6 a camera motion.
+    pub fn special(&self) -> u8 {
+        self.cam.state
     }
 
     /// True while the round-intro fly-in is still playing.
@@ -627,6 +867,8 @@ impl FightCamera {
             if self.w[2] <= 0 {
                 self.intro = false;
             }
+        } else if let Some(dir) = self.data.director.clone() {
+            self.direct(&dir, frames_since_start, move_cam);
         } else {
             self.w = [0x1000, 0, 0, 0, 0];
             self.slot0_update(self.wprev[0] < 1, frames_since_start, move_cam);
@@ -634,6 +876,335 @@ impl FightCamera {
         }
         self.frame += 1;
         self.view
+    }
+
+    /// libc rand (0x40FBD0) on the camera's own stream. shortcut: the game shares it with the CPU and everything
+    /// else, so its low bits look random there; drawn alone they repeat, so bits 16-30 (as the AI's `AiRng`).
+    fn rand(&mut self) -> i64 {
+        self.seed = self.seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
+        i64::from((self.seed >> 16) & 0x7FFF)
+    }
+
+    /// 0x3800D8: 0..n (without the AI's second stream).
+    fn randint(&mut self, n: i64) -> i64 {
+        (n * self.rand()) >> 15
+    }
+
+    /// 0x38C0F0: back to the fight camera.
+    fn reset(&mut self) {
+        self.cam = Cam::new();
+        self.w = [0x1000, 0, 0, 0, 0];
+        self.wprev = [0; 5];
+    }
+
+    /// Tekken Tag's director after the fly-in (0x38C1E8, mode 0xD): a throw starts its move's camera from the move's
+    /// camera list, a situation (slot 1 at an angle, blended or cut in, held while the throw lasts) or a camera
+    /// motion (slot 2); then slot 0 and the mixer. shortcut: not the per-fighter situation cameras (0x38DEA0, states
+    /// 7-15, camera ids 0x1C-0x66 on 18 moves); the screen side is the start side, as the yaw controller's.
+    fn direct(&mut self, dir: &Director, fss: i64, mc: [i64; 2]) {
+        let a = self.actors;
+        if self.cam.latch >= 0 && a[self.cam.latch as usize & 1].throw == 0 {
+            self.cam.latch = -1;
+        }
+        let cam3 = a.iter().any(|f| f.cam == 3);
+        let orient = |side: usize| self.samp[side].side >= self.samp[1 - side].side;
+        let orient = [orient(0), orient(1)];
+        let c = &mut self.cam;
+        match c.state {
+            1 => {
+                c.n = -1;
+                if c.latch < 0 && a.iter().any(|f| f.throw > 0) && !a.iter().all(|f| (0x11..=0x68).contains(&f.cam)) {
+                    let side = usize::from(a[0].throw < 1);
+                    (c.latch, c.side, c.orient) = (side as i64, side, orient[side]);
+                    if let Some(r) = self.select(dir, &a[side], false) {
+                        let c = &mut self.cam;
+                        (c.n, c.len) = (r, r);
+                        if c.camera < 0 {
+                            (c.delay, c.state) = (-1, 6);
+                        } else {
+                            self.situation(dir);
+                            (self.cam.delay, self.cam.state) = (16, 3);
+                        }
+                    }
+                }
+            }
+            2 => {
+                self.w[..3].copy_from_slice(&[0, 0x1000, 0]);
+                if self.ended(&a) {
+                    let h = self.hold(dir);
+                    (self.cam.n, self.cam.len, self.cam.state) = (h, h, 4);
+                }
+            }
+            3 if c.delay >= 0 => {
+                c.delay -= 1;
+                if cam3 {
+                    (c.delay, c.state) = (-1, 1);
+                }
+            }
+            3 => {
+                self.w[0] = (c.n << 12) / c.len.max(1);
+                self.w[1] = 0x1000 - self.w[0];
+                if self.ended(&a) {
+                    let h = self.hold(dir);
+                    (self.cam.n, self.cam.len) = (h, h);
+                    self.cam.state = if self.w[1] == 0 {
+                        1
+                    } else if self.w[0] != 0 {
+                        self.freeze();
+                        5
+                    } else {
+                        4
+                    };
+                } else {
+                    self.cam.n -= 1;
+                    if self.cam.n < 0 {
+                        self.cam.state = 2;
+                    }
+                }
+            }
+            4 => {
+                self.w[1] = (c.n << 12) / c.len.max(1);
+                self.w[0] = 0x1000 - self.w[1];
+                c.n -= 1;
+                if c.n < 0 {
+                    (c.n, c.len, c.state) = (-1, -1, 1);
+                }
+            }
+            5 => {
+                self.w[4] = (c.n << 12) / c.len.max(1);
+                self.w[0] = 0x1000 - self.w[4];
+                c.n -= 1;
+                if c.n < 0 {
+                    c.state = 1;
+                }
+            }
+            6 => {
+                let start = if c.chained {
+                    (c.delay, c.chained) = (-3, false);
+                    false
+                } else if c.delay == -1 {
+                    c.delay = -2;
+                    true
+                } else {
+                    false
+                };
+                // (a throw's next part changed the camera: this frame not drawn anew)
+                let share = self.slot1(dir, start);
+                if share < 0 {
+                    return;
+                }
+                self.w[..3].copy_from_slice(&[share << 5, 0, 0x1000 - (share << 5)]);
+                let c = &mut self.cam;
+                if cam3 || a[c.side].throw < 0 {
+                    let n = if cam3 { 8 } else { 35 };
+                    (c.n, c.len, c.delay) = (n, n, -1);
+                    if cam3 && share == 0x80 {
+                        c.state = 1;
+                    } else {
+                        c.state = 5;
+                        self.freeze();
+                    }
+                } else if c.delay == -2 && share == 0 {
+                    c.delay = -3;
+                } else if c.delay == -3 && share == 0x80 {
+                    (c.state, c.delay) = (1, -1);
+                }
+            }
+            _ => self.reset(),
+        }
+        if self.w[1] > 0 {
+            self.slot1(dir, self.wprev[1] < 1);
+        }
+        if self.w[0] > 0 {
+            self.slot0_update(self.wprev[0] < 1, fss, mc);
+        }
+        if !self.mix() {
+            self.reset();
+            self.wprev = self.w;
+        }
+    }
+
+    /// 0x38EAA0(3): the shown key frozen into slot 4 (the S-curve back starts from it).
+    fn freeze(&mut self) {
+        self.keys[4] = self.keys[3];
+        self.w = [0, 0, 0, 0, 0x1000];
+    }
+
+    /// 0x3940B0: the situation's blend back.
+    fn hold(&self, dir: &Director) -> i64 {
+        usize::try_from(self.cam.camera - 1).ok().and_then(|k| dir.situations.get(k)).map_or(1, |s| s.hold)
+    }
+
+    /// 0x393CB8 on the thrower `t` and the other: the throw over (or its camera to end).
+    fn ended(&self, a: &[Actor; 2]) -> bool {
+        let (t, o) = (&a[self.cam.side], &a[1 - self.cam.side]);
+        if t.throw <= 0 && o.throw >= 0 || t.cam == 3 {
+            return true;
+        }
+        if self.cam.cut {
+            return false;
+        }
+        if o.release {
+            return true;
+        }
+        // (when the later mark is reached; the game also not while its +0x17A is 0x20, not modelled)
+        let (t2, t1) = (t.marks[0], o.marks[1]);
+        if t2 < 0 && t1 < 0 {
+            false
+        } else if t1 < t2 {
+            t2 == 0
+        } else {
+            t1 == 0
+        }
+    }
+
+    /// 0x393E08 / 0x393F60 / 0x393A90: a camera from the list of `t`'s move: r = rand & 0xFFF (on a variant arena
+    /// below the split) picks the first entry weighing r or more. Some(the situation's frames in, or 0 for a
+    /// motion), None for none.
+    fn select(&mut self, dir: &Director, t: &Actor, again: bool) -> Option<i64> {
+        if again && self.cam.camera == 0 {
+            self.reset();
+            return None;
+        }
+        let list = usize::try_from(t.cam).ok().and_then(|k| dir.lists.get(k)).unwrap_or(&dir.lists[0]).as_ref()?;
+        let r = if self.data.variant { self.randint(list.split) } else { self.rand() & 0xFFF };
+        let k = list.entries.iter().position(|e| e.weight >= r).unwrap_or(list.entries.len().saturating_sub(1));
+        let e = list.entries.get(k)?;
+        let c = &mut self.cam;
+        (c.entry, c.mirror, c.camera) = (k, c.orient && e.mirror, e.camera[usize::from(c.orient)]);
+        c.trigger = (t.mv, t.cam);
+        match c.camera {
+            0 => None,
+            m if m < 0 => {
+                c.cut = false;
+                Some(0)
+            }
+            s => {
+                let frames = dir.situations.get(s as usize - 1)?.in_frames;
+                c.cut = frames < 2;
+                Some(frames)
+            }
+        }
+    }
+
+    /// 0x3910D0: a situation's angle: the fighters' axis turned by one of its four yaw offsets (the other way when
+    /// the thrower is on the right), one of its four pitches (halved on a variant arena).
+    fn situation(&mut self, dir: &Director) {
+        self.randint(0xE3);
+        let [a, b] = self.samp;
+        let axis = if a.side < b.side { self.data.ratan2(b.x - a.x, b.z - a.z) } else { self.data.ratan2(a.x - b.x, a.z - b.z) } << 6;
+        let Some(s) = usize::try_from(self.cam.camera - 1).ok().and_then(|k| dir.situations.get(k)) else { return };
+        let pitch = s.pitch[(self.rand() & 3) as usize] << 5;
+        let off = s.yaw[(self.rand() & 3) as usize] << 6;
+        self.cam.pitch = if self.data.variant { tdiv(pitch, 2) } else { pitch };
+        self.cam.yaw = if self.cam.orient { axis - off } else { axis + off };
+    }
+
+    /// 0x391170: slot 1 for the director's camera: a motion's frame (returning its share of the fight camera; -1
+    /// when a throw's next part changed the camera), or the situation framed at its angle (0).
+    fn slot1(&mut self, dir: &Director, start: bool) -> i64 {
+        let (t, o) = (self.actors[self.cam.side], self.actors[1 - self.cam.side]);
+        if self.cam.camera < 0 {
+            return self.motion(dir, if start { -self.cam.camera } else { 0 }, &t, &o);
+        }
+        if self.cam.camera == 0 {
+            self.reset();
+            return 0;
+        }
+        self.frame_key(1, self.cam.pitch, self.cam.yaw, start, tdiv(self.data.distance * 0x72, 128));
+        if !start && t.mv != self.cam.trigger.0 && t.throw > 0 && t.cam != 0x11 {
+            self.cam.trigger = (t.mv, t.cam);
+            // (0x390F48: a chain throw's next part)
+            if matches!(t.cam, 0x71 | 0xA1..=0xA3) {
+                self.chain(dir, self.cam.orient, &t, &o, Some(0x400), 1);
+            }
+        }
+        0
+    }
+
+    /// A throw's next part (0x38D1B8 / 0x38D290 / 0x38D3D0): a new pick from its move's list; a motion (`yaw` Some:
+    /// started at once, its yaw `yaw` - the victim's facing, from the victim's root), or the situation held. The
+    /// shot cut to slot `slot`.
+    fn chain(&mut self, dir: &Director, orient: bool, t: &Actor, o: &Actor, yaw: Option<i64>, slot: usize) {
+        self.cam.orient = orient;
+        self.cam.latch = self.cam.side as i64;
+        if self.select(dir, t, true).is_some() {
+            let c = &mut self.cam;
+            if c.camera > 0 {
+                (c.n, c.len, c.state) = (1, 1, 2);
+            } else {
+                (c.n, c.len, c.state) = (0, 0, 6);
+                if let Some(y) = yaw {
+                    (c.yaw, c.anchor, c.frame, c.chained) = ((y - o.facing) & 0xFFF, [o.root[0], o.at[1], o.root[2]], 0, true);
+                    c.mirror &= slot == 1;
+                }
+            }
+        }
+        (self.cam.cut, self.cam.delay) = (true, -1);
+        self.w = [0; 5];
+        self.w[slot] = 0x1000;
+    }
+
+    /// 0x3928B8: a camera motion: `m` > 0 starts motion m (its yaw by its flag and the victim's facing, from the
+    /// victim's place); else its next frame, after a throw's next part (0x392888: a camera id under 0x68 picks
+    /// anew, 0x9E then 0x9F starts its own, else the same entry of the new move's list from its start). Returns the
+    /// fight camera's share (128 all), -1 when the camera was picked anew.
+    fn motion(&mut self, dir: &Director, m: i64, t: &Actor, o: &Actor) -> i64 {
+        if m != 0 {
+            let flag = usize::try_from(m - 1).ok().and_then(|k| dir.motions.get(k)).map_or(0xFF, |x| x.flag);
+            let f = o.facing;
+            self.cam.yaw = match flag {
+                0 | 4 => 0x400 - f,
+                1 => 0x800 - f,
+                2 => -f,
+                3 | 5 => -(f + 0x400),
+                _ => 0,
+            } & 0xFFF;
+            (self.cam.anchor, self.cam.frame) = (o.at, 0);
+        } else if t.mv != self.cam.trigger.0 && t.throw > 0 && t.cam != 0x11 {
+            let old = self.cam.trigger.1;
+            self.cam.trigger = (t.mv, t.cam);
+            if t.cam < 0x68 {
+                // (0x3927F0's side test reads stack addresses: always 0)
+                self.chain(dir, false, t, o, None, 1);
+                return -1;
+            }
+            if old == 0x9E && t.cam == 0x9F {
+                self.chain(dir, false, t, o, Some(-0xA00), 2);
+            }
+            let list = usize::try_from(t.cam).ok().and_then(|k| dir.lists.get(k)).unwrap_or(&dir.lists[0]);
+            let e = list.as_ref().and_then(|l| l.entries.get(self.cam.entry));
+            let c = &mut self.cam;
+            c.camera = e.map_or(0, |e| e.camera[usize::from(c.orient)]);
+            (c.mirror, c.frame) = (c.orient && e.is_some_and(|e| e.mirror), 0);
+        }
+        if self.cam.camera >= 0 {
+            self.reset();
+            return 0;
+        }
+        self.motion_frame(dir)
+    }
+
+    /// 0x392B68: a motion's frame into slot 2: its eye (from the target; on a dolly arena scaled by H / the shot's
+    /// H and seen at H) and target, z negated when mirrored, turned by the yaw about the anchor. shortcut: past its
+    /// last frame it holds it (the game reads on into the next motion).
+    fn motion_frame(&mut self, dir: &Director) -> i64 {
+        let Some(&[ex, ey, ez, tx, ty, tz, share, h0]) = usize::try_from(-self.cam.camera - 1).ok().and_then(|k| dir.motions.get(k)).and_then(|m| m.frames.get(self.cam.frame).or(m.frames.last()))
+        else {
+            self.reset();
+            return 0;
+        };
+        let (ez, tz) = if self.cam.mirror { (s16(-ez), s16(-tz)) } else { (ez, tz) };
+        let h = self.data.h;
+        let (e, h) = if self.data.dolly && h0 != 0 { ([ex, ey, ez].map(|v| tdiv(v * h, h0)), h) } else { ([ex, ey, ez], h0) };
+        let e = [s16(tx + e[0]), s16(ty + e[1]), s16(tz + e[2])];
+        let (sn, cs) = (self.data.sin(self.cam.yaw), self.data.cos(self.cam.yaw));
+        let turn = |x: i64, z: i64| (sra_tz(cs * x - sn * z, 12), sra_tz(sn * x + cs * z, 12));
+        let ((ax, az), (bx, bz)) = (turn(e[0], e[2]), turn(tx, tz));
+        let [x, y, z] = self.cam.anchor;
+        self.keys[2] = self.lookat([x + ax, y + e[1], z + az], [x + bx, y + ty, z + bz], h);
+        self.cam.frame += 1;
+        share
     }
 
     /// 0x8006953C: start the replay camera. `variant_a`: the sweeping variant (the game alternates, B first);
@@ -910,7 +1481,19 @@ impl FightCamera {
             top = 2;
         }
         let (ytop, ztop) = (ys[top], zs[top]);
-        let t1 = d_.centre_drop;
+        // slot 1 pitched up drops more; pitched down it lifts by a low top fighter's height (Tekken Tag 0x38FD90),
+        // eased 28 a frame
+        let t1 = if slot == 1 && pitch6 < 0 { d_.centre_drop_up } else { d_.centre_drop };
+        let mut lift = 0;
+        if slot == 1 && pitch6 > 0 {
+            let y = (self.samp[if sy[0] < sy[1] { 0 } else { 1 }].y * s5) >> 12;
+            lift = if y >= -1000 { (y + 1000) * d_.slot1_lift / 640 } else { 0 };
+            let prev = self.lift;
+            if !flag && (lift - prev).abs() >= 29 {
+                lift = prev + 28 * (lift - prev).signum();
+            }
+            self.lift = lift;
+        }
         let mut a3 = sra_tz(s5 * (t1 - tdiv(450 * h, dist)), 12);
         let mut pull = (tdiv(-(keep * (ztop - zc)) - h * (ytop - yc), a3 + keep) - zc).max(0);
         if flag {
@@ -934,7 +1517,7 @@ impl FightCamera {
             zc += pull;
         }
         a3 += sra_tz(tdiv(sra_tz(pull * s5, 12) * h, dist), 4);
-        let dy_ = yc - tdiv(a3 * zc, h);
+        let dy_ = yc - tdiv(a3 * zc, h) + lift;
         // view-space delta -> world
         let (sp, cp) = (sin6(pitch6), cos6(pitch6));
         let hd = sra_tz(dz_ * cp - dy_ * sp, 12);
@@ -1016,8 +1599,8 @@ impl FightCamera {
         tdiv(t << 12, self.data.intro_blend).min(0x1000)
     }
 
-    /// 0x80062B74 slot mixer (the versus director only uses slots 0 and 2).
-    fn mix(&mut self) {
+    /// 0x80062B74 slot mixer; false for a mix of no case (Tekken Tag resets the director on one).
+    fn mix(&mut self) -> bool {
         let m: u32 = (0..5).filter(|&i| self.w[i] > 0).map(|i| 1 << i).sum();
         let k = self.keys;
         let key = match m {
@@ -1027,9 +1610,11 @@ impl FightCamera {
             3 => Some(self.blend(&k[0], &k[1], self.w[0])),
             5 => Some(self.blend(&k[0], &k[2], self.w[0])),
             0x10 => Some(k[4]),
-            0x11 => {
-                let ww = self.data.sin[((half(self.w[0]) - 0x400) & 0xFFF) as usize];
-                Some(self.blend(&k[0], &k[4], half(ww) + 0x800))
+            // the S-curves from the frozen slot 4 (Tekken Tag's 0x12 too)
+            0x11 | 0x12 => {
+                let i = m.trailing_zeros() as usize;
+                let ww = self.data.sin[((half(self.w[i]) - 0x400) & 0xFFF) as usize];
+                Some(self.blend(&k[i], &k[4], half(ww) + 0x800))
             }
             _ => None,
         };
@@ -1037,6 +1622,7 @@ impl FightCamera {
             self.apply(key);
         }
         self.wprev = self.w;
+        key.is_some()
     }
 }
 
@@ -1091,6 +1677,10 @@ impl CameraData {
         let pc = self.lookat6(eye, [rx, p.chest + a.chest_offset, rz]).0;
         let pf = self.lookat6(eye, [rx, 0, rz]).0;
         let pitch = pt.min(pc + a.chest_clamp).min(pf + a.floor_clamp);
+        // Tekken Tag's (0x35BA58): no minimum distance; on a variant arena not pitched up
+        if self.win.is_some() {
+            return Block { eye, p: if self.variant { pitch.max(0) } else { pitch }, y };
+        }
         let mut out = Block { eye, p: pitch, y };
         let (dx, dz) = (eye[0] - rx, eye[2] - rz);
         if dx * dx + dz * dz < a.min_distance * a.min_distance {
@@ -1112,9 +1702,17 @@ fn s12(v: i64) -> i64 {
 }
 
 impl EndCam {
-    /// Winner camera A (0x80046460) or B (0x800467A0) on the round winner. `random(n)`: 0..n.
+    /// Winner camera A (0x80046460) or B (0x800467A0) on the round winner. `random(n)`: 0..n. Tekken Tag's
+    /// (0x35BB58): camera A only, beside the arena's light 0 at a distance by H.
     pub fn winner(d: &CameraData, p: &Subject, b_variant: bool, random: &mut dyn FnMut(i64) -> i64) -> Self {
         let [rx, _, rz] = p.root;
+        if let Some(w) = &d.win {
+            let a = (w.arc_from + random(w.arc_range) - w.light) & 0xFFF;
+            let r = tdiv(d.h * w.distance_per_h[0], w.distance_per_h[1]) + w.radius_add;
+            let y = if d.variant { p.chest + d.end.aim.chest_offset } else { w.eye_y };
+            let eye = [rx + sra_tz(d.cos(a) * r, 12), y, rz + sra_tz(d.sin(a) * r, 12)];
+            return EndCam::WinnerA { block: d.aim(p, eye) };
+        }
         if !b_variant {
             let c = &d.end.cam_a;
             let a = (c.arc_from + random(c.arc_range) + p.front - 0x400) & 0xFFF;
@@ -1153,7 +1751,8 @@ impl EndCam {
                 let c = &d.end.cam_a;
                 let (dx, dy, dz) = (rx - block.eye[0], ry - block.eye[1], rz - block.eye[2]);
                 let n = d.gsqrt(dx * dx + dy * dy + dz * dz);
-                if n > c.stop_distance {
+                let stop = d.win.as_ref().map_or(c.stop_distance, |w| tdiv(d.h * w.distance_per_h[0], w.distance_per_h[1]));
+                if n > stop {
                     block.eye[0] += tdiv(c.approach * dx, n);
                     block.eye[1] += tdiv(c.approach * dy, n);
                     block.eye[2] += tdiv(c.approach * dz, n);

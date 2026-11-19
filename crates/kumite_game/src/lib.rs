@@ -612,8 +612,9 @@ impl Game {
             self.fight.fighters[0].position.z -= if t == 0 { ti.place.z } else { -ti.place.z } as f32;
         }
         self.visible = [true; 2];
-        // the chest points as 0x3B4DC0 sets them (the place, 1425 up); the shot on the team's fighter's (as the PS2
-        // frames show it), a pair's midpoint. shortcut: a pair's points set the same way (0x3B4E10 not read)
+        // the chest points as 0x3B4DC0 sets them (the place, 1425 up); the shot (0x3D2330) on the team's own fighter
+        // (checked against a PS2 recording of Jin and Jun's: the shot, the partner's place and the stage behind as
+        // here), a pair's midpoint. shortcut: a pair's points set the same way (0x3B4E10 not read)
         let chest = |i: usize| {
             let p = self.fight.fighters[i].position;
             [p.x.round() as i64, -1425, -(p.z.round() as i64)]
@@ -642,7 +643,9 @@ impl Game {
     /// Start with the round-start camera fly-in (variant = round counter % 10). While it plays the
     /// fighters stand in their stance, pads are ignored and the round clock does not run.
     pub fn with_intro(mut self, variant: usize, first_round: bool) -> Self {
+        let seed = self.camera.seed;
         self.camera = FightCamera::new(self.camera.data().clone(), true, variant, first_round);
+        self.camera.seed = seed;
         self.intro = Some((variant, first_round));
         self.step_camera();
         self
@@ -730,7 +733,9 @@ impl Game {
             self.ball_doubles(&partner, &extra);
         }
         let (intro, (variant, first)) = (intro_setting.is_some(), intro_setting.unwrap_or((0, true)));
+        let seed = self.camera.seed;
         self.camera = FightCamera::new(self.camera.data().clone(), intro, variant, first);
+        self.camera.seed = seed;
         self.camera_mode = CameraMode::Fight;
         self.recorded.clear();
         self.recorded_total = 0;
@@ -754,6 +759,34 @@ impl Game {
             let chest = place.transform_point3(pose[self.bodies[i].chest].w_axis.truncate()) * UNITS;
             let root = self.fight.fighters[i].root();
             Sample { x: root.x.round() as i64, y: -(chest.y.round() as i64) - 290, z: -(root.z.round() as i64), side: self.fight.fighters[i].side as i64 }
+        })
+    }
+
+    /// What Tekken Tag's director reads of each fighter (0x38C1E8): its throw role, move and its camera id, facing,
+    /// place, and the frames to its move's throw-end marks (0x393CB8).
+    fn camera_actors(&self) -> [kumite_sim::camera::Actor; 2] {
+        std::array::from_fn(|i| {
+            let f = &self.fight.fighters[i];
+            let mv = f.current_move(&self.fight.data);
+            let s = self.subject(i);
+            let mark = |op| mv.properties.iter().flatten().rfind(|p| p.op == op).map_or(-1, |p| i64::from(p.frame) - i64::from(f.frame));
+            let p = f.position;
+            kumite_sim::camera::Actor {
+                throw: if !f.locked {
+                    0
+                } else if f.thrown {
+                    -1
+                } else {
+                    1
+                },
+                mv: (f.current.bank as u64) << 32 | f.current.index as u64,
+                cam: i64::from(mv.flags24.camera_script),
+                facing: s.front,
+                at: [p.x.round() as i64, -(p.y.round() as i64), -(p.z.round() as i64)],
+                root: s.root,
+                marks: [mark(0x0C), mark(0x0D)],
+                release: mv.posture.raw & 0x40_0000 != 0,
+            }
         })
     }
 
@@ -851,6 +884,9 @@ impl Game {
         let gd = self.fight.data.clone();
         self.camera.ball = self.fight.ball.as_ref().map(|b| b.pos.map(|v| v as i64));
         let mc = std::array::from_fn(|i| self.fight.fighters[i].current_move(&gd).flags24.camera_script as i64);
+        if self.camera.data().director.is_some() {
+            self.camera.actors = self.camera_actors();
+        }
         let v = self.camera.step(self.camera_samples(), self.fight.frame as i64, mc);
         // screen right in game space is (cos yaw, 0, sin yaw); Z flips into the simulation's axes
         let w = v.yaw as f32 * std::f32::consts::TAU / 4096.0;
