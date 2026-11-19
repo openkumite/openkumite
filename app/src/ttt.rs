@@ -3288,6 +3288,28 @@ pub fn theme<'a>(d: Option<&Data>, sound: &'a kumite_game::sound::SoundData, nam
 /// middle, the owner's blinking while the ball has power; the texts in the chrome font. `gauges`: per side the shown
 /// and the trail part of the full; `texts`: text, Tekken 3's colour, place on the 368 x 480 screen.
 #[allow(clippy::too_many_arguments)]
+/// Ball 2 ON 2 (OpenKumite's): each side's partner's health, a thin bar of Tekken Tag's strips over its side's
+/// (filling from the inner end, as the bars).
+pub fn ball_partner_bars(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout) {
+    let fight = &bout.game.fight;
+    if !fight.ball_doubles() {
+        return;
+    }
+    let h = &d.raw["hud"];
+    let strip = |k: usize| h["strips"][k].as_str().unwrap_or_default();
+    let (bx, by, bw) = ([num(&h["bars"]["x"][0]), num(&h["bars"]["x"][1])], num(&h["bars"]["y"]), num(&h["bars"]["w"]));
+    // (actor 3 is P1's side's partner, 2 the other side's)
+    for (i, actor) in [3, 2].into_iter().enumerate() {
+        let Some(f) = fight.actor(actor) else { continue };
+        let part = (f.health.max(0) as f32 / (f.max_health * kumite_sim::ONE).max(1) as f32).clamp(0.0, 1.0);
+        // (above the side's bar, where a tag battle shows the member in back)
+        let y = by - 10.0;
+        image(painter, v, art, strip(2), [bx[i], y, bw, 6.0], Color32::WHITE);
+        let w = bw * part;
+        image(painter, v, art, strip(1), [if i == 0 { bx[i] + bw - w } else { bx[i] }, y, w, 6.0], Color32::WHITE);
+    }
+}
+
 pub fn ball_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, gauges: [[f32; 2]; 2], flash: Option<usize>, texts: &[(&str, u32, [f32; 2])], frame: u32) {
     let h = &d.raw["hud"];
     let strip = |k: usize| h["strips"][k].as_str().unwrap_or_default();
