@@ -373,6 +373,8 @@ mod tests {
         let mut names: Vec<_> = std::fs::read_dir(dir(Part::Ttt, &root)).unwrap().map(|e| e.unwrap().file_name()).collect();
         names.sort();
         assert_eq!(names, ["assets", "extras", "manifest.json"]);
+        let size = size_of(&dir(Part::Ttt, &root));
+        assert!(size <= crate::dataui::TTT_PACK, "the pack ({size} bytes) outgrew its budget: the space a conversion asks for");
         let manifest = |p: PathBuf| serde_json::from_slice::<Value>(&std::fs::read(p.join("manifest.json")).unwrap()).unwrap()["fingerprint"].clone();
         assert_eq!(manifest(dir(Part::Ttt, &root).join(EXTRAS)), manifest(game_root(&root, Game::Ttt)));
         run(&root, &Job::Remove(Part::Ttt), &|_| {}, &AtomicBool::new(false)).unwrap();

@@ -12,8 +12,9 @@ use kumite_sim::ai::{Ai, Style};
 use kumite_sim::input::Pad;
 use serde::{Deserialize, Serialize};
 
-/// (2: the tag brawl and Force too, the match's kind in `game`; 3: the AI seats, `ai`. A 2 plays as one without)
-pub const VERSION: u32 = 3;
+/// (2: the tag brawl and Force too, the match's kind in `game`; 3: the AI seats, `ai`; 4: a Tekken Tag match's
+/// run, its teams. An older one plays as one without)
+pub const VERSION: u32 = 4;
 /// The newest replays kept (natively; a browser's storage keeps fewer).
 pub const KEEP: usize = if cfg!(target_arch = "wasm32") { 15 } else { 50 };
 /// The longest match a replay holds (an hour): a longer one is a damaged file.
@@ -57,8 +58,15 @@ impl AiSeat {
 /// What a match is made from, by its kind.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Match {
-    /// Two fighters' match (Ball 2 ON 2 too): the setup, what the mode gave it, the arcade's ladder.
-    Fight { setup: FightSetup, params: MatchParams, ladder: Vec<usize> },
+    /// Two fighters' match (Ball 2 ON 2 too): the setup, what the mode gave it, the arcade's ladder; a Tekken Tag
+    /// match's run (both teams: who is in back to tag in; the seed is `params.copy_seed`).
+    Fight {
+        setup: FightSetup,
+        params: MatchParams,
+        ladder: Vec<usize>,
+        #[serde(default)]
+        ttt: Option<crate::ttt::Run>,
+    },
     /// The tag brawl: its four and their teams, on this stage.
     Tag { setup: crate::tagrun::TagSetup, stage: usize },
     /// A Force stage: its fight's setup, the run as the stage began, and players joining on the way (the step
@@ -115,7 +123,7 @@ impl ReplayFile {
         self.length_ok()
             && self.ai.iter().flatten().all(|a| a.difficulty <= 2 && a.level <= 9)
             && match &self.game {
-                Match::Fight { setup, .. } => MatchSetup::Fight(setup.clone()).numbers_valid(roster),
+                Match::Fight { setup, ttt, .. } => MatchSetup::Fight(setup.clone()).numbers_valid(roster) && ttt.as_ref().is_none_or(|r| r.teams.iter().flatten().all(|&p| pick(p))),
                 Match::Tag { setup, .. } => MatchSetup::Tag(setup.clone()).numbers_valid(roster),
                 Match::Force { setup, start, joins } => {
                     MatchSetup::Fight(setup.clone()).numbers_valid(roster)
@@ -528,12 +536,41 @@ mod tests {
             result: "r".into(),
             online: false,
             kept: false,
-            game: Match::Fight { setup, params, ladder: vec![] },
+            game: Match::Fight { setup, params, ladder: vec![], ttt: None },
             steps: 1,
             hash: 0,
             inputs: encode(&[StepInput::default()]),
             ai: [None; 4],
         }
+    }
+
+    /// A Tekken Tag match keeps its run (both teams: who tags in); one from before (format 3) reads without.
+    #[test]
+    fn a_tag_battle_keeps_its_teams() {
+        let mut f = file(4);
+        let run = crate::ttt::Run {
+            mode: 0,
+            teams: [vec![(7, 0), (4, 1)], vec![]],
+            humans: [true, false],
+            ladder: vec![(vec![(18, 0), (2, 0)], 3)],
+            fight: 0,
+            member: [0; 2],
+            health: [None; 2],
+            wins: [0; 2],
+            frames: 0,
+            stage: 3,
+            options: [1, 2, 3],
+        };
+        let Match::Fight { ttt, .. } = &mut f.game else { unreachable!() };
+        *ttt = Some(run);
+        let back: ReplayFile = serde_json::from_slice(&to_bytes(&f).unwrap()).unwrap();
+        let Match::Fight { ttt: Some(r), .. } = back.game else { panic!("the run was lost") };
+        assert_eq!((r.teams, r.ladder), ([vec![(7, 0), (4, 1)], vec![]], vec![(vec![(18, 0), (2, 0)], 3)]));
+        let mut old = serde_json::to_value(file(3)).unwrap();
+        old["version"] = 3.into();
+        old["game"]["Fight"].as_object_mut().unwrap().remove("ttt");
+        let old: ReplayFile = serde_json::from_value(old).unwrap();
+        assert!(old.plays_on("d") && matches!(old.game, Match::Fight { ttt: None, .. }));
     }
 
     /// The AI's seats go with the replay; one of format 2, from before them, reads and plays without.

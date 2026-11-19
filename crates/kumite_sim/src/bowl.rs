@@ -26,10 +26,21 @@ pub const CHARGE_FRAMES: u32 = 175;
 const MESSAGE_FRAMES: u32 = 60;
 const KO_FRAMES: u32 = 180;
 const KO_VOICE_AT: u32 = 90;
-/// How long a strike's pose (states 5-7) and a count's callout stay (OpenKumite's: the pose's own length is not
-/// decoded; START skips).
+/// How long a strike's pose (states 5-7) stays when the scene gives no motion lengths ([`Bowler::strike_frames`]),
+/// and a count's callout (OpenKumite's); START skips.
 pub const STRIKE_FRAMES: u32 = 150;
 const RESULT_FRAMES: u32 = 90;
+/// The strike's pose (state 5, 0x3F0670): the bowler at z -6500, the partner at -9500, 1000 to the side.
+pub const STRIKE_Z: [f32; 2] = [-6500.0, -9500.0];
+pub const STRIKE_SIDE: f32 = 1000.0;
+/// The replay (0x3EF1D0 takes it as the ball passes z 4000; 0x3EFB00 decides): a strike within 91 frames of it
+/// replays at once, three times on a frame's first ball; a later one once, at half speed, after the roll. Its
+/// camera (0x3EBC98 mode 3) circles (0, -290, 8000) at 4000.
+const REPLAY_FROM_Z: f32 = 4000.0;
+const REPLAY_QUICK: u32 = 91;
+const REPLAYS: u32 = 3;
+pub const REPLAY_PIVOT: [f32; 3] = [0.0, -290.0, 8000.0];
+pub const REPLAY_DISTANCE: f32 = 4000.0;
 /// The bowler's line, the step and turn a frame and their limits (1/65536 turns), the run-up's steering.
 const BOWLER_Z: f32 = -11000.0;
 const STEP: f32 = 8.0;
@@ -182,6 +193,8 @@ pub struct Bowler {
     pub hand: Vec3,
     /// The charge motion's own travel down the lane, frame by frame.
     pub charge: Vec<f32>,
+    /// How long its strike's pose lasts: the longer of its and its partner's reaction motions (0x3E9628).
+    pub strike_frames: u32,
 }
 
 impl Bowler {
@@ -202,6 +215,7 @@ impl Bowler {
             voices: [voice(0), voice(1), voice(2)],
             hand: Vec3::new(if left { -150.0 } else { 150.0 }, -500.0, 4200.0),
             charge: Vec::new(),
+            strike_frames: STRIKE_FRAMES,
         }
     }
 
@@ -388,6 +402,24 @@ pub enum Event {
     Voice { player: usize, id: u16 },
 }
 
+/// A strike's replay (0x3EF1D0 takes it, 0x3EF290 starts one, 0x3EFB00 decides).
+#[derive(Clone, Debug, Default)]
+pub struct Replay {
+    /// The ball, the pins and the roll's frame as the ball passed z 4000 (0x1FC62C0).
+    from: Option<Box<(Ball, Vec<Pin>, u32)>>,
+    /// Replays left (gp-0x603A), the frame one ends at (gp-0x6036), the slow one after the roll (gp-0x602E), one
+    /// playing (gp-0x6034), its half-speed toggle (gp-0x602C), the frames since z 4000 (gp-0x6046).
+    pub left: u32,
+    until: u32,
+    slow: bool,
+    pub on: bool,
+    half: bool,
+    t: u32,
+    /// The camera's draw orders (0x1FC6340, 0x3E92E0) and the angles drawn for the one playing (pitch, yaw).
+    order: [[u8; 3]; 2],
+    pub view: (f32, f32),
+}
+
 /// One game of Tekken Bowl.
 #[derive(Clone, Debug)]
 pub struct Bowl {
@@ -415,6 +447,7 @@ pub struct Bowl {
     pub ko_side: f32,
     pub events: Vec<Event>,
     pub frame: u64,
+    pub replay: Replay,
     data_rack: Vec<[f32; 2]>,
     pin_y: f32,
     people: Vec<[f32; 2]>,
@@ -538,6 +571,7 @@ impl Bowl {
             ko_side: 0.0,
             events: Vec::new(),
             frame: 0,
+            replay: Replay::default(),
             data_rack: rack,
             pin_y,
             people,
@@ -586,6 +620,9 @@ impl Bowl {
         self.callout = None;
         self.counted = None;
         self.foul = false;
+        // (gp-0x603A: three on a frame's first ball, none on its second)
+        let first = self.cards.get(self.current).is_some_and(|c| c.at().ball % 2 == 0);
+        self.replay = Replay { left: if first { REPLAYS } else { 0 }, ..Replay::default() };
         self.standing_before = std::array::from_fn(|k| self.pins.get(k).is_some_and(|p| p.standing));
     }
 
@@ -593,6 +630,7 @@ impl Bowl {
     pub fn bowler_at(&self) -> (Vec3, f32) {
         let z = match self.phase {
             Phase::Charge(f) => BOWLER_Z + charge_distance(f),
+            Phase::Strike(_) => STRIKE_Z[0],
             _ => BOWLER_Z,
         };
         (Vec3::new(self.x, 0.0, z), radians(self.angle))
@@ -690,7 +728,7 @@ impl Bowl {
                 }
             }
             Phase::Strike(f) => {
-                if f + 1 >= STRIKE_FRAMES || pad.start {
+                if f + 1 >= b.strike_frames || pad.start {
                     self.next_ball();
                 } else {
                     self.phase = Phase::Strike(f + 1);
@@ -706,6 +744,11 @@ impl Bowl {
             Phase::Over => {}
         }
         if let Some(r) = self.rolled.filter(|_| !matches!(self.phase, Phase::Ko(_) | Phase::Strike(_) | Phase::Result(_) | Phase::Over)) {
+            // START in a replay: every pin down, counted (0x3EFB00's first test)
+            if pad.start && self.replay.on {
+                self.pins.iter_mut().for_each(|p| p.standing = false);
+                return self.count();
+            }
             self.roll(r);
         }
     }
@@ -748,9 +791,45 @@ impl Bowl {
         self.events.push(Event::Voice { player: self.current, id: voice });
     }
 
-    /// The roll (state 3, 0x3EED88): the ball or the runner, the pins, the spectators; the decision (0x3EFB00).
+    /// The roll (state 3, 0x3EED88): the ball or the runner, the pins, the spectators; the replay; the decision
+    /// (0x3EFB00).
     fn roll(&mut self, r: u32) {
         self.rolled = Some(r + 1);
+        // (the slow replay steps it every other frame, gp-0x602C)
+        let rp = &mut self.replay;
+        let step = if rp.on && rp.slow && rp.left == 0 {
+            rp.half = !rp.half;
+            rp.half
+        } else {
+            true
+        };
+        if step && self.physics() {
+            return;
+        }
+        // the replay taken as the ball passes z 4000 (state 1 -> 3, 0x3EF1D0), then each frame its decision
+        if self.replay.from.is_none() {
+            if self.ball.rolling && self.ball.pos.z > REPLAY_FROM_Z {
+                self.take_replay(r + 1);
+            }
+        } else if self.replay_due() {
+            return self.start_replay();
+        }
+        // the decision (0x3EFB00): every pin at rest and the ball gone, after 150 frames at least, 1000 at most
+        let charge = matches!(self.phase, Phase::Charge(_));
+        let gone = if charge { matches!(self.phase, Phase::Charge(f) if f >= CHARGE_FRAMES) } else { !self.ball.rolling };
+        let done = (gone && r + 1 >= ROLL_FRAMES.0 && self.pins.iter().all(|p| !p.moving)) || r + 1 >= ROLL_FRAMES.1;
+        let thrown = !matches!(self.phase, Phase::Throw(f) if f <= THROW_FRAMES);
+        if done && (thrown || r + 1 >= ROLL_FRAMES.1) {
+            if self.replay.slow && self.replay.left > 0 {
+                return self.start_replay();
+            }
+            self.count();
+        }
+    }
+
+    /// The physics' frame (0x3EED88): the ball or the runner, the pins, the spectators (true: one knocked over),
+    /// the pins' sounds.
+    fn physics(&mut self) -> bool {
         let body = match self.phase {
             Phase::Charge(f) => {
                 let (at, _) = self.bowler_at();
@@ -784,7 +863,7 @@ impl Bowl {
                 self.ko_side = x;
                 self.callout = Some(self.callouts.ko.clone());
                 self.phase = Phase::Ko(0);
-                return;
+                return true;
             }
         }
         // pin sounds (0x3EC200)
@@ -800,14 +879,92 @@ impl Bowl {
                 self.quiet = quiet;
             }
         }
-        // the decision (0x3EFB00): every pin at rest and the ball gone, after 150 frames at least, 1000 at most
-        let charge = matches!(self.phase, Phase::Charge(_));
-        let gone = if charge { matches!(self.phase, Phase::Charge(f) if f >= CHARGE_FRAMES) } else { !self.ball.rolling };
-        let done = (gone && r + 1 >= ROLL_FRAMES.0 && self.pins.iter().all(|p| !p.moving)) || r + 1 >= ROLL_FRAMES.1;
-        let thrown = !matches!(self.phase, Phase::Throw(f) if f <= THROW_FRAMES);
-        if done && (thrown || r + 1 >= ROLL_FRAMES.1) {
-            self.count();
+        false
+    }
+
+    /// 0x3EF1D0: the ball and the pins kept, the camera's draw orders.
+    fn take_replay(&mut self, r: u32) {
+        let order = [self.order(), self.order()];
+        let rp = &mut self.replay;
+        rp.from = Some(Box::new((self.ball.clone(), self.pins.clone(), r)));
+        (rp.t, rp.until, rp.slow, rp.on, rp.order) = (0, 0, false, false, order);
+    }
+
+    /// 0x3E92E0: 0, 1, 2 in a random order (each into the k-th free place).
+    fn order(&mut self) -> [u8; 3] {
+        let mut o = [u8::MAX; 3];
+        for s in 0..3u8 {
+            let k = (self.random() * f32::from(3 - s)) as usize;
+            if let Some(i) = (0..3).filter(|&i| o[i] == u8::MAX).nth(k) {
+                o[i] = s;
+            }
         }
+        o
+    }
+
+    /// 0x3EFB00's replay part, a frame after z 4000: true when one starts. Once the pins first stand still the
+    /// frame is kept; all down (a strike) before frame 91: a replay at once, to halfway between, as many as left;
+    /// later: one, slow, once the roll is over.
+    fn replay_due(&mut self) -> bool {
+        self.replay.t += 1;
+        let rp = &self.replay;
+        if rp.left == 0 || rp.slow {
+            return false;
+        }
+        if rp.on {
+            return rp.until < rp.t;
+        }
+        if rp.until == 0 {
+            if self.pins.iter().all(|p| !p.moving) {
+                self.replay.until = self.replay.t;
+            }
+            return false;
+        }
+        if !(0..self.pins.len()).all(|k| self.down(k)) {
+            return false;
+        }
+        let rp = &mut self.replay;
+        rp.until = (rp.until + rp.t) / 2;
+        if rp.t < REPLAY_QUICK {
+            return true;
+        }
+        (rp.slow, rp.left) = (true, 1);
+        false
+    }
+
+    /// 0x3EF290: the ball and the pins as kept, the camera's angles for this one (0x3EBC98 mode 3).
+    fn start_replay(&mut self) {
+        let Some(from) = self.replay.from.clone() else { return };
+        let (ball, pins, r) = *from;
+        (self.ball, self.pins, self.rolled, self.quiet) = (ball, pins, Some(r), 0);
+        let rp = &mut self.replay;
+        rp.left = rp.left.saturating_sub(1);
+        (rp.on, rp.t, rp.half) = (true, 0, false);
+        let k = rp.left as usize;
+        let (a, b) = (
+            rp.order[0][k % 3],
+            rp.order[1][if k < 3 {
+                k
+            } else if k < 6 {
+                (k + 1) % 3
+            } else {
+                (k + 2) % 3
+            }],
+        );
+        let pi = std::f32::consts::PI;
+        let pitch = (f32::from(a) + self.random()) * pi / 12.0 - 0.879_645_94;
+        let yaw = (f32::from(b) + self.random()) * pi / 6.0 - pi / 4.0;
+        self.replay.view = (pitch, yaw);
+    }
+
+    /// Pin `k` counts as down (+0x170 = 0): lying on the lane, or its base off its spot.
+    fn down(&self, k: usize) -> bool {
+        let (Some(p), Some(spot)) = (self.pins.get(k), self.data_rack.get(k)) else { return true };
+        let base = self.base();
+        let b = p.base(base);
+        let off = (b.x - spot[0]) * (b.x - spot[0]) + (b.z - spot[1]) * (b.z - spot[1]);
+        let lying = p.spheres(base).iter().skip(1).any(|(c, r)| c.y + r > -2.0) || p.up().y > -0.7;
+        !p.standing || lying || off > DOWN_RADIUS2
     }
 
     /// The ball's frame (0x3EC768 after the move): the fall, the touch, the hook; past the deck it drops out.
@@ -949,16 +1106,9 @@ impl Bowl {
 
     /// The count (0x3EA4C8) once a roll is over: the fallen pins, the mark, the callout; a strike's pose.
     fn count(&mut self) {
-        let base = self.base();
-        let rack = self.data_rack.clone();
-        for (k, p) in self.pins.iter_mut().enumerate() {
-            let spot = rack.get(k).copied().unwrap_or_default();
-            let b = p.base(base);
-            let off = (b.x - spot[0]) * (b.x - spot[0]) + (b.z - spot[1]) * (b.z - spot[1]);
-            let lying = p.spheres(base).iter().skip(1).any(|(c, r)| c.y + r > -2.0) || p.up().y > -0.7;
-            if lying || off > DOWN_RADIUS2 {
-                p.standing = false;
-            }
+        let down: Vec<bool> = (0..self.pins.len()).map(|k| self.down(k)).collect();
+        for (p, down) in self.pins.iter_mut().zip(down) {
+            p.standing &= !down;
         }
         let standing: [bool; 10] = std::array::from_fn(|k| self.pins.get(k).is_some_and(|p| p.standing));
         let knocked = if self.foul { 0 } else { (0..10).filter(|&k| self.standing_before[k] && !standing[k]).count() as u8 };
@@ -1009,6 +1159,7 @@ impl Bowl {
             card.marks.push(mark);
         }
         self.counted = Some((knocked, mark));
+        self.replay.on = false;
         self.ball.rolling = false;
         self.ball.shown = false;
         self.phase = if mark == Mark::Strike { Phase::Strike(0) } else { Phase::Result(0) };
@@ -1214,6 +1365,30 @@ mod tests {
         let knocked = b.cards[0].rolls.first().copied().unwrap_or(0);
         assert!(knocked >= 7, "{knocked} down, {:?}", b.pins.iter().map(|p| p.standing).collect::<Vec<_>>());
         assert!(matches!(b.phase, Phase::Strike(_) | Phase::Result(_)), "{:?}", b.phase);
+    }
+
+    #[test]
+    fn a_strike_replays_and_counts_as_a_strike() {
+        // straight full-power balls from across the lane: the first strike replays (from z 4000, the pins racked
+        // again) and still counts 10; START skips the replays
+        let d = data();
+        for skip in [false, true] {
+            let strike = (-300..=300).step_by(10).find_map(|x| {
+                let mut b = Bowl::new(&d, vec![Bowler::new(&d, 0, 0)], 1);
+                (b.x, b.spin, b.spin_speed, b.power, b.power_speed) = (x as f32, 0.0, 0.0, 100.0, 0.0);
+                b.phase = Phase::Throw(1);
+                let mut replayed = false;
+                for _ in 0..3000 {
+                    if !matches!(b.phase, Phase::Throw(_)) {
+                        break;
+                    }
+                    b.step(In { start: skip && b.replay.on, ..In::default() });
+                    replayed |= b.replay.on;
+                }
+                (b.cards[0].marks == [Mark::Strike]).then_some((replayed, b.cards[0].rolls.clone()))
+            });
+            assert_eq!(strike, Some((true, vec![10])));
+        }
     }
 
     #[test]

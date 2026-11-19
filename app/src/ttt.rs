@@ -257,11 +257,19 @@ pub struct Progress {
     pub options: Option<[usize; 3]>,
     /// OPTIONS' ARCADE ARENAS (OpenKumite's) set OFF.
     pub arcade_off: bool,
+    /// Tekken Bowl's TOP 5 BOWLERS (save block 0x46BC70; None: bowl.json's defaults), and its bonuses kept: a
+    /// 200-point game (+0x202, JUKEBOX's), a 300 (+0x204).
+    pub bowlers: Option<Vec<kumite_game::bowl::Record>>,
+    pub bowl_bonus: [bool; 2],
+    /// Tekken Force's keys and hi-score here (apart from Tekken 3's records).
+    pub force_keys: u32,
+    pub force_hiscore: u32,
 }
 
 /// The save's progress as last loaded or changed (the menus read it; the app keeps it in the save), as the
 /// DIFFICULTY of the Tekken 3 menus.
-static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress { stage: 0, points: 0, seen: 0, options: None, arcade_off: false });
+static PROGRESS: std::sync::Mutex<Progress> =
+    std::sync::Mutex::new(Progress { stage: 0, points: 0, seen: 0, options: None, arcade_off: false, bowlers: None, bowl_bonus: [false; 2], force_keys: 0, force_hiscore: 0 });
 
 pub fn progress() -> Progress {
     PROGRESS.lock().map_or_else(|e| e.into_inner().clone(), |p| p.clone())
@@ -306,7 +314,7 @@ impl Progress {
 pub type Team = Vec<(usize, usize)>;
 
 /// A mode's run: who fights, the ladder, the score.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Run {
     /// The main menu id.
     pub mode: u32,
@@ -673,9 +681,10 @@ pub struct Select {
 
 impl Select {
     pub fn new(mode: u32, d: &Data, tally: Option<[u32; 2]>) -> Self {
+        // (Tekken Bowl: a team too, its second the strike's partner and in the records, 0x3E99C0, 0x3F1408)
         let need = match mode {
             TEAM => 8,
-            m if tag(m) => 2,
+            m if tag(m) || m == BOWL => 2,
             _ => 1,
         };
         // (the cursors start on `start_slots`: 1P's on Xiaoyu's, as the PS2 shows)
@@ -1237,8 +1246,10 @@ impl Front {
             Page::GameOver { .. } => banner_at(painter, v, art, d, &d.raw["arcade"]["continue"]["game_over"], 0),
             Page::Message { lines, .. } => {
                 backdrop(painter, v, art);
+                // (a long one, Tekken Bowl's results, closer and smaller)
+                let (y0, step, size) = if lines.len() > 6 { (40.0, 400.0 / lines.len() as f32, 0.3) } else { (150.0, 50.0, 0.45) };
                 for (k, l) in lines.iter().enumerate() {
-                    font(painter, v, art, d, l, W / 2.0, 150.0 + 50.0 * k as f32, if k == 0 { 0.7 } else { 0.45 }, Color32::WHITE);
+                    font(painter, v, art, d, l, W / 2.0, y0 + step * k as f32, if k == 0 { size + 0.25 } else { size }, Color32::WHITE);
                 }
             }
             // OpenKumite's layout: a row a character, its cells side by side, 13 rows about the cursor's
@@ -1510,11 +1521,25 @@ fn font_in(painter: &egui::Painter, v: &View, art: &Art, d: &Data, colour: Optio
     let text = text.to_uppercase().replace(['´', '`'], "'");
     let mut at = x - text.chars().map(advance).sum::<f32>() / 2.0;
     for c in text.chars() {
-        if let Some((r, k)) = rows.iter().enumerate().find_map(|(r, row)| row.chars().position(|g| g == c).map(|k| (r, k))) {
+        // (the font has no '+', which Tekken 3's "+N SEC" wants: its '-', and the '-' turned a quarter about its middle)
+        let g = if c == '+' { '-' } else { c };
+        if let Some((r, k)) = rows.iter().enumerate().find_map(|(r, row)| row.chars().position(|x| x == g).map(|k| (r, k))) {
             let (u, vv) = (k as f32 * gw / tw as f32, r as f32 * gh / th as f32);
             let uv = Rect::from_min_max(Pos2::new(u, vv), Pos2::new(u + gw / tw as f32, vv + gh / th as f32));
             let [rx, ry, rw, rh] = sv([at - (gw * sx - advance(c)) / 2.0, y, gw * sx, gh * sy]);
-            painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, tint);
+            let cell = v.rect(rx, ry, rw, rh);
+            painter.image(tex.id(), cell, uv, tint);
+            if c == '+' {
+                // (about the dash's ink, below and left of its cell's middle: read off the picture)
+                let m = cell.center() + egui::vec2(-0.14 * cell.width(), 0.13 * cell.height());
+                let turn = |p: Pos2| m + egui::vec2(m.y - p.y, p.x - m.x);
+                let mut mesh = egui::Mesh::with_texture(tex.id());
+                for (p, t) in [(cell.left_top(), uv.left_top()), (cell.right_top(), uv.right_top()), (cell.right_bottom(), uv.right_bottom()), (cell.left_bottom(), uv.left_bottom())] {
+                    mesh.vertices.push(egui::epaint::Vertex { pos: turn(p), uv: t, color: tint });
+                }
+                mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+                painter.add(egui::Shape::mesh(mesh));
+            }
         }
         at += advance(c);
     }
@@ -2328,6 +2353,10 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         let hand = if bowler.is_some_and(|p| p.left) { "LEFT-HANDED" } else { "RIGHT-HANDED" };
         small(painter, v, art, d, hand, 560.0, 372.0, Color32::from_gray(200));
     }
+    // (shortcut: REPLAY's place and blink are OpenKumite's; its draw in 0x3E4BC0 is not decoded)
+    if b.replay.on && (frame / 30).is_multiple_of(2) {
+        font(painter, v, art, d, "REPLAY", W / 2.0, 120.0, 0.6, Color32::WHITE);
+    }
     if b.rolled.is_some() && b.speed > 0.0 && !matches!(b.phase, Phase::Charge(_)) {
         let mph = b.mph();
         small(painter, v, art, d, &format!("SPEED {:3}.{:02} MPH", mph / 100, mph % 100), 540.0, 410.0, Color32::WHITE);
@@ -2347,6 +2376,24 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         if (frame / 30).is_multiple_of(2) {
             small(painter, v, art, d, "PRESS START", W / 2.0, 410.0, Color32::WHITE);
         }
+    }
+}
+
+/// Tekken Bowl's pause (state 9; OpenKumite's box): TOP BOWLERS and EXIT, or TOP 5 BOWLERS' list.
+// shortcut: of the PS2's pause items only TOP BOWLERS and EXIT (BOWLING OPTIONS' HELP MESSAGES, SPECIAL EFFECTS and
+// JUKEBOX are not done; their effects are not decoded)
+pub fn bowl_pause(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, (cursor, top): (usize, bool), list: &[kumite_game::bowl::Record]) {
+    Art::shade(painter, v, sv([170.0, 120.0, 300.0, 210.0]), [Color32::from_rgba_unmultiplied(0, 0, 0, 200); 4]);
+    if top {
+        font(painter, v, art, d, &scene.text("top", "TOP 5 BOWLERS"), W / 2.0, 140.0, 0.4, Color32::WHITE);
+        for (k, r) in list.iter().enumerate() {
+            small(painter, v, art, d, &format!("{:2}  {}  {:3}", k + 1, r.name, r.score), W / 2.0, 190.0 + 24.0 * k as f32, Color32::WHITE);
+        }
+        return;
+    }
+    for (k, item) in [scene.text("top_bowlers", "TOP BOWLERS"), scene.text("exit", "EXIT")].iter().enumerate() {
+        let c = if k == cursor { Color32::from_rgb(255, 80, 60) } else { Color32::WHITE };
+        font(painter, v, art, d, item, W / 2.0, 190.0 + 50.0 * k as f32, 0.45, c);
     }
 }
 
@@ -2471,9 +2518,9 @@ mod tests {
         let d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![], None, false, &Value::Null).unwrap();
         let modes = |stage| Front::items(&d, &Progress { stage, ..Progress::default() }).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
         assert_eq!((modes(9), modes(10)), (vec![ARCADE], vec![ARCADE, BOWL]));
-        // its select: P1 picks one; 2P's START joins
+        // its select: P1 picks two; 2P's START joins
         let mut s = Select::new(BOWL, &d, None);
-        assert_eq!((s.sides[0].need, s.sides[1].player), (1, None));
+        assert_eq!((s.sides[0].need, s.sides[1].player), (2, None));
         let roster = roster();
         s.key(1, Key::Start, &d, &roster, &Progress::default());
         assert_eq!(s.sides[1].player, Some(1));

@@ -58,7 +58,9 @@ onmessage = async ({ data }) => {
     const { run, state } = await ready;
     // the packs this job writes (locked while it runs); the others it reads from a snapshot, which leaves them to
     // the game (a Tekken 2 job beside the game playing on Tekken 3's)
-    const writes = data.job === 'state' ? [] : ['extras', 'unpacked', ...(data.part ? [PACK[data.part] ?? data.part] : [])];
+    // (Tekken Tag Tournament's pack too when its extras follow: a Tekken 3 job, an install)
+    const ttt = data.job === 'install' || data.part === 't3' ? ['ttt'] : [];
+    const writes = data.job === 'state' ? [] : ['extras', 'unpacked', ...(data.part ? [PACK[data.part] ?? data.part] : []), ...ttt];
     for (const name of STORES) {
       const file = await root.getFileHandle(name, { create: true });
       if (!writes.includes(name.split('.')[0])) { handles.push(await file.getFile()); continue; }

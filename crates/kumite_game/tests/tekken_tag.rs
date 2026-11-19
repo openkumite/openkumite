@@ -688,7 +688,7 @@ fn tekken_bowl_from_the_pack() {
     use kumite_sim::bowl::{Phase as Bowl, CROSS};
     let Some(a) = assets() else { return };
     let play = || {
-        let mut s = BowlScene::new(&a, &[(PAUL, 0), (LEI, 2)], 7).unwrap();
+        let mut s = BowlScene::new(&a, &[(PAUL, 0), (LEI, 2)], &[], 7).unwrap();
         let hand = s.bowl.players[0].hand;
         assert!(hand.y < -150.0 && hand.z > 3000.0 && hand.x > 0.0, "Paul's release point {hand}");
         assert_eq!(s.bowl.players[0].charge.len(), 175);
