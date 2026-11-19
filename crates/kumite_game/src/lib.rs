@@ -612,8 +612,9 @@ impl Game {
             self.fight.fighters[0].position.z -= if t == 0 { ti.place.z } else { -ti.place.z } as f32;
         }
         self.visible = [true; 2];
-        // the chest points as 0x3B4DC0 sets them (the place, 1425 up); the shot on the team's fighter's (as the PS2
-        // frames show it), a pair's midpoint. shortcut: a pair's points set the same way (0x3B4E10 not read)
+        // the chest points as 0x3B4DC0 sets them (the place, 1425 up); the shot (0x3D2330) on the team's own fighter
+        // (checked against a PS2 recording of Jin and Jun's: the shot, the partner's place and the stage behind as
+        // here), a pair's midpoint. shortcut: a pair's points set the same way (0x3B4E10 not read)
         let chest = |i: usize| {
             let p = self.fight.fighters[i].position;
             [p.x.round() as i64, -1425, -(p.z.round() as i64)]
