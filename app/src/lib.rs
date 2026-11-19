@@ -899,7 +899,7 @@ impl App {
             // (Tekken Tag: the arena's)
             let arcade = arcade.and_then(|b| sound.music(b));
             let track = sound.arena_music(stage).or(arcade).or_else(|| bgm.and_then(|b| sound.music(b))).or_else(|| sound.music_for(&names[k]));
-            audio.music_from(track, sound.loop_start(track));
+            audio.music(track);
         }
         if watch {
             // the attract demo's fighters have 125 health (0x800516CC)
@@ -1581,7 +1581,7 @@ impl App {
             // a movie's soundtrack starts with its pictures (once enough of it has arrived)
             if let (Screen::Movie(m, _), false, Some(audio)) = (&*screen, was_playing, self.audio.as_mut()) {
                 if m.playing {
-                    audio.music(m.audio.as_deref().map(|p| (p, m.looped)));
+                    audio.music(m.audio.as_deref().map(|p| kumite_game::sound::Track::plain(p, m.looped)).as_ref());
                 }
             }
             if matches!(screen, Screen::GameOver { .. }) {
@@ -1616,15 +1616,14 @@ impl App {
                 };
                 match screen {
                     // a movie's own soundtrack, once (a looping ending's, over and over)
-                    Screen::Movie(m, _) => audio.music(m.audio.as_deref().filter(|_| m.playing).map(|p| (p, m.looped))),
+                    Screen::Movie(m, _) => audio.music(m.audio.as_deref().filter(|_| m.playing).map(|p| kumite_game::sound::Track::plain(p, m.looped)).as_ref()),
                     // the Theater's music player (the menu itself is silent)
                     Screen::Theater(_) => audio.music(self.theater_music.and_then(|(id, col)| sound.music_column(id, col))),
                     // the staff roll's music once it started
                     Screen::StaffRoll(_) => audio.music(self.roll_music.and_then(|id| sound.music(id))),
                     // Tekken Tag's music player
                     Screen::Ttt(f) => {
-                        let track = f.music(self.roster.ttt.as_deref()).and_then(|id| sound.music(id));
-                        audio.music_from(track, sound.loop_start(track));
+                        audio.music(f.music(self.roster.ttt.as_deref()).and_then(|id| sound.music(id)));
                     }
                     // the records: a new record's BGM 2 until its fade; else whatever played goes on
                     Screen::Records(r) => {
@@ -3293,6 +3292,9 @@ impl App {
                 self.start_fight(setup, Vec::new());
             }
             Outcome::TttEnding(e, costume, cursor) => self.start_ttt_ending(e, costume, false, ttt::Page::Theater { cursor }),
+            Outcome::TttMovie(file, back) => self.start_ttt_movie(file, menu::AfterMovie::Ttt(back)),
+            Outcome::TttRoll(back) => self.start_ttt_roll(*back),
+            Outcome::TttEmbu(cast, cursor) => self.start_ttt_embu(cast, ttt::Page::Theater { cursor }),
             Outcome::TttSaved => {
                 self.records.ttt = ttt::progress();
                 self.records.save();
@@ -3505,30 +3507,45 @@ impl App {
         }
     }
 
+    /// Tekken Tag's movie `file` (video/NN.avi), then `after`; where it does not load, the front end stays.
+    fn start_ttt_movie(&mut self, file: usize, after: menu::AfterMovie) {
+        match movie::Movie::load(&self.assets.root, file) {
+            Ok(m) => {
+                self.theater_music = None;
+                self.screen = Some(Screen::Movie(Box::new(m), after));
+            }
+            Err(e) => log::warn!("movie {file}: {e:#}"),
+        }
+    }
+
+    /// Tekken Tag's staff roll alone (BGM 6), then the page `back`.
+    fn start_ttt_roll(&mut self, back: ttt::Page) {
+        let Some(data) = self.roster.ttt.as_ref().and_then(|d| d.endings.clone()) else { return };
+        if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
+            audio.music(sound.music(data.raw["staff_roll"]["bgm"].as_u64().unwrap_or(6) as usize));
+        }
+        (self.screen, self.fight) = (None, None);
+        self.ttt_ending = Some(EndingRun { scene: None, models: Vec::new(), roll: Some(0), skip: false, back });
+    }
+
     /// Tekken Tag's ending `e`, the player's costume `costume` (0x3AA8A8): its arena and cast on its camera path; an
-    /// arcade clear `roll`s the staff first (BGM 6), Theater plays BGM 7; then the page `back`.
+    /// arcade clear `roll`s the staff first (BGM 6), Theater plays BGM 7; then the page `back`. Unknown's is a movie
+    /// (then the staff roll, from an arcade clear).
     fn start_ttt_ending(&mut self, e: usize, costume: usize, roll: bool, back: ttt::Page) {
         let Some(data) = self.roster.ttt.as_ref().and_then(|d| d.endings.clone()) else {
             self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: back, frame: 0 })));
             return;
         };
         let movie = data.raw["playback"]["unknown"].as_u64() == Some(e as u64);
-        let r = self.renderer.take();
-        let mut shown = None;
-        if let (Some(r), false) = (r.as_ref(), movie) {
-            match kumite_game::ending::EndingScene::new(&self.assets, &data, e, costume) {
-                Ok(s) => {
-                    let mut stage = self.stage_scene(r, s.arena);
-                    stage.models.clear();
-                    let models = s.characters.iter().zip(&s.records).map(|(c, &record)| skinned_character(r, c, record)).collect();
-                    self.scene = Some(stage);
-                    shown = Some((s, models));
-                }
-                Err(err) => log::warn!("ending {e}: {err:#}"),
+        if let (true, Some(file)) = (movie, data.raw["playback"]["unknown_movie"].as_u64()) {
+            let after = if roll { menu::AfterMovie::TttRoll(Box::new(back.clone())) } else { menu::AfterMovie::Ttt(Box::new(back.clone())) };
+            self.start_ttt_movie(file as usize, after);
+            if matches!(self.screen, Some(Screen::Movie(..))) {
+                return;
             }
         }
-        self.renderer = r;
-        // (Unknown's, a movie, is not converted: the staff roll alone)
+        let shown = if movie { None } else { self.ttt_scene(kumite_game::ending::EndingScene::new(&self.assets, &data, e, costume)) };
+        // (Unknown's movie not there: the staff roll alone)
         if shown.is_none() && !roll {
             self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: back, frame: 0 })));
             return;
@@ -3542,6 +3559,30 @@ impl App {
         self.ttt_ending = Some(EndingRun { scene, models, roll: roll.then_some(0), skip: false, back });
     }
 
+    /// A Tekken Tag scene (an ending, the EMBU) on its arena, with its cast's GPU models; None (and a log line) where it
+    /// does not load.
+    fn ttt_scene(&mut self, s: Result<kumite_game::ending::EndingScene>) -> Option<(kumite_game::ending::EndingScene, Vec<SkinnedModel>)> {
+        let s = s.map_err(|e| log::warn!("the scene: {e:#}")).ok()?;
+        let r = self.renderer.take()?;
+        let mut stage = self.stage_scene(&r, s.arena);
+        stage.models.clear();
+        let models = s.characters.iter().zip(&s.records).map(|(c, &record)| skinned_character(&r, c, record)).collect();
+        (self.scene, self.renderer) = (Some(stage), Some(r));
+        Some((s, models))
+    }
+
+    /// Tekken Tag's EMBU with cast `cast` (Theater's EMBU, 0x3A97B0), then the page `back`.
+    fn start_ttt_embu(&mut self, cast: usize, back: ttt::Page) {
+        let Some(data) = self.roster.ttt.as_ref().and_then(|d| d.endings.clone()) else { return };
+        if let Some((s, models)) = self.ttt_scene(kumite_game::ending::EndingScene::embu(&self.assets, &data, cast)) {
+            if let Some(a) = self.audio.as_mut() {
+                a.music(None);
+            }
+            (self.screen, self.fight) = (None, None);
+            self.ttt_ending = Some(EndingRun { scene: Some(s), models, roll: None, skip: false, back });
+        }
+    }
+
     /// One frame of Tekken Tag's ending: the staff roll alone for its first 77 s (START skips it), then the scene under
     /// it (START ends it), then the roll to its end (START); then its page.
     fn step_ttt_ending(&mut self) {
@@ -3550,9 +3591,12 @@ impl App {
         let alone = data.raw["staff_roll"]["frames"].as_u64().unwrap_or(4620) as u32;
         let skip = std::mem::take(&mut run.skip);
         let over = match (run.roll, run.scene.as_mut()) {
-            // (the music goes on: BGM 7 is the same stream further on)
+            // START: the music jumps to BGM 7 (the same stream further on, 0x3AA8A8)
             (Some(f), Some(_)) if f < alone && skip => {
                 run.roll = None;
+                if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
+                    audio.music(sound.music(data.raw["playback"]["ending_bgm"].as_u64().unwrap_or(7) as usize));
+                }
                 false
             }
             (Some(f), _) if f < alone && !skip => {
@@ -3561,6 +3605,10 @@ impl App {
             }
             (_, Some(s)) if !s.done && !skip => {
                 s.step();
+                // (the EMBU starts its music from its script)
+                if let (Some(bgm), Some(audio), Some(sound)) = (s.music.take(), self.audio.as_mut(), self.sound.as_ref()) {
+                    audio.music(sound.music(bgm));
+                }
                 run.roll = run.roll.map(|f| f + 1);
                 false
             }
@@ -6979,11 +7027,16 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             }
             return Ok(());
         }
-        // Tekken Tag's ending (--variant E, --costume N; --roll: the staff roll first), N frames in
-        Some("ttt-ending") => {
+        // Tekken Tag's ending (--variant E, --costume N; --roll: the staff roll first), or its EMBU (--variant: the
+        // cast), N frames in
+        Some(which @ ("ttt-ending" | "ttt-embu")) => {
             let arg = |k: &str| std::env::args().skip_while(|a| a != k).nth(1).and_then(|v| v.parse().ok());
             app.renderer = Some(r);
-            app.start_ttt_ending(arg("--variant").unwrap_or(1), arg("--costume").unwrap_or(0), std::env::args().any(|a| a == "--roll"), ttt::Page::Title);
+            if which == "ttt-embu" {
+                app.start_ttt_embu(arg("--variant").unwrap_or(0), ttt::Page::Title);
+            } else {
+                app.start_ttt_ending(arg("--variant").unwrap_or(1), arg("--costume").unwrap_or(0), std::env::args().any(|a| a == "--roll"), ttt::Page::Title);
+            }
             for _ in 0..frames {
                 app.step();
             }
@@ -6993,7 +7046,7 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             let r = app.renderer.take().context("renderer")?;
             write_png(Path::new(path), &r.capture()?)?;
             if let Some(s) = app.ttt_ending.as_ref().and_then(|e| e.scene.as_ref()) {
-                log::info!("ending {} frame {}: camera {:?}, slots {:?}", s.ending, s.frame(), s.camera(), (0..2).map(|k| s.pose(k).map(|p| (p.0, p.1[0].w_axis))).collect::<Vec<_>>());
+                log::info!("ending {:?} frame {}: camera {:?}, slots {:?}", s.ending, s.frame(), s.camera(), (0..2).map(|k| s.pose(k).map(|p| (p.0, p.1[0].w_axis))).collect::<Vec<_>>());
             }
             return Ok(());
         }

@@ -342,8 +342,13 @@ fn the_round_call_starts_the_fight_on_frame_151_then_91() {
         assert_eq!(said, calls.map(|(k, f)| (k, f.to_string())), "round {round}'s call");
         b.resume_match(1, [0, 0]);
     }
-    let (music, looped) = s.arena_music(0).unwrap();
-    assert!(music.ends_with("audio/music/22.flac") && looped, "{}", music.display());
+    let music = s.arena_music(0).unwrap();
+    assert!(music.file.ends_with("audio/music/22.flac") && music.looped, "{}", music.file.display());
+    // (arena 0's BGM 9: its loop point and volume 9830, the PS2's level)
+    assert_eq!((music.loop_at, music.gain), (3.779047619047619, 9830.0 / 16384.0 * 0.85 / 0.55));
+    // BGM 7 is the staff roll's stream further on
+    let (roll, ending) = (s.music(6).unwrap(), s.music(7).unwrap());
+    assert!(roll.file == ending.file && roll.start == 0.0 && ending.start > 134.0);
 }
 
 /// Paul's kick, a voiced move, a guarded jab and a K.O. by a jab: the samples sound.json names.

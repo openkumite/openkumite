@@ -316,8 +316,9 @@ fn decode(path: &Path) -> Result<Vec<f32>> {
     Ok(out)
 }
 
-/// The sounds noted (by game step) mixed to `steps` steps of 48 kHz stereo: the music at `music_volume` (looped as
-/// asked, quieter while ducked), each sound once at its volume. Limited softly, never clipped.
+/// The sounds noted (by game step) mixed to `steps` steps of 48 kHz stereo: the music at `music_volume` and its
+/// level (from its start, looped from its loop point as asked, quieter while ducked), each sound once at its volume.
+/// Limited softly, never clipped.
 pub fn mix(events: &[(u64, Event)], steps: u64, music_volume: f32) -> Vec<f32> {
     let len = (steps as usize * RATE / FPS as usize) * 2;
     let mut out = vec![0f32; len];
@@ -335,20 +336,21 @@ pub fn mix(events: &[(u64, Event)], steps: u64, music_volume: f32) -> Vec<f32> {
         cache.get(p).cloned()
     };
     // the music: each track from its start to the next change
-    let changes: Vec<(usize, &Option<(PathBuf, bool)>)> = events.iter().filter_map(|(s, e)| if let Event::Music(m) = e { Some((sample_of(*s), m)) } else { None }).collect();
+    let changes: Vec<(usize, &Option<kumite_game::sound::Track>)> = events.iter().filter_map(|(s, e)| if let Event::Music(m) = e { Some((sample_of(*s), m)) } else { None }).collect();
     let ducks: Vec<(usize, bool)> = events.iter().filter_map(|(s, e)| if let Event::Duck(d) = e { Some((sample_of(*s), *d)) } else { None }).collect();
     for (k, (start, track)) in changes.iter().enumerate() {
-        let Some((path, looped)) = track else { continue };
-        let Some(m) = clip(path) else { continue };
-        if m.is_empty() {
-            continue;
-        }
+        let Some(t) = track else { continue };
+        let Some(m) = clip(&t.file) else { continue };
+        // (stereo samples: the start and the loop point at a frame)
+        let at = |s: f64| ((s.max(0.0) * RATE as f64) as usize * 2).min(m.len());
+        let (first, back) = (at(t.start), at(t.loop_at));
         let end = changes.get(k + 1).map_or(len, |c| c.0).min(len);
         for (n, i) in (*start..end).enumerate() {
-            let j = if *looped { n % m.len() } else { n };
+            let j = first + n;
+            let j = if t.looped && j >= m.len() && back < m.len() { back + (j - m.len()) % (m.len() - back) } else { j };
             let Some(&s) = m.get(j) else { break };
             let ducked = ducks.iter().rev().find(|d| d.0 <= i).is_some_and(|d| d.1);
-            out[i] += s * music_volume * if ducked { 0.3 } else { 1.0 };
+            out[i] += s * music_volume * t.gain * if ducked { 0.3 } else { 1.0 };
         }
     }
     for (step, e) in events {

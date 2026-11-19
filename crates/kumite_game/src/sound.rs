@@ -26,6 +26,36 @@ struct Sample {
     file: PathBuf,
 }
 
+/// A music track as its game's sound driver plays it: the file, whether it loops, where it starts and where a loop
+/// goes back to (seconds), its level (1: the file's own).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Track {
+    pub file: PathBuf,
+    pub looped: bool,
+    pub start: f64,
+    pub loop_at: f64,
+    pub gain: f32,
+}
+
+impl Track {
+    /// A file from its start, at its own level.
+    pub fn plain(file: &Path, looped: bool) -> Self {
+        Self { file: file.to_path_buf(), looped, start: 0.0, loop_at: 0.0, gain: 1.0 }
+    }
+
+    /// A music.json column: Tekken Tag's start, loop point and its BGM entry's volume (`raw[2]`, 0x50CD00's u16:
+    /// measured in PCSX2, the PS2 plays a track at volume / 16384 x 0.85 of full scale, which `TTT_MUSIC_LEVEL` makes
+    /// of OpenKumite's music volume).
+    fn of(dir: &Path, col: &serde_json::Value) -> Self {
+        let num = |k: &str| col[k].as_f64().unwrap_or(0.0);
+        let gain = col["raw"][2].as_f64().map_or(1.0, |v| (v / 16384.0) as f32 * TTT_MUSIC_LEVEL);
+        Self { file: dir.join(col["file"].as_str().unwrap_or_default()), looped: col["loop"].as_bool().unwrap_or(false), start: num("start_seconds"), loop_at: num("loop_seconds"), gain }
+    }
+}
+
+/// Tekken Tag's music level: the PS2's 0.85 (a track's volume 16384) over OpenKumite's music volume (0.55).
+const TTT_MUSIC_LEVEL: f32 = 0.85 / 0.55;
+
 #[derive(Default)]
 pub struct SoundData {
     /// Tekken Tag's tables (sound.json's dialect "ttt"): its sounds are played by [`Tag`], none of the others.
@@ -68,9 +98,9 @@ pub struct SoundData {
     /// Bank key ("sys", "ann", "m071", ...) -> samples with the tones that play them.
     banks: HashMap<String, Vec<Sample>>,
     /// Music by BGM id (column 0, the arranged tracks) and the characters each belongs to.
-    pub music: Vec<(PathBuf, bool, Vec<String>, f64)>,
+    pub music: Vec<(Track, Vec<String>)>,
     /// The same BGM ids' column 1 (the arcade originals), as the Theater's music player plays them.
-    pub music_arcade: Vec<(PathBuf, bool)>,
+    pub music_arcade: Vec<Track>,
     /// Announcer calls: sound-table indices traced in the round code (sound.json `announcer`).
     announcer: serde_json::Value,
     /// The SePlay volumes (0x800278FC, sound.json `volumes`).
@@ -187,20 +217,11 @@ impl SoundData {
             .context("music.json: bgm")?
             .iter()
             .map(|b| {
-                let col = &b["columns"][0];
                 let names = b["characters"].as_array().into_iter().flatten().filter_map(|n| n.as_str()).map(str::to_string).collect();
-                (music_dir.join(col["file"].as_str().unwrap_or_default()), col["loop"].as_bool().unwrap_or(false), names, col["loop_seconds"].as_f64().unwrap_or(0.0))
+                (Track::of(&music_dir, &b["columns"][0]), names)
             })
             .collect();
-        let music_arcade = music_json["bgm"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|b| {
-                let col = &b["columns"][1];
-                (music_dir.join(col["file"].as_str().unwrap_or_default()), col["loop"].as_bool().unwrap_or(false))
-            })
-            .collect();
+        let music_arcade = music_json["bgm"].as_array().into_iter().flatten().map(|b| Track::of(&music_dir, &b["columns"][1])).collect();
         if sound["dialect"] == "ttt" {
             let arena_bgm = music_json["by_arena"]["bgm"].as_array().into_iter().flatten().filter_map(|v| v.as_u64()).map(|v| v as usize).collect();
             let tag = Tag::load(&sound, &audio, assets.root.join("audio/sfx"))?;
@@ -407,32 +428,27 @@ impl SoundData {
         self.table(index)
     }
 
-    /// The fight music of a character (BGM ids 7..27 belong to the characters), and whether it loops.
-    pub fn music_for(&self, name: &str) -> Option<(&Path, bool)> {
-        self.music.iter().find(|m| m.2.iter().any(|n| n == name)).map(|m| (m.0.as_path(), m.1))
+    /// The fight music of a character (BGM ids 7..27 belong to the characters).
+    pub fn music_for(&self, name: &str) -> Option<&Track> {
+        self.music.iter().find(|m| m.1.iter().any(|n| n == name)).map(|m| &m.0)
     }
 
-    /// Music by BGM id from column 0 (arranged) or 1 (arcade), and whether it loops.
-    pub fn music_column(&self, id: usize, column: usize) -> Option<(&Path, bool)> {
+    /// Music by BGM id from column 0 (arranged) or 1 (arcade).
+    pub fn music_column(&self, id: usize, column: usize) -> Option<&Track> {
         if column == 1 {
-            return self.music_arcade.get(id).map(|m| (m.0.as_path(), m.1));
+            return self.music_arcade.get(id);
         }
         self.music(id)
     }
 
-    /// Tekken Tag: the fight music of arena `stage` (music.json `by_arena`), and whether it loops.
-    pub fn arena_music(&self, stage: usize) -> Option<(&Path, bool)> {
+    /// Tekken Tag: the fight music of arena `stage` (music.json `by_arena`).
+    pub fn arena_music(&self, stage: usize) -> Option<&Track> {
         self.music(*self.arena_bgm.get(stage)?)
     }
 
-    /// Music by BGM id, and whether it loops (the jingles play once).
-    pub fn music(&self, id: usize) -> Option<(&Path, bool)> {
-        self.music.get(id).map(|m| (m.0.as_path(), m.1))
-    }
-
-    /// Where a track loops back to, in seconds (music.json `loop_seconds`: Tekken Tag's driver's loop point; 0 the start).
-    pub fn loop_start(&self, track: Option<(&Path, bool)>) -> f64 {
-        track.and_then(|(p, _)| self.music.iter().find(|m| m.0 == p)).map_or(0.0, |m| m.3)
+    /// Music by BGM id (the jingles play once).
+    pub fn music(&self, id: usize) -> Option<&Track> {
+        self.music.get(id).map(|m| &m.0)
     }
 
     /// Tekken Tag: a sound entry (`kind << 12 | id`) as Tekken Bowl plays them: kinds 2-5 a voice of the character
