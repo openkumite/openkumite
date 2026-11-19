@@ -22,6 +22,7 @@ use crate::menu::{lcg, sfx, FightSetup, Key, Mode, Outcome, Roster};
 use egui::{Color32, Pos2, Rect};
 use kumite_game::bout::{Announcement, Bout, Phase};
 use kumite_game::ending::EndingData;
+use kumite_game::ending::Overlay;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -1831,7 +1832,19 @@ pub fn roll_frames(e: &EndingData) -> u32 {
 /// colour 11, centred, foot at y 200), each from black over 171 frames (0x3A67D0) and from its 343rd frame to black
 /// over 171 / 172 (0x3A6770); then the lines (size 4 in their colour; x by kind, 0x3ABF70: 0 from 48, 1 from 304, 2
 /// ending at 608, 3 and 4 centred) rising from y 480 at 1.5 px a frame.
-pub fn draw_ending(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roll: Option<u32>, black: u8, white: u8) {
+pub fn draw_ending(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roll: Option<u32>, black: u8, white: u8, overlays: &[Overlay]) {
+    // the script's 2D objects (op 24's negative is the renderer's)
+    let at = |x: f32, y: f32| v.pos(x * SCREEN_W / W, y * SCREEN_H / H);
+    for o in overlays {
+        match *o {
+            Overlay::Iris { x, y, r } => outside(painter, |a: f32| at(x + r * a.cos(), y + r * a.sin()), at(x, y)),
+            Overlay::Oval => outside(painter, |a: f32| at(320.0 + 220.0 * 1.33 * a.cos(), 224.0 + 220.0 * a.sin()), at(320.0, 224.0)),
+            Overlay::Tint([r, g, b], a) => {
+                painter.rect_filled(painter.clip_rect(), 0.0, Color32::from_rgba_unmultiplied(r, g, b, (a.min(1.0) * 255.0) as u8));
+            }
+            Overlay::Negative(_) => {}
+        }
+    }
     // (the whole window: the scene fills it)
     painter.rect_filled(painter.clip_rect(), 0.0, Color32::from_black_alpha(black));
     painter.rect_filled(painter.clip_rect(), 0.0, Color32::from_white_alpha(white));
@@ -1865,6 +1878,25 @@ pub fn draw_ending(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roll:
         };
         chrome(painter, v, art, d, text, x, y, Some(colour), 4.0);
     }
+}
+
+/// Black over the window outside the closed curve `edge(angle)` about `centre` (the GS's 15-step fans, 0x3CF850).
+fn outside(painter: &egui::Painter, edge: impl Fn(f32) -> egui::Pos2, centre: egui::Pos2) {
+    let far = 4.0 * painter.clip_rect().size().length();
+    let mut mesh = egui::Mesh::default();
+    for k in 0..=64 {
+        let a = k as f32 * std::f32::consts::TAU / 64.0;
+        let p = edge(a);
+        let out = centre + (p - centre).normalized() * far;
+        mesh.colored_vertex(p, Color32::BLACK);
+        mesh.colored_vertex(if p == centre { centre + egui::vec2(a.cos(), a.sin()) * far } else { out }, Color32::BLACK);
+        if k > 0 {
+            let i = 2 * k as u32;
+            mesh.add_triangle(i - 2, i - 1, i);
+            mesh.add_triangle(i - 1, i + 1, i);
+        }
+    }
+    painter.add(mesh);
 }
 
 /// The music player's list (0x455D80): BGM and name, EXIT left out.

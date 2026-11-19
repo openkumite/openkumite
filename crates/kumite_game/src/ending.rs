@@ -12,11 +12,14 @@
 //!
 //! The hand tracks come in the body clips (the converter's format 26: the finger nodes' turns).
 //!
-//! Ops 17 / 18 throw 0x3A2758's bursts from an actor's node (see [`Burst`]).
+//! Ops 17 / 18 throw 0x3A2758's bursts from an actor's node (see [`Burst`]); ops 21-24 lay 2D objects over the picture
+//! (see [`Overlay`]); 4's and 27's 0x3465E0, 26 and 31 change nothing drawn.
 //!
-//! Not played: the other effect ops (10, 12, 15, 16, 21-32; the EMBU's 7-12: the characters' own effects, objects,
-//! show / hide [L]), ops 17 / 18 at nodes 0x4000-0x4002 (an arena object's matrix, 20 objects 0x3ACCD0), the face
-//! track (its joints are not mapped), the arenas' background characters.
+//! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 12 (texture channel 0's frame, 0x3A86D8), 15 (True
+//! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 25 (arena props on an actor's node, 0x3D10D0), 28 (Kuma's
+//! and Panda's +0xB052), 30 (objects 0x3ACF50), 32 (gp-0x6E78); the EMBU's 7-12; ops 17 / 18 at nodes 0x4000-0x4002
+//! (op 25's prop matrix 0x444CD0, 20 objects 0x3ACCD0); the face track (its joints are not mapped); the arenas'
+//! background characters.
 
 use crate::UNITS;
 use anyhow::{bail, Context, Result};
@@ -124,6 +127,23 @@ pub struct Burst {
     pub spin: f32,
 }
 
+/// A 2D object over the picture (ops 21-24's tasks), in the PS2's 640 x 448 screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Overlay {
+    /// Black outside the circle about (x, y) of radius r (op 22: 0x3CF850).
+    Iris { x: f32, y: f32, r: f32 },
+    /// Black outside the oval about (320, 224) of half-height 220 and half-width 220 x 1.33 (op 23: 0x3CFAD8(220, 133)).
+    Oval,
+    /// Colour [r, g, b] (0-255) over the screen at alpha a (ALPHA (Cs - Cd) x As + Cd: op 21's black or white,
+    /// 0x43FD10 entries 9 / 10, at b / 128; op 24 kind 2, table 0x437D10).
+    Tint([u8; 3], f32),
+    /// The colour less the screen (op 24 kinds 0 and 1: ALPHA (Cs - Cd) x Ad, the frame's alpha taken as 1).
+    Negative([u8; 3]),
+}
+
+/// Op 24's screen fills (table 0x437D10: r, g, b, a, then ALPHA's A, B, C, D).
+const FILLS: [([u8; 3], u8, bool); 3] = [([255, 255, 255], 126, true), ([205, 157, 200], 76, true), ([162, 51, 50], 64, false)];
+
 pub struct EndingScene {
     /// The ending (None: the EMBU).
     pub ending: Option<usize>,
@@ -147,6 +167,8 @@ pub struct EndingScene {
     pub music: Option<usize>,
     /// The bursts thrown this frame.
     pub bursts: Vec<Burst>,
+    /// Ops 21-24's objects: (scene frame started, op, a, b, c).
+    objects: Vec<(i32, i32, i32, i32, i32)>,
     black: Fade,
     white: Fade,
     pub done: bool,
@@ -219,6 +241,7 @@ impl EndingScene {
             ranges: [None; 2],
             music: None,
             bursts: Vec::new(),
+            objects: Vec::new(),
             black: Fade { from: 255, to: 255, at: 0, len: 1 },
             white: Fade::default(),
             done: false,
@@ -276,6 +299,7 @@ impl EndingScene {
                         self.bursts.push(Burst { kind: 3, pos, dir: None, high, spin: last as f32 * std::f32::consts::TAU / 4096.0 });
                     }
                 }
+                21..=24 => self.objects.push((c, op, a, b, last)),
                 -1 => self.done = true,
                 _ => {}
             }
@@ -310,6 +334,34 @@ impl EndingScene {
     /// The camera path playing.
     fn frames(&self) -> &[[f32; 7]] {
         self.cameras.get(self.path).map_or(&[], Vec::as_slice)
+    }
+
+    /// Ops 21-24's objects this frame, in the order drawn. Op 22's iris closes from radius 640 to c & 0xFF over
+    /// c >> 8 frames and stays (0x3AC8B0); 23's oval stands a frames (0x3AC978), 24's fill b (0x3ACAB0), 21's c
+    /// (0x3AC7C0).
+    pub fn overlays(&self) -> Vec<Overlay> {
+        let mut out = Vec::new();
+        for &(at, op, a, b, last) in &self.objects {
+            let t = self.c - at;
+            let shown = |frames: i32| t < frames.max(1);
+            match op {
+                21 if shown(last) => out.push(Overlay::Tint(if a < 2 { [0; 3] } else { [255; 3] }, b as f32 / 128.0)),
+                22 => {
+                    let (frames, end) = ((last >> 8) & 0xFF, last & 0xFF);
+                    // (+0x54 less (640 - end) / frames a frame, floats)
+                    let r = (640.0 - (640 - end) as f32 / frames.max(1) as f32 * t as f32).max(end as f32);
+                    out.push(Overlay::Iris { x: a as f32, y: b as f32, r });
+                }
+                23 if shown(a) => out.push(Overlay::Oval),
+                24 if shown(b) => {
+                    if let Some(&(rgb, alpha, negative)) = FILLS.get(a as usize) {
+                        out.push(if negative { Overlay::Negative(rgb) } else { Overlay::Tint(rgb, alpha as f32 / 128.0) });
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     /// Black over the picture (fades in and out), then white (flashes), 0..=255.
