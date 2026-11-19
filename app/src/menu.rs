@@ -1273,6 +1273,11 @@ impl Screen {
         Screen::Title { frame: 0, difficulty: difficulty() }
     }
 
+    /// Tekken Tag's CONTINUE? and GAME OVER: over the fight's scene and HUD, which keep running.
+    pub fn ttt_over_fight(&self) -> bool {
+        matches!(self, Screen::Ttt(f) if matches!(f.page, crate::ttt::Page::Continue { .. } | crate::ttt::Page::GameOver { .. }))
+    }
+
     /// the extra levels' list with the cursor on a stage.
     pub fn extra_levels(roster: &Roster, stage: usize, difficulty: usize) -> Self {
         Screen::ExtraLevels { frame: 0, cursor: roster.extra_levels.iter().position(|l| l.0 == stage).unwrap_or(0), difficulty }
@@ -1676,7 +1681,7 @@ impl Screen {
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("menu")));
         let window = ctx.content_rect();
         // CONTINUE? and GAME OVER draw over the fight's loser shot
-        if !matches!(self, Screen::Continue { .. } | Screen::GameOver { .. } | Screen::Records(_)) {
+        if !matches!(self, Screen::Continue { .. } | Screen::GameOver { .. } | Screen::Records(_)) && !self.ttt_over_fight() {
             painter.rect_filled(window, 0.0, Color32::BLACK);
         }
         let v = View::fit(window);

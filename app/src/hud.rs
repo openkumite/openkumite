@@ -353,6 +353,8 @@ pub struct HudState {
     run_frames: u32,
     /// Ball: the charge gauges and the floating texts.
     ball: BallHud,
+    /// Tekken Tag's bars.
+    tag: crate::ttt::TagHud,
 }
 
 /// Ball's HUD state (record 8 0x800B49A8 gauges, 0x800B3F98 floating texts).
@@ -385,6 +387,7 @@ impl Hud {
         }
         self.state.shown = [0; 2];
         self.state.trail = [0; 2];
+        self.state.tag = Default::default();
         self.state.ko = None;
         self.state.round = 0;
         self.state.ball = BallHud::default();
@@ -500,6 +503,7 @@ impl Hud {
             self.state.round = bout.round;
             self.state.shown = [0; 2];
             self.state.trail = [0; 2];
+            self.state.tag = Default::default();
             self.state.ko = None;
             self.state.wins_at_start = bout.wins;
         }
@@ -509,12 +513,9 @@ impl Hud {
             }
         }
         let fight = &bout.game.fight;
-        // Tekken Tag (no Tekken 3 bar tables): the damage trail closes max/800 a frame (0x3C1F08's +0x18)
+        // Tekken Tag (no Tekken 3 bar tables)
         if self.data.bar_w == 0 {
-            for (i, f) in fight.fighters.iter().enumerate() {
-                let hp = f.health.max(0);
-                self.state.trail[i] = if self.state.trail[i] <= hp { hp } else { (self.state.trail[i] - (f.max_health * kumite_sim::ONE / 800).max(1)).max(hp) };
-            }
+            self.state.tag.step(bout);
             return;
         }
         for i in 0..2 {
@@ -538,8 +539,7 @@ impl Hud {
             if let Some(t) = &info.ttt {
                 // (Force's pickups behind the HUD)
                 under(&painter, &v);
-                let time = info.time_base.map(|_| self.state.run_frames);
-                crate::ttt::hud(&painter, &v, art, t, bout, info, self.state.trail, self.state.ko, self.state.frame, time);
+                crate::ttt::hud(&painter, &v, art, t, bout, info, &self.state.tag, self.state.ko, self.state.frame, self.state.run_frames);
                 if bout.game.fight.ball.is_some() && !matches!(bout.phase, Phase::Replay { .. }) {
                     let w = self.data.ball.w.max(1) as f32;
                     let gauges = self.state.ball.gauges.map(|(_, _, shown, trail)| [shown as f32 / w, trail as f32 / w]);

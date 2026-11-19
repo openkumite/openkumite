@@ -29,9 +29,12 @@ pub struct RoundRules {
     /// The ROUND banner's first and last frame, and READY! from this frame until the fight: round 1, later rounds.
     pub banner: [[u32; 2]; 2],
     pub ready_from: [u32; 2],
-    /// After a K.O.: the replay starts on this frame and plays this many times.
+    /// After a K.O.: the replay starts on this frame, of the record's last `replay_frames`, in `replay_passes` passes
+    /// at full speed (a shot each); the round is done on frame `ko_done`, the replay not counted.
     pub replay_from: u32,
-    pub replay_plays: u32,
+    pub replay_frames: u32,
+    pub replay_passes: u32,
+    pub ko_done: u32,
     /// After a time up: the round is done on this frame (no replay).
     pub time_up_done: u32,
     /// The win poses (0x368528), and the pose stage's frames (START ends it from `skip_from`).
@@ -40,6 +43,8 @@ pub struct RoundRules {
     pub skip_from: u32,
     /// The round clock: the 60 s option's frames (a displayed second is 70 frames).
     pub round_frames: u32,
+    /// The arcade lost (0x36E6C8): the losing pair's motion and its frames.
+    pub team_lose: (usize, u32),
 }
 
 impl RoundRules {
@@ -54,13 +59,16 @@ impl RoundRules {
             banner: [[at("/call/banner/first_round/0")?, at("/call/banner/first_round/1")?], [at("/call/banner/other_rounds/0")?, at("/call/banner/other_rounds/1")?]],
             ready_from: both("/call/ready_from")?,
             replay_from: at("/end/ko/replay_from")?,
-            replay_plays: at("/end/ko/replay_plays")?,
+            replay_frames: at("/end/ko/replay_frames")?,
+            replay_passes: at("/end/ko/replay_passes")?,
+            ko_done: at("/end/ko/done")?,
             time_up_done: at("/end/time_up/done")?,
             win_poses: [pose(0)?, pose(1)?, pose(2)?, pose(3)?],
             pose_frames: at("/win_poses/frames")?,
             skip_from: at("/win_poses/start_skips_from")?,
             // (the default option is not written by any code found: the 60 s one, option 2)
             round_frames: at("/round_time/options_frames/2")?,
+            team_lose: (at("/team_lose/alias")? as usize, at("/team_lose/frames")?),
         })
     }
 }
@@ -195,6 +203,8 @@ struct ReplayRun {
     /// Ball: where each pass starts and the passes left after this one (all but the last at full speed).
     start: usize,
     passes_left: u32,
+    /// Tekken Tag: the live frames after the last pass, the last shot staying on.
+    live: u32,
 }
 
 /// How the result phase ends (0x8003D27C).
@@ -206,6 +216,8 @@ enum ResultKind {
     Loser,
     /// No winner: 75 frames.
     Draw,
+    /// Tekken Tag's arcade lost: the losing pair's motion, its frames.
+    TeamLose(u32),
 }
 
 #[derive(Clone)]
@@ -245,6 +257,8 @@ pub struct Bout {
     /// Stop for the boss-change scene once the human has won a round (0x80051204): set by the app at the arcade's
     /// last stage against its boss.
     pub interlude_check: bool,
+    /// Tekken Tag's arcade (settings +0x1F): a match the CPU won ends on the losing pair's motion, not its pose.
+    pub team_lose: bool,
     /// Force: the other soldier's CPU, and no replay or result after the K.O. (the app takes over).
     pub extra_cpu: Option<Ai>,
     pub force: bool,
@@ -292,6 +306,7 @@ impl Bout {
             counters: COUNTERS.map(|c| c.load(Ordering::Relaxed)),
             frames: 0,
             interlude_check: false,
+            team_lose: false,
             extra_cpu: None,
             force: false,
             partner_pad: Pad::default(),
@@ -585,11 +600,27 @@ impl Bout {
                     self.start_result(winner);
                     return;
                 };
-                // Ball's earlier passes run at full speed, the last at half (0x80032398)
-                r.pos += if r.passes_left > 0 && self.game.ball.is_some() { 2 } else { 1 };
+                // Tekken Tag: after the passes the fight runs on in the last shot (round state 2's frames 17-135)
+                if r.pos >= r.end && r.live > 0 && !self.skip {
+                    r.live -= 1;
+                    self.replay = Some(r);
+                    self.game.step([Pad::default(); 2]);
+                    return;
+                }
+                // Ball's earlier passes run at full speed, the last at half (0x80032398); Tekken Tag's all at full
+                let tag = self.game.rounds.is_some() && self.game.ball.is_none();
+                r.pos += if (r.passes_left > 0 && self.game.ball.is_some()) || tag { 2 } else { 1 };
                 if !self.skip && r.pos >= r.end && r.passes_left > 0 {
                     r.passes_left -= 1;
                     r.pos = r.start;
+                    if tag {
+                        self.replay_shot();
+                    }
+                }
+                if r.pos >= r.end && r.live > 0 && !self.skip {
+                    self.game.show(None);
+                    self.replay = Some(r);
+                    return;
                 }
                 if self.skip || r.pos >= r.end {
                     self.skipped = self.skip;
@@ -608,7 +639,11 @@ impl Bout {
                 // Tekken Tag: the pose stage's 300 frames
                 let cap = self.game.rounds.as_ref().map_or(cap, |r| r.pose_frames);
                 let done = match self.result {
-                    ResultKind::Pose(_) if self.game.rounds.is_some() => false,
+                    // Tekken Tag (0x36E888): as soon as the winner's or its partner's pose ends
+                    ResultKind::Pose(w) if self.game.rounds.is_some() => (0..2).filter(|&i| i == w || self.game.visible[i]).any(|i| {
+                        let f = &self.game.fight.fighters[i];
+                        f.frame + 1 >= f.current_move(&self.game.fight.data).frames
+                    }),
                     ResultKind::Pose(w) => {
                         let f = &self.game.fight.fighters[w];
                         let mv = f.current_move(&self.game.fight.data);
@@ -617,6 +652,7 @@ impl Bout {
                     // Ball's loser shot lasts 240 frames
                     ResultKind::Loser => self.phase_frame >= if self.game.ball.is_some() { 240 } else { loser_frames },
                     ResultKind::Draw => self.phase_frame >= draw_frames,
+                    ResultKind::TeamLose(frames) => self.phase_frame >= frames,
                 };
                 if done || self.skip || self.phase_frame >= cap {
                     self.skip = false;
@@ -683,16 +719,31 @@ impl Bout {
             return self.start_result(winner);
         }
         let ball = self.game.ball.is_some();
-        let start = if ball { len as i64 - 30 } else { start };
+        // (Tekken Tag: the record's last frames, 0x364698)
+        let tag = self.game.rounds.as_ref().filter(|_| !ball).map(|r| (r.replay_frames, r.replay_passes, r.ko_done.saturating_sub(r.replay_from + 1)));
+        let start = match tag {
+            _ if ball => len as i64 - 30,
+            Some((frames, ..)) => len as i64 - frames as i64,
+            None => start,
+        };
         let start = start.clamp(0, len.saturating_sub(2) as i64) as usize;
         if len < 2 {
             return self.start_result(winner);
         }
-        // (Tekken Tag's K.O. replay plays twice)
-        let passes = self.game.fight.ball.as_ref().map_or(self.game.rounds.as_ref().map_or(1, |r| r.replay_plays.max(1)), |b| b.replay_passes.max(1));
-        let run = ReplayRun { pos: 2 * start, end: 2 * len - 2, start: 2 * start, passes_left: passes - 1 };
+        let passes = self.game.fight.ball.as_ref().map_or(tag.map_or(1, |t| t.1.max(1)), |b| b.replay_passes.max(1));
+        let run = ReplayRun { pos: 2 * start, end: 2 * len - 2, start: 2 * start, passes_left: passes - 1, live: tag.map_or(0, |t| t.2) };
         self.replay = Some(run);
         self.game.show(Some((start, false)));
+        self.replay_shot();
+        // Ball keeps the live director through the replay
+        self.game.camera_mode = if ball { CameraMode::Fight } else { CameraMode::Replay };
+        self.game.step_camera_only();
+        self.phase = Phase::Replay { winner };
+        self.phase_frame = 0;
+    }
+
+    /// A replay shot (variants alternate, B first).
+    fn replay_shot(&mut self) {
         let variant_a = self.count(REPLAY) % 2 == 1;
         let samples = self.game.replay_samples();
         let mut rng = self.rng;
@@ -702,11 +753,6 @@ impl Bout {
         };
         self.game.camera.start_replay(samples, variant_a, &mut random);
         self.rng = rng;
-        // Ball keeps the live director through the replay
-        self.game.camera_mode = if ball { CameraMode::Fight } else { CameraMode::Replay };
-        self.game.step_camera_only();
-        self.phase = Phase::Replay { winner };
-        self.phase_frame = 0;
     }
 
     /// After the replay (0x8003D124 / 0x8003EA5C): the win pose on the winner camera, the loser shot when a CPU
@@ -725,6 +771,22 @@ impl Bout {
         self.phase_frame = 0;
         let tag = self.game.rounds.clone();
         match winner {
+            // Tekken Tag's arcade lost (0x36E6C8): the loser and its partner, in the winner's place, play the team's
+            // loss on the loser's camera
+            Some(w) if decided && self.team_lose && self.cpu[w].is_some() && self.cpu[1 - w].is_none() && tag.is_some() => {
+                let (alias, frames) = tag.as_ref().map_or((0, 0), |r| r.team_lose);
+                let l = 1 - w;
+                self.game.fight.fighters[l].play_alias(alias);
+                let p = self.game.subject(l);
+                let mut rnd = |n: i64| self.random(n);
+                let cam = EndCam::winner(&data, &p, true, &mut rnd);
+                self.game.camera_mode = CameraMode::End { cam, who: l };
+                self.game.visible = [l == 0, l == 1];
+                if self.game.pose_partner(l) {
+                    self.game.visible = [true; 2];
+                }
+                self.result = ResultKind::TeamLose(frames);
+            }
             // (Tekken Tag has no loser shot outside the arcade)
             Some(w) if !decided || self.cpu[w].is_none() || tag.is_some() => {
                 // the win motion: the frame counter's parity, or a held button (□ △ × ○ -> 0xD67..0xD6A)

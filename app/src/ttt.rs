@@ -7,9 +7,11 @@
 //! and sound as the PS2's (FRONTEND.md 9: the title out of white, the menu's sliding rows and band, the select's
 //! lightning, frame, pulsing cursors, RANDOM's roll, timer and plates, its 3D characters standing and posing), in frames.
 //!
+//! The fight HUD is the PS2's (FRONTEND.md 4): the tag bars, plates, lamps, timer, the ladder's STAGE and time, the
+//! round's texts in the chrome font as its printf lays them out.
+//!
 //! Not decoded, OpenKumite's own: the VS screen's code (laid out as the PS2 shows it), which button gives which
-//! costume, the banners (in the chrome font), the option and Theater screens' layout, the staff roll's fonts, and
-//! which of the six health-bar strips is which.
+//! costume, the option and Theater screens' layout, the staff roll's fonts.
 
 use crate::art::{additive, Art, Screen as View, SCREEN_H, SCREEN_W};
 use crate::menu::{lcg, sfx, FightSetup, Key, Mode, Outcome, Roster};
@@ -381,6 +383,11 @@ impl Run {
         (self.mode, self.fight as u32 + 1)
     }
 
+    /// A ladder that offers CONTINUE? when lost (and loses as a team, settings +0x1F).
+    pub fn continues(&self) -> bool {
+        matches!(self.mode, ARCADE | TIME_ATTACK | ONE_ARCADE)
+    }
+
     /// Time Attack: its clock runs over the whole run.
     pub fn timed(&self) -> bool {
         self.mode == TIME_ATTACK
@@ -430,7 +437,7 @@ impl Run {
                 self.fight += 1;
                 Next::Fight(Box::new(self))
             }
-            ARCADE | TIME_ATTACK | ONE_ARCADE => {
+            _ if self.continues() => {
                 progress.played(d, None);
                 Next::Screen(Page::Continue { run: Box::new(self), countdown: CONTINUE })
             }
@@ -585,10 +592,15 @@ pub enum Page {
         run: Box<Run>,
         cursor: usize,
     },
-    /// The arcade ladder lost: CONTINUE? 9..0, then GAME OVER.
+    /// The arcade ladder lost: CONTINUE? 9..0, then GAME OVER, over the fight's scene and HUD.
     Continue {
         run: Box<Run>,
         countdown: u32,
+    },
+    /// GAME OVER (0x35B0E4) over the fight's scene, then the title. shortcut: the CHARACTER USAGE ranking the PS2 shows
+    /// between them (screen 7) is not done.
+    GameOver {
+        frame: u32,
     },
     /// A run's end (or GAME OVER): its lines, then the title or the main menu.
     Message {
@@ -989,6 +1001,7 @@ impl Front {
                 Key::Start | Key::Button(_) => Some(if *title { Page::Title } else { Page::Menu { cursor: 0, scroll: 0, idle: 0 } }),
                 _ => None,
             },
+            Page::GameOver { .. } => None,
             Page::Theater { cursor } => {
                 let rows = theater(&d, progress.seen);
                 let [r, c] = cursor;
@@ -1084,7 +1097,14 @@ impl Front {
                     sfx::play(0x1047 + (*countdown as u16 + 100) / 100);
                 }
                 if *countdown == 0 {
-                    self.page = Page::Message { lines: vec!["GAME OVER".into()], frame: 0, title: true };
+                    sfx::play(int(&d.raw["arcade"]["continue"]["game_over"]["voice"]) as u16);
+                    self.page = Page::GameOver { frame: 0 };
+                }
+            }
+            Page::GameOver { frame } => {
+                *frame += 1;
+                if *frame >= int(&d.raw["arcade"]["continue"]["game_over"]["frames"]) as u32 {
+                    self.page = Page::Title;
                 }
             }
             Page::Message { frame, title, .. } => {
@@ -1168,9 +1188,13 @@ impl Front {
                 }
             }
             Page::Select(s) => draw_select(painter, v, art, d, roster, progress, s),
+            // (0x3BA560: the chrome font's own colour)
             Page::Continue { countdown, .. } => {
-                font(painter, v, art, d, &format!("CONTINUE? {}", ((countdown + 2) / 100).min(9)), W / 2.0, 180.0, 0.8, Color32::WHITE);
+                let c = &d.raw["arcade"]["continue"];
+                let text = crate::art::printf(c["text"].as_str().unwrap_or_default(), &[((countdown + 2) / 100).min(9)]);
+                chrome(painter, v, art, d, &text, num(&c["x"]), num(&c["y"]), None, 10.0);
             }
+            Page::GameOver { .. } => banner_at(painter, v, art, d, &d.raw["arcade"]["continue"]["game_over"], 0),
             Page::Message { lines, .. } => {
                 backdrop(painter, v, art);
                 for (k, l) in lines.iter().enumerate() {
@@ -1809,93 +1833,260 @@ fn feathered(painter: &egui::Painter, v: &View, art: &Art, file: &str, [x, y, w,
     painter.add(egui::Shape::mesh(mesh));
 }
 
-/// The fight HUD (0x3C1F08, 0x3C23F0; FRONTEND.md 4): per side the health bar of the member in front (its six strips:
-/// empty, the recoverable cap, the damage trail, the health; angry strips past the anger mark), the benched partner's
-/// smaller bar under it (shortcut: its place and size are OpenKumite's), the name plate on its streak, the round
-/// lamps, the timer's digits, the arcade's STAGE, Time Attack's clock (`time`, frames) and the round's banner in the
-/// chrome font. `trails`: per side the damage trail (16.16).
+/// The tag HUD's own state (0x3C23F0, 0x3C2F40): per side and member the trail of the health it lost, which member
+/// is in front, the swap's frames left after a tag, and whether its bar shows angry this frame.
+#[derive(Clone, Debug, Default)]
+pub struct TagHud {
+    trail: [[i32; 2]; 2],
+    front: [usize; 2],
+    swap: [u32; 2],
+    blink: [[u32; 2]; 2],
+    mad: [[bool; 2]; 2],
+}
+
+impl TagHud {
+    /// Per side its members' health, full health (16.16) and anger; the active one's health is its fighter's.
+    fn members(bout: &Bout, i: usize) -> Vec<(i32, i32, i32, i32)> {
+        let f = &bout.game.fight.fighters[i];
+        match bout.game.fight.teams.as_deref().and_then(|t| t.get(i)) {
+            Some(t) => (0..2)
+                .map(|k| {
+                    let m = &t.members[k];
+                    (if k == t.active { f.health } else { m.health }, m.cap, m.max_health * kumite_sim::ONE, m.anger)
+                })
+                .collect(),
+            None => vec![(f.health, 0, f.max_health * kumite_sim::ONE, 0)],
+        }
+    }
+
+    /// A simulation step: the trails drop max / 400 a frame to the health (none at 0), the swap counts down while
+    /// the round is fought (else ends), the angry bars blink 5 frames on, 3 off (0x3C2670).
+    pub fn step(&mut self, bout: &Bout) {
+        let angry = bout.game.fight.data.tag.angry;
+        for i in 0..2 {
+            for (k, (health, _, max, anger)) in Self::members(bout, i).into_iter().enumerate() {
+                let t = &mut self.trail[i][k];
+                *t = if health <= 0 {
+                    0
+                } else if *t > health {
+                    (*t - max / 400).max(health)
+                } else {
+                    health
+                };
+                let b = &mut self.blink[i][k];
+                if anger >= angry {
+                    *b = if *b == 0 { 8 } else { *b };
+                    self.mad[i][k] = *b >= 4;
+                    *b -= 1;
+                } else {
+                    (*b, self.mad[i][k]) = (0, false);
+                }
+            }
+            let active = bout.game.fight.teams.as_deref().and_then(|t| t.get(i)).map_or(0, |t| t.active);
+            if active != self.front[i] {
+                // shortcut: the swap starts as the active member changes (the PS2 holds it at 30 while 0x3D3228 says
+                // the tag is under way), until a tag's frames are matched
+                (self.front[i], self.swap[i]) = (active, 30);
+            }
+            self.swap[i] = if bout.phase == Phase::Fight { self.swap[i].saturating_sub(1) } else { 0 };
+        }
+    }
+}
+
+/// A text in the chrome font as the printf draws it (0x3C6C60, 0x3C69D8): from the left `x`, its foot at `y`, at
+/// printf size `size` (10 the glyphs' own), each glyph `fonts.big.advance` on (an A `kern_a` further left), in text
+/// colour `colour`.
 #[allow(clippy::too_many_arguments)]
-pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, info: &crate::hud::HudInfo, trails: [i32; 2], result: Option<Announcement>, frame: u32, time: Option<u32>) {
+fn chrome(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, colour: Option<usize>, size: f32) {
+    let f = &d.raw["fonts"]["big"];
+    let rows: Vec<&str> = f["rows"].as_array().into_iter().flatten().filter_map(|r| r.as_str()).collect();
+    let Some((tex, [tw, th])) = art.pic(colour.and_then(|c| f["colours"][c].as_str()).or(f["picture"].as_str()).unwrap_or_default()) else { return };
+    let (gw, gh, s) = (num(&f["glyph"][0]).max(1.0), num(&f["glyph"][1]).max(1.0), size / 10.0);
+    let (per_row, top) = (rows.first().map_or(1, |r| r.chars().count()), y + num(&f["foot_dy"]));
+    let mut at = x;
+    for c in text.chars() {
+        let place = rows.iter().enumerate().find_map(|(r, row)| row.chars().position(|g| g == c).map(|k| (r, k)));
+        if c == 'A' {
+            at -= num(&f["kern_a"]) * s;
+        }
+        if let Some((r, k)) = place.filter(|_| c != ' ') {
+            let (u, vv) = (k as f32 * gw / tw as f32, r as f32 * gh / th as f32);
+            let uv = Rect::from_min_max(Pos2::new(u, vv), Pos2::new(u + gw / tw as f32, vv + gh / th as f32));
+            let [rx, ry, rw, rh] = sv([at, top, gw * s, gh * s]);
+            painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, Color32::WHITE);
+        }
+        let (r, k) = place.unwrap_or((0, 0));
+        at += num(&f["advance"][r * per_row + k]) * s;
+    }
+}
+
+/// A round text of `hud.banners` (its format with `n`).
+fn banner(painter: &egui::Painter, v: &View, art: &Art, d: &Data, key: &str, n: u32) {
+    banner_at(painter, v, art, d, &d.raw["hud"]["banners"][key], n);
+}
+
+/// A chrome text `{text, x, y, colour, size}` (its format with `n`; size 10 when not given).
+fn banner_at(painter: &egui::Painter, v: &View, art: &Art, d: &Data, b: &Value, n: u32) {
+    let text = crate::art::printf(b["text"].as_str().unwrap_or_default(), &[n]);
+    chrome(painter, v, art, d, &text, num(&b["x"]), num(&b["y"]), Some(int(&b["colour"])), b["size"].as_f64().map_or(10.0, |s| s as f32));
+}
+
+/// The fight HUD (0x3C2F40, 0x3C23F0, 0x3C1F08, 0x3BC540; FRONTEND.md 4): per side the bar of the member in back
+/// (15 up and out, darker) and over it the one in front (`TagHud`: they swap after a tag), each from its inner end
+/// health, the trail of what it lost, the recoverable cap and empty, its strips angry while the member is; the front
+/// member's name plate on its streak; the round lamps; the timer's digits; in the ladder modes the player's STAGE and
+/// the run's time (`run`, frames), the other side's INSERT COIN (Time Attack's label); the round's texts by its state
+/// (0x36EA88): ROUND n and READY! in the call, the result while it ends and its replay plays, YOU WIN! / YOU LOSE in
+/// the pose.
+#[allow(clippy::too_many_arguments)]
+pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, info: &crate::hud::HudInfo, tag: &TagHud, result: Option<Announcement>, frame: u32, run: u32) {
     let h = &d.raw["hud"];
     let fight = &bout.game.fight;
     if !matches!(bout.phase, Phase::Replay { .. }) && !info.hidden {
-        let (bx, by, bw, bh) = ([num(&h["bars"]["x"][0]), num(&h["bars"]["x"][1])], num(&h["bars"]["y"]), num(&h["bars"]["w"]), num(&h["bars"]["h"]));
-        let strips: Vec<String> = h["strips"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).map(String::from).collect();
-        let angry: Vec<String> = h["angry_strips"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).map(String::from).collect();
-        let strip = |k: usize, mad: bool| if mad { angry.get(k) } else { strips.get(k) }.cloned().unwrap_or_default();
-        // a bar: [from, to) of its width (side 0 full at its right, side 1 at its left)
-        let bar = |i: usize, x: f32, y: f32, w: f32, hh: f32, parts: &[(usize, f32)], mad: bool| {
-            image(painter, v, art, &strip(2, mad), [x, y, w, hh], Color32::WHITE);
-            for &(k, part) in parts {
-                let pw = w * part.clamp(0.0, 1.0);
-                let x0 = if i == 0 { x + w - pw } else { x };
-                image(painter, v, art, &strip(k, mad), [x0, y, pw, hh], Color32::WHITE);
-            }
-            image(painter, v, art, &strip(3, mad), [x - 4.0, y, 8.0, hh], Color32::WHITE);
-            image(painter, v, art, &strip(3, mad), [x + w + 4.0, y, -8.0, hh], Color32::WHITE);
-        };
-        let teams = fight.teams.as_deref();
-        for (i, f) in fight.fighters.iter().enumerate() {
-            let full = (f.max_health * kumite_sim::ONE).max(1) as f32;
-            let part = |x: i32| x.max(0) as f32 / full;
-            let (cap, mad, partner, body) = match teams {
-                Some(t) => {
-                    let team = &t[i];
-                    let mad = team.members[team.active].anger >= int(&h["angry_at"]) as i32 && (frame / int(&h["angry_blink"]).max(1) as u32).is_multiple_of(2);
-                    (team.members[team.active].cap, mad, Some(team.partner()), team.members[team.active].character)
+        let b = &h["bars"];
+        let (bx, by, bw, bh, cap) = ([num(&b["x"][0]), num(&b["x"][1])], num(&b["y"]), num(&b["w"]), num(&b["h"]), num(&b["cap_w"]));
+        let strip = |k: usize, mad: bool| h[if mad { "angry_strips" } else { "strips" }][k].as_str().unwrap_or_default().to_string();
+        for i in 0..2 {
+            let members = TagHud::members(bout, i);
+            let front = tag.front[i].min(members.len() - 1);
+            let n = (tag.swap[i] / 2) as f32;
+            // (the member in back first, then the one in front)
+            let order: Vec<(usize, f32)> = if members.len() > 1 { vec![(1 - front, num(&b["back"]) - n), (front, n)] } else { vec![(0, 0.0)] };
+            for (k, off) in order {
+                let (health, cap_h, max, _) = members[k];
+                let (is_front, mad) = (k == front, tag.mad[i][k]);
+                let level = if is_front {
+                    num(&b["levels"][1])
+                } else if mad {
+                    num(&b["angry_level"])
+                } else {
+                    num(&b["levels"][0])
+                };
+                let (y, inner) = (by - off, if i == 0 { bx[0] + bw - off } else { bx[1] + off });
+                if is_front {
+                    // the name plate (0x3C1DA0) on its streak, added (draw mode 4)
+                    let body = fight.teams.as_deref().and_then(|t| t[i].members[k].character).or(fight.fighters[i].character).unwrap_or(0).max(0) as usize;
+                    let plate = &h["plates"][body];
+                    let (px, py) = (num(&h["plate_x"][i]) + if i == 0 { -off } else { off }, num(&h["plate_y"]) - off);
+                    let streak = h["streaks"][int(&plate["streak"])].as_str().unwrap_or_default();
+                    image(painter, v, art, streak, [px, py, num(&h["streak_size"][0]), num(&h["streak_size"][1])], additive(Color32::WHITE));
+                    sprite(painter, v, art, plate["picture"].as_str().unwrap_or_default(), px, py, Color32::WHITE);
                 }
-                None => (f.health, false, None, f.character),
-            };
-            // strips (shortcut: which is which is a guess, FRONTEND.md 4 [M]): 2 empty, 5 the recoverable cap, 4 the
-            // trail, 1 the health
-            bar(i, bx[i], by, bw, bh, &[(5, part(cap)), (4, part(trails[i].max(f.health))), (1, part(f.health))], mad);
-            if let Some(m) = partner {
-                let full = (m.max_health * kumite_sim::ONE).max(1) as f32;
-                let (pw, px) = (bw * 0.5, if i == 0 { bx[i] + bw * 0.5 } else { bx[i] });
-                bar(i, px, by + bh + 22.0, pw, 8.0, &[(5, m.cap.max(0) as f32 / full), (1, m.health.max(0) as f32 / full)], false);
+                // widths from the inner end: health, the trail past it, the recoverable cap
+                let w = |x: i32| bw * x.max(0) as f32 / max.max(1) as f32;
+                let (wh, wc, wt) = (w(health), w(cap_h).max(w(health)), w(tag.trail[i][k] - health));
+                // a part [from, to) of the bar, counted from its inner end
+                let part = |s: usize, from: f32, to: f32| {
+                    let (a, z) = (from.clamp(0.0, bw), to.clamp(0.0, bw));
+                    if z > a {
+                        let x = if i == 0 { inner - z } else { inner + a };
+                        lit(painter, v, art, &strip(s, mad), [x, y, z - a, bh], level);
+                    }
+                };
+                let (left, right) = if i == 0 { (inner - bw, inner) } else { (inner, inner + bw) };
+                lit(painter, v, art, &strip(3, mad), [left - cap, y, cap, bh], level);
+                lit(painter, v, art, &strip(4, mad), [right, y, cap, bh], level);
+                part(2, wc, bw);
+                part(5, wh, wc);
+                part(0, 0.0, wh);
+                part(1, wh, wh + wt);
             }
-            // the name plate (0x3C1DA0: the member in front) on its streak
-            let b = body.unwrap_or(0).max(0) as usize;
-            let plate = &h["plates"][b];
-            let py = num(&h["plate_y"]);
-            let px = if i == 0 { bx[0] + num(&plate["x"]) } else { bx[1] + bw - 128.0 - num(&plate["x"]) };
-            let streak = h["streaks"][int(&plate["streak"])].as_str().unwrap_or_default();
-            image(painter, v, art, streak, [if i == 0 { px - 8.0 } else { px + 136.0 }, py - 9.0, if i == 0 { 124.0 } else { -124.0 }, 32.0], Color32::WHITE);
-            sprite(painter, v, art, plate["picture"].as_str().unwrap_or_default(), px, py, Color32::WHITE);
-            // the round lamps: one a round to win when 2 or more (a new win blinks 180 frames, 11-frame period)
+            // the round lamps: one a round to win when 2 or more (a new win blinks 180 frames, 11-frame period); 8
+            // higher without a partner
             let l = &h["lamps"];
             if bout.rounds_to_win >= 2 {
+                let y = num(&l["y"]) + if members.len() > 1 { 0.0 } else { num(&l["solo_dy"]) };
                 for k in 0..bout.rounds_to_win {
                     let x = if i == 0 { num(&l["x"][0]) - num(&l["dx"]) * k as f32 } else { num(&l["x"][1]) + num(&l["dx"]) * k as f32 };
                     let lit = k < bout.wins[i]
                         && !(k + 1 == bout.wins[i] && bout.phase_frame < 180 && bout.phase_frame / 11 % 2 == 1 && matches!(bout.phase, Phase::RoundOver { .. } | Phase::Result { .. }));
-                    sprite(painter, v, art, l[if lit { "lit" } else { "unlit" }].as_str().unwrap_or_default(), x, num(&l["y"]), Color32::WHITE);
+                    sprite(painter, v, art, l[if lit { "lit" } else { "unlit" }].as_str().unwrap_or_default(), x, y, Color32::WHITE);
                 }
             }
         }
-        // the timer: seconds (t * 6 / 7 - 1) / 60 in the digits' picture, INFINITY untimed
+        // the timer (0x3C6738): seconds (t * 6 / 7 - 1) / 60, the tens 39 left of the ones; INFINITY untimed
         let t = &h["timer"];
         let y = num(&t["y"]);
         if bout.game.round_frames > 100 * 70 {
-            sprite(painter, v, art, t["infinity"].as_str().unwrap_or_default(), W / 2.0 - 36.0, y, Color32::WHITE);
+            sprite(painter, v, art, t["infinity"].as_str().unwrap_or_default(), num(&t["infinity_x"]), y, Color32::WHITE);
         } else {
-            digits(painter, v, art, t, (fight.clock * 6 / 7).saturating_sub(1) / 60, W / 2.0, y);
+            let (dw, secs) = (num(&t["digit_w"]), (fight.clock * 6 / 7).saturating_sub(1) / 60);
+            for (k, digit) in [secs.min(99) / 10, secs.min(99) % 10].into_iter().enumerate() {
+                if let Some((tex, [tw, _])) = art.pic(t["digits"].as_str().unwrap_or_default()) {
+                    let u = digit as f32 * dw / tw as f32;
+                    let [rx, ry, rw, rh] = sv([num(&t["x"]) + if k == 0 { num(&t["tens_dx"]) } else { 0.0 }, y, dw, 47.0]);
+                    painter.image(tex.id(), v.rect(rx, ry, rw, rh), Rect::from_min_max(Pos2::new(u, 0.0), Pos2::new(u + dw / tw as f32, 1.0)), Color32::WHITE);
+                }
+            }
         }
-        // the arcade's STAGE n / FINAL (alternating every 32 frames on the last stage)
-        if let Some(stage) = info.stage {
-            let last = stage >= int(&d.raw["arcade"]["fights"]) as u32;
-            let s = &h["stage"];
-            let text = if last && frame / int(&s["alternate"]).max(1) as u32 % 2 == 1 { s["final"].as_str().unwrap_or_default().to_string() } else { format!("STAGE {stage}") };
-            font(painter, v, art, d, &text, W / 2.0, 70.0, 0.3, Color32::WHITE);
-        }
-        if let Some(t) = time {
-            small(painter, v, art, d, &clock(t), W / 2.0, 86.0, Color32::WHITE);
+        // the ladder modes (0x3BC048): the player's STAGE (FINAL from the last fight, every 32 frames) and the run's
+        // time; the other side INSERT COIN / CREDIT, or Time Attack's label
+        let top = &h["top"];
+        if let (Some(stage), Some(me)) = (info.stage, (0..2).find(|&i| info.humans[i] && !info.humans[1 - i])) {
+            let (y, small_h) = (num(&top["y"]), num(&d.raw["fonts"]["small"]["glyph"][1]));
+            let text_at = |text: &str, x: f32, colour: &str| small_in(painter, v, art, d, Some(int(&top[colour])), text, x, y - small_h - 2.0, Color32::WHITE);
+            let ins = &d.raw["select"]["insert"];
+            // (INSERT COIN's blinking and alternation, centred on x)
+            let blink = |texts: [&str; 2], x: f32| {
+                if frame & int(&ins["show_mask"]) as u32 != 0 {
+                    let text = texts[usize::from(frame & int(&ins["second_mask"]) as u32 != 0)];
+                    text_at(text, x - num(&ins["measure"]) * text.chars().count() as f32 / 2.0, "insert_colour");
+                }
+            };
+            let (other, s) = (1 - me, |v: &Value| v.as_str().unwrap_or_default().to_string());
+            if info.under[me] == crate::hud::Under::Push {
+                // under CONTINUE?: PRESS Pn START and the credits on the player's side, nothing on the other
+                blink([&s(&top["press"][me]), &s(&top["free_play"])], num(&top["insert_x"][me]));
+            } else {
+                let last = stage >= int(&d.raw["arcade"]["fights"]) as u32;
+                let label = if last && frame & 0x20 == 0 { s(&top["final"]) } else { crate::art::printf(&s(&top["stage"]), &[stage]) };
+                text_at(&label, num(&top["stage_x"][me]), "stage_colour");
+                text_at(&clock(run), num(&top["stage_x"][me]) + num(&top["time_dx"]), "time_colour");
+                if info.time_base.is_some() {
+                    text_at(&s(&top["time_attack"]), num(&top["label_x"][other]), "label_colour");
+                } else {
+                    blink([&s(&ins["texts"][0]), &s(&ins["texts"][1])], num(&top["insert_x"][other]));
+                }
+            }
         }
     }
-    // (Force: FIGHT! and K.O. only; its stage card instead of the round, STAGE CLEAR!! instead of the result)
-    let shown = !info.no_result || matches!(bout.phase, Phase::Fight | Phase::RoundOver { .. });
-    if let Some(call) = crate::hud::call(bout, info, result).filter(|_| shown) {
-        font(painter, v, art, d, &call, W / 2.0, 190.0, 0.9, Color32::WHITE);
+    // (Force: FIGHT! and K.O. only, OpenKumite's; its stage card instead of the round, STAGE CLEAR!! instead of the
+    // result)
+    if info.no_result {
+        if let Some(call) = crate::hud::call(bout, info, result).filter(|_| matches!(bout.phase, Phase::Fight | Phase::RoundOver { .. })) {
+            font(painter, v, art, d, &call, W / 2.0, 190.0, 0.9, Color32::WHITE);
+        }
+        return;
+    }
+    // the round's texts
+    let rounds = bout.game.rounds.as_ref();
+    let later = usize::from(bout.round > 1);
+    let f = bout.phase_frame;
+    match bout.phase {
+        Phase::Call if info.intro.is_none() => {
+            if rounds.is_some_and(|r| f >= r.ready_from[later]) {
+                banner(painter, v, art, d, "ready", 0);
+            } else if rounds.is_none_or(|r| (r.banner[later][0]..=r.banner[later][1]).contains(&f)) {
+                let pairs = fight.teams.is_some();
+                banner(painter, v, art, d, if bout.rounds_to_win == 1 && pairs { "tag_battle" } else { "round" }, bout.round);
+            }
+        }
+        Phase::RoundOver { .. } | Phase::Replay { .. } if bout.game.display.is_none() => {
+            let key = match result {
+                Some(Announcement::TimeUp) => "time_up",
+                Some(Announcement::Perfect) => "perfect",
+                Some(Announcement::DoubleKo) => "double_ko",
+                _ => "ko",
+            };
+            banner(painter, v, art, d, key, 0);
+        }
+        Phase::Result { winner } => match winner {
+            None => banner(painter, v, art, d, "draw", 0),
+            // (two players: the winner's name, not done)
+            Some(w) if info.humans[w] != info.humans[1 - w] => banner(painter, v, art, d, if info.humans[w] { "you_win" } else { "you_lose" }, 0),
+            _ => {}
+        },
+        _ => {}
     }
 }
 

@@ -788,6 +788,7 @@ impl App {
         game.copy_seed = replaying.map_or(self.seed, |p| p.copy_seed);
         let (counters, round_frames, max_health, start_health, copy_seed) = (kumite_game::bout::counters(), game.round_frames, game.max_health, game.start_health, game.copy_seed);
         let mut bout = Bout::new(game, self.ai.clone(), rounds, setup.is_some());
+        bout.team_lose = ttt.as_ref().is_some_and(|r| r.continues());
         match setup.as_ref().map(|s| s.mode) {
             // a game without its menus yet (Tekken Tag: no screens.json) plays its fight as a match
             None if self.roster.screens.is_null() => {}
@@ -1594,7 +1595,7 @@ impl App {
                 self.vs_record = g.record;
             }
             // CONTINUE? and GAME OVER show over the loser shot, which keeps running; other screens end the fight
-            if matches!(screen, Screen::Continue { .. } | Screen::GameOver { .. }) {
+            if matches!(screen, Screen::Continue { .. } | Screen::GameOver { .. }) || screen.ttt_over_fight() {
                 if let Some(f) = self.fight.as_mut() {
                     f.bout.step([Pad::default(); 2]);
                 }
@@ -2729,7 +2730,6 @@ impl App {
         };
         // Tekken Tag's front end: its run decides (the next fight, CONTINUE?, the results); the unlocks are saved
         if let (Some(run), Some(d)) = (self.ttt_run.take(), self.roster.ttt.clone()) {
-            self.scene = None;
             let f = &fight.bout.game.fight;
             let (health, max) = (f.fighters.each_ref().map(|x| x.health), f.fighters.each_ref().map(|x| x.max_health * kumite_sim::ONE));
             let mut progress = ttt::progress();
@@ -2737,6 +2737,13 @@ impl App {
             ttt::set_progress(progress.clone());
             self.records.ttt = progress;
             self.records.save();
+            // (CONTINUE? over the fight's scene and HUD, which keep running)
+            let over_fight = matches!(next, ttt::Next::Screen(ttt::Page::Continue { .. }));
+            if over_fight {
+                self.fight = Some(fight);
+            } else {
+                self.scene = None;
+            }
             match next {
                 ttt::Next::Fight(r) => self.outcome(Outcome::TttFight(r)),
                 ttt::Next::Screen(page) => self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page, frame: 0 }))),
@@ -5082,6 +5089,12 @@ impl App {
                         ttt::draw_ending(&painter, &view, d, roll, black, white);
                     }
                     if let Some(screen) = screen {
+                        if let Some(f) = fight.filter(|_| screen.ttt_over_fight()) {
+                            // (the player's side asks for START)
+                            let mut info = f.info.clone();
+                            info.under = std::array::from_fn(|i| if info.humans[i] { hud::Under::Push } else { hud::Under::None });
+                            hud.draw_with(ctx, art, &f.bout, &info, &|_, _| {});
+                        }
                         screen.draw(ctx, art, roster);
                     } else if let Some(cs) = fight.and_then(|f| f.cutscene.as_ref()) {
                         // the scene has no HUD; its white fade adds over the picture
