@@ -684,12 +684,12 @@ fn normal_cpus_walk_attack_guard_and_hit() {
 #[test]
 fn the_top_cpu_beats_a_standing_dummy() {
     let Some(a) = assets() else { return };
-    let top = cpu_run(&a, [Some((4, 7)), None], 15000);
+    let top = cpu_run_of(&a, [PAUL, LEI], [Some((4, 7)), None], 30000, 4);
     let easy = cpu_run(&a, [Some((0, 0)), None], 15000);
     for (n, r) in [("top", &top), ("easy", &easy)] {
-        eprintln!("{n}: presses {:?} starts {:?} hits {:?} wins {:?} fight {} turned {}", r.attacks, r.starts, r.hits, r.wins, r.fight, r.turned);
+        eprintln!("{n}: presses {:?} starts {:?} hits {:?} wins {:?} fight {} turned {} stats {:?}", r.attacks, r.starts, r.hits, r.wins, r.fight, r.turned, r.stats);
     }
-    assert_eq!(top.wins[0], 2, "the top CPU wins the match");
+    assert_eq!(top.wins[0], 4, "the top CPU wins the match");
     // (per fight step: the matches run different lengths)
     assert!(easy.starts[0] * top.fight < top.starts[0] * easy.fight, "EASY starts fewer attacks a step");
     assert!(easy.stats[0] == 0 && top.stats[0] > 0, "strings: EASY none, the top level {}", top.stats[0]);
@@ -796,6 +796,29 @@ fn the_cpu_stays_down_under_the_fire_breath() {
     let (breath, other) = (lying_against_ogre(&a, FIRE_BREATH), lying_against_ogre(&a, 422));
     eprintln!("frames down under the breath {breath}, under 422 {other}");
     assert!(breath >= 60 && other < 30, "waits under the breath only");
+}
+
+/// Tekken Tag's body push (0x377338): a fighter walking into one standing still carries it along (as PCSX2 shows a
+/// lunge carrying a guarding Xiaoyu), the walker taking the whole push back.
+#[test]
+fn a_walk_carries_the_one_it_pushes() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [XIAOYU, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let f = &mut b.game.fight.fighters;
+    let along = (f[1].position - f[0].position).normalize();
+    f[1].position = f[0].position + along * 700.0;
+    f[1].push_prev = None;
+    let (start, walk) = (b.game.fight.fighters[0].position, parse_script("b").unwrap()[0]);
+    for _ in 0..60 {
+        b.step([Pad::default(), walk]);
+    }
+    let f = &b.game.fight.fighters;
+    let (carried, gap) = (f[0].position.distance(start), (f[1].root() - f[0].root()).length());
+    eprintln!("carried {carried:.0}, gap {gap:.0}");
+    assert!(carried > 300.0 && gap > 400.0, "carried {carried:.0}, gap {gap:.0}");
 }
 
 /// The arcade CPU, team `cpu` at NORMAL `level`, against Xiaoyu and Yoshimitsu over the seeds' matches: (damage a

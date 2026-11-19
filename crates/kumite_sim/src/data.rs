@@ -139,6 +139,9 @@ pub struct Move {
     pub properties: Option<Vec<Property>>,
     #[serde(default)]
     pub flags24: Flags24,
+    /// Record +0x30: the push spheres' sizes (Tekken Tag's 0x377B58).
+    #[serde(default)]
+    pub push_control: PushControl,
     /// Voice/SFX event list (move-properties.md §5).
     #[serde(default)]
     pub sounds: Option<Vec<SoundEntry>>,
@@ -159,6 +162,13 @@ pub struct SoundEntry {
     #[serde(rename = "type")]
     pub kind: u32,
     pub index: u32,
+}
+
+/// Move record +0x30: low 4 bits a mode of the push spheres' sizes; with mode 0, bits 4-11 drop spheres (bit 12: only
+/// from 8 frames before the active frames to their end).
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct PushControl {
+    pub raw: u32,
 }
 
 /// Move word +0x24: flag bits plus the camera id byte (0x27..0x2A cap the fight camera's yaw speed).
