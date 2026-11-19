@@ -77,7 +77,7 @@ const PIN_SOUNDS: [(u32, u16, u32); 3] = [(15, 0x10AE, 8), (30, 0x10AD, 14), (u3
 const SPECTATOR_RADIUS2: f32 = 90000.0;
 const KO_VOICE: u16 = 0x1059;
 /// SPECIAL EFFECTS' explosion as every pin falls (0x3E9808).
-const EXPLOSION: u16 = 0x10A8;
+pub const EXPLOSION: u16 = 0x10A8;
 /// The strike announcer (0x3EF8B0): by the run of strikes (1, 3, 12, else), then 0x10B5.
 const STRIKE_CALLS: [(u32, u16); 3] = [(1, 0x10B2), (3, 0x1046), (12, 0x1058)];
 const STRIKE_CALL: u16 = 0x1057;
@@ -911,7 +911,7 @@ impl Bowl {
             }
         }
         // every pin down the first time this roll (0x3E9808, gp-0x6028): with SPECIAL EFFECTS on, the explosion's sound
-        // 0x10A8 (and the burst 0x3A2298, the shake 0x35C2F8: not drawn here)
+        // 0x10A8 (and the burst 0x3A2298; the scene shakes the camera, 0x35C2F8)
         if !self.all_down && self.pins.iter().all(|p| !p.standing) {
             self.all_down = true;
             if self.effects && !self.foul {

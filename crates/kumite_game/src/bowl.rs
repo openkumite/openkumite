@@ -124,6 +124,8 @@ pub struct BowlScene {
     pivot: Vec3,
     /// The throw's and the roll's camera (0x1FC51B0, game units): its pivot, yaw (radians) and distance.
     view: (Vec3, f32, f32),
+    /// The frame of SPECIAL EFFECTS' explosion, which shakes the camera.
+    shake_at: Option<u64>,
 }
 
 /// The camera's pitch (0x3E9C10: -0.2 rad, looking down), the fixed view behind the lane (mode 0: its pivot and
@@ -134,6 +136,9 @@ const LANE_VIEW: ([f32; 3], f32) = ([0.0, -2300.0, -12000.0], 2000.0);
 const EYE_Y: f32 = -2350.0;
 const ROLL_TO: [f32; 3] = [0.0, -1500.0, 4000.0];
 const ROLL_BEHIND: f32 = 4000.0;
+/// The explosion's shake (0x35C2F8(1): pattern 0x4FBB38, run by 0x35C320 after the camera each frame): added to the
+/// view's pitch (4096 a turn) from the next frame on.
+const SHAKE: [i8; 24] = [3, 2, 0, -2, -3, 0, 3, 2, 0, -3, -2, 0, 2, 1, 0, -2, -1, 0, 1, 0, 0, -1, 0, 0];
 
 impl BowlScene {
     /// A game for `players`: each one's model record (its character file) and character id, in turn order, and
@@ -239,6 +244,7 @@ impl BowlScene {
             stepping: 0,
             pivot: Vec3::ZERO,
             view: (Vec3::from(LANE_VIEW.0), 0.0, LANE_VIEW.1),
+            shake_at: None,
         })
     }
 
@@ -254,6 +260,9 @@ impl BowlScene {
             0
         };
         self.bowl.step(pad);
+        if self.bowl.events.contains(&kumite_sim::bowl::Event::Sound(kumite_sim::bowl::EXPLOSION)) {
+            self.shake_at = Some(self.bowl.frame);
+        }
         // (SELECT switched the hand: its other motions)
         let k = self.bowl.current;
         if let (Some(p), Some(c), Some(Some(o))) = (self.bowl.players.get(k), self.clips.get_mut(k), self.other_clips.get_mut(k)) {
@@ -384,7 +393,9 @@ impl BowlScene {
         }
         // the eye `dist` back from the pivot along the view, turned by the pitch and the yaw
         let (pivot, yaw, dist) = self.view;
-        let ((sp, cp), (sy, cy)) = (PITCH.dsin_cos(), yaw.dsin_cos());
+        let k = self.shake_at.and_then(|f| b.frame.checked_sub(f + 1));
+        let shake = k.and_then(|k| SHAKE.get(k as usize)).map_or(0.0, |&n| f32::from(n) * std::f32::consts::TAU / 4096.0);
+        let ((sp, cp), (sy, cy)) = ((PITCH - shake).dsin_cos(), yaw.dsin_cos());
         let ahead = Vec3::new(cp * sy, -sp, cp * cy);
         (to_m(pivot - ahead * dist), to_m(pivot + ahead * 1000.0))
     }
