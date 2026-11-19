@@ -116,8 +116,8 @@ const KING: usize = 390;
 const YOSHIMITSU: usize = 396;
 const NINA: usize = 408;
 const MICHELLE: usize = 615;
-const JULIA: usize = 480;
-const ARMOR_KING: usize = 639;
+/// Unknown's first model (stage 8's team, both slots, as the PS2's arcade sets it).
+const UNKNOWN: usize = 693;
 
 /// Law's and Jin's first models: Paul and Law against Lei and Jin.
 const LAW: usize = 357;
@@ -684,12 +684,12 @@ fn normal_cpus_walk_attack_guard_and_hit() {
 #[test]
 fn the_top_cpu_beats_a_standing_dummy() {
     let Some(a) = assets() else { return };
-    let top = cpu_run(&a, [Some((4, 7)), None], 15000);
+    let top = cpu_run_of(&a, [PAUL, LEI], [Some((4, 7)), None], 30000, 4);
     let easy = cpu_run(&a, [Some((0, 0)), None], 15000);
     for (n, r) in [("top", &top), ("easy", &easy)] {
-        eprintln!("{n}: presses {:?} starts {:?} hits {:?} wins {:?} fight {} turned {}", r.attacks, r.starts, r.hits, r.wins, r.fight, r.turned);
+        eprintln!("{n}: presses {:?} starts {:?} hits {:?} wins {:?} fight {} turned {} stats {:?}", r.attacks, r.starts, r.hits, r.wins, r.fight, r.turned, r.stats);
     }
-    assert_eq!(top.wins[0], 2, "the top CPU wins the match");
+    assert_eq!(top.wins[0], 4, "the top CPU wins the match");
     // (per fight step: the matches run different lengths)
     assert!(easy.starts[0] * top.fight < top.starts[0] * easy.fight, "EASY starts fewer attacks a step");
     assert!(easy.stats[0] == 0 && top.stats[0] > 0, "strings: EASY none, the top level {}", top.stats[0]);
@@ -793,9 +793,38 @@ fn lying_against_ogre(a: &Assets, alias: usize) -> usize {
 #[test]
 fn the_cpu_stays_down_under_the_fire_breath() {
     let Some(a) = assets() else { return };
+    // (a pack older than format 31 has no `rules.wake_wait`: the wait is not there to test)
+    let ai: serde_json::Value = serde_json::from_slice(&std::fs::read(a.root.join("gamedata/ai.json")).unwrap()).unwrap();
+    if ai["rules"]["wake_wait"].is_null() {
+        eprintln!("skipped: the pack has no rules.wake_wait (convert it again)");
+        return;
+    }
     let (breath, other) = (lying_against_ogre(&a, FIRE_BREATH), lying_against_ogre(&a, 422));
     eprintln!("frames down under the breath {breath}, under 422 {other}");
     assert!(breath >= 60 && other < 30, "waits under the breath only");
+}
+
+/// Tekken Tag's body push (0x377338): a fighter walking into one standing still carries it along (as PCSX2 shows a
+/// lunge carrying a guarding Xiaoyu), the walker taking the whole push back.
+#[test]
+fn a_walk_carries_the_one_it_pushes() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [XIAOYU, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let f = &mut b.game.fight.fighters;
+    let along = (f[1].position - f[0].position).normalize();
+    f[1].position = f[0].position + along * 700.0;
+    f[1].push_prev = None;
+    let (start, walk) = (b.game.fight.fighters[0].position, parse_script("b").unwrap()[0]);
+    for _ in 0..60 {
+        b.step([Pad::default(), walk]);
+    }
+    let f = &b.game.fight.fighters;
+    let (carried, gap) = (f[0].position.distance(start), (f[1].root() - f[0].root()).length());
+    eprintln!("carried {carried:.0}, gap {gap:.0}");
+    assert!(carried > 300.0 && gap > 400.0, "carried {carried:.0}, gap {gap:.0}");
 }
 
 /// The arcade CPU, team `cpu` at NORMAL `level`, against Xiaoyu and Yoshimitsu over the seeds' matches: (damage a
@@ -825,20 +854,20 @@ fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: imp
 }
 
 /// The arcade's CPU against a fighter who stands still or holds back, damage a fight minute as measured on the PS2
-/// (PCSX2, the default NORMAL, single matches against Xiaoyu: stage 1 level 0 about 200 still, 30-40 holding back;
-/// stage 4 level 3 200-240 / 140-160; stage 8 level 7 (Unknown) 240 / 140), here a cell's eight matches each (stage
-/// 8 by Julia and Armor King); a seed replays the same.
+/// (PCSX2, the default NORMAL, single matches against Xiaoyu: stage 1 level 0 about 190 still, 30-50 holding back;
+/// stage 4 level 3 200-240 / 140-160; stage 8 level 7 (Unknown) 240 / 140), here a cell's eight matches each; a seed
+/// replays the same. (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands.)
 #[test]
 fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     let Some(a) = assets() else { return };
     let seeds = || (0..8).map(|k| k * 11);
-    let cells = [([LEI, NINA], 0), ([MICHELLE, KING], 3), ([JULIA, ARMOR_KING], 7)].map(|(cpu, level)| {
+    let cells = [([LEI, NINA], 0), ([MICHELLE, KING], 3), ([UNKNOWN, UNKNOWN], 7)].map(|(cpu, level)| {
         let ((still, runs), (back, _)) = (arcade_cell(&a, cpu, level, false, seeds()), arcade_cell(&a, cpu, level, true, seeds()));
         (still, back, runs)
     });
     let dmg: Vec<(u32, u32)> = cells.iter().map(|c| (c.0, c.1)).collect();
     eprintln!("damage a minute, still / holding back: {dmg:?}");
-    for (k, (still, back)) in [((140, 260), (40, 120)), ((180, 300), (100, 200)), ((150, 300), (100, 200))].into_iter().enumerate() {
+    for (k, (still, back)) in [((120, 240), (40, 130)), ((200, 300), (110, 190)), ((200, 290), (110, 180))].into_iter().enumerate() {
         assert!((still.0..=still.1).contains(&dmg[k].0) && (back.0..=back.1).contains(&dmg[k].1), "cell {k}: {:?}", dmg[k]);
         assert!(dmg[k].1 < dmg[k].0, "holding back takes less");
     }

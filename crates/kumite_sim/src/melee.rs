@@ -347,7 +347,7 @@ impl Melee {
             for b in a + 1..n {
                 if free(self, a) && free(self, b) {
                     let pair = [bodies[a], bodies[b]];
-                    self.on_pair(a, b, |f| f.separate(pair));
+                    self.on_pair(a, b, |f| f.push_apart(pair));
                 }
             }
         }

@@ -136,6 +136,8 @@ pub struct GameData {
     pub tag_juggles: bool,
     /// Tekken Tag's tag battle rules.
     pub tag: TagRules,
+    /// Tekken Tag's body push (0x377338), not Tekken 3's.
+    pub tag_push: bool,
 }
 
 /// Tekken Tag's tag rules (rules.json `tag` and `health.recoverable`; ok_tekken_tag_converter FIGHT_DATA.md section
@@ -349,6 +351,7 @@ impl GameData {
             counter_bonus: vec![3, 3],
             chip_add: 2,
             tag_juggles: false,
+            tag_push: false,
             tag: TagRules::default(),
         })
     }
@@ -621,6 +624,9 @@ pub struct Fighter {
     /// Tekken Tag: the screen's right in the ground plane, as an angle (the axis of +0x54, set by the game layer).
     pub screen_right: f32,
     pub juggle_bias: u32,
+    /// Tekken Tag: the root at the last body push (its step since then shares the push, 0x377338); none before the
+    /// first.
+    pub push_prev: Option<Vec3>,
 }
 
 /// Facing angles in game units (u16 turn = 0x10000), as the actor keeps them (0x80043A94): `off` (+0x2E) the
@@ -716,6 +722,7 @@ impl Fighter {
             off_screen: false,
             screen_right: 0.0,
             juggle_bias: 0,
+            push_prev: None,
         };
         f.current = f.resolve(neutral).unwrap_or(f.current);
         f
@@ -2829,11 +2836,20 @@ impl Fight {
         }
     }
 
-    /// Body collision (EXE push spheres, actor+0x324): every pair of push spheres that overlaps horizontally
+    /// Body collision: Tekken Tag's push in its two-fighter fights, else Tekken 3's (Force under Tekken Tag too).
+    fn separate(&mut self, bodies: [&BodyVolumes; 2]) {
+        if self.data.tag_push && self.extra.is_none() {
+            self.separate_tag(bodies)
+        } else {
+            self.push_apart(bodies)
+        }
+    }
+
+    /// Tekken 3's body push (EXE push spheres, actor+0x324): every pair of push spheres that overlaps horizontally
     /// (and in height) pushes the two actors apart along the line between them, half each. The actor
     /// positions (not the animation's root lean) are moved; their roots never come closer than
     /// [`PUSH_DISTANCE`].
-    fn separate(&mut self, bodies: [&BodyVolumes; 2]) {
+    pub(crate) fn push_apart(&mut self, bodies: [&BodyVolumes; 2]) {
         // (between the drawn roots; the push moves the origins)
         let (a, b) = (self.fighters[0].root(), self.fighters[1].root());
         let d = glam::Vec2::new(b.x - a.x, b.z - a.z);
@@ -2861,6 +2877,104 @@ impl Fight {
             for f in &mut self.fighters {
                 f.pushed = true;
             }
+        }
+    }
+
+    /// Tekken Tag's body push (0x377338): the deepest overlap of the push spheres (in 3D; sized by the moves, 0x377B58)
+    /// is shared by how far each moved since the last push, each backing off along its facing's axis (turned towards
+    /// the other) and carried by the other's step along its axis; half of it a frame.
+    /// shortcut: the trade rule (both attacking, coming together: the whole push, at least 400) is not ported; port it
+    /// with the actors' velocities +0x4 / +0xC.
+    fn separate_tag(&mut self, bodies: [&BodyVolumes; 2]) {
+        let gd = self.data.clone();
+        let ctrl: [u32; 2] = std::array::from_fn(|i| self.fighters[i].current_move(&gd).push_control.raw & 0xFFFF);
+        let radii: [Vec<f32>; 2] = std::array::from_fn(|i| {
+            // (mode 6 of either side is both sides')
+            let c = if ctrl[1 - i] & 0xF == 6 { 6 } else { ctrl[i] };
+            let f = &self.fighters[i];
+            let m = f.current_move(&gd);
+            let near = c & 0x1000 == 0 || m.active[0] == 0 || (f.frame + 8 > m.active[0] && f.frame < m.active[1]);
+            let mut r: Vec<f32> = bodies[i]
+                .push
+                .iter()
+                .enumerate()
+                .map(|(k, s)| {
+                    let (base, ends) = (s.radius, k == 0 || k == 3);
+                    match c & 0xF {
+                        0 if near && c >> (k + 4) & 1 != 0 => 0.0,
+                        1 => {
+                            if ends {
+                                base
+                            } else {
+                                1.0
+                            }
+                        }
+                        2 => 1.0,
+                        3 => (base as i32 >> 1) as f32,
+                        4 => 0.0,
+                        5 | 6 => {
+                            if ends {
+                                (base as i32 >> 1) as f32
+                            } else {
+                                1.0
+                            }
+                        }
+                        7 => match k {
+                            0 => base + 60.0,
+                            4..=7 => 1.0,
+                            _ => base,
+                        },
+                        8 => base + 100.0,
+                        9 => {
+                            if k == 0 {
+                                base + 60.0
+                            } else {
+                                1.0
+                            }
+                        }
+                        _ => base,
+                    }
+                })
+                .collect();
+            // an attack drops the forearms'
+            if m.active[0] != 0 {
+                r.iter_mut().skip(1).take(2).for_each(|x| *x = 0.0);
+            }
+            r
+        });
+        let mut depth = 0.0f32;
+        for (p, rp) in bodies[0].push.iter().zip(&radii[0]) {
+            for (q, rq) in bodies[1].push.iter().zip(&radii[1]) {
+                if *rp > 0.0 && *rq > 0.0 {
+                    depth = depth.max(rp + rq - p.centre.distance(q.centre));
+                }
+            }
+        }
+        let roots = [self.fighters[0].root(), self.fighters[1].root()];
+        let moved: [f32; 2] = std::array::from_fn(|i| self.fighters[i].push_prev.map_or(0.0, |p| roots[i].distance(p)));
+        for (f, r) in self.fighters.iter_mut().zip(roots) {
+            f.push_prev = Some(r);
+        }
+        if depth <= 0.0 {
+            return;
+        }
+        let to = roots[1] - roots[0];
+        let axis = |f: &Fighter, toward: Vec3| {
+            let a = Vec3::new(f.yaw.dsin(), 0.0, f.yaw.dcos());
+            if a.dot(toward) < 0.0 {
+                -a
+            } else {
+                a
+            }
+        };
+        let ax = [axis(&self.fighters[0], to), axis(&self.fighters[1], -to)];
+        let (w0, w1) = if moved == [0.0; 2] { (1.0, 1.0) } else { (moved[0], moved[1]) };
+        let share = [depth * w0 / (w0 + w1), depth * w1 / (w0 + w1)];
+        for i in 0..2 {
+            let d = ax[1 - i] * moved[1 - i] - ax[i] * share[i];
+            let f = &mut self.fighters[i];
+            f.position += d * 0.5;
+            f.pushed = true;
         }
     }
 
