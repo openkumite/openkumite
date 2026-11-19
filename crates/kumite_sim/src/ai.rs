@@ -2681,8 +2681,19 @@ impl Ai {
         let perms = cx.data.perms.get(cx.my_moveset.max(0) as usize).unwrap_or(&none);
         if let Some(first) = perms.preludes.first() {
             if self.combocd < 0 && !self.atk && self.m4 & 1 == 0 && cx.me.alias != first.1 && self.turn < 0x2001 && !cx.me_air && self.myzone < 3 && !self.odown {
-                let u = (cx.lcg() & 0xFFF) as i32;
-                if let Some((_, alias, seq)) = perms.preludes.iter().find(|p| u <= p.0) {
+                // (Tekken Tag's 0x386D60 draws rand() again for each prelude)
+                let mut u = (cx.lcg() & 0xFFF) as i32;
+                let mut found = None;
+                for (k, p) in perms.preludes.iter().enumerate() {
+                    if k > 0 && cx.data.ttt {
+                        u = (cx.lcg() & 0xFFF) as i32;
+                    }
+                    if u <= p.0 {
+                        found = Some(p);
+                        break;
+                    }
+                }
+                if let Some((_, alias, seq)) = found {
                     if self.reachable(cx, *alias) {
                         self.play(&seq[1.min(seq.len())..]);
                         self.lc_b = 1;
