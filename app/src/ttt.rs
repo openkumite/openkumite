@@ -51,6 +51,7 @@ const OPTION_ROWS: [usize; 3] = [0, 1, 2];
 /// OPTIONS' entries (0x439CC8): GAME OPTIONS, CONTROLLER SETUP, RECORDS, ADJUST DISPLAY, MEMORY CARD(PS2), EXIT.
 const OPT_GAME: usize = 0;
 const OPT_CONTROLLER: usize = 1;
+const OPT_RECORDS: usize = 2;
 const OPT_DISPLAY: usize = 3;
 const OPT_MEMORY_CARD: usize = 4;
 /// GAME OPTIONS' row of OpenKumite's ARCADE ARENAS (with the arcade pack), before DEFAULT.
@@ -281,12 +282,41 @@ pub struct Progress {
     pub force_hiscore: u32,
     /// The other GAME OPTIONS (rows 3.., CHARACTER CHANGE AT CONTINUE to SE VOLUME) as set (missing: the defaults).
     pub settings: Vec<usize>,
+    /// RECORDS (0x440D50): the picks of each character (by id), TIME ATTACK's best times, SURVIVAL's most wins.
+    pub usage: Vec<u32>,
+    pub times: Vec<Record>,
+    pub survivors: Vec<Record>,
 }
+
+/// A TIME ATTACK (frames) or SURVIVAL (wins) record: the team's character ids and the name entered.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Record {
+    pub score: u32,
+    pub members: Vec<usize>,
+    pub name: String,
+}
+
+/// The records kept of each (TIME ATTACK's table 0x440D58 holds 10; shortcut: SURVIVAL's count is not decoded).
+const RECORDS: usize = 10;
 
 /// The save's progress as last loaded or changed (the menus read it; the app keeps it in the save), as the
 /// DIFFICULTY of the Tekken 3 menus.
-static PROGRESS: std::sync::Mutex<Progress> =
-    std::sync::Mutex::new(Progress { stage: 0, points: 0, seen: 0, options: None, arcade_off: false, bowlers: None, bowl_bonus: [false; 2], force_keys: 0, force_hiscore: 0, settings: Vec::new() });
+static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress {
+    stage: 0,
+    points: 0,
+    seen: 0,
+    options: None,
+    arcade_off: false,
+    bowlers: None,
+    bowl_bonus: [false; 2],
+    force_keys: 0,
+    force_hiscore: 0,
+    settings: Vec::new(),
+    usage: Vec::new(),
+    times: Vec::new(),
+    survivors: Vec::new(),
+});
 
 pub fn progress() -> Progress {
     PROGRESS.lock().map_or_else(|e| e.into_inner().clone(), |p| p.clone())
@@ -302,6 +332,23 @@ pub fn set_progress(p: Progress) {
 impl Progress {
     pub fn options(&self, d: &Data) -> [usize; 3] {
         self.options.unwrap_or_else(|| OPTION_ROWS.map(|r| d.option(r).0))
+    }
+
+    /// Where `r` would stand among SURVIVAL's (`survival`: most wins first) or TIME ATTACK's records (fastest first);
+    /// None: not among them.
+    pub fn rank(&self, survival: bool, r: &Record) -> Option<usize> {
+        let list = if survival { &self.survivors } else { &self.times };
+        let at = list.iter().position(|o| if survival { r.score > o.score } else { r.score < o.score }).unwrap_or(list.len());
+        (at < RECORDS && (r.score > 0 || !survival)).then_some(at)
+    }
+
+    /// Keep `r` among the records.
+    pub fn record(&mut self, survival: bool, r: Record) {
+        if let Some(at) = self.rank(survival, &r) {
+            let list = if survival { &mut self.survivors } else { &mut self.times };
+            list.insert(at, r);
+            list.truncate(RECORDS);
+        }
     }
 
     /// GAME OPTIONS row `row`'s value as set, else its default.
@@ -428,6 +475,11 @@ impl Run {
         !self.humans[k] && self.mode != PRACTICE
     }
 
+    /// The player's character ids.
+    fn members(&self, roster: &Roster) -> Vec<usize> {
+        self.teams[0].iter().filter_map(|p| roster.characters.get(p.0)).map(|c| c.id).collect()
+    }
+
     /// The arcade ladder's STAGE (1..8).
     pub fn stage_number(&self) -> Option<u32> {
         ladder_mode(self.mode).then_some(self.fight as u32 + 1)
@@ -481,7 +533,11 @@ impl Run {
                 if up {
                     lines.push(unlocked(d, roster, progress.stage));
                 }
-                let page = Page::Message { lines, frame: 0, title: true };
+                let mut page = Page::Message { lines, frame: 0, title: true };
+                let record = Record { score: self.frames, members: self.members(roster), name: String::new() };
+                if self.mode == TIME_ATTACK && progress.rank(false, &record).is_some() {
+                    page = Page::NameEntry { survival: false, record, letter: 0, then: Box::new(page) };
+                }
                 match ending {
                     Some((e, costume)) => Next::Ending(e, costume, page),
                     None => Next::Screen(page),
@@ -505,7 +561,12 @@ impl Run {
             }
             SURVIVAL => {
                 progress.played(d, None);
-                Next::Screen(Page::Message { lines: vec!["SURVIVAL".into(), format!("WINS {}", self.wins[0])], frame: 0, title: false })
+                let page = Page::Message { lines: vec!["SURVIVAL".into(), format!("WINS {}", self.wins[0])], frame: 0, title: false };
+                let record = Record { score: self.wins[0], members: self.members(roster), name: String::new() };
+                if progress.rank(true, &record).is_some() {
+                    return Next::Screen(Page::NameEntry { survival: true, record, letter: 0, then: Box::new(page) });
+                }
+                Next::Screen(page)
             }
             TEAM => {
                 // the loser's next member comes in; the winner stays, 15 % of its full health back (0x3C1620)
@@ -659,8 +720,7 @@ pub enum Page {
         run: Box<Run>,
         countdown: u32,
     },
-    /// GAME OVER (0x35B0E4) over the fight's scene, then the title. shortcut: the CHARACTER USAGE ranking the PS2 shows
-    /// between them (screen 7) is not done.
+    /// GAME OVER (0x35B0E4) over the fight's scene, then the CHARACTER USAGE ranking (screen 7), then the title.
     GameOver {
         frame: u32,
     },
@@ -669,6 +729,21 @@ pub enum Page {
         lines: Vec<String>,
         frame: u32,
         title: bool,
+    },
+    /// RECORDS (0x3B2978): the page (CHARACTER USAGE, GREATEST SURVIVORS, TIME ATTACK), the first row shown;
+    /// `attract`: after GAME OVER, CHARACTER USAGE for a while, then the title.
+    Records {
+        page: usize,
+        scroll: usize,
+        attract: bool,
+    },
+    /// A new record's name entry: the record (its name so far), the letter under the cursor of `records.letters`,
+    /// then `then`.
+    NameEntry {
+        survival: bool,
+        record: Record,
+        letter: usize,
+        then: Box<Page>,
     },
     /// THEATER (screen 0xC): its rows and cells, the cursor's [row, cell].
     Theater {
@@ -1035,6 +1110,10 @@ impl Front {
                             sfx::play(sound(&d, "decide"));
                             return Outcome::OpenGraphics(crate::menu::difficulty());
                         }
+                        OPT_RECORDS => {
+                            sfx::play(sound(&d, "decide"));
+                            Some(Page::Records { page: 0, scroll: 0, attract: false })
+                        }
                         OPT_MEMORY_CARD => None,
                         c if c + 1 < n => None,
                         _ => Some(Self::menu_at(&d, progress, OPTIONS)),
@@ -1159,6 +1238,62 @@ impl Front {
                 _ => None,
             },
             Page::GameOver { .. } => None,
+            // (left / right the page, up / down the rows; back to OPTIONS, or after GAME OVER to the title)
+            Page::Records { page, scroll, attract } => match key {
+                _ if *attract => matches!(key, Key::Start | Key::Button(_)).then_some(Page::Title),
+                Key::Left | Key::Right => {
+                    sfx::play(sound(&d, "cursor"));
+                    *page = (*page + if key == Key::Left { 2 } else { 1 }) % 3;
+                    *scroll = 0;
+                    None
+                }
+                Key::Up | Key::Down => {
+                    let max = record_rows(progress, *page).len().saturating_sub(RECORD_ROWS);
+                    let next = if key == Key::Up { scroll.saturating_sub(1) } else { (*scroll + 1).min(max) };
+                    if next != *scroll {
+                        sfx::play(sound(&d, "cursor"));
+                        *scroll = next;
+                    }
+                    None
+                }
+                Key::Start | Key::Button(_) | Key::Back => {
+                    sfx::play(sound(&d, "cancel"));
+                    Some(Page::Options { cursor: OPT_RECORDS })
+                }
+            },
+            // (0x3D0450: the letters go round; a button takes the one under the cursor, "<" takes the last back,
+            // "=" or the last letter ends; START ends)
+            Page::NameEntry { survival, record, letter, then } => {
+                let letters: Vec<char> = d.raw["records"]["letters"].as_str().unwrap_or_default().chars().collect();
+                let n = letters.len().max(1);
+                let mut done = key == Key::Start;
+                match (key, letters.get(*letter)) {
+                    (Key::Left | Key::Right | Key::Up | Key::Down, _) => {
+                        sfx::play(sound(&d, "cursor"));
+                        *letter = (*letter + if matches!(key, Key::Left | Key::Down) { n - 1 } else { 1 }) % n;
+                    }
+                    (Key::Button(_) | Key::Back, Some('<')) | (Key::Back, _) => {
+                        sfx::play(sound(&d, "cancel"));
+                        record.name.pop();
+                    }
+                    (Key::Button(_), Some('=')) => done = true,
+                    (Key::Button(_), Some(&c)) => {
+                        sfx::play(sound(&d, "pick"));
+                        record.name.push(c);
+                        done = record.name.chars().count() >= int(&d.raw["records"]["name_len"]).max(1);
+                    }
+                    _ => {}
+                }
+                if !done {
+                    return Outcome::None;
+                }
+                sfx::play(sound(&d, "decide"));
+                progress.record(*survival, record.clone());
+                set_progress(progress.clone());
+                self.page = std::mem::replace(then.as_mut(), Page::Title);
+                self.frame = 0;
+                return Outcome::TttSaved;
+            }
             Page::Theater { cursor } => {
                 let rows = theater(&d, progress.seen);
                 let [r, c] = cursor;
@@ -1244,6 +1379,15 @@ impl Front {
             }
             Page::Select(s) => {
                 if let Some(run) = s.tick(&d, roster, progress, seed) {
+                    // CHARACTER USAGE: each of the players' picks
+                    let mut p = progress.clone();
+                    for c in run.teams.iter().zip(run.humans).filter(|t| t.1).flat_map(|t| t.0).filter_map(|m| roster.characters.get(m.0)) {
+                        if p.usage.len() <= c.id {
+                            p.usage.resize(c.id + 1, 0);
+                        }
+                        p.usage[c.id] += 1;
+                    }
+                    set_progress(p);
                     if run.mode == FORCE {
                         return Outcome::StartForce(run.teams[0].first().copied().unwrap_or((0, 0)), run.options[0].min(2));
                     }
@@ -1268,9 +1412,15 @@ impl Front {
             }
             Page::GameOver { frame } => {
                 *frame += 1;
+                // then the CHARACTER USAGE ranking, as the PS2 shows it
                 if *frame >= int(&d.raw["arcade"]["continue"]["game_over"]["frames"]) as u32 {
-                    self.page = Page::Title;
+                    self.page = Page::Records { page: 0, scroll: 0, attract: true };
+                    self.frame = 0;
                 }
+            }
+            Page::Records { attract: true, .. } if self.frame >= MESSAGE_FRAMES => {
+                self.page = Page::Title;
+                self.frame = 0;
             }
             Page::Message { frame, title, .. } => {
                 *frame += 1;
@@ -1358,6 +1508,25 @@ impl Front {
                 chrome(painter, v, art, d, &text, num(&c["x"]), num(&c["y"]), None, 10.0);
             }
             Page::GameOver { .. } => banner_at(painter, v, art, d, &d.raw["arcade"]["continue"]["game_over"], 0),
+            Page::Records { page, scroll, attract } => {
+                let level = if *attract { 128.0 } else { num(&d.raw["menu"]["dim"]) };
+                image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], ps2(level).0);
+                draw_records(painter, v, art, d, roster, progress, *page, *scroll, self.frame, !*attract);
+            }
+            Page::NameEntry { record, letter, .. } => {
+                backdrop(painter, v, art);
+                let r = &d.raw["records"];
+                let text = r["new_record"].as_str().unwrap_or_default();
+                let w = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, text, 0.0, 0.0, None, 10.0);
+                chrome(painter, v, art, d, text, (W - w) / 2.0, 150.0, Some(int(&r["pages"][2]["colour"])), 10.0);
+                // (OpenKumite's layout: the letters so far, then the cursor's blinking)
+                let letters: Vec<char> = r["letters"].as_str().unwrap_or_default().chars().collect();
+                let mut name = record.name.clone();
+                if self.frame & 0x10 == 0 {
+                    name.push(letters.get(*letter).copied().unwrap_or(' '));
+                }
+                chrome(painter, v, art, d, &name, W / 2.0 - 60.0, 260.0, Some(11), 10.0);
+            }
             Page::Message { lines, .. } => {
                 backdrop(painter, v, art);
                 // (a long one, Tekken Bowl's results, closer and smaller)
@@ -1569,6 +1738,91 @@ fn draw_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Prog
     }
     if p.setting(d, HELP_ROW) != 0 {
         help_line(painter, v, art, d, int(&m["help"]) + cursor, 0);
+    }
+}
+
+/// RECORDS' rows shown at once.
+const RECORD_ROWS: usize = 6;
+
+/// A RECORDS page's rows: CHARACTER USAGE (each character picked: its id, its per-mille of the picks), GREATEST
+/// SURVIVORS, TIME ATTACK.
+fn record_rows(p: &Progress, page: usize) -> Vec<(Vec<usize>, u32, String)> {
+    match page {
+        0 => {
+            let total: u32 = p.usage.iter().sum();
+            let mut rows: Vec<(Vec<usize>, u32, String)> = p.usage.iter().enumerate().filter(|u| *u.1 > 0).map(|(c, &n)| (vec![c], n * 1000 / total.max(1), String::new())).collect();
+            rows.sort_by_key(|a| std::cmp::Reverse(a.1));
+            rows
+        }
+        1 => p.survivors.iter().map(|r| (r.members.clone(), r.score, r.name.clone())).collect(),
+        _ => p.times.iter().map(|r| (r.members.clone(), r.score, r.name.clone())).collect(),
+    }
+}
+
+/// RECORDS (0x3B2978, `records`): the title; the page's name between its arrows (blinking every `arrows_blink`
+/// frames); `rows` rows `row_dy` apart, each over a bar in the page's colour (0x3B15F8): the rank and its suffix
+/// (0x3B1EC8), the faces (0x3CE318, 40 x 42), then CHARACTER USAGE's name and share "%3d.%1d%", SURVIVORS' wins and
+/// WIN(S) and name, TIME ATTACK's time and name, at the page's `columns`; the arrows of more rows above and below
+/// (0x3B1F78); the page's help line.
+#[allow(clippy::too_many_arguments)]
+fn draw_records(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &Roster, p: &Progress, page: usize, scroll: usize, frame: u32, help: bool) {
+    let r = &d.raw["records"];
+    let pg = &r["pages"][page];
+    title(painter, v, art, d, r);
+    let py = num(&r["page_y"]);
+    chrome(painter, v, art, d, pg["title"].as_str().unwrap_or_default(), num(&pg["x"]), py, Some(int(&pg["colour"])), num(&r["page_size"]));
+    let arrow = |k: usize, x: f32, y: f32| {
+        let pic = d.raw["menu"]["arrows"]["pictures"][k].as_str().unwrap_or_default();
+        let h = art.pic(pic).map_or(0.0, |p| p.1[1] as f32);
+        sprite(painter, v, art, pic, x, y - h, Color32::WHITE);
+    };
+    if frame / int(&r["arrows_blink"]).max(1) as u32 % 2 == 1 {
+        arrow(0, num(&r["arrows_x"][0]), py);
+        arrow(1, num(&r["arrows_x"][1]), py);
+    }
+    let rows = record_rows(p, page);
+    let col = |k: usize, key: &str| num(&pg["columns"][k][key]);
+    let colour = |k: usize| Some(int(&pg["columns"][k]["colour"]));
+    let (y0, dy, bar_w) = (num(&r["row_y"]), num(&r["row_dy"]), num(&r["bar_w"]));
+    for (k, (members, score, name)) in rows.iter().enumerate().skip(scroll).take(RECORD_ROWS) {
+        let y = y0 + dy * (k - scroll) as f32;
+        let on = rgba(&pg["bar"]);
+        let (b, x) = (&d.raw["pause"]["bar"], num(&d.raw["options_menu"]["game"]["row_xy"][0]));
+        let (t, h) = (num(&b["y"][0]), num(&b["y"][1]) - num(&b["y"][0]));
+        Art::shade(painter, v, sv([0.0, y + 2.0 + t, x, h]), [Color32::TRANSPARENT, on, Color32::TRANSPARENT, on]);
+        Art::shade(painter, v, sv([x, y + 2.0 + t, bar_w, h]), [on, Color32::TRANSPARENT, on, Color32::TRANSPARENT]);
+        let rank = k + 1;
+        let suffix = match rank % 10 {
+            1 if rank != 11 => 0,
+            2 if rank != 12 => 1,
+            3 if rank != 13 => 2,
+            _ => 3,
+        };
+        let end = chrome(painter, v, art, d, &format!("{rank:2}"), num(&r["rank_x"]), y - 4.0, Some(int(&pg["colour"])), 5.0);
+        chrome(painter, v, art, d, r["suffixes"][suffix].as_str().unwrap_or_default(), end, y, Some(11), 4.0);
+        for (m, &c) in members.iter().enumerate().take(2) {
+            let fx = num(&r["faces_x"][m]);
+            image(painter, v, art, &d.picture(&["select", "faces", &c.to_string()]), [fx, y - 46.0, 40.0, 42.0], Color32::WHITE);
+        }
+        match page {
+            0 => {
+                let n = members.first().and_then(|&c| roster.by_id(c)).map_or(String::new(), |c| c.name.to_uppercase());
+                chrome(painter, v, art, d, &n, col(0, "x"), y + col(0, "dy"), colour(0), col(0, "size"));
+                chrome(painter, v, art, d, &format!("{:3}.{}%", score / 10, score % 10), col(1, "x"), y + col(1, "dy"), colour(1), col(1, "size"));
+            }
+            1 => {
+                chrome(painter, v, art, d, &format!("{:3}", (*score).min(999)), col(0, "x"), y + col(0, "dy"), colour(0), col(0, "size"));
+                chrome(painter, v, art, d, if *score >= 2 { "WINS" } else { "WIN" }, col(1, "x"), y + col(1, "dy"), colour(1), col(1, "size"));
+                chrome(painter, v, art, d, name, col(2, "x"), y + col(2, "dy"), colour(2), col(2, "size"));
+            }
+            _ => {
+                chrome(painter, v, art, d, &clock(*score), col(0, "x"), y + col(0, "dy"), colour(0), col(0, "size"));
+                chrome(painter, v, art, d, name, col(1, "x"), y + col(1, "dy"), colour(1), col(1, "size"));
+            }
+        }
+    }
+    if help && p.setting(d, HELP_ROW) != 0 {
+        help_line(painter, v, art, d, int(&r["help"]) + page, 0);
     }
 }
 
@@ -3141,6 +3395,22 @@ mod tests {
         pause = Some((0, 1));
         pause_key(&d, &mut pause, &mut reset, Key::Button(0));
         assert_eq!(pause, None);
+    }
+
+    /// Records: TIME ATTACK fastest first, SURVIVAL most wins first (none for 0 wins), ten of each.
+    #[test]
+    fn records_keep_the_best_ten() {
+        let mut p = Progress::default();
+        let r = |score: u32| Record { score, members: vec![7], name: "ABC".into() };
+        for t in [500, 300, 400] {
+            p.record(false, r(t));
+        }
+        assert_eq!(p.times.iter().map(|t| t.score).collect::<Vec<_>>(), [300, 400, 500]);
+        assert_eq!(p.rank(true, &r(0)), None);
+        for w in 1..=12 {
+            p.record(true, r(w));
+        }
+        assert_eq!((p.survivors.len(), p.survivors[0].score, p.rank(true, &r(2))), (RECORDS, 12, None));
     }
 
     #[test]
