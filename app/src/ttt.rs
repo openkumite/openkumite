@@ -5,11 +5,11 @@
 //! (`gamedata/endings.json`: the arcade clear's staff roll and ending, Theater), the fight HUD and Tekken Bowl's, drawn
 //! from its 2D pictures (`pictures/FFF_NNN.png`) on its 640 x 448 screen. The title, main menu and select move, light
 //! and sound as the PS2's (FRONTEND.md 9: the title out of white, the menu's sliding rows and band, the select's
-//! lightning, frame, pulsing cursors, RANDOM's roll, timer and plates), in frames.
+//! lightning, frame, pulsing cursors, RANDOM's roll, timer and plates, its 3D characters standing and posing), in frames.
 //!
-//! Not decoded, OpenKumite's own: the VS screen's code (laid out as the PS2 shows it), the select's 3D models (the
-//! portraits stand in), which button gives which costume, the banners (in the chrome font), the option and Theater
-//! screens' layout, the staff roll's fonts, and which of the six health-bar strips is which.
+//! Not decoded, OpenKumite's own: the VS screen's code (laid out as the PS2 shows it), which button gives which
+//! costume, the banners (in the chrome font), the option and Theater screens' layout, the staff roll's fonts, and
+//! which of the six health-bar strips is which.
 
 use crate::art::{additive, Art, Screen as View, SCREEN_H, SCREEN_W};
 use crate::menu::{lcg, sfx, FightSetup, Key, Mode, Outcome, Roster};
@@ -658,6 +658,36 @@ impl Select {
         free.sort_unstable();
         let at = self.frame as usize / int(&d.raw["select"]["random_roll"]).max(1);
         free.get(at % free.len().max(1)).copied()
+    }
+
+    /// Side `k`'s characters shown: its picks (roster index, costume), then the one under its cursor (costume None).
+    fn shown(&self, d: &Data, roster: &Roster, p: &Progress, k: usize) -> Vec<(usize, Option<usize>)> {
+        let Some(side) = self.sides.get(k) else { return vec![] };
+        let hover = (!side.done)
+            .then(|| d.slots.get(side.cursor))
+            .flatten()
+            .and_then(|sl| match sl.character {
+                Some(c) => Some(c).filter(|&c| d.selectable(p.stage, c)),
+                None => self.roll(d, roster, p, k),
+            })
+            .and_then(|c| roster.index_of(c))
+            .filter(|i| !side.picks.iter().any(|q| q.0 == *i));
+        side.picks.iter().map(|q| (q.0, Some(q.1))).chain(hover.map(|i| (i, None))).collect()
+    }
+
+    /// The 3D characters standing now (FRONTEND.md 9): per side its last two of [`Select::shown`], as (slot = side + 2
+    /// * member, model record, picked).
+    pub fn posers(&self, d: &Data, roster: &Roster, p: &Progress) -> Vec<(usize, usize, bool)> {
+        let mut out = vec![];
+        for k in (0..2).filter(|&k| self.sides[k].player.is_some()) {
+            let list = self.shown(d, roster, p, k);
+            for (j, &(i, costume)) in list.iter().skip(list.len().saturating_sub(2)).enumerate() {
+                if let Some(&record) = roster.characters.get(i).and_then(|c| c.costumes.get(costume.unwrap_or(0)).or(c.costumes.first())) {
+                    out.push((k + 2 * j, record, costume.is_some()));
+                }
+            }
+        }
+        out
     }
 
     fn key(&mut self, player: usize, key: Key, d: &Data, roster: &Roster, progress: &Progress) -> Option<Page> {
@@ -1375,9 +1405,7 @@ fn small(painter: &egui::Painter, v: &View, text: &str, x: f32, y: f32, c: Color
 /// frame, under the frame and its mirror; the faces (0x3CC6C8: brighter under a cursor, dark under the cursor of the
 /// side that took them, RANDOM's showing its roll); each side's name plates (0x3CC3E0) and "1ST"; the timer
 /// (0x3CC190, blinking in its last seconds); the cursors, pulsing (0x3CC9E0), with their tags; the screen darkening
-/// to the fight.
-// shortcut: the PS2 stands each side's character there as its 3D model, posing once picked (0x3AEC58); here its
-// portrait (files 143-181) until the select draws fighters
+/// to the fight. Each side's 3D characters ([`Posers`]) stand between the lightning and the rest.
 fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &Roster, p: &Progress, s: &Select) {
     let sel = &d.raw["select"];
     let l = &sel["lightning"];
@@ -1385,28 +1413,10 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
     if let Some(file) = pics.get(s.frame as usize % pics.len().max(1)) {
         lit(painter, v, art, file, [0, 1, 2, 3].map(|k| num(&l["rect"][k])), num(&l["level"]));
     }
-    // each side's characters: its picks, then the one under its cursor
-    let shown = |k: usize| -> Vec<usize> {
-        let side = &s.sides[k];
-        let hover = (!side.done)
-            .then(|| d.slots.get(side.cursor))
-            .flatten()
-            .and_then(|sl| match sl.character {
-                Some(c) => Some(c).filter(|&c| d.selectable(p.stage, c)),
-                None => s.roll(d, roster, p, k),
-            })
-            .and_then(|c| roster.index_of(c))
-            .filter(|i| !side.picks.iter().any(|q| q.0 == *i));
-        side.picks.iter().map(|q| q.0).chain(hover).collect()
-    };
+    let shown = |k: usize| -> Vec<usize> { s.shown(d, roster, p, k).into_iter().map(|q| q.0).collect() };
     let body = |i: usize| roster.characters.get(i).map_or(0, |c| c.id);
-    for k in (0..2).filter(|&k| s.sides[k].player.is_some()) {
-        if let Some(&i) = shown(k).last() {
-            // (where and about as big as the PS2 shows the model: head at y 320, centred on x 220 of its side)
-            let x = if k == 0 { 173.0 } else { W - 173.0 };
-            image(painter, v, art, &d.picture(&["select", "portraits", &body(i).to_string()]), [x, 320.0, if k == 0 { 94.0 } else { -94.0 }, 128.0], Color32::WHITE);
-        }
-    }
+    // (the 3D characters stand in front of the lightning, behind the rest)
+    crate::debug::mark_under(painter);
     let frame = sel["frame"]["picture"].as_str().unwrap_or_default();
     let [fw, fh] = [num(&sel["frame"]["size"][0]), num(&sel["frame"]["size"][1])];
     image(painter, v, art, frame, [0.0, 0.0, fw, fh], Color32::WHITE);
@@ -1512,6 +1522,104 @@ fn digits(painter: &egui::Painter, v: &View, art: &Art, t: &Value, n: u32, x: f3
             painter.image(tex.id(), v.rect(rx, ry, rw, rh), Rect::from_min_max(Pos2::new(u, 0.0), Pos2::new(u + dw / tw as f32, 1.0)), Color32::WHITE);
         }
     }
+}
+
+/// One 3D character standing on the select (`select.models`, FRONTEND.md 9): its slot (side + 2 * member), model
+/// record, whether it is a pick, its body with the clips of its aliases 0 and 3, and the frames since it came or was
+/// picked.
+pub struct Poser {
+    pub slot: usize,
+    pub record: usize,
+    picked: bool,
+    pub character: Arc<kumite_assets::Character>,
+    clips: [usize; 2],
+    frame: u32,
+}
+
+/// The select's 3D characters, and the bodies loaded so far (a model record's, with its two clips).
+#[derive(Default)]
+pub struct Posers {
+    pub shown: Vec<Poser>,
+    loaded: Vec<(usize, Arc<kumite_assets::Character>, [usize; 2])>,
+}
+
+impl Posers {
+    /// One frame of the select `s`: who stands where (a new one, or one just picked, from its first frame), then a frame
+    /// on.
+    pub fn step(&mut self, assets: &kumite_assets::Assets, d: &Data, roster: &Roster, s: &Select) {
+        let progress = &progress();
+        let wanted = if d.raw["select"]["models"].is_object() { s.posers(d, roster, progress) } else { vec![] };
+        self.shown.retain(|m| wanted.iter().any(|w| w.0 == m.slot && w.1 == m.record));
+        for (slot, record, picked) in wanted {
+            match self.shown.iter_mut().find(|m| m.slot == slot) {
+                Some(m) if m.picked != picked => (m.picked, m.frame) = (picked, 0),
+                Some(_) => {}
+                None => {
+                    let id = roster.characters.iter().find(|c| c.costumes.contains(&record)).map_or(0, |c| c.id);
+                    match self.load(assets, d, record, id) {
+                        Ok((character, clips)) => self.shown.push(Poser { slot, record, picked, character, clips, frame: 0 }),
+                        Err(e) => log::warn!("select model {record}: {e:#}"),
+                    }
+                }
+            }
+        }
+        for m in &mut self.shown {
+            m.frame += 1;
+        }
+    }
+
+    /// Model `record` (character `id`) with its select clips (`select.models.motions[id]`), loaded once.
+    fn load(&mut self, assets: &kumite_assets::Assets, d: &Data, record: usize, id: usize) -> anyhow::Result<(Arc<kumite_assets::Character>, [usize; 2])> {
+        if let Some(l) = self.loaded.iter().find(|l| l.0 == record) {
+            return Ok((l.1.clone(), l.2));
+        }
+        let names = &d.raw["select"]["models"]["motions"][id];
+        let mut ch = assets.character(record)?;
+        let mut clip = |k: usize| -> anyhow::Result<usize> {
+            let name = names[k].as_str().ok_or_else(|| anyhow::anyhow!("no select motions for character {id}"))?;
+            if ch.clip(name).is_none() {
+                // (a plain clip name only: one with a folder in it would read outside `motions/`)
+                anyhow::ensure!(std::path::Path::new(name).file_name() == Some(name.as_ref()), "a motion that is not a plain name: {name:?}");
+                ch.add_motions(&kumite_fs::read(&assets.root.join("motions").join(format!("{name}.glb")))?)?;
+            }
+            ch.clip(name).ok_or_else(|| anyhow::anyhow!("motions/{name}.glb holds no clip {name}"))
+        };
+        let clips = [clip(0)?, clip(1)?];
+        let ch = Arc::new(ch);
+        self.loaded.push((record, ch.clone(), clips));
+        Ok((ch, clips))
+    }
+
+    /// Each one's node matrices and placement (metres): a pick's pose (alias 3) once, then alias 0 over and over, at
+    /// its slot's place (`select.models.places`, 1 ON 1's in its mode).
+    pub fn poses(&self, d: &Data, mode: u32) -> Vec<(Vec<glam::Mat4>, glam::Mat4)> {
+        let m = &d.raw["select"]["models"];
+        let places = if mode == int(&m["one_on_one_mode"]) as u32 { &m["places_one_on_one"] } else { &m["places"] };
+        self.shown
+            .iter()
+            .map(|p| {
+                let n = |c: usize| p.character.clips.get(c).map_or(1, |c| c.frames.max(1)) as u32;
+                let f = p.frame.saturating_sub(1);
+                let (clip, f) = if p.picked && f < n(p.clips[1]) { (p.clips[1], f) } else { (p.clips[0], (f - if p.picked { n(p.clips[1]) } else { 0 }) % n(p.clips[0])) };
+                let at = &places[p.slot];
+                // (the game's x, z as the picture's x, -z, on the floor (the game sets y from the pose: the table's is not
+                // kept); its 65536ths of a turn, the picture facing -z)
+                let place = kumite_game::placement(glam::Vec3::new(num(&at[0]), 0.0, -num(&at[2])), std::f32::consts::PI - num(&at[3]) * std::f32::consts::TAU / 65536.0);
+                (p.character.pose(clip, f as usize, false), place)
+            })
+            .collect()
+    }
+}
+
+/// The select's camera (`select.models.camera`, 0x3AE6E0): eye, look direction and field of view, as a fight view's;
+/// and the arena whose light table lights the characters (`select.models.light`).
+pub fn select_camera(d: &Data) -> (glam::Vec3, glam::Vec3, f32, Option<usize>) {
+    let c = &d.raw["select"]["models"]["camera"];
+    let i = |v: &Value| v.as_i64().unwrap_or(0);
+    // (H on Tekken Tag's 512-pixel-wide screen; the view's is on the 368-pixel one the renderer draws)
+    let view = kumite_sim::camera::View { eye: [0, 1, 2].map(|k| i(&c["eye"][k])), pitch: i(&c["pitch"]), yaw: i(&c["yaw"]), h: i(&c["h"]) * 368 / 512, roll: 0 };
+    let (eye, forward, fov_y) = kumite_game::view_camera(&view);
+    (eye, forward, fov_y, d.raw["select"]["models"]["light"].as_u64().map(|a| a as usize))
 }
 
 /// The VS screen, laid out as the PS2 shows it (FRONTEND.md 9; the code is not decoded): each team's leader high and

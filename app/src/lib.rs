@@ -499,6 +499,9 @@ struct App {
     ttt_ending: Option<EndingRun>,
     /// Tekken Bowl, while it plays.
     bowl: Option<BowlRun>,
+    /// Tekken Tag's select: its 3D characters, and their GPU models by model record.
+    posers: ttt::Posers,
+    poser_models: HashMap<usize, SkinnedModel>,
     attract_demo_list: Vec<usize>,
     /// The attract demo's CPU level (attract.json `demo_fight.ai_level`).
     attract_demo_level: usize,
@@ -1560,6 +1563,19 @@ impl App {
             let was_playing = matches!(screen, Screen::Movie(m, _) if m.playing);
             // (the main menu waits while the replays are open over it: no idle return to the title)
             let outcome = if self.replays.is_some() && matches!(screen, Screen::Menu(_)) { Outcome::None } else { screen.tick(&self.roster, &mut self.seed) };
+            // Tekken Tag's select: its 3D characters follow it (their bodies dropped once it is left)
+            match (&*screen, self.roster.ttt.as_deref()) {
+                (Screen::Ttt(f), Some(d)) if matches!(f.page, ttt::Page::Select(_)) => {
+                    if let ttt::Page::Select(s) = &f.page {
+                        self.posers.step(&self.assets, d, &self.roster, s);
+                    }
+                }
+                _ if !self.posers.shown.is_empty() => {
+                    self.posers = Default::default();
+                    self.poser_models.clear();
+                }
+                _ => {}
+            }
             // a movie's soundtrack starts with its pictures (once enough of it has arrived)
             if let (Screen::Movie(m, _), false, Some(audio)) = (&*screen, was_playing, self.audio.as_mut()) {
                 if m.playing {
@@ -4712,7 +4728,25 @@ impl App {
                 }
             }
         }
+        // Tekken Tag's select: a GPU model for each 3D character, made when it comes
+        for p in &self.posers.shown {
+            self.poser_models.entry(p.record).or_insert_with(|| skinned_character(r, &p.character, p.record));
+        }
         let (cam, lines) = match (self.fight.as_ref(), self.scene.as_ref()) {
+            // Tekken Tag's select: its characters on its camera
+            (None, None) if !self.posers.shown.is_empty() => {
+                let (Some(d), Some(Screen::Ttt(f))) = (self.roster.ttt.as_deref(), self.screen.as_ref()) else { return };
+                let ttt::Page::Select(s) = &f.page else { return };
+                for (p, (pose, place)) in self.posers.shown.iter().zip(self.posers.poses(d, s.mode)) {
+                    if let Some(model) = self.poser_models.get(&p.record) {
+                        r.update_bones(model, &p.character.skin_matrices(&pose, place));
+                    }
+                }
+                let (eye, forward, fov_y, light) = ttt::select_camera(d);
+                let mut cam = Camera::new(eye, eye + forward, fov_y);
+                cam.light = light.and_then(|a| self.stage_lights.get(&a)).and_then(|l| l.0);
+                (cam, Vec::new())
+            }
             (Some(fight), Some(scene)) => {
                 let cutscene = fight.cutscene.as_ref();
                 let (game, gpu_models) = match cutscene {
@@ -4903,6 +4937,7 @@ impl App {
             _ => (Camera::new(glam::Vec3::Z, glam::Vec3::ZERO, 0.8), Vec::new()),
         };
         let (sky, statics, models): (Vec<_>, Vec<_>, Vec<_>) = match (&self.scene, &self.fight) {
+            (None, None) => (vec![], vec![], self.posers.shown.iter().filter_map(|p| self.poser_models.get(&p.record)).collect()),
             (Some(s), None) if matches!(self.screen, Some(Screen::Records(_))) => (s.sky.iter().collect(), s.statics.iter().collect(), vec![]),
             (Some(s), None) if self.tag.is_some() => (s.sky.iter().collect(), s.statics.iter().collect(), s.models.iter().collect()),
             (Some(s), None) if self.ttt_ending.as_ref().is_some_and(|e| e.scene.is_some()) => {
@@ -7502,6 +7537,8 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         embu: None,
         ttt_ending: None,
         bowl: None,
+        posers: Default::default(),
+        poser_models: HashMap::new(),
         attract_demo_list: attract["demo_fight"]["p1_list"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as usize).collect()).unwrap_or_default(),
         attract_demo_level: attract["demo_fight"]["ai_level"].as_u64().unwrap_or(0) as usize,
         attract_steps: attract["cycle"]["steps"].as_array().cloned().unwrap_or_default(),
