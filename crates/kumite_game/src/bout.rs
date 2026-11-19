@@ -495,6 +495,22 @@ impl Bout {
         matches!(self.phase, Phase::Replay { .. }) && self.frames & 0x10 != 0
     }
 
+    /// A fight step: the camera draws from the CPU's random streams, as the PS2's director does (Tekken Tag).
+    fn fight_step(&mut self, pads: [Pad; 2]) {
+        std::mem::swap(&mut self.ai_rng, &mut self.game.camera.rng);
+        self.game.step(pads);
+        std::mem::swap(&mut self.ai_rng, &mut self.game.camera.rng);
+    }
+
+    /// An end camera's 0..n: Tekken Tag's own LCG (gp-0x73FC), else the bout's.
+    fn end_random(&mut self, n: i64) -> i64 {
+        if self.game.camera.data().win.is_some() {
+            self.game.camera.end_random(n)
+        } else {
+            self.random(n)
+        }
+    }
+
     fn random(&mut self, n: i64) -> i64 {
         self.rng = self.rng.wrapping_mul(1_103_515_245).wrapping_add(12345);
         (((self.rng >> 16) as i64 & 0x7FFF) * n.max(1)) >> 15
@@ -602,7 +618,7 @@ impl Bout {
             }
             Phase::Fight => {
                 let pads = self.input(pads);
-                self.game.step(pads);
+                self.fight_step(pads);
                 if self.free {
                     return;
                 }
@@ -619,7 +635,7 @@ impl Bout {
                         if self.game.rounds.is_some() && self.game.ball.is_none() && self.game.camera.data().replay_shots.is_some() {
                             let loser = if double { 0 } else { 1 - winner };
                             let throw = self.game.fight.fighters.iter().any(|f| f.locked);
-                            self.tag_replay = Some((self.random(14) as usize, 0, loser, self.game.subject(loser).root, throw));
+                            self.tag_replay = Some((self.ai_rng.randint(14) as usize, 0, loser, self.game.subject(loser).root, throw));
                         }
                         self.round_over(if double { None } else { Some(winner) }, false);
                     }
@@ -634,7 +650,7 @@ impl Bout {
                         p[w] = pads[w];
                     }
                 }
-                self.game.step(p);
+                self.fight_step(p);
                 // Tekken Tag: the replay from frame 16 of a K.O., a time up done on frame 160
                 let frames = match &self.game.rounds {
                     Some(r) if self.ko_at.is_some() => r.replay_from,
@@ -831,7 +847,7 @@ impl Bout {
         };
         let at = who(target).map_or(point, |i| self.game.subject(i).root);
         let facing = self.game.subject(if throw { loser } else { 1 - loser }).front;
-        let Some(shot) = Shot::replay(&data, k, at, facing, &mut |n| self.random(n)) else { return };
+        let Some(shot) = Shot::replay(&data, k, at, facing, &mut |n| i64::from(self.ai_rng.randint(n as i32))) else { return };
         self.game.camera_mode = CameraMode::Shot { shot, follow: who(follow) };
     }
 
@@ -858,7 +874,7 @@ impl Bout {
                 let l = 1 - w;
                 self.game.fight.fighters[l].play_alias(alias);
                 let p = self.game.subject(l);
-                let mut rnd = |n: i64| self.random(n);
+                let mut rnd = |n: i64| self.end_random(n);
                 let cam = EndCam::winner(&data, &p, true, &mut rnd);
                 self.game.camera_mode = CameraMode::End { cam, who: l };
                 self.game.visible = [l == 0, l == 1];
@@ -889,7 +905,7 @@ impl Bout {
                 }
                 let b_variant = self.count(WINNER).is_multiple_of(2);
                 let p = self.game.subject(w);
-                let mut rnd = |n: i64| self.random(n);
+                let mut rnd = |n: i64| self.end_random(n);
                 let cam = EndCam::winner(&data, &p, b_variant, &mut rnd);
                 self.game.camera_mode = CameraMode::End { cam, who: w };
                 self.game.visible = [w == 0, w == 1];

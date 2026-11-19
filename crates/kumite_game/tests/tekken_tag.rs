@@ -724,7 +724,7 @@ fn strings_go_on_from_normal_level_4() {
 #[test]
 fn king_throws_canned_and_delays_inputs() {
     let Some(a) = assets() else { return };
-    let (normal, hard) = (cpu_run_of(&a, [KING, LEI], [Some((1, 7)), None], 9000, 2), cpu_run_of(&a, [KING, LEI], [Some((2, 0)), None], 15000, 2));
+    let (normal, hard) = (cpu_run_of(&a, [KING, LEI], [Some((1, 7)), None], 40000, 9), cpu_run_of(&a, [KING, LEI], [Some((2, 0)), None], 15000, 2));
     // (rare: a few a match)
     let ultra = cpu_run_of(&a, [LEI, KING], [None, Some((4, 0))], 60000, 9).stats[2];
     eprintln!("King NORMAL L7 {:?}, ULTRA HARD L0 delays {ultra}, HARD L0 {:?}", normal.stats, hard.stats);

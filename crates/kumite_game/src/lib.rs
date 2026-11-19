@@ -666,9 +666,9 @@ impl Game {
     /// Start with the round-start camera fly-in (variant = round counter % 10). While it plays the
     /// fighters stand in their stance, pads are ignored and the round clock does not run.
     pub fn with_intro(mut self, variant: usize, first_round: bool) -> Self {
-        let seed = self.camera.seed;
+        let (rng, lcg) = (self.camera.rng.clone(), self.camera.lcg);
         self.camera = FightCamera::new(self.camera.data().clone(), true, variant, first_round);
-        self.camera.seed = seed;
+        (self.camera.rng, self.camera.lcg) = (rng, lcg);
         self.intro = Some((variant, first_round));
         self.step_camera();
         self
@@ -756,9 +756,9 @@ impl Game {
             self.ball_doubles(&partner, &extra);
         }
         let (intro, (variant, first)) = (intro_setting.is_some(), intro_setting.unwrap_or((0, true)));
-        let seed = self.camera.seed;
+        let (rng, lcg) = (self.camera.rng.clone(), self.camera.lcg);
         self.camera = FightCamera::new(self.camera.data().clone(), intro, variant, first);
-        self.camera.seed = seed;
+        (self.camera.rng, self.camera.lcg) = (rng, lcg);
         self.camera_mode = CameraMode::Fight;
         self.recorded.clear();
         self.recorded_total = 0;

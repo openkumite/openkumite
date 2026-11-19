@@ -823,11 +823,13 @@ pub struct FightCamera {
     replay: Option<Replay>,
     pub view: View,
     /// Tekken Tag's director: the fighters as it reads them (set before each step), its block, slot 1's lift
-    /// (gp-0x6FA8) and its random stream (libc rand's, carried from round to round).
+    /// (gp-0x6FA8); its random streams, the CPU's (libc rand and the AI's LCG: a bout lends its own for each fight
+    /// step, as the PS2 shares them) and the end cameras' LCG (gp-0x73FC), carried from round to round.
     pub actors: [Actor; 2],
     cam: Cam,
     lift: i64,
-    pub seed: u32,
+    pub rng: crate::ai::AiRng,
+    pub lcg: u32,
 }
 
 /// The replay camera's block (0x800A04C8): distance, yaw and its sweeping offset (both kept in 16 bits, as the
@@ -874,7 +876,8 @@ impl FightCamera {
             actors: [Actor::default(); 2],
             cam: Cam::new(),
             lift: 0,
-            seed: 0,
+            rng: crate::ai::AiRng::new(0),
+            lcg: 0,
         }
     }
 
@@ -925,16 +928,20 @@ impl FightCamera {
         self.view
     }
 
-    /// libc rand (0x40FBD0) on the camera's own stream. shortcut: the game shares it with the CPU and everything
-    /// else, so its low bits look random there; drawn alone they repeat, so bits 16-30 (as the AI's `AiRng`).
+    /// libc rand (0x40FBD0) on the CPU's stream (its bits as the AI draws them, `AiRng`).
     fn rand(&mut self) -> i64 {
-        self.seed = self.seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
-        i64::from((self.seed >> 16) & 0x7FFF)
+        i64::from(self.rng.rand())
     }
 
-    /// 0x3800D8: 0..n (without the AI's second stream).
-    fn randint(&mut self, n: i64) -> i64 {
-        (n * self.rand()) >> 15
+    /// 0x3800D8: 0..n from both of the CPU's streams.
+    pub fn randint(&mut self, n: i64) -> i64 {
+        i64::from(self.rng.randint(n as i32))
+    }
+
+    /// The end cameras' 0..n (gp-0x73FC: x = (x + 1) * 69069, its high half scaled; 0x35BB58, 0x3957A0).
+    pub fn end_random(&mut self, n: i64) -> i64 {
+        self.lcg = self.lcg.wrapping_add(1).wrapping_mul(69069);
+        (i64::from(self.lcg >> 16) * n) >> 16
     }
 
     /// 0x38C0F0: back to the fight camera.
