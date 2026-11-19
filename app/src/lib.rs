@@ -275,11 +275,17 @@ struct EndingRun {
 struct BowlRun {
     scene: kumite_game::bowl::BowlScene,
     models: Vec<SkinnedModel>,
+    /// Each player's partner's (the strike's pose).
+    partners: Vec<Option<SkinnedModel>>,
     ball: Vec<(usize, Vec<StaticVertex>)>,
     pins: Vec<Vec<(usize, Vec<StaticVertex>)>>,
     start: bool,
     /// Each player's model record (its voices).
     records: Vec<usize>,
+    /// Each player's team (character ids: the bowler, its partner), for TOP 5 BOWLERS.
+    teams: Vec<[usize; 2]>,
+    /// The pause menu (state 9, START in the throw): its cursor, TOP BOWLERS shown.
+    pause: Option<(usize, bool)>,
 }
 
 /// The attract loop's state: its step (0x80097F3E), the embu variant last shown (0x80097F20), the demo list
@@ -3764,18 +3770,19 @@ impl App {
     /// Tekken Bowl (mode 8, 0x3F0C00): the bowling hall, each player's bowler, the ball and the ten pins
     /// (`stages/bowl_*.glb`, moved with the hall's model), the pin deck's machinery, its music.
     fn start_bowl(&mut self, teams: &[ttt::Team]) -> Result<()> {
-        let players: Vec<(usize, usize)> = (teams.iter().filter_map(|t| t.first()))
-            .filter_map(|&(i, costume)| {
-                let c = self.roster.characters.get(i)?;
-                Some((*c.costumes.get(costume).or(c.costumes.first())?, c.id))
-            })
-            .collect();
+        let pick = |&(i, costume): &(usize, usize)| {
+            let c = self.roster.characters.get(i)?;
+            Some((*c.costumes.get(costume).or(c.costumes.first())?, c.id))
+        };
+        let players: Vec<(usize, usize)> = teams.iter().filter_map(|t| t.first()).filter_map(pick).collect();
+        let partners: Vec<Option<(usize, usize)>> = teams.iter().filter(|t| !t.is_empty()).map(|t| t.get(1).and_then(pick)).collect();
         let r = self.renderer.take().context("no renderer")?;
         let result = (|| -> Result<()> {
-            let scene = kumite_game::bowl::BowlScene::new(&self.assets, &players, self.seed)?;
+            let scene = kumite_game::bowl::BowlScene::new(&self.assets, &players, &partners, self.seed)?;
             let mut stage = self.stage_scene(&r, kumite_game::bowl::ARENA);
             stage.models.clear();
             let models = scene.characters.iter().zip(&players).map(|(ch, p)| skinned_character(&r, ch, p.0)).collect();
+            let mates = scene.partners.iter().zip(&partners).map(|(m, p)| Some(skinned_character(&r, &m.as_ref()?.0, p.as_ref()?.0))).collect();
             // a model's meshes join the hall's (each its texture), with their vertices as made
             let add = |file: &str, stage: &mut Scene| -> Result<Vec<(usize, Vec<StaticVertex>)>> {
                 let st = kumite_assets::Stage::load(&self.assets.root.join(file))?;
@@ -3796,7 +3803,8 @@ impl App {
             }
             log::info!("Tekken Bowl: {} player(s)", players.len());
             self.scene = Some(stage);
-            self.bowl = Some(BowlRun { scene, models, ball, pins, start: false, records: players.iter().map(|p| p.0).collect() });
+            let teams = players.iter().zip(&partners).map(|(p, m)| [p.1, m.map_or(p.1, |m| m.1)]).collect();
+            self.bowl = Some(BowlRun { scene, models, partners: mates, ball, pins, start: false, records: players.iter().map(|p| p.0).collect(), teams, pause: None });
             self.screen = None;
             self.fight = None;
             Ok(())
@@ -3809,7 +3817,7 @@ impl App {
     fn step_bowl(&mut self) {
         let pads = self.pads();
         self.tapped.clear();
-        let Some(run) = self.bowl.as_mut() else { return };
+        let Some(run) = self.bowl.as_mut().filter(|r| r.pause.is_none()) else { return };
         let who = run.scene.bowl.current;
         let start = std::mem::take(&mut run.start);
         run.scene.step(Pad { start, ..pads[who.min(1)] });
@@ -3826,18 +3834,70 @@ impl App {
         }
     }
 
-    /// Tekken Bowl over or left: the totals (and who won), then the main menu.
+    /// Tekken Bowl over or left: the results (each player's score, WINNERS / LOSERS / DRAW, a place in TOP 5 BOWLERS
+    /// with NEW RECORD!, the summary), THE KING OF IRONBOWL and THANKS FOR PLAYING MISHIMA LANE!, then the main menu.
+    /// A finished game enters the records (0x3F1408) and keeps its bonuses (0x3F1570: placed and 200 or more, the
+    /// JUKEBOX's; placed and 300, with the announcer's 0x1058).
+    // shortcut: the results are OpenKumite's lines (0x3F1570's screens are not decoded) and a record's name is the
+    // bowler's three letters (the name entry, 0x3F2EB8, is not done)
     fn end_bowl(&mut self) {
+        use kumite_sim::bowl::Mark;
         let Some(run) = self.bowl.take() else { return };
         self.scene = None;
         if let Some(a) = self.audio.as_mut() {
             a.music(None);
         }
-        let b = &run.scene.bowl;
+        let (sc, b) = (&run.scene, &run.scene.bowl);
+        let over = b.phase == kumite_sim::bowl::Phase::Over;
+        let t = |k: &str, f: &str| sc.text(k, f);
+        let ordinal = |k: usize| sc.texts.get("ordinals").and_then(|o| o.get(k)?.as_str()).map_or_else(|| format!("{}", k + 1), str::to_string);
+        let summary: Vec<String> = sc.texts.get("summary_rows").and_then(|r| serde_json::from_value(r.clone()).ok()).unwrap_or_default();
+        let mut progress = ttt::progress();
+        let mut top = progress.bowlers.clone().unwrap_or_else(|| sc.records.defaults.clone());
+        let (mut from, mut perfect) = (0, false);
         let mut lines = vec!["TEKKEN BOWL".to_string()];
-        lines.extend(b.cards.iter().enumerate().map(|(k, c)| format!("{}P  {}", k + 1, c.total())));
-        if b.cards.len() > 1 && b.phase == kumite_sim::bowl::Phase::Over {
-            lines.push(b.winner().map_or("DRAW".into(), |w| format!("{}P WINS", w + 1)));
+        for (k, card) in b.cards.iter().enumerate() {
+            let total = card.total();
+            lines.push(if b.cards.len() > 1 {
+                let verdict = match b.winner() {
+                    _ if !over => String::new(),
+                    Some(w) if w == k => t("winners", "WINNERS"),
+                    Some(_) => t("losers", "LOSERS"),
+                    None => t("draw", "DRAW"),
+                };
+                format!("PLAYER{} {total:3} {verdict}", k + 1)
+            } else {
+                t("your_score", "YOUR SCORE:%3d").replace("%3d", &format!("{total:3}"))
+            });
+            let team = run.teams.get(k).copied().unwrap_or_default();
+            let name: String = self.roster.by_id(team[0]).map_or("?".into(), |c| c.name.to_uppercase().chars().take(3).collect());
+            let placed = if over { sc.records.insert(&mut top, from, kumite_game::bowl::Record { name, bodies: team, score: total }) } else { None };
+            if let Some(rank) = placed {
+                from = rank + 1;
+                lines.push(format!("{} {}{}", t("rank", "RANK %s:%3d").replace("%s", &ordinal(rank)).replace("%3d", &format!("{total:3}")), t("new", "NEW"), t("record", "RECORD!")));
+                let bonus = &sc.records.bonus;
+                if total >= bonus.jukebox && !progress.bowl_bonus[0] {
+                    progress.bowl_bonus[0] = true;
+                    lines.push(t("bonus", "BONUS AT 200 PTS"));
+                }
+                perfect |= total >= bonus.perfect;
+                progress.bowl_bonus[1] |= total >= bonus.perfect;
+            }
+            let count = |m: Mark| card.marks.iter().filter(|&&x| x == m).count();
+            let counts = [Mark::Strike, Mark::Spare, Mark::Miss, Mark::Foul, Mark::Split].map(count);
+            lines.push(summary.iter().zip(counts).map(|(s, n)| format!("{s} {n}")).collect::<Vec<_>>().join("  "));
+        }
+        lines.push(t("king", "THE KING OF IRONBOWL"));
+        lines.extend(top.iter().enumerate().map(|(k, r)| format!("{} {} {:3}", ordinal(k), r.name, r.score)));
+        lines.push(t("thanks", "THANKS FOR PLAYING MISHIMA LANE!"));
+        if over {
+            progress.bowlers = Some(top);
+            ttt::set_progress(progress);
+            self.records.ttt = ttt::progress();
+            self.records.save();
+        }
+        if let (true, Some(audio), Some(s)) = (perfect, self.audio.as_mut(), self.sound.as_ref().and_then(|d| d.tag_entry(0x1058, 0, kumite_game::bowl::ARENA))) {
+            audio.sfx(&s.file, s.volume, s.speed);
         }
         self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, title: false }, frame: 0 })));
     }
@@ -4670,12 +4730,34 @@ impl App {
             run.skip |= key == Key::Start;
             return true;
         }
-        // Tekken Bowl: START skips a strike's pose and ends a finished game; BACK leaves it for the main menu
+        // Tekken Bowl: START skips a strike's pose or a replay and ends a finished game; in the throw it pauses
+        // (state 9: TOP BOWLERS, EXIT); BACK leaves it for the main menu
         if let Some(b) = self.bowl.as_mut() {
-            if key == Key::Back || (key == Key::Start && b.scene.bowl.phase == kumite_sim::bowl::Phase::Over) {
-                self.end_bowl();
-            } else if key == Key::Start {
-                b.start = true;
+            use kumite_sim::bowl::Phase as P;
+            match (&mut b.pause, key) {
+                (Some((_, top)), _) if *top => *top = false,
+                (Some(_), Key::Back) => b.pause = None,
+                (Some((c, _)), Key::Up | Key::Down) => {
+                    menu::sfx::play(menu::sfx::cursor());
+                    *c ^= 1;
+                }
+                (Some((c, top)), Key::Start | Key::Button(_)) => {
+                    menu::sfx::play(menu::sfx::pick());
+                    if *c == 0 {
+                        *top = true;
+                    } else {
+                        self.end_bowl();
+                    }
+                }
+                (Some(_), _) => {}
+                (None, Key::Back) => self.end_bowl(),
+                (None, Key::Start) if b.scene.bowl.phase == P::Over => self.end_bowl(),
+                (None, Key::Start) if matches!(b.scene.bowl.phase, P::Position | P::Aim | P::Power) => {
+                    menu::sfx::play(menu::sfx::pick());
+                    b.pause = Some((0, false));
+                }
+                (None, Key::Start) => b.start = true,
+                _ => {}
             }
             return true;
         }
@@ -5097,6 +5179,9 @@ impl App {
                 if let (Some((ch, pose, place)), Some(model)) = (run.scene.pose(), run.models.get(run.scene.bowl.current)) {
                     r.update_bones(model, &ch.skin_matrices(&pose, place));
                 }
+                if let (Some((ch, pose, place)), Some(Some(model))) = (run.scene.partner_pose(), run.partners.get(run.scene.bowl.current)) {
+                    r.update_bones(model, &ch.skin_matrices(&pose, place));
+                }
                 let fov_y = kumite_game::view_camera(&kumite_sim::camera::View { h: 500, ..Default::default() }).2;
                 let (e, t) = run.scene.camera();
                 // (or the debug orbit camera about its target)
@@ -5144,7 +5229,9 @@ impl App {
             }
             (Some(s), None) if self.bowl.is_some() => {
                 let Some(run) = self.bowl.as_ref() else { return };
-                (s.sky.iter().collect(), s.statics.iter().collect(), run.models.get(run.scene.bowl.current).into_iter().collect())
+                let k = run.scene.bowl.current;
+                let mate = run.scene.partner_pose().and(run.partners.get(k)).and_then(Option::as_ref);
+                (s.sky.iter().collect(), s.statics.iter().collect(), run.models.get(k).into_iter().chain(mate).collect())
             }
             (Some(s), None) if self.embu.is_some() => {
                 let Some(run) = self.embu.as_ref() else { return };
@@ -5324,6 +5411,10 @@ impl App {
                         let view = art::Screen::fit(ctx.content_rect());
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("bowl_hud")));
                         ttt::bowl_hud(&painter, &view, art, d, roster, &b.scene, frames);
+                        if let Some(p) = b.pause {
+                            let top = ttt::progress().bowlers.unwrap_or_else(|| b.scene.records.defaults.clone());
+                            ttt::bowl_pause(&painter, &view, art, d, &b.scene, p, &top);
+                        }
                     } else if let Some(t) = tag {
                         if replay_view.as_ref().is_none_or(|v| v.hud) {
                             t.hud.draw(ctx, art, &hud.data, &t.game, &t.info);
@@ -7223,12 +7314,16 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             app.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Theater { cursor: [0, 0] }, frame: 0 })));
         }
         Some("bowl") => {
-            // Tekken Bowl (`--variant 2`: two players, the previews' player and the next character), each throw
-            // scripted: steps until the hand is a little right of the middle, a small turn left, CROSS for the spin
-            // and near the power meter's top; N frames in
-            let two = std::env::args().skip_while(|a| a != "--variant").nth(1).as_deref() == Some("2");
+            // Tekken Bowl (`--variant 2`: two players, the previews' player and the next character; `3`: one, the
+            // next character its partner), each throw scripted: steps until the hand is a little right of the
+            // middle, a small turn left, CROSS for the spin and near the power meter's top; N frames in
+            let variant = std::env::args().skip_while(|a| a != "--variant").nth(1);
             let next = (previewed + 1) % app.roster.characters.len().max(1);
-            let teams: Vec<ttt::Team> = if two { vec![vec![(previewed, 0)], vec![(next, 0)]] } else { vec![vec![(previewed, 0)]] };
+            let teams: Vec<ttt::Team> = match variant.as_deref() {
+                Some("2") => vec![vec![(previewed, 0)], vec![(next, 0)]],
+                Some("3") => vec![vec![(previewed, 0), (next, 0)]],
+                _ => vec![vec![(previewed, 0)]],
+            };
             app.renderer = Some(r);
             app.start_bowl(&teams)?;
             for f in 0..frames {
@@ -7251,7 +7346,17 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             write_png(Path::new(path), &r.capture()?)?;
             if let Some(b) = &app.bowl {
                 let g = &b.scene.bowl;
-                log::info!("bowl frame {}: {:?}, player {}, ball {:?}, standing {}, cards {:?}", g.frame, g.phase, g.current, g.ball.pos, g.standing(), g.cards);
+                log::info!(
+                    "bowl frame {}: {:?}, player {}, ball {:?}, standing {}, replay {}/{}, cards {:?}",
+                    g.frame,
+                    g.phase,
+                    g.current,
+                    g.ball.pos,
+                    g.standing(),
+                    g.replay.on,
+                    g.replay.left,
+                    g.cards
+                );
             }
             return Ok(());
         }
