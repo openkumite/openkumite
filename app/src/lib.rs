@@ -190,6 +190,66 @@ struct Scene {
     shadow: Option<kumite_render::Shadow>,
     /// Force's blob shadows instead, in this colour (the light table's +0x18).
     blob: Option<[u8; 3]>,
+    /// Tekken Tag's arenas' background characters (stages.json `people`).
+    people: Vec<Person>,
+    /// And its lens flare (stages.json `flare`).
+    flare: Option<Flare>,
+    /// The eye as it was last drawn (m: what the stage's objects that face the camera turn to).
+    eye: glam::Vec3,
+}
+
+/// Tekken Tag's lens flare (0x3A1C78): its sun (m, the arena's axes), its strength, its nine discs (picture, size,
+/// brightness of 128).
+struct Flare {
+    sun: glam::Vec3,
+    strength: f32,
+    discs: Vec<(usize, f32, f32)>,
+}
+
+impl Flare {
+    /// The discs as 0x3A1C78 lays them for the eye `eye` and the projection `view_proj` on a screen `aspect` wide: each
+    /// one's picture, its centre and half size as fractions of the screen, and its brightness (1 = the texture's).
+    /// The PS2's screen is 640 x 448 (GS units of 1/16 pixel from its centre, y down); the discs lie on the line from
+    /// the sun through the centre, a sixteenth of 1.5 x the sun's distance from the centre apart (disc 4 at the
+    /// centre); none past 8000 units, fading from 6000; bigger by up to half within 2000 of the centre's height; dimmed
+    /// while one of `blockers` (m) is within 500 mm of the line from the eye to the sun.
+    fn quads(&self, view_proj: glam::Mat4, aspect: f32, eye: glam::Vec3, blockers: &[glam::Vec3]) -> Vec<(usize, [f32; 4], f32)> {
+        let c = view_proj * self.sun.extend(1.0);
+        if c.w <= 0.0 {
+            return vec![];
+        }
+        // (the centre less the sun)
+        let (dx, dy) = (-c.x / c.w * 240.0 * aspect * 16.0, c.y / c.w * 224.0 * 16.0);
+        let reach = (dx * dx + dy * dy).sqrt() * 1.5;
+        if reach > 8000.0 {
+            return vec![];
+        }
+        let mut level = if reach >= 6000.0 { (8000.0 - reach) / 2000.0 } else { 1.0 };
+        let grow = if dy.abs() <= 2000.0 { 1.0 + (2000.0 - dy.abs()) * 0.00025 } else { 1.0 };
+        let toward = (self.sun - eye).normalize_or_zero();
+        let near = blockers.iter().map(|p| ((*p - eye) * 1000.0).reject_from_normalized(toward).length_squared()).fold(1e10f32, f32::min);
+        if near < 250_000.0 {
+            level *= (near / 250_000.0).powi(2);
+        }
+        (self.discs.iter().enumerate())
+            .map(|(k, &(pic, size, bright))| {
+                let along = (k as f32 - 4.0) * 0.1875;
+                // (GS units to fractions of the screen: 480 x aspect units of 16 across, 448 down)
+                let half = 1024.0 * size * grow / 16.0;
+                let at = [0.5 + along * dx / 16.0 / (480.0 * aspect), 0.5 + along * dy / 16.0 / 448.0];
+                (pic, [at[0], at[1], half / (480.0 * aspect), half / 448.0], bright * level * self.strength / 128.0)
+            })
+            .collect()
+    }
+}
+
+/// An arena's background character: its model, where it stands, the clips it plays in turn from frame `start`.
+struct Person {
+    character: Arc<kumite_assets::Character>,
+    model: SkinnedModel,
+    place: glam::Mat4,
+    clips: Vec<usize>,
+    start: u64,
 }
 
 /// The attract embu running: the scene and, per slot, a GPU mesh for every cast model.
@@ -649,11 +709,26 @@ impl Scene {
                     }
                 }
                 MovingKind::Track { vertices, chain, place } => {
-                    let m = *place * kumite_assets::Joint::chain(chain, frame);
+                    let m = kumite_assets::Joint::chain(chain, frame, *place, self.eye);
                     let moved: Vec<StaticVertex> = vertices.iter().map(|v| StaticVertex { pos: m.transform_point3(glam::Vec3::from(v.pos)).to_array(), ..*v }).collect();
                     r.move_mesh(mesh, &moved);
                 }
             }
+        }
+        // the background characters: their clips one after another, round and round
+        for p in &self.people {
+            let ch = &p.character;
+            let lens: Vec<u64> = p.clips.iter().map(|&c| ch.clips.get(c).map_or(1, |c| c.frames.max(1) as u64)).collect();
+            let mut f = (frame + p.start) % lens.iter().sum::<u64>().max(1);
+            let mut clip = 0;
+            for (&c, &n) in p.clips.iter().zip(&lens) {
+                clip = c;
+                if f < n {
+                    break;
+                }
+                f -= n;
+            }
+            r.update_bones(&p.model, &ch.skin_matrices(&ch.pose(clip, f as usize, false), p.place));
         }
     }
 }
@@ -1229,12 +1304,20 @@ impl App {
             light: self.stage_lights.get(&stage).and_then(|l| l.0),
             shadow: self.stage_lights.get(&stage).and_then(|l| l.1),
             blob: None,
+            people: vec![],
+            flare: None,
+            eye: glam::Vec3::ZERO,
         };
         // the arcade game's stage in its place, when the arcade pack has one and the setting asks for it
         let hidden = hidden.then(|| self.assets.arcade_hidden()).flatten();
         // (Tekken Tag: the arcade stages are not its arenas' stand-ins, but arenas of their own)
         let arcade = (self.graphics.arcade_stages && self.roster.ttt.is_none()).then(|| hidden.or_else(|| self.assets.arcade_stage(stage))).flatten();
         let arcade = self.ttt_arcade(stage).map(|f| kumite_assets::Stage::load(&self.assets.root.join(f))).or(arcade);
+        // (the arena's own model: its background characters stand in it)
+        if arcade.is_none() {
+            scene.people = self.people(r, stage);
+            scene.flare = self.flare(stage);
+        }
         match arcade.unwrap_or_else(|| self.assets.stage(stage)) {
             Ok(st) => {
                 let tex: Vec<_> = st
@@ -1303,6 +1386,55 @@ impl App {
             }
         }
         scene
+    }
+
+    /// Stage `stage`'s background characters (stages.json `people`, Tekken Tag's 0x114FC8): each one's model
+    /// `stages/stage_NN_pK.glb` with the clips of `stage_NN_mK.glb` it plays, standing at `at` (m), turned `heading`
+    /// degrees about y. One whose files are missing or bad is left out (logged).
+    fn people(&self, r: &Renderer, stage: usize) -> Vec<Person> {
+        let json: serde_json::Value = kumite_fs::read(&self.assets.root.join("gamedata/stages.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let Some(list) = json["stages"].as_array().into_iter().flatten().find(|s| s["id"].as_u64() == Some(stage as u64)).and_then(|s| s["people"].as_array()) else { return vec![] };
+        let mut models: std::collections::BTreeMap<u64, Option<Arc<kumite_assets::Character>>> = Default::default();
+        let mut out = vec![];
+        for p in list {
+            let (Some(k), Some(motions)) = (p["model"].as_u64(), p["motions"].as_array()) else { continue };
+            let motions: Vec<u64> = motions.iter().filter_map(serde_json::Value::as_u64).collect();
+            let ch = models.entry(k).or_insert_with(|| {
+                // the model with every clip of its arena's people who wear it
+                let ch = kumite_assets::Character::load(&self.assets.root.join(format!("stages/stage_{stage:02}_p{k}.glb")));
+                let mut ch = ch.map_err(|e| log::warn!("stage {stage}'s person {k}: {e:#}")).ok()?;
+                let used: std::collections::BTreeSet<u64> =
+                    list.iter().filter(|q| q["model"].as_u64() == Some(k)).flat_map(|q| q["motions"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_u64)).collect();
+                for m in used {
+                    let file = self.assets.root.join(format!("stages/stage_{stage:02}_m{m}.glb"));
+                    if let Err(e) = kumite_fs::read(&file).map_err(anyhow::Error::from).and_then(|b| ch.add_motions(&b)) {
+                        log::warn!("stage {stage}'s motion {m}: {e:#}");
+                    }
+                }
+                Some(Arc::new(ch))
+            });
+            let Some(ch) = ch.clone() else { continue };
+            let clips: Vec<usize> = motions.iter().filter_map(|m| ch.clip(&format!("stage_{stage:02}_m{m}"))).collect();
+            if clips.is_empty() {
+                continue;
+            }
+            let f = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32;
+            let at = glam::Vec3::new(f(&p["at"][0]), f(&p["at"][1]), f(&p["at"][2]));
+            let place = glam::Mat4::from_rotation_translation(glam::Quat::from_rotation_y(f(&p["heading"]).to_radians()), at);
+            let verts: Vec<SkinVertex> = ch.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal }).collect();
+            let model = r.skinned(&verts, &ch.indices, ch.blend_from, r.texture(ch.texture.width, ch.texture.height, &ch.texture.rgba));
+            out.push(Person { character: ch, model, place, clips, start: p["start"].as_u64().unwrap_or(0) });
+        }
+        out
+    }
+
+    /// Stage `stage`'s lens flare (stages.json `flare`), when it has one.
+    fn flare(&self, stage: usize) -> Option<Flare> {
+        let json: serde_json::Value = kumite_fs::read(&self.assets.root.join("gamedata/stages.json")).ok().and_then(|b| serde_json::from_slice(&b).ok())?;
+        let f = &json["stages"].as_array()?.iter().find(|s| s["id"].as_u64() == Some(stage as u64))?["flare"];
+        let n = |v: &serde_json::Value| v.as_f64().map(|x| x as f32);
+        let discs = f["discs"].as_array()?.iter().filter_map(|d| Some((d[0].as_u64()? as usize, n(&d[1])?, n(&d[2])?))).collect();
+        Some(Flare { sun: glam::Vec3::new(n(&f["sun"][0])?, n(&f["sun"][1])?, n(&f["sun"][2])?), strength: n(&f["strength"])?, discs })
     }
 
     /// A menu is open (a screen, a pause, practice's menu, a match's end): the keys move its cursor, not a fighter.
@@ -4998,6 +5130,9 @@ impl App {
             }
             _ => (Camera::new(glam::Vec3::Z, glam::Vec3::ZERO, 0.8), Vec::new()),
         };
+        if let Some(s) = self.scene.as_mut() {
+            s.eye = cam.eye;
+        }
         let (sky, statics, models): (Vec<_>, Vec<_>, Vec<_>) = match (&self.scene, &self.fight) {
             (None, None) => (vec![], vec![], self.posers.shown.iter().filter_map(|p| self.poser_models.get(&p.record)).collect()),
             (Some(s), None) if matches!(self.screen, Some(Screen::Records(_))) => (s.sky.iter().collect(), s.statics.iter().collect(), vec![]),
@@ -5029,6 +5164,24 @@ impl App {
             },
             _ => (vec![], vec![], vec![]),
         };
+        // the arena's background characters wherever it is drawn
+        let mut models = models;
+        if let (Some(s), false) = (self.scene.as_ref(), statics.is_empty()) {
+            models.extend(s.people.iter().map(|p| &p.model));
+        }
+        // ... and its lens flare, dimmed by the fighters before the sun
+        // shortcut: the fighters' roots and 0.6 m above them stand for the two points of each the PS2 tests (player
+        // +0x590, +0x11A0, not decoded); upgrade: those points
+        let flare = self.scene.as_ref().filter(|_| !statics.is_empty()).and_then(|s| s.flare.as_ref()).map_or_else(Vec::new, |f| {
+            let roots: Vec<glam::Vec3> = match (self.fight.as_ref(), self.tag.as_ref()) {
+                (Some(fight), _) => fight.bout.game.fight.fighters.iter().map(|a| a.root()).collect(),
+                (None, Some(t)) => t.game.melee.actors.iter().map(|a| a.root()).collect(),
+                _ => vec![],
+            };
+            let blockers: Vec<glam::Vec3> = roots.iter().map(|p| *p / kumite_game::UNITS).flat_map(|p| [p, p + glam::Vec3::Y * 0.6]).collect();
+            let proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, r.aspect(), 0.05, 400.0);
+            f.quads(proj * cam.view(), r.aspect(), cam.eye, &blockers)
+        });
         // an arcade stage's sky, behind everything
         r.backdrop = self.scene.as_ref().filter(|_| !sky.is_empty()).map_or_else(Vec::new, |s| sky_backdrop(&cam, s));
         // effect sprites, as quads facing the camera
@@ -5127,6 +5280,19 @@ impl App {
                     }
                 });
                 let mut frame = egui.run(self.window.as_deref(), size, |ctx| {
+                    if !flare.is_empty() {
+                        // the lens flare's discs, added over the picture under everything 2D
+                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("flare")));
+                        let w = ctx.content_rect();
+                        let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
+                        for &(pic, [x, y, hw, hh], level) in &flare {
+                            if let Some((tex, _)) = art.pic_linear(&format!("effects/flare_{pic}.png")) {
+                                let rect = egui::Rect::from_center_size(w.lerp_inside(egui::vec2(x, y)), egui::vec2(2.0 * hw * w.width(), 2.0 * hh * w.height()));
+                                // shortcut: a brightness past 1 (the GS's FIX up to 2) is drawn at 1; upgrade: draw it twice
+                                painter.image(tex.id(), rect, uv, art::additive(egui::Color32::from_gray((level * 255.0).clamp(0.0, 255.0) as u8)));
+                            }
+                        }
+                    }
                     if embu_white > 0 {
                         // the embu's additive white
                         let view = art::Screen::fit(ctx.content_rect());
@@ -7834,6 +8000,24 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The lens flare's discs lie through the centre, the first three quarters of the way to the sun; none once the sun
+    /// is 333 pixels from the centre; a fighter on the line to the sun puts them out.
+    #[test]
+    fn the_flare_lies_through_the_centre_towards_the_sun() {
+        let f = super::Flare { sun: glam::Vec3::new(0.0, 0.0, -10.0), strength: 0.5, discs: vec![(0, 1.0, 128.0); 9] };
+        let (eye, aspect) = (glam::Vec3::ZERO, 4.0 / 3.0);
+        // the sun 100 pixels right of the centre (x 1 is 320 pixels)
+        let q = f.quads(glam::Mat4::from_translation(glam::Vec3::new(100.0 / 320.0, 0.0, 0.0)), aspect, eye, &[]);
+        assert_eq!(q.len(), 9);
+        let x = |k: usize| (q[k].1[0] - 0.5) * 640.0;
+        assert!(x(4).abs() < 1e-3 && (x(0) - 75.0).abs() < 1e-3 && (x(8) + 75.0).abs() < 1e-3);
+        // (at the centre's height: half again as big; a brightness of 128 x 0.5)
+        assert!((q[0].1[3] * 448.0 - 96.0).abs() < 1e-3 && (q[0].2 - 0.5).abs() < 1e-6);
+        assert!(f.quads(glam::Mat4::from_translation(glam::Vec3::new(340.0 / 320.0, 0.0, 0.0)), aspect, eye, &[]).is_empty());
+        let shaded = f.quads(glam::Mat4::IDENTITY, aspect, eye, &[glam::Vec3::new(0.0, 0.0, -2.0)]);
+        assert!(shaded.iter().all(|d| d.2 == 0.0));
+    }
+
     /// A Force round won while the stage still runs (soldiers 0, 1; the boss 6; the final stage's fight 9) is the
     /// clock run out: GAME OVER; only a stage at its tally (7, or the final stage's 10) is cleared.
     #[test]
