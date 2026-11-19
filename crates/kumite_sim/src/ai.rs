@@ -522,9 +522,11 @@ impl AiData {
         })
     }
 
-    /// The random streams of a match of this game (`seed`: libc's state).
-    pub fn rng(&self, seed: u32) -> AiRng {
-        AiRng { lcg: self.lcg_seed, rand: seed, shift: if self.rand_low { 0 } else { 16 } }
+    /// The random streams of a match of this game (`seed`: libc's state). Tekken Tag's rand() runs on through its
+    /// front end, so no two fights start the CPU on the same draws: `match_seed` (the match's own) stands in for that
+    /// there; Tekken 3 keeps `seed`.
+    pub fn rng(&self, seed: u32, match_seed: u32) -> AiRng {
+        AiRng { lcg: self.lcg_seed, rand: if self.ttt { seed ^ match_seed } else { seed }, shift: if self.rand_low { 0 } else { 16 } }
     }
 
     pub fn profile(&self, difficulty: usize, level: usize) -> &Profile {

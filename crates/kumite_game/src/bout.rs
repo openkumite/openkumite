@@ -282,6 +282,7 @@ pub struct Bout {
 
 impl Bout {
     pub fn new(game: Game, ai_data: Arc<AiData>, rounds_to_win: u32, intros: bool) -> Self {
+        let ai_rng = ai_data.rng(0x2545_F491, game.copy_seed);
         let mut b = Self {
             game,
             wins: [0; 2],
@@ -291,7 +292,7 @@ impl Bout {
             phase_frame: 0,
             cpu: [None, None],
             // (the game seeds libc rand once at boot; a fixed seed keeps equal inputs giving equal fights)
-            ai_rng: ai_data.rng(0x2545_F491),
+            ai_rng,
             ai_data,
             events: Vec::new(),
             intros,

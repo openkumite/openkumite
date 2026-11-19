@@ -3286,7 +3286,9 @@ impl App {
                 }
             }
             Outcome::TttFight(run) => {
-                let setup = run.setup();
+                // (Tekken Tag's front end runs only with its data)
+                let Some(d) = self.roster.ttt.clone() else { return };
+                let setup = run.setup(&d);
                 self.ttt_run = Some(*run);
                 self.start_fight(setup, Vec::new());
             }

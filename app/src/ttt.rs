@@ -104,14 +104,16 @@ pub struct Data {
     pub ball: Option<usize>,
     /// The Tekken 3 slice's Tekken Force is there (TEKKEN FORCE on the menu).
     pub force: bool,
+    /// SURVIVAL's CPU profiles (ai.json `survival`): max wins, difficulty, lowest and highest level.
+    survival: Vec<[usize; 4]>,
 }
 
 impl Data {
     /// From roster.json (None without `front_end`: an older pack, the plain front end); `arenas`: the pack's
     /// (stages/index.json); `rounds`: rounds.json; `endings`: endings.json's; `arcade`: the arcade pack's arenas; `ball`:
-    /// Tekken Ball's court; `force`: Tekken Force is there.
+    /// Tekken Ball's court; `force`: Tekken Force is there; `ai`: ai.json.
     #[allow(clippy::too_many_arguments)]
-    pub fn load(roster: &Value, arenas: &Value, rounds: &Value, endings: Option<EndingData>, arcade: Vec<(usize, String)>, ball: Option<usize>, force: bool) -> Option<Arc<Self>> {
+    pub fn load(roster: &Value, arenas: &Value, rounds: &Value, endings: Option<EndingData>, arcade: Vec<(usize, String)>, ball: Option<usize>, force: bool, ai: &Value) -> Option<Arc<Self>> {
         let raw = roster.get("front_end").filter(|f| f.is_object())?.clone();
         let opt = |v: &Value| v.as_u64().map(|x| x as usize);
         let slots = raw["select"]["slots"]
@@ -136,8 +138,20 @@ impl Data {
             endings: endings.map(Arc::new),
             ball,
             force,
+            survival: ai["survival"]["rows"].as_array().into_iter().flatten().map(|r| [int(&r["max_wins"]), int(&r["difficulty"]), int(&r["levels"][0]), int(&r["levels"][1])]).collect(),
             raw,
         }))
+    }
+
+    /// SURVIVAL's CPU after `streak` wins (0x380120): the first row whose max wins reach it, its difficulty on an odd
+    /// draw (else NORMAL, EASY for an EASY row), a level in its range.
+    /// shortcut: drawn per fight from the streak, the game's per round from the AI generator; draw it there once
+    /// replays record the streak.
+    fn survival_profile(&self, streak: u32) -> Option<(usize, usize)> {
+        let &[_, diff, lo, hi] = self.survival.iter().find(|r| r[0] >= streak as usize)?;
+        let mut seed = streak ^ 0x5EED;
+        let diff = if crate::menu::lcg(&mut seed, 256) & 1 == 1 { diff } else { diff.min(1) };
+        Some((diff, lo + crate::menu::lcg(&mut seed, hi.saturating_sub(lo) + 1)))
     }
 
     /// The arenas a fight is drawn on: Tekken Tag's, and the arcade pack's unless OPTIONS turned them off.
@@ -348,7 +362,7 @@ impl Run {
     }
 
     /// The fight's setup now.
-    pub fn setup(&self) -> FightSetup {
+    pub fn setup(&self, d: &Data) -> FightSetup {
         let mode = match self.mode {
             ARCADE | ONE_ARCADE => Mode::Arcade,
             VS | ONE_VS => Mode::Versus,
@@ -363,9 +377,15 @@ impl Run {
             (1, Some((t, _))) => t.first().copied().unwrap_or((0, 0)),
             _ => self.teams[k].get(self.member[k]).or(self.teams[k].first()).copied().unwrap_or((0, 0)),
         };
-        let level = (self.fight * 9 / 7).min(9);
+        // the CPU's profile (0x380120): the DIFFICULTY option and the fight's number (0..7); TIME ATTACK at NORMAL;
+        // SURVIVAL by the streak
+        let (difficulty, level) = match self.mode {
+            TIME_ATTACK => (1, self.fight.min(7)),
+            SURVIVAL => d.survival_profile(self.wins[0]).unwrap_or((self.options[0], 0)),
+            _ => (self.options[0], self.fight.min(7)),
+        };
         let stage = cpu.map_or(self.stage, |c| c.1);
-        FightSetup { mode, players: [side(0), side(1)], stage, difficulty: self.options[0].min(2), level, handicap: [100; 2], ball: (self.mode == BALL).then_some((0, 0)), partners: None }
+        FightSetup { mode, players: [side(0), side(1)], stage, difficulty, level, handicap: [100; 2], ball: (self.mode == BALL).then_some((0, 0)), partners: None }
     }
 
     /// The CPU plays side `k` (practice's dummy stands).
@@ -2324,7 +2344,7 @@ mod tests {
         // (each character's ending: its id)
         let endings = EndingData::new(serde_json::json!({"table": [[0], [1], [2], [3]], "endings": [{}, {}, {}, {}]}), &Value::Null).unwrap();
         let arenas: Vec<Value> = (0..23).map(|id| serde_json::json!({"id": id, "name": format!("A{id}")})).collect();
-        Data::load(&fe, &Value::from(arenas), &serde_json::json!({"round_time": {"options_frames": [2160, 2820, 4260]}}), Some(endings), vec![], None, false).unwrap()
+        Data::load(&fe, &Value::from(arenas), &serde_json::json!({"round_time": {"options_frames": [2160, 2820, 4260]}}), Some(endings), vec![], None, false, &Value::Null).unwrap()
     }
 
     fn roster() -> Roster {
@@ -2404,7 +2424,7 @@ mod tests {
         let endings = serde_json::json!({"table": [[1, 1], [2]], "endings": [{}, {}, {}], "playback": {"unknown": 2},
             "theater": {"labels": [["(1P)PAUL", "(2P)PAUL"], ["(1P)LAW"]], "extras": [{"label": "OPENING MOVIE"}, {"label": "EMBU2", "cast": 1}]}});
         let e = EndingData::new(endings, &Value::Null).unwrap();
-        let d = Data::load(&serde_json::json!({"front_end": {}}), &Value::Null, &serde_json::json!({}), Some(e), vec![], None, false).unwrap();
+        let d = Data::load(&serde_json::json!({"front_end": {}}), &Value::Null, &serde_json::json!({}), Some(e), vec![], None, false, &Value::Null).unwrap();
         let rows = |seen| theater(&d, seen).into_iter().map(|r| r.into_iter().map(|c| (c.0, c.1)).collect::<Vec<_>>()).collect::<Vec<_>>();
         let tail = [vec![("OPENING MOVIE".to_string(), Cell::None)], vec![("MUSIC PLAYER".into(), Cell::Music)], vec![("EXIT THEATER MENU".into(), Cell::Exit)]];
         assert_eq!(rows(0), tail);
@@ -2420,7 +2440,7 @@ mod tests {
         let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE", "locked": false},
             {"mode": 8, "label": "TEKKEN BOWL", "locked": true}, {"mode": 9, "label": "THEATER", "locked": true}]},
             "unlocks": {"schedule": [{"stage": 10, "kind": 5, "character": 0}]}}});
-        let d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![], None, false).unwrap();
+        let d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![], None, false, &Value::Null).unwrap();
         let modes = |stage| Front::items(&d, &Progress { stage, ..Progress::default() }).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
         assert_eq!((modes(9), modes(10)), (vec![ARCADE], vec![ARCADE, BOWL]));
         // its select: P1 picks one; 2P's START joins
@@ -2437,7 +2457,7 @@ mod tests {
     fn tekken_ball_with_the_slice() {
         let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE"}, {"mode": 11, "label": "OPTIONS"}]}}});
         let modes = |ball| {
-            Front::items(&Data::load(&fe, &Value::Null, &serde_json::json!({}), None, vec![], ball, false).unwrap(), &Progress::default())
+            Front::items(&Data::load(&fe, &Value::Null, &serde_json::json!({}), None, vec![], ball, false, &Value::Null).unwrap(), &Progress::default())
                 .iter()
                 .map(|i| i.0)
                 .filter(|&m| m != u32::MAX)
@@ -2447,15 +2467,40 @@ mod tests {
         let (d, roster, mut seed) = (data(), roster(), 1);
         let d = Arc::new(Data { ball: Some(23), ..Arc::try_unwrap(d).unwrap() });
         let run = Run::new(&d, &roster, &Progress::default(), BALL, [vec![(0, 0)], vec![]], &mut seed);
-        let s = run.setup();
+        let s = run.setup(&d);
         assert_eq!((s.mode, s.stage, s.ball, run.bench(), run.teams[1].len()), (Mode::Ball, 23, Some((0, 0)), None, 1));
+    }
+
+    /// The CPU's profile (0x380120, measured in PCSX2: fight n of the arcade plays NORMAL level n - 1): the
+    /// DIFFICULTY option (all five) and the fight's number, TIME ATTACK at NORMAL, SURVIVAL by ai.json's streak ladder.
+    #[test]
+    fn the_cpu_profile_follows_the_mode() {
+        let (d, roster, seed) = (data(), roster(), 1u32);
+        let rows = serde_json::json!({"survival": {"rows": [{"max_wins": 4, "difficulty": 0, "levels": [0, 3]}, {"max_wins": 99, "difficulty": 4, "levels": [5, 7]}, {"max_wins": 764, "difficulty": 0, "levels": [0, 0]}]}});
+        let d = Arc::new(Data {
+            survival: Data::load(&serde_json::json!({"front_end": {}}), &Value::Null, &Value::Null, None, vec![], None, false, &rows).unwrap().survival.clone(),
+            ..Arc::try_unwrap(d).unwrap()
+        });
+        let profile = |mode, fight, wins| {
+            let mut run = Run::new(&d, &roster, &Progress::default(), mode, [vec![(0, 0)], vec![]], &mut seed.clone());
+            (run.fight, run.wins[0], run.options[0]) = (fight, wins, 4);
+            let s = run.setup(&d);
+            (s.difficulty, s.level)
+        };
+        assert_eq!((0..9).map(|f| profile(ARCADE, f, 0)).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5, 6, 7, 7].map(|l| (4, l)));
+        assert_eq!(profile(TIME_ATTACK, 5, 0), (1, 5));
+        assert_eq!(profile(SURVIVAL, 0, 764), (0, 0));
+        for wins in 0..100 {
+            let (diff, level) = profile(SURVIVAL, 0, wins);
+            assert!(if wins <= 4 { diff == 0 && level <= 3 } else { (diff == 4 || diff == 1) && (5..=7).contains(&level) }, "{wins}: {diff} {level}");
+        }
     }
 
     /// TEKKEN FORCE is on the menu (before OPTIONS) only with the Tekken 3 slice's force.json; one pick.
     #[test]
     fn tekken_force_with_the_slice() {
         let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE"}, {"mode": 11, "label": "OPTIONS"}]}}});
-        let d = |force| Data::load(&fe, &Value::Null, &serde_json::json!({}), None, vec![], None, force).unwrap();
+        let d = |force| Data::load(&fe, &Value::Null, &serde_json::json!({}), None, vec![], None, force, &Value::Null).unwrap();
         let modes = |force| Front::items(&d(force), &Progress::default()).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
         assert_eq!((modes(false), modes(true)), (vec![ARCADE, OPTIONS], vec![ARCADE, FORCE, OPTIONS]));
         assert_eq!(Select::new(FORCE, &d(true), None).sides[0].need, 1);
