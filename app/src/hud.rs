@@ -538,6 +538,7 @@ impl Hud {
                 // (Force's pickups behind the HUD)
                 under(&painter, &v);
                 crate::ttt::hud(&painter, &v, art, t, bout, info, &self.state.tag, self.state.ko, self.state.frame, self.state.run_frames);
+                crate::ttt::ball_partner_bars(&painter, &v, art, t, bout);
                 // (Tekken 3's gauges from the extras, else in Tekken Tag's bar strips)
                 if bout.game.fight.ball.is_some() && !matches!(bout.phase, Phase::Replay { .. }) {
                     if let (Some(a), Some(d)) = (art.t3.as_deref(), self.t3.as_ref()) {

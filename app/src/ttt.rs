@@ -282,8 +282,10 @@ pub struct Progress {
     /// 200-point game (+0x202, JUKEBOX's), a 300 (+0x204).
     pub bowlers: Option<Vec<kumite_game::bowl::Record>>,
     pub bowl_bonus: [bool; 2],
-    /// BOWLING OPTIONS' HELP MESSAGES and SPECIAL EFFECTS set OFF (+0x1FE, +0x200: both ON at first).
+    /// BOWLING OPTIONS' HELP MESSAGES and SPECIAL EFFECTS set OFF (+0x1FE, +0x200: both ON at first); the JUKEBOX's
+    /// track (the music player's list, 0x455D80; None: OFF, the hall's own).
     pub bowl_off: [bool; 2],
+    pub jukebox: Option<usize>,
     /// Tekken Force's keys and hi-score here (apart from Tekken 3's records).
     pub force_keys: u32,
     pub force_hiscore: u32,
@@ -320,6 +322,7 @@ static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress {
     bowlers: None,
     bowl_bonus: [false; 2],
     bowl_off: [false; 2],
+    jukebox: None,
     force_keys: 0,
     force_hiscore: 0,
     settings: Vec::new(),
@@ -3320,6 +3323,28 @@ pub fn theme<'a>(d: Option<&Data>, sound: &'a kumite_game::sound::SoundData, nam
 /// middle, the owner's blinking while the ball has power; the texts in the chrome font. `gauges`: per side the shown
 /// and the trail part of the full; `texts`: text, Tekken 3's colour, place on the 368 x 480 screen.
 #[allow(clippy::too_many_arguments)]
+/// Ball 2 ON 2 (OpenKumite's): each side's partner's health, a thin bar of Tekken Tag's strips over its side's
+/// (filling from the inner end, as the bars).
+pub fn ball_partner_bars(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout) {
+    let fight = &bout.game.fight;
+    if !fight.ball_doubles() {
+        return;
+    }
+    let h = &d.raw["hud"];
+    let strip = |k: usize| h["strips"][k].as_str().unwrap_or_default();
+    let (bx, by, bw) = ([num(&h["bars"]["x"][0]), num(&h["bars"]["x"][1])], num(&h["bars"]["y"]), num(&h["bars"]["w"]));
+    // (actor 3 is P1's side's partner, 2 the other side's)
+    for (i, actor) in [3, 2].into_iter().enumerate() {
+        let Some(f) = fight.actor(actor) else { continue };
+        let part = (f.health.max(0) as f32 / (f.max_health * kumite_sim::ONE).max(1) as f32).clamp(0.0, 1.0);
+        // (above the side's bar, where a tag battle shows the member in back)
+        let y = by - 10.0;
+        image(painter, v, art, strip(2), [bx[i], y, bw, 6.0], Color32::WHITE);
+        let w = bw * part;
+        image(painter, v, art, strip(1), [if i == 0 { bx[i] + bw - w } else { bx[i] }, y, w, 6.0], Color32::WHITE);
+    }
+}
+
 pub fn ball_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, gauges: [[f32; 2]; 2], flash: Option<usize>, texts: &[(&str, u32, [f32; 2])], frame: u32) {
     let h = &d.raw["hud"];
     let strip = |k: usize| h["strips"][k].as_str().unwrap_or_default();
@@ -3413,10 +3438,12 @@ pub fn bowl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &
 /// 64 apart; PLAYERn at (48, 116) (size 5, colour 14); WINNERS (blinking 2 / 11), LOSERS (12) or DRAW (10) right-aligned
 /// on 472 at 78 and the total at (415, 110) (size 8, the same colour); the score card from (36, 128) (0x3C59D8, the
 /// ten frames and the total); a new record's NEW RECORD! and its place, taking turns, blinking (0x3F0E28 at (123, 84)).
-// shortcut: over the hall darkened (what the PS2 shows behind it is not decoded)
-pub fn bowl_results(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, teams: &[[usize; 2]], placed: &[Option<usize>], frame: u64) {
+/// Over the hall going to black over the game's first 60 frames over (`since`, 0x3F1370: a black quad, alpha t x 128 /
+/// 60).
+#[allow(clippy::too_many_arguments)]
+pub fn bowl_results(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, teams: &[[usize; 2]], placed: &[Option<usize>], (frame, since): (u64, u64)) {
     let b = &scene.bowl;
-    Art::shade(painter, v, crate::art::FULL, [Color32::from_black_alpha(128); 4]);
+    Art::shade(painter, v, crate::art::FULL, [Color32::from_black_alpha((since.min(60) * 255 / 60) as u8); 4]);
     for (p, card) in b.cards.iter().enumerate().take(2) {
         let dy = 176.0 * p as f32;
         for (m, body) in teams.get(p).into_iter().flatten().enumerate() {
@@ -3445,6 +3472,11 @@ pub fn bowl_results(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scen
     }
 }
 
+/// The JUKEBOX's track (a BGM id) for Tekken Bowl's music, when one is chosen.
+pub fn jukebox(d: &Data) -> Option<usize> {
+    progress().jukebox.and_then(|k| music(d).get(k).map(|m| m.0))
+}
+
 /// The name entry's letters (`records.letters`, 0x3D0450's: "<" takes the last back, "=" ends).
 pub fn record_letters(d: &Data) -> Vec<char> {
     d.raw["records"]["letters"].as_str().unwrap_or_default().chars().collect()
@@ -3471,7 +3503,7 @@ pub fn bowl_records(
             r.name.push(letters.get(c).copied().unwrap_or(' '));
         }
     }
-    bowl_top(painter, v, art, d, scene, &list, new);
+    bowl_top(painter, v, art, d, scene, &list, new, 255);
     chrome(painter, v, art, d, &scene.text("king", "THE KING OF IRONBOWL"), 112.0, 40.0, Some(15), 5.0);
     if cursor.is_none() {
         let h = &d.raw["help"]["band"]["rect"];
@@ -3658,20 +3690,31 @@ fn bowl_callout(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &
 /// (BONUS AT 200 PTS until a 200 game unlocks the JUKEBOX), EXIT. Up / down move the cursor (past the bonus row while
 /// it is locked), left / right switch the one at it, a button on EXIT or START leave (true). The switches are kept in
 /// the save (block 0x46BC70 +0x1FE, +0x200; both ON at first, 0x3F20E8).
-// shortcut: the JUKEBOX's track choice (0x455D80's list) is not here: the row stays BONUS AT 200 PTS
+/// Once a 200 game unlocked it (+0x202) the bonus row is the JUKEBOX: left / right go round the music player's tracks
+/// and OFF.
 pub fn bowl_options_key(d: &Data, cursor: &mut usize, key: Key) -> bool {
     let mut p = progress();
+    let juke = p.bowl_bonus[0];
     match key {
         Key::Up | Key::Down => {
             sfx::play(sound(d, "cursor"));
-            // (0 HELP MESSAGES, 1 SPECIAL EFFECTS, 3 EXIT)
-            let rows = [0, 1, 3];
+            // (0 HELP MESSAGES, 1 SPECIAL EFFECTS, 2 JUKEBOX once unlocked, 3 EXIT)
+            let rows: &[usize] = if juke { &[0, 1, 2, 3] } else { &[0, 1, 3] };
             let k = rows.iter().position(|r| r == cursor).unwrap_or(0);
             *cursor = rows[(k + if key == Key::Up { rows.len() - 1 } else { 1 }) % rows.len()];
         }
         Key::Left | Key::Right if *cursor < 2 => {
             sfx::play(sound(d, "cursor"));
             p.bowl_off[*cursor] = !p.bowl_off[*cursor];
+            set_progress(p);
+        }
+        Key::Left | Key::Right if *cursor == 2 && juke => {
+            sfx::play(sound(d, "cursor"));
+            // (the tracks, then OFF)
+            let n = music(d).len() + 1;
+            let at = p.jukebox.unwrap_or(n - 1);
+            let at = (at + if key == Key::Left { n - 1 } else { 1 }) % n;
+            p.jukebox = (at + 1 < n).then_some(at);
             set_progress(p);
         }
         Key::Start | Key::Back => return true,
@@ -3715,13 +3758,27 @@ pub fn draw_bowl_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
         let end = chrome(painter, v, art, d, label, 155.0, y, Some(if cursor == k { 11 } else { 5 }), 4.0);
         chrome(painter, v, art, d, if on { "ON" } else { "OFF" }, end, y, Some(if on { 16 } else { 12 }), 4.0);
     }
-    chrome(painter, v, art, d, &scene.text("bonus", "BONUS AT 200 PTS"), 155.0, 240.0, Some(17), 4.0);
+    if progress().bowl_bonus[0] {
+        // JUKEBOX: its track (OFF: none), the arrows either side under the cursor
+        let name = progress().jukebox.and_then(|k| music(d).get(k).map(|m| m.1.clone())).unwrap_or_else(|| "OFF".into());
+        if cursor == 2 {
+            bar(298.0, 240.0);
+            let left = d.raw["menu"]["arrows"]["pictures"][0].as_str().unwrap_or_default();
+            sprite(painter, v, art, left, 296.0, 240.0 - ah, Color32::WHITE);
+            sprite(painter, v, art, arrow, 475.0, 240.0 - ah, Color32::WHITE);
+        }
+        let label = scene.text("jukebox", "JUKEBOX: ");
+        let end = chrome(painter, v, art, d, label.split('%').next().unwrap_or_default(), 155.0, 240.0, Some(if cursor == 2 { 11 } else { 5 }), 4.0);
+        chrome(painter, v, art, d, &name, end, 240.0, Some(17), 4.0);
+    } else {
+        chrome(painter, v, art, d, &scene.text("bonus", "BONUS AT 200 PTS"), 155.0, 240.0, Some(17), 4.0);
+    }
     if cursor == 3 {
         bar(70.0, 260.0);
     }
     chrome(painter, v, art, d, &scene.text("exit", "EXIT"), 155.0, 260.0, Some(if cursor == 3 { 11 } else { 5 }), 4.0);
-    if cursor < 2 {
-        help_line(painter, v, art, d, 106 + cursor, usize::from(!off[cursor]));
+    if cursor < 3 {
+        help_line(painter, v, art, d, 106 + cursor, usize::from(!off.get(cursor).copied().unwrap_or(false)));
     }
 }
 
@@ -3741,8 +3798,9 @@ pub fn bowl_pause_card(painter: &egui::Painter, v: &View, art: &Art, d: &Data, s
 /// its place large at x 16 with ST / ND / RD / TH after it, the team's two faces in their frames from x 176 (52 apart),
 /// the score right-aligned on 364 (size 9) and PTS at 408, the name at 468.
 // shortcut: over the scene darkened (what the PS2 shows behind it is not decoded)
-pub fn bowl_top(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, list: &[kumite_game::bowl::Record], new: Option<usize>) {
-    Art::shade(painter, v, crate::art::FULL, [Color32::from_black_alpha(200); 4]);
+pub fn bowl_top(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &kumite_game::bowl::BowlScene, list: &[kumite_game::bowl::Record], new: Option<usize>, back: u8) {
+    // (`back`: after the results on their black, 255; from the pause over the hall darkened, not decoded there)
+    Art::shade(painter, v, crate::art::FULL, [Color32::from_black_alpha(back); 4]);
     chrome(painter, v, art, d, &scene.text("top", "TOP 5 BOWLERS"), 183.0, 64.0, Some(10), 5.0);
     for (k, r) in list.iter().enumerate().take(5) {
         let y = 135.0 + 71.0 * k as f32;

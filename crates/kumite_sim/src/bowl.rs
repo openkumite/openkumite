@@ -76,6 +76,8 @@ const PIN_SOUNDS: [(u32, u16, u32); 3] = [(15, 0x10AE, 8), (30, 0x10AD, 14), (u3
 /// The spectators' test (0x3EFDB8): a ball within 300 of one (horizontally) knocks it over; voice 0x1059.
 const SPECTATOR_RADIUS2: f32 = 90000.0;
 const KO_VOICE: u16 = 0x1059;
+/// SPECIAL EFFECTS' explosion as every pin falls (0x3E9808).
+const EXPLOSION: u16 = 0x10A8;
 /// The strike announcer (0x3EF8B0): by the run of strikes (1, 3, 12, else), then 0x10B5.
 const STRIKE_CALLS: [(u32, u16); 3] = [(1, 0x10B2), (3, 0x1046), (12, 0x1058)];
 const STRIKE_CALL: u16 = 0x1057;
@@ -480,6 +482,9 @@ pub struct Bowl {
     held: u8,
     /// Frames BOWL STYLE / SWITCH HANDS stays (gp-0x6032).
     pub style: u32,
+    /// BOWLING OPTIONS' SPECIAL EFFECTS (save +0x200, the app sets it); every pin down this roll (gp-0x6028).
+    pub effects: bool,
+    all_down: bool,
     seed: u32,
 }
 
@@ -604,6 +609,8 @@ impl Bowl {
             quiet: 0,
             held: 0,
             style: 0,
+            effects: true,
+            all_down: false,
             seed,
         };
         b.new_turn();
@@ -630,6 +637,7 @@ impl Bowl {
         let Some(b) = self.bowler().cloned() else { return };
         self.x = (self.random() * 128.0).floor() - 64.0;
         self.angle = 0;
+        self.all_down = false;
         let s2 = b.s2();
         self.spin = self.random() * 2.0 - 1.0;
         let sign = if self.random() < 0.5 { -1.0 } else { 1.0 };
@@ -900,6 +908,14 @@ impl Bowl {
                 self.callout = Some(self.callouts.ko.clone());
                 self.phase = Phase::Ko(0);
                 return true;
+            }
+        }
+        // every pin down the first time this roll (0x3E9808, gp-0x6028): with SPECIAL EFFECTS on, the explosion's sound
+        // 0x10A8 (and the burst 0x3A2298, the shake 0x35C2F8: not drawn here)
+        if !self.all_down && self.pins.iter().all(|p| !p.standing) {
+            self.all_down = true;
+            if self.effects && !self.foul {
+                self.events.push(Event::Sound(EXPLOSION));
             }
         }
         // pin sounds (0x3EC200)

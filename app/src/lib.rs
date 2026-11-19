@@ -308,6 +308,8 @@ struct BowlRun {
     started: Vec<ttt::Team>,
     /// The game over: TOP 5 BOWLERS with its players placed (0x3F1408), each one's place.
     top: Option<(Vec<kumite_game::bowl::Record>, Vec<Option<usize>>)>,
+    /// The game's frame it ended on (the results' fade, 0x3F1370).
+    over_at: u64,
 }
 
 impl BowlRun {
@@ -327,6 +329,7 @@ impl BowlRun {
             })
             .collect();
         self.top = Some((top, placed));
+        self.over_at = self.scene.bowl.frame;
     }
 }
 
@@ -3968,7 +3971,9 @@ impl App {
             // the pin deck's machinery, where the arena's object table puts it (an older pack has none)
             let _ = add(&scene.deck_model, &mut stage);
             if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
-                audio.music(sound.arena_music(kumite_game::bowl::ARENA));
+                // (the JUKEBOX's track, else the hall's)
+                let juke = self.roster.ttt.as_deref().and_then(ttt::jukebox).and_then(|id| sound.music(id));
+                audio.music(juke.or(sound.arena_music(kumite_game::bowl::ARENA)));
             }
             log::info!("Tekken Bowl: {} player(s)", players.len());
             self.scene = Some(stage);
@@ -3988,6 +3993,7 @@ impl App {
                 page: None,
                 started: started.to_vec(),
                 top: None,
+                over_at: 0,
             });
             self.screen = None;
             self.fight = None;
@@ -4004,6 +4010,8 @@ impl App {
         let Some(run) = self.bowl.as_mut().filter(|r| r.pause.is_none() && r.page.is_none()) else { return };
         let who = run.scene.bowl.current;
         let (start, select) = (std::mem::take(&mut run.start), std::mem::take(&mut run.select));
+        // (BOWLING OPTIONS' SPECIAL EFFECTS, as set now)
+        run.scene.bowl.effects = !ttt::progress().bowl_off[1];
         let pad = pads[who.min(1)];
         run.scene.step(Pad { start, buttons: pad.buttons | if select { kumite_sim::bowl::SELECT } else { 0 }, ..pad });
         run.place();
@@ -4930,8 +4938,14 @@ impl App {
                 (Some(BowlPage::Records(None)), Key::Start | Key::Button(_) | Key::Back) => self.end_bowl(),
                 (Some(BowlPage::Records(None)), _) => {}
                 (Some(BowlPage::Options(c)), _) => {
+                    let before = ttt::jukebox(&d);
                     if ttt::bowl_options_key(&d, c, key) {
                         b.page = None;
+                    }
+                    // (the JUKEBOX's track plays at once)
+                    let now = ttt::jukebox(&d);
+                    if let (true, Some(audio), Some(sound)) = (now != before, self.audio.as_mut(), self.sound.as_ref()) {
+                        audio.music(now.and_then(|id| sound.music(id)).or(sound.arena_music(kumite_game::bowl::ARENA)));
                     }
                 }
                 (None, Key::Button(_)) if b.reset.is_none() && matches!(item, Some(4 | 5)) => {
@@ -5669,14 +5683,14 @@ impl App {
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("bowl_hud")));
                         // (state 9, the pause or the score card, draws no HUD of the throw's; the game over its results)
                         match (&b.top, b.page) {
-                            (Some((_, placed)), None) => ttt::bowl_results(&painter, &view, art, d, &b.scene, &b.teams, placed, frames),
+                            (Some((_, placed)), None) => ttt::bowl_results(&painter, &view, art, d, &b.scene, &b.teams, placed, (frames, b.scene.bowl.frame.saturating_sub(b.over_at))),
                             (_, None) if b.pause.is_none() => ttt::bowl_hud(&painter, &view, art, d, &b.scene, frames),
                             _ => {}
                         }
                         match (b.page, b.pause) {
                             (Some(BowlPage::Top), _) => {
                                 let top = ttt::progress().bowlers.unwrap_or_else(|| b.scene.records.defaults.clone());
-                                ttt::bowl_top(&painter, &view, art, d, &b.scene, &top, None);
+                                ttt::bowl_top(&painter, &view, art, d, &b.scene, &top, None, 200);
                             }
                             (Some(BowlPage::Options(c)), _) => ttt::draw_bowl_options(&painter, &view, art, d, &b.scene, c),
                             (Some(BowlPage::Card), _) => ttt::bowl_pause_card(&painter, &view, art, d, &b.scene, frames),
