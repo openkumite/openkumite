@@ -918,6 +918,22 @@ fn play_ending(a: &Assets, d: &kumite_game::ending::EndingData, e: usize) -> Vec
     out
 }
 
+/// The EMBU's camera as PCSX2 showed it at its counter 1100, one ahead of the view (our frame 1099): the view 0x415808's eye (-339, -2152,
+/// -2338) game units; and its people: none in the first cast, set 30 in the second.
+#[test]
+fn the_embus_camera_is_the_ps2s() {
+    let Some(a) = assets() else { return };
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    let mut s = kumite_game::ending::EndingScene::embu(&a, &d, 0).unwrap();
+    while s.frame() < 1099 {
+        s.step();
+    }
+    let (eye, _, _) = s.camera();
+    assert!((eye - glam::Vec3::new(-0.339, 2.152, 2.338)).abs().max_element() < 0.002, "{eye}");
+    assert!(s.people.is_none());
+    assert_eq!(kumite_game::ending::EndingScene::embu(&a, &d, 1).unwrap().people.unwrap()["set"], 30);
+}
+
 #[test]
 fn an_ending_plays_to_its_end() {
     let Some(a) = assets() else { return };
