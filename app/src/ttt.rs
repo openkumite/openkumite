@@ -635,7 +635,7 @@ impl Run {
                 // (0x3C1620, mode 4); the first member leads again
                 self.wins[0] += 1;
                 let refill = d.raw["team_battle"]["refill_percent"].as_i64().unwrap_or(15) as i32;
-                let up = |(h, cap, m): (i32, i32, i32)| ((h + m / 100 * refill).min(m), (cap + m / 100 * refill).min(m));
+                let up = |(h, cap, m): (i32, i32, i32)| ((h + m * refill / 100).min(m), (cap + m * refill / 100).min(m));
                 match tag {
                     Some([t, _]) => {
                         let carry = t.map(up);
@@ -660,7 +660,7 @@ impl Run {
                 // the loser's next member comes in; the winner stays, 15 % of its full health back (0x3C1620)
                 let Some(w) = winner else { return Next::Fight(Box::new(self)) };
                 let refill = d.raw["team_battle"]["refill_percent"].as_i64().unwrap_or(15) as i32;
-                self.health[w] = Some((health[w] + max[w] / 100 * refill).min(max[w]));
+                self.health[w] = Some((health[w] + max[w] * refill / 100).min(max[w]));
                 self.health[1 - w] = None;
                 self.member[1 - w] += 1;
                 if self.member[1 - w] < self.teams[1 - w].len() {
@@ -2260,7 +2260,7 @@ fn draw_ranking(painter: &egui::Painter, v: &View, art: &Art, d: &Data, kind: us
             Art::shade(&clip, v, sv([x, y + num(&cu["dy"]), num(&cu["w"]), num(&cu["h"])]), [Color32::from_rgb(255, g, g); 4]);
             let n = &rk["counter"];
             let left = int(&rk["frames"]).saturating_sub(frame as usize).div_ceil(60);
-            chrome(&clip, v, art, d, &left.to_string(), num(&n["x"]), y + num(&n["dy"]), Some(int(&n["colour"])), num(&n["size"]));
+            chrome(&clip, v, art, d, &left.to_string(), num(&n["x"]), y + num(&n["dy"]), n["colour"].as_u64().map(|c| c as usize), num(&n["size"]));
         }
     }
     // (the banner over the rows, 0x3C93A0 after them)
@@ -2530,6 +2530,19 @@ fn small(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: 
     painter.text(v.pos(px, py), egui::Align2::CENTER_TOP, text, egui::FontId::proportional(h * v.rect.height() / SCREEN_H), c);
 }
 
+/// A button icon (cell `cell` of `003_003`, 16 x 16) from (x, top) in the small font's colour `colour`: its
+/// `003_003_cNN.png` beside the font's `003_002_cNN.png`.
+#[allow(clippy::too_many_arguments)]
+fn button_icon(painter: &egui::Painter, v: &View, art: &Art, d: &Data, cell: f32, colour: usize, x: f32, top: f32) {
+    let cell = cell * 16.0;
+    let coloured = d.raw["fonts"]["small"]["colours"][colour].as_str().map(|f| f.replace("003_002", "003_003"));
+    if let Some((tex, [tw, th])) = coloured.and_then(|f| art.pic(&f)).or_else(|| art.pic("003_003.png")) {
+        let uv = Rect::from_min_max(Pos2::new(cell / tw as f32, 0.0), Pos2::new((cell + 16.0) / tw as f32, 16.0 / th as f32));
+        let [rx, ry, rw, rh] = sv([x, top, 16.0, 16.0]);
+        painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, Color32::WHITE);
+    }
+}
+
 /// A text's width in the small font (`fonts.small.advance` a glyph, whatever its ink).
 fn small_width(d: &Data, text: &str) -> f32 {
     num(&d.raw["fonts"]["small"]["advance"]) * text.chars().count() as f32
@@ -2587,6 +2600,13 @@ fn draw_quick_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, mod
     }
 }
 
+/// QUICK SELECT: the body under side `k`'s cursor (None on RANDOM), if it has a cursor (0x3BECC0, 0x3CBE88).
+fn quick_hover(d: &Data, roster: &Roster, p: &Progress, s: &Select, k: usize) -> Option<Option<usize>> {
+    let side = s.sides.get(k).filter(|side| !side.done)?;
+    let c = d.slots.get(side.cursor)?.character;
+    Some(c.filter(|&c| d.selectable(p.stage, c) && roster.by_id(c).is_some()))
+}
+
 fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &Roster, p: &Progress, s: &Select) {
     let sel = &d.raw["select"];
     let quick = quick_select(d, p);
@@ -2612,21 +2632,36 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
         image(painter, v, art, frame, [0.0, 0.0, fw, fh], Color32::WHITE);
         image(painter, v, art, frame, [W - 1.0, 0.0, -fw, fh], Color32::WHITE);
     }
-    // QUICK SELECT's members' faces (0x3BECC0, `quick.faces`): each side's picks, then the face under its cursor, then
-    // the random face (1 ON 1: the first member alone).
-    // shortcut: the faces' frame (0x3BF080) and the cursor face's pulse are left out
+    // QUICK SELECT's members' faces (0x3BECC0, `quick.faces`): each side's picks in grey frames, then the face under its
+    // cursor (darker on the first pick's character) in a frame pulsing by the frame, then the random face unframed (1
+    // ON 1: the first member alone)
     if quick {
         let f = &sel["quick"]["faces"];
+        let fr = &f["frame"];
         let members = if matches!(s.mode, ONE_ARCADE | ONE_VS) { 1 } else { 2 };
+        let size = num(&sel["face_size"]);
+        let turn = std::f32::consts::TAU * s.frame as f32 / num(&fr["period"]).max(1.0);
+        let pulse = (turn.sin().abs() * 256.0).min(255.0);
         for k in (0..2).filter(|&k| s.sides.get(k).is_some_and(|side| side.player.is_some())) {
-            let faces = shown(k);
+            let side = &s.sides[k];
+            let n = side.picks.len();
             for m in 0..members {
-                let file = match faces.get(m) {
-                    Some(&i) => d.picture(&["select", "faces", &body(i).to_string()]),
-                    None => d.picture(&["select", "random_face"]),
+                let (x, y) = (num(&f["x"][2 * k + m]), num(&f["y"]));
+                let (file, level, grey) = match (side.picks.get(m), quick_hover(d, roster, p, s, k)) {
+                    (Some(q), _) => (d.picture(&["select", "faces", &body(q.0).to_string()]), 128.0, Some(num(&fr["picked"]))),
+                    (None, Some(Some(c))) if m == n => {
+                        let same = side.picks.first().is_some_and(|q| body(q.0) == c);
+                        (d.picture(&["select", "faces", &c.to_string()]), if same { num(&fr["same"]) } else { 128.0 }, Some(pulse))
+                    }
+                    (None, Some(None)) if m == n => (d.picture(&["select", "random_face"]), 128.0, Some(pulse)),
+                    _ => (d.picture(&["select", "random_face"]), 128.0, None),
                 };
-                let size = num(&sel["face_size"]);
-                image(painter, v, art, &file, [num(&f["x"][2 * k + m]), num(&f["y"]), size, size], Color32::WHITE);
+                lit(painter, v, art, &file, [x, y, size, size], level);
+                for b in fr["bars"].as_array().into_iter().flatten().filter(|_| grey.is_some()) {
+                    let g = Color32::from_gray(grey.unwrap_or(0.0) as u8);
+                    let [rx, ry, rw, rh] = sv([x + num(&b[0]), y + num(&b[1]), num(&b[2]), num(&b[3])]);
+                    painter.rect_filled(v.rect(rx, ry, rw, rh), 0.0, g);
+                }
             }
         }
     }
@@ -2657,7 +2692,36 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
     }
     for k in (0..2).filter(|&k| s.sides[k].player.is_some()) {
         let list = shown(k);
-        let plates = sel["plates"][k].as_array().map_or(0, Vec::len);
+        // QUICK SELECT: no plates but the members' names at the lines' points (0x3BEAB0), side 0's ending there, side
+        // 1's from there; the member being picked blinking, the cursor on the first pick's character SELECTED
+        if quick {
+            let (q, nm) = (&sel["quick"], &sel["quick"]["names"]);
+            let side = &s.sides[k];
+            let one = matches!(s.mode, ONE_ARCADE | ONE_VS);
+            let name = |c: usize, costume: usize| nm["texts"][c * 8 + (costume & 7)].as_str().unwrap_or_default().to_string();
+            let picking = if s.frame & int(&nm["blink"][0]) as u32 == 0 { int(&nm["blink"][1]) } else { int(&nm["colour"]) };
+            for m in 0..if one { 1 } else { 2 } {
+                let next = m == side.picks.len();
+                let (text, colour) = match (side.picks.get(m), quick_hover(d, roster, p, s, k)) {
+                    (Some(q), _) => (name(body(q.0), q.1), int(&nm["colour"])),
+                    (None, Some(Some(c))) if next && m == 1 && side.picks.first().is_some_and(|q| body(q.0) == c) => {
+                        (nm["selected"][0].as_str().unwrap_or_default().to_string(), int(&nm["selected"][1]))
+                    }
+                    (None, Some(Some(c))) if next => (name(c, 0), picking),
+                    (None, Some(None)) if next => match s.roll(d, roster, p, k) {
+                        Some(c) => (name(c, 0), picking),
+                        None => continue,
+                    },
+                    _ => continue,
+                };
+                let pt = &q["lines"][k + 2 * m];
+                let (size, y) = (num(&nm["size"]), num(&pt[1]) + if one { num(&q["one_on_one_dy"]) } else { 0.0 });
+                let w = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, &text, 0.0, 0.0, None, size);
+                let x = if k == 0 { num(&pt[0]) - w } else { num(&pt[0]) };
+                chrome(painter, v, art, d, &text, x, y, Some(colour), size);
+            }
+        }
+        let plates = if quick { 0 } else { sel["plates"][k].as_array().map_or(0, Vec::len) };
         for (j, &i) in list.iter().skip(list.len().saturating_sub(plates)).enumerate() {
             let at = &sel["plates"][k][j];
             sprite(painter, v, art, &d.picture(&["hud", "plates", &body(i).to_string(), "picture"]), num(&at[0]), num(&at[1]), Color32::WHITE);
@@ -2670,7 +2734,8 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
         let first = side.picks.is_empty() && s.mode != ONE_ARCADE;
         let second =
             !side.picks.is_empty() && !matches!(s.mode, ONE_ARCADE | ONE_VS) && s.frame >= side.since + int(&o["second_after"]) as u32 && list.len() <= side.picks.len() && o["second"].is_string();
-        if !side.done && (first || second) {
+        // (none with QUICK SELECT: 0x3CC654)
+        if !side.done && (first || second) && !quick {
             let text = if first { o["text"].as_str() } else { o["second"].as_str() }.unwrap_or_default();
             let (n, suffix) = text.split_at(text.find(|c: char| !c.is_ascii_digit()).unwrap_or(0));
             // (sized and placed as the PS2 shows them: both on one foot, about y 371)
@@ -2835,6 +2900,16 @@ pub fn select_camera(d: &Data) -> (glam::Vec3, glam::Vec3, f32, Option<usize>) {
     let view = kumite_sim::camera::View { eye: [0, 1, 2].map(|k| i(&c["eye"][k])), pitch: i(&c["pitch"]), yaw: i(&c["yaw"]), h: i(&c["h"]) * 368 / 512, roll: 0 };
     let (eye, forward, fov_y) = kumite_game::view_camera(&view);
     (eye, forward, fov_y, d.raw["select"]["models"]["light"].as_u64().map(|a| a as usize))
+}
+
+/// The ranking's (screen 7) view `frame` into it (`ranking.arena`, 0x3B7888): the arena's middle orbited, level.
+pub fn ranking_view(d: &Data, frame: u32) -> Option<kumite_sim::camera::View> {
+    let a = &d.raw["ranking"]["arena"];
+    let i = |k: &str| a[k].as_i64().unwrap_or(0);
+    let turn = i("step") * i64::from(frame);
+    let t = (i("angle") + turn) as f64 * std::f64::consts::TAU / 4096.0;
+    let r = i("radius") as f64;
+    a.is_object().then(|| kumite_sim::camera::View { eye: [(r * t.cos()) as i64, i("y"), (r * t.sin()) as i64], pitch: 0, yaw: turn, h: i("h") * 368 / 512, roll: 0 })
 }
 
 /// The VS screen as the PS2 draws it (`vs`, 0x3C3FB8): the fire over the screen, each team's leader high and its
@@ -3188,6 +3263,9 @@ pub struct Practice {
     chain: Chain,
     /// FREESTYLE's COMMAND CAPTURE (0x4318C8).
     capture: Capture,
+    /// COMBO TRAINING's demo, and each side's character (the training data's).
+    demo: Demo,
+    bodies: [usize; 2],
     /// The damage each side took, and the last hit's on the dummy (damage, base damage).
     total: [i32; 2],
     last: (i32, i32),
@@ -3261,6 +3339,18 @@ impl Practice {
                 sfx::play(sound(d, "cursor"));
                 self.cursor = (self.cursor + if key == Key::Up { n - 1 } else { 1 }) % n;
             }
+            Key::Left | Key::Right if kind == "type" => {
+                let last = self.last_type(d);
+                if let Some(v) = self.values.get_mut(self.mode).and_then(|m| m.get_mut(self.cursor)) {
+                    sfx::play(sound(d, "cursor"));
+                    *v = match key {
+                        Key::Left if *v == 0 => last,
+                        Key::Left => *v - 1,
+                        _ if *v >= last => 0,
+                        _ => *v + 1,
+                    };
+                }
+            }
             Key::Left | Key::Right if kind == "mode" => {
                 sfx::play(sound(d, "cursor"));
                 self.mode = (self.mode + if key == Key::Left { modes - 1 } else { 1 }) % modes;
@@ -3272,6 +3362,11 @@ impl Practice {
                 if let (true, Some(v)) = (len > 1, self.values.get_mut(self.mode).and_then(|m| m.get_mut(self.cursor))) {
                     sfx::play(sound(d, "cursor"));
                     *v = (*v + if key == Key::Left { len - 1 } else { 1 }) % len;
+                }
+                // (another side's combos: TYPE kept within them)
+                let last = self.last_type(d);
+                if let Some(t) = self.rows(d).iter().position(|r| r["kind"] == "type").and_then(|k| self.values.get_mut(self.mode)?.get_mut(k)) {
+                    *t = (*t).min(last);
                 }
             }
             Key::Back => {
@@ -3405,6 +3500,158 @@ impl Practice {
     }
 }
 
+/// COMBO TRAINING's demo (practice's states 0xB-0xE, `practice.combo`): its state (0 none, 1 waiting for the side to
+/// stand free, 2 the entry's steps playing, 3 waiting for it to stand free again), the side, the training entry,
+/// RANDOM's (no line shown), the wait's frames left, the step, its frames left, the key icons lit, SELECT the frame
+/// before.
+#[derive(Clone, Debug, Default)]
+struct Demo {
+    state: u8,
+    side: usize,
+    entry: usize,
+    random: bool,
+    timer: u32,
+    step: usize,
+    left: u32,
+    lit: usize,
+    select: bool,
+}
+
+/// COMBO TRAINING: the training entries of `body` with +8 set (0x37D0F8: at most 16).
+fn combos(d: &Data, body: usize) -> Vec<usize> {
+    let entries = d.raw["command_list"]["lists"][body]["training"]["entries"].as_array().map_or(&[][..], Vec::as_slice);
+    entries.iter().enumerate().filter(|(_, e)| int(&e[4]) != 0).map(|(k, _)| k).take(16).collect()
+}
+
+/// A PS2 pad word (up 0x1000, right 0x2000, down 0x4000, left 0x8000; square, triangle, cross, circle 0x80, 0x10, 0x40,
+/// 0x20: buttons 1-4).
+fn ps2_pad(w: usize) -> kumite_sim::input::Pad {
+    let b = |bit: usize, to: u8| if w & bit != 0 { to } else { 0 };
+    kumite_sim::input::Pad {
+        up: w & 0x1000 != 0,
+        right: w & 0x2000 != 0,
+        down: w & 0x4000 != 0,
+        left: w & 0x8000 != 0,
+        buttons: b(0x80, 1) | b(0x10, 2) | b(0x40, 4) | b(0x20, 8),
+        ..Default::default()
+    }
+}
+
+impl Practice {
+    /// COMBO DISPLAY's TYPE's last value (0x37A7CC): the player's character's combos less one; the CPU's one more
+    /// (RANDOM) with two or more.
+    fn last_type(&self, d: &Data) -> usize {
+        let who = self.value(d, "COMBO DISPLAY").unwrap_or(0).min(1);
+        let n = combos(d, self.bodies[who]).len();
+        match (who, n) {
+            (0, _) => n.saturating_sub(1),
+            (_, 1) => 0,
+            _ => n,
+        }
+    }
+
+    /// COMBO DISPLAY's TYPE's value.
+    fn combo_type(&self, d: &Data) -> usize {
+        let k = self.rows(d).iter().position(|r| r["kind"] == "type");
+        k.and_then(|k| self.values.get(self.mode)?.get(k).copied()).unwrap_or(0)
+    }
+
+    /// COMBO TRAINING's demo on: the player stands still (0x36C468).
+    pub fn demo_on(&self) -> bool {
+        self.demo.state != 0
+    }
+
+    /// A key while COMBO TRAINING's demo is on: START stops it (0x379F94); none opens the menu. True: taken.
+    pub fn demo_key(&mut self, key: Key) -> bool {
+        let on = self.demo.state != 0;
+        if on && key == Key::Start {
+            self.demo = Demo { select: self.demo.select, ..Demo::default() };
+        }
+        on
+    }
+
+    /// COMBO TRAINING (mode 3) each frame: SELECT (`select` held) starts the demo of COMBO DISPLAY's side's combo of
+    /// its TYPE when it has one; the side waits to stand free at most `wait` frames (0x37DEE0), then its pad plays the
+    /// entry's steps (frames, pad as facing right, icons lit: 0x37D558, 0x37C990); after the last, free again, the
+    /// demo ends. The side and its pad.
+    /// shortcut: after the wait the PS2 puts both sides back `distance` apart (0x37D8C8); here the demo starts where
+    /// they stand.
+    pub fn combo_step(&mut self, d: &Data, select: bool, f: &kumite_sim::Fight) -> Option<(usize, kumite_sim::input::Pad)> {
+        self.bodies = [0, 1].map(|k| f.fighters.get(k).and_then(|x| x.character).unwrap_or(0).max(0) as usize);
+        let select_new = select && !self.demo.select;
+        self.demo.select = select;
+        if self.mode != 3 || self.open || self.commands.is_some() {
+            self.demo = Demo { select, ..Demo::default() };
+            return None;
+        }
+        let c = &d.raw["practice"]["combo"];
+        let gd = &f.data;
+        let free = |k: usize| {
+            let x = &f.fighters[k];
+            x.current_move(gd).posture.raw & 0x204 == 0 && x.accepts(gd, kumite_sim::input::Pad { buttons: 1, ..Default::default() }, f.facing_right(k))
+        };
+        let (state, side, timer) = (self.demo.state, self.demo.side, self.demo.timer);
+        match state {
+            0 if select_new => {
+                let who = self.value(d, "COMBO DISPLAY").unwrap_or(0).min(1);
+                if !combos(d, self.bodies[who]).is_empty() {
+                    self.demo = Demo { state: 1, side: who, timer: int(&c["wait"]) as u32, select, ..Demo::default() };
+                }
+                None
+            }
+            0 => None,
+            1 if !free(side) && timer > 0 => {
+                self.demo.timer -= 1;
+                None
+            }
+            1 => {
+                // (0x379EAC: TYPE's entry; RANDOM's (the CPU's last value) any of them)
+                let list = combos(d, self.bodies[side]);
+                let v = self.combo_type(d);
+                let random = side == 1 && v >= list.len() && list.len() > 1;
+                let k = if random { lcg(&mut (f.frame as u32), list.len()) } else { v };
+                let Some(&entry) = list.get(k) else {
+                    self.demo = Demo { select, ..Demo::default() };
+                    return None;
+                };
+                let t = &d.raw["command_list"]["lists"][self.bodies[side]]["training"];
+                let first = &t["steps"][int(&t["entries"][entry][1])];
+                self.demo = Demo { state: 2, side, entry, random, left: int(&first[0]) as u32, lit: int(&first[2]), select, ..Demo::default() };
+                self.combo_pad(d, f.facing_right(side))
+            }
+            2 => self.combo_pad(d, f.facing_right(side)),
+            _ => {
+                if free(side) {
+                    self.demo = Demo { select, ..Demo::default() };
+                }
+                None
+            }
+        }
+    }
+
+    /// The demo's step this frame (0x37C990): its pad while its frames last, then the next step's (its icons lit).
+    fn combo_pad(&mut self, d: &Data, right: bool) -> Option<(usize, kumite_sim::input::Pad)> {
+        let dm = &mut self.demo;
+        let t = &d.raw["command_list"]["lists"][self.bodies[dm.side]]["training"];
+        let e = &t["entries"][dm.entry];
+        let (n, first) = (int(&e[0]), int(&e[1]));
+        if dm.left > 0 {
+            dm.left -= 1;
+        } else {
+            dm.step += 1;
+            if dm.step >= n {
+                dm.state = 3;
+                return None;
+            }
+            let st = &t["steps"][first + dm.step];
+            dm.lit += int(&st[2]);
+            dm.left = (int(&st[0]) as u32).saturating_sub(1);
+        }
+        let pad = ps2_pad(int(&t["steps"][first + dm.step][1]));
+        Some((dm.side, facing(pad, right)))
+    }
+}
+
 /// CHAIN TRAINING's run (0x37EB04, `practice.chain`): its state (0 the start, 1 READY!, 2 the moves, 3 the end),
 /// the move, the time (frames) and the state's frames left.
 #[derive(Clone, Debug, Default)]
@@ -3475,36 +3722,50 @@ impl Practice {
     }
 }
 
+/// A training entry's line (0x37B8D8, 0x3DD188) under those it names before it (`practice.chain.lines`), the first
+/// `lit` key icons lit (COMBO TRAINING's demo).
+#[allow(clippy::too_many_arguments)]
+fn training_lines(painter: &egui::Painter, v: &View, art: &Art, d: &Data, body: usize, m: usize, lit: usize) {
+    let l = &d.raw["practice"]["chain"]["lines"];
+    let cl = &d.raw["command_list"];
+    let list = &cl["lists"][body];
+    let entry = &list["training"]["entries"][m];
+    let before = (9..17).map(|k| int(&entry[k])).take_while(|&b| b != 0).map(|b| b - 1);
+    let (x, y0) = (num(&l["xy"][0]), num(&l["xy"][1]));
+    let mut lit = lit;
+    for (k, mv) in before.take(8).chain([m]).enumerate() {
+        let y = y0 + num(&l["dy"]) * k as f32;
+        let row = &list["moves"][mv];
+        let colours = &cl["colours"][int(&row[0])];
+        let (b0, b1, w) = (num(&l["bands"][0]), num(&l["bands"][1]), num(&l["w"]));
+        Art::shade(painter, v, sv([x, y, w, b0]), [rgba(&colours[0]); 4]);
+        Art::shade(painter, v, sv([x, y + b0, w, b1]), [rgba(&colours[1]); 4]);
+        let (width, level) = (num(&l["width"]), num(&l["level"]));
+        let keys = row[2].as_str().unwrap_or_default();
+        command_text(painter, v, art, d, row[1].as_str().unwrap_or_default(), x + num(&l["name_xy"][0]), y + num(&l["name_xy"][1]), width, level, 0);
+        command_text(painter, v, art, d, keys, x + num(&l["keys_xy"][0]), y + num(&l["keys_xy"][1]), width, level, lit);
+        // (the count goes on to the next line, 0x3DFF28)
+        lit = lit.saturating_sub(keys.chars().filter(|c| (0xdc..=0xfb).contains(&u32::from(*c))).count());
+    }
+}
+
 /// CHAIN TRAINING over the fight (`practice.chain`): READY!; the move's line under those its entry names before it
 /// (0x37B8D8, 0x3DD188), the time with TIME DISPLAY on and "COMBO n:m"; in the end, under `result` frames, the result
 /// (0x3DD5B8). `name`: the player's character.
-/// shortcut: the result is drawn over the fight, without 0x3BF180's backdrop (not followed).
 pub fn draw_chain(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Practice, body: usize, name: &str) {
     let c = &d.raw["practice"]["chain"];
     let ch = &p.chain;
     let time = |t: u32| [t / 3600, t / 60 % 60, t % 60 * 100 / 60];
+    // COMBO TRAINING's demo: its entry's line, the keys lit as they go (not RANDOM's: 0x379F6C)
+    if p.mode == 3 && matches!(p.demo.state, 2 | 3) && !p.demo.random {
+        training_lines(painter, v, art, d, p.bodies[p.demo.side], p.demo.entry, p.demo.lit);
+    }
     match ch.state {
         1 => banner_at(painter, v, art, d, &c["ready"], 0),
         2 => {
             let moves = chain_moves(d, body);
-            let l = &c["lines"];
-            let cl = &d.raw["command_list"];
-            let list = &cl["lists"][body];
             if let Some(&m) = moves.get(ch.at) {
-                let entry = &list["training"]["entries"][m];
-                let before = (9..17).map(|k| int(&entry[k])).take_while(|&b| b != 0).map(|b| b - 1);
-                let (x, y0) = (num(&l["xy"][0]), num(&l["xy"][1]));
-                for (k, mv) in before.take(8).chain([m]).enumerate() {
-                    let y = y0 + num(&l["dy"]) * k as f32;
-                    let row = &list["moves"][mv];
-                    let colours = &cl["colours"][int(&row[0])];
-                    let (b0, b1, w) = (num(&l["bands"][0]), num(&l["bands"][1]), num(&l["w"]));
-                    Art::shade(painter, v, sv([x, y, w, b0]), [rgba(&colours[0]); 4]);
-                    Art::shade(painter, v, sv([x, y + b0, w, b1]), [rgba(&colours[1]); 4]);
-                    let (width, level) = (num(&l["width"]), num(&l["level"]));
-                    command_text(painter, v, art, d, row[1].as_str().unwrap_or_default(), x + num(&l["name_xy"][0]), y + num(&l["name_xy"][1]), width, level);
-                    command_text(painter, v, art, d, row[2].as_str().unwrap_or_default(), x + num(&l["keys_xy"][0]), y + num(&l["keys_xy"][1]), width, level);
-                }
+                training_lines(painter, v, art, d, body, m, 0);
             }
             if p.value(d, "TIME DISPLAY") == Some(1) {
                 let t = &c["time"];
@@ -3518,6 +3779,16 @@ pub fn draw_chain(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Pr
         }
         3 if ch.timer < int(&c["end"]["result"]) as u32 => {
             let r = &c["result"];
+            // 0x3BF180's backdrop: black at the top and the foot, its colour at `middle`, fading in from the result's start
+            let b = &r["backdrop"];
+            if b.is_object() {
+                let a = (int(&b["fade"]) * (int(&c["end"]["result"]) - ch.timer as usize)).min(int(&b["colour"][3]));
+                let (k, alpha) = (|i: usize| int(&b["colour"][i]).min(255) as u8, (a * 255 / 128).min(255) as u8);
+                let colour = Color32::from_rgba_unmultiplied(k(0), k(1), k(2), alpha);
+                let (black, m) = (Color32::from_rgba_unmultiplied(0, 0, 0, alpha), num(&b["middle"]));
+                Art::shade(painter, v, sv([0.0, 0.0, W, m]), [black, black, colour, colour]);
+                Art::shade(painter, v, sv([0.0, m, W, H - m]), [colour, colour, black, black]);
+            }
             chrome(painter, v, art, d, r["text"].as_str().unwrap_or_default(), num(&r["xy"][0]), num(&r["xy"][1]), Some(int(&r["colour"])), num(&r["size"]));
             let fs = num(&d.raw["select"]["face_size"]);
             image(painter, v, art, &d.picture(&["select", "faces", &body.to_string()]), [num(&r["face_xy"][0]), num(&r["face_xy"][1]), fs, fs], Color32::WHITE);
@@ -3589,7 +3860,10 @@ pub fn draw_practice_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
         let (dmg, base) = p.last;
         at(&h["damage"], &format!("DMG:{dmg} ({:03}%)", if base > 0 { dmg * 100 / base } else { 0 }));
     }
-    at(&h["mode"], d.raw["practice"]["modes"][p.mode]["title"].as_str().unwrap_or_default());
+    // (the demo's states print neither, 0x379824 being state 0's)
+    if p.demo.state == 0 {
+        at(&h["mode"], d.raw["practice"]["modes"][p.mode]["title"].as_str().unwrap_or_default());
+    }
     // FREESTYLE's COMMAND CAPTURE (0x37FE58) by its state: nothing on, its name (higher with a recording) over SELECT
     // + o = REC (and SELECT + x = PLAY with a recording); else the state's text blinking and SELECT = STOP. The keys:
     // SELECT, then the small font's texts and button icons (its top 20 over the foot)
@@ -3600,20 +3874,17 @@ pub fn draw_practice_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
         for part in parts.as_array().into_iter().flatten() {
             let text = part[0].as_str().unwrap_or_default();
             if let Some(cell) = k["buttons"][text].as_i64() {
-                // (the icons in the small font's colour: `003_003_cNN.png` beside its `003_002_cNN.png`)
-                let cell = cell as f32 * 16.0;
-                let coloured = d.raw["fonts"]["small"]["colours"][int(&part[1])].as_str().map(|f| f.replace("003_002", "003_003"));
-                if let Some((tex, [tw, th])) = coloured.and_then(|f| art.pic(&f)).or_else(|| art.pic("003_003.png")) {
-                    let uv = Rect::from_min_max(Pos2::new(cell / tw as f32, 0.0), Pos2::new((cell + 16.0) / tw as f32, 16.0 / th as f32));
-                    let [rx, ry, rw, rh] = sv([x, y - 20.0, 16.0, 16.0]);
-                    painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, Color32::WHITE);
-                }
+                button_icon(painter, v, art, d, cell as f32, int(&part[1]), x, y - 20.0);
             } else {
                 small_in(painter, v, art, d, Some(int(&part[1])), text, x, y - 20.0, Color32::WHITE);
             }
             x += small_width(d, text);
         }
     };
+    let combo = &d.raw["practice"]["combo"];
+    if p.mode == 3 && p.demo.state == 0 && combo.is_object() {
+        keys(&combo["keys"]["small"], num(&combo["keys"]["xy"][0]), num(&combo["keys"]["xy"][1]));
+    }
     if p.mode != 0 || !c.is_object() {
         return;
     }
@@ -3647,8 +3918,8 @@ pub fn draw_practice_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
 /// Practice's menu (`practice`) in the pause's window: the mode's name, its rows in their colours (the cursor's over
 /// the pause's bar, from its value's line where it has one), the values right-aligned (ON / OFF in GAME OPTIONS'
 /// default / off colours), the arrow after MODE SELECT or the cursor's value, the help line (the mode's, the row's
-/// or its value's). `name`: the player's character (COMBO DISPLAY's "%s (YOU)").
-pub fn draw_practice(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Practice, name: &str) {
+/// or its value's). COMBO DISPLAY's side by its name (0x415840) and TYPE as its combos have them (0x37F3E8, 0x37F4B0).
+pub fn draw_practice(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Practice) {
     let pr = &d.raw["practice"];
     let rows = p.rows(d);
     let (x0, y0, w) = (num(&pr["window"][0]), num(&pr["window"][1]), num(&pr["window"][2]));
@@ -3672,21 +3943,35 @@ pub fn draw_practice(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: 
     for (k, r) in rows.iter().enumerate() {
         let (label, y, on) = (r["label"].as_str().unwrap_or_default(), num(&r["y"]), k == p.cursor);
         let vy = r["value_y"].as_f64().map_or(y, |v| v as f32);
-        let value = r["values"][p.values.get(p.mode).and_then(|m| m.get(k)).copied().unwrap_or(0)].as_str();
+        let at = p.values.get(p.mode).and_then(|m| m.get(k)).copied().unwrap_or(0);
+        let value = match r["kind"].as_str() {
+            Some("who") => r["values"][at].as_str().map(|t| t.replace("%s", &body_name(d, p.bodies[at.min(1)]))),
+            Some("type") => {
+                let n = combos(d, p.bodies[p.value(d, "COMBO DISPLAY").unwrap_or(0).min(1)]).len();
+                let t = |i: usize| r["values"][i].as_str().unwrap_or_default().to_string();
+                Some(match at {
+                    _ if n == 0 => t(2),
+                    _ if at < n => crate::art::printf(&t(0), &[at as u32 + 1]),
+                    _ => t(1),
+                })
+            }
+            _ => r["values"][at].as_str().map(String::from),
+        };
         if on {
             bar(painter, v, d, [x0, x, right], y);
         }
         let end = chrome(painter, v, art, d, label, x, y, if on { colour("cursor") } else { colour("item") }, size);
-        if let Some(t) = value {
+        if let Some(t) = value.as_deref() {
             let c = match t {
                 "ON" => colour("on"),
                 "OFF" => colour("off"),
-                _ => colour("value"),
+                // (COMBO TRAINING's TYPE in its own, 0x37F4B0)
+                _ => r["colour"].as_u64().map(|c| c as usize).or(colour("value")),
             };
             chrome(painter, v, art, d, t, right - measure(t), vy, c, size);
-            for (i, l) in r["lines"].as_array().into_iter().flatten().enumerate() {
-                let l = l.as_str().unwrap_or_default().replace("%s", &name.to_uppercase());
-                chrome(painter, v, art, d, &l, right - measure(&l), vy - 21.0 * (i + 1) as f32, colour("value"), size);
+            // (QUICK ROLL's down / up icon over its two spaces, 0x37F5B8)
+            if let Some(cell) = r["icons"][at.to_string()].as_u64() {
+                button_icon(painter, v, art, d, cell as f32, int(&r["icon_colour"]), right + num(&r["icon_dx"]), vy - 20.0);
             }
             if on {
                 arrow(right + 2.0, vy);
@@ -3716,6 +4001,12 @@ pub fn draw_practice(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: 
         let text = format!("{}\\n{}", texts[first].as_str().unwrap_or_default(), texts[second].as_str().unwrap_or_default());
         help_text(painter, v, art, d, &text, 0);
     }
+}
+
+/// A character's name as the PS2 writes it (`select.quick.names`, 0x415840: its first costume's).
+/// shortcut: costume 0's name (Eddy's, not Tiger's), the fighter keeping no costume.
+fn body_name(d: &Data, body: usize) -> String {
+    d.raw["select"]["quick"]["names"]["texts"][body * 8].as_str().unwrap_or_default().to_string()
 }
 
 /// A PS2 RGBA `[r, g, b, a]` (alpha 0x80 opaque).
@@ -3756,9 +4047,10 @@ impl CommandList {
 
 /// A command list text (0x3DFA00) in the help font from (x, y): 0xFC 0xFF aligns each line right in `width`, 0xFF 'n'
 /// starts a line 20 lower, 0xDB-0xEB arrows and 0xEC-0xFB buttons (`command_list.arrows` / `buttons`), each glyph its
-/// help font width on, a space 4; at PS2 colour `level`.
+/// help font width on, a space 4; at PS2 colour `level`; the first `lit` icons outside brackets lit (the code `L`:
+/// the arrows' palette rows 2 more, the buttons' `lit` picture).
 #[allow(clippy::too_many_arguments)]
-fn command_text(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, width: f32, level: f32) {
+fn command_text(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, width: f32, level: f32, lit: usize) {
     let (f, c) = (&d.raw["help"]["font"], &d.raw["command_list"]);
     let (ar, bt) = (&c["arrows"], &c["buttons"]);
     let advance = |ch: u32| match ch {
@@ -3777,6 +4069,7 @@ fn command_text(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &s
     let Some((font, [tw, th])) = art.pic(f["picture"].as_str().unwrap_or_default()) else { return };
     let (gw, gh, cols) = (num(&f["glyph"][0]), num(&f["glyph"][1]), int(&f["columns"]).max(1));
     let dy = num(&c["dy"]);
+    let (mut lit, mut bracket) = (lit, false);
     for (k, line) in lines.iter().enumerate() {
         let line = line.strip_prefix(&[u32::from('n')]).filter(|_| k > 0).unwrap_or(line);
         let w: f32 = line.iter().map(|&ch| advance(ch)).sum();
@@ -3793,16 +4086,23 @@ fn command_text(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &s
                 }
             };
             let size = |s: &Value| [num(&s[0]), num(&s[1])];
+            bracket = match ch {
+                0x28 => true,
+                0x29 => false,
+                _ => bracket,
+            };
+            let on = (0xdc..=0xfb).contains(&ch) && !bracket && lit > 0;
+            lit -= usize::from(on);
             match ch {
                 // (0x3DF500: the arrow's cell and mirrors by its direction, the star the ninth; palette row 1 tapped,
                 // 0 held)
                 0xdb..=0xeb => {
                     let (k, row) = if ch == 0xdb { (8, 1.0) } else { (((ch - 0xdc) & 7) as usize, if ch >= 0xe4 { 0.0 } else { 1.0 }) };
                     let cell = &ar["cells"][k];
-                    icon(&ar["picture"], size(&ar["cell"]), num(&cell[0]), row, int(&cell[1]) as i64, at);
+                    icon(&ar["picture"], size(&ar["cell"]), num(&cell[0]), row + if on { 2.0 } else { 0.0 }, int(&cell[1]) as i64, at);
                 }
                 // (0x3DF150: the palette row is the buttons pressed)
-                0xec..=0xfb => icon(&bt["picture"], size(&bt["size"]), 0.0, (ch - 0xec) as f32, 0, at),
+                0xec..=0xfb => icon(if on { &bt["lit"] } else { &bt["picture"] }, size(&bt["size"]), 0.0, (ch - 0xec) as f32, 0, at),
                 0x20 => {}
                 _ => {
                     let g = ch.saturating_sub(32) as usize;
@@ -3838,9 +4138,9 @@ pub fn draw_command_list(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
     image(painter, v, art, &d.picture(&["select", "faces", &body.to_string()]), [x0 + num(&c["face_xy"][0]), y0 + num(&c["face_xy"][1]), fs, fs], Color32::WHITE);
     let (width, level) = (num(&c["width"]), num(&c["level"]));
     let name = c["lists"][body]["name"].as_str().unwrap_or_default();
-    command_text(painter, v, art, d, name, x0 + num(&c["name_xy"][0]), y0 + num(&c["name_xy"][1]), width, level);
+    command_text(painter, v, art, d, name, x0 + num(&c["name_xy"][0]), y0 + num(&c["name_xy"][1]), width, level, 0);
     let facing = format!("\u{fc}\u{ff}{}", c["facing"]["text"].as_str().unwrap_or_default());
-    command_text(painter, v, art, d, &facing, x0, y0 + num(&c["facing"]["y"]), width, level);
+    command_text(painter, v, art, d, &facing, x0, y0 + num(&c["facing"]["y"]), width, level, 0);
     // (the ease: what is left less a third, rounded up, 0x3DCC5C)
     let left = list.offset.get();
     let eased = (left.abs() - (left.abs() + 3) / 3).max(0) * left.signum();
@@ -3863,8 +4163,8 @@ pub fn draw_command_list(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
             Art::shade(&clip, v, sv([bx, y, bw, bands[0]]), [rgba(&colours[0]); 4]);
             Art::shade(&clip, v, sv([bx, y + bands[0], bw, bands[1]]), [rgba(&colours[1]); 4]);
         }
-        command_text(&clip, v, art, d, label, x0, y, width, level);
-        command_text(&clip, v, art, d, m[2].as_str().unwrap_or_default(), x0 + num(&c["keys_xy"][0]), y + num(&c["keys_xy"][1]), width, level);
+        command_text(&clip, v, art, d, label, x0, y, width, level, 0);
+        command_text(&clip, v, art, d, m[2].as_str().unwrap_or_default(), x0 + num(&c["keys_xy"][0]), y + num(&c["keys_xy"][1]), width, level, 0);
         y += row_h;
     }
     let span = row_h * rows as f32;
@@ -4866,7 +5166,8 @@ mod tests {
                 "training": {"entries": [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]}}, {"moves": [[0, "A", ""]]}]},
             "records": {"defaults": {"survivors": [{"members": [0, 1], "score": 5, "name": "PAU"}, {"members": [2, 3], "score": 1, "name": "KIN"}]},
                 "letters": "ABC<=", "name_len": 3},
-            "ranking": {"frames": 10, "rows": [{}, {}, {"dy": 75, "first": 135, "shown": 5, "hold": 130}], "pace": {"fade": 8, "scroll": 12, "after": 60}},
+            "ranking": {"frames": 10, "rows": [{}, {}, {"dy": 75, "first": 135, "shown": 5, "hold": 130}], "pace": {"fade": 8, "scroll": 12, "after": 60},
+                "arena": {"angle": 0xC00, "step": -3, "radius": 5000, "y": -1400, "h": 615}},
             "practice": {"modes": [
                 {"rows": [{"label": "MODE SELECT", "kind": "mode"}, {"label": "CANCEL", "kind": "close"},
                     {"label": "TRAINING DUMMY", "kind": "list", "values": ["STAND", "STAND GUARD"], "default": 0}]},
@@ -4950,12 +5251,12 @@ mod tests {
         assert_eq!(run.teams[1].len(), 2);
         let max = 140 * kumite_sim::ONE;
         let Next::Fight(next) = run.after(&d, &r, &mut Progress::default(), Some(0), [max / 2, 0], [max; 2], None, 0, &mut seed) else { panic!() };
-        assert_eq!((next.health[0], next.member), (Some(max / 2 + max / 100 * 15), [0, 1]));
+        assert_eq!((next.health[0], next.member), (Some(max / 2 + max * 15 / 100), [0, 1]));
         assert!(matches!(next.after(&d, &r, &mut Progress::default(), Some(0), [max, 0], [max; 2], None, 0, &mut seed), Next::Screen(Page::Message { .. })));
     }
 
     /// SURVIVAL is a tag battle: a won match gives each of the player's members 15 % of its full health back, to its
-    /// health and its recoverable cap (0x3C1620), carried into the next.
+    /// health and its recoverable cap (0x3C1620: max x 15 / 100, as PCSX2 shows it), carried into the next.
     #[test]
     fn survival_refills_both_members() {
         let (d, r) = (data(), roster());
@@ -4963,7 +5264,7 @@ mod tests {
         let run = Run::new(&d, &r, &Progress::default(), SURVIVAL, [vec![(0, 0), (1, 0)], vec![]], &mut seed);
         assert!(tag(SURVIVAL));
         let max = 140 * kumite_sim::ONE;
-        let (q, add) = (max / 4, max / 100 * 15);
+        let (q, add) = (max / 4, max * 15 / 100);
         let members = [[(q, 2 * q, max), (max, max, max)], [(0, 0, max); 2]];
         let Next::Fight(next) = run.after(&d, &r, &mut Progress::default(), Some(0), [q, 0], [max; 2], Some(members), 0, &mut seed) else { panic!() };
         assert_eq!((next.wins[0], next.health[0], next.carry[0]), (1, Some(q + add), Some([(q + add, 2 * q + add), (max, max)])));
@@ -5157,6 +5458,17 @@ mod tests {
         assert_eq!((run.mode, run.ladder.len(), run.teams[0].len()), (ARCADE, 8, 2));
         p.stage = 1;
         assert!(d.selectable(p.stage, 2));
+    }
+
+    /// The ranking's arena camera (0x3B7888), as PCSX2's camera block read: frame 0 at (0, -1400, -5000), yaw 0;
+    /// 341 frames in at (-5000, -1400, 0) give or take the rounding, yaw -1023.
+    #[test]
+    fn ranking_orbits_the_arena() {
+        let d = data();
+        let v = ranking_view(&d, 0).unwrap();
+        assert_eq!((v.eye, v.yaw, v.pitch), ([0, -1400, -5000], 0, 0));
+        let v = ranking_view(&d, 341).unwrap();
+        assert!((v.eye[0] + 5000).abs() <= 1 && v.eye[2].abs() <= 10 && v.yaw == -1023, "{v:?}");
     }
 
     /// The ranking's pace (0x3C8A88): 32 frames in from black; 7 rows: the last 2 down 150 from above at 12 a frame
@@ -5408,6 +5720,36 @@ mod tests {
         p.chain_step(&d, 0, 7);
         assert_eq!((p.chain.state, p.chain.at, p.chain.timer), (3, 1, 3));
         assert!(!p.chain_key(Key::Button(0)) && p.chain_key(Key::Start) && p.chain.state == 0);
+    }
+
+    /// COMBO TRAINING's demo: each step's pad for its frames (as facing right, mirrored facing left), its icons lit at
+    /// its start, the end after the last; TYPE's last value: RANDOM only for the CPU's side, with two combos or more.
+    #[test]
+    fn combo_demo_plays_its_steps() {
+        let mut d = data();
+        let entry = |combo: usize, first: usize| {
+            let mut e = vec![0; 33];
+            (e[0], e[1], e[4]) = (2, first, combo);
+            e
+        };
+        let raw = &mut Arc::get_mut(&mut d).unwrap().raw;
+        raw["command_list"] = serde_json::json!({"lists": [{"training": {
+            "entries": [entry(0, 0), entry(1, 0), entry(1, 2)],
+            "steps": [[2, 0x80, 1, 0], [1, 0x2000, 0, 0], [1, 0x10, 1, 0], [1, 0, 0, 0]]}}]});
+        if let Some(m) = raw["practice"]["modes"].as_array_mut() {
+            m.push(serde_json::json!({"rows": []}));
+            m.push(serde_json::json!({"rows": [{"label": "COMBO DISPLAY", "kind": "who", "values": ["%s (YOU)", "%s (CPU)"], "default": 0},
+                {"label": "", "kind": "type", "default": 0}]}));
+        }
+        let mut p = Practice { mode: 3, ..Practice::new(&d) };
+        p.demo = Demo { state: 2, entry: 1, left: 2, lit: 1, ..Demo::default() };
+        let pads: Vec<_> = (0..4).map(|_| p.combo_pad(&d, false).map(|(_, pad)| (pad.buttons, pad.left, p.demo.lit))).collect();
+        assert_eq!(pads, [Some((1, false, 1)), Some((1, false, 1)), Some((0, true, 1)), None]);
+        assert_eq!(p.demo.state, 3);
+        assert_eq!(combos(&d, 0), [1, 2]);
+        assert_eq!(p.last_type(&d), 1, "the player's: TYPE 1, TYPE 2");
+        p.values[3][0] = 1;
+        assert_eq!(p.last_type(&d), 2, "the CPU's: and RANDOM");
     }
 
     /// Practice's menu: MODE SELECT's left / right turn the modes, a row's left / right its values (round), CANCEL and

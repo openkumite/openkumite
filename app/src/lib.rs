@@ -2101,6 +2101,14 @@ impl App {
             if let Some(pad) = p.capture_step(d, select, pads[0], f.facing_right(0), f.facing_right(1)) {
                 pads[1] = pad;
             }
+            // COMBO TRAINING's demo: SELECT; the player stands still while a side plays the combo
+            let play = p.combo_step(d, select, f);
+            if p.demo_on() {
+                pads[0] = Pad::default();
+            }
+            if let Some((k, pad)) = play {
+                pads[k] = pad;
+            }
         }
         // the practice dummy: its TRAINING DUMMY action, the second pad (CONTROLLER) or the CPU (VS CPU)
         if let (Some(p), None) = (fight.practice.as_ref(), p2_script) {
@@ -5248,7 +5256,7 @@ impl App {
                 return true;
             }
             if !p.open {
-                if p.chain_key(key) {
+                if p.chain_key(key) || p.demo_key(key) {
                     return true;
                 }
                 // (SELECT is COMMAND CAPTURE's, not the menu's)
@@ -5530,13 +5538,18 @@ impl App {
                     Some(cs) => (&cs.scene.game, &cs.models),
                     None => (&fight.bout.game, &scene.models),
                 };
+                // Tekken Tag's ranking (screen 7) over the arena: the fighters gone, its own orbit
+                let ranking = match (self.roster.ttt.as_deref(), self.screen.as_ref()) {
+                    (Some(d), Some(s @ Screen::Ttt(f))) if s.ttt_over_arena() => ttt::ranking_view(d, f.frame),
+                    _ => None,
+                };
                 for (i, model) in gpu_models.iter().enumerate() {
                     let (mut pose, mut place) = game.pose(i);
                     if i < 2 {
                         fight.secondary.borrow_mut()[i].apply(&game.bodies[i].character, game.shown_clip(i), game.fight.frame, &mut pose);
                     }
                     fight.sway(i, &mut pose, place);
-                    if !game.visible[i] {
+                    if !game.visible[i] || ranking.is_some() {
                         // not drawn (the win pose shows the winner only, the loser shot the loser)
                         place = glam::Mat4::from_scale(glam::Vec3::ZERO);
                     }
@@ -5573,7 +5586,7 @@ impl App {
                 }
                 // the game's fight camera (kumite_sim::camera), stepped with the fight, plus the move's screen shake;
                 // or the debug orbit camera
-                let mut view = game.camera.view;
+                let mut view = ranking.unwrap_or(game.camera.view);
                 view.pitch += self.vfx.as_ref().map_or(0, |v| v.shake_pitch()) as i64;
                 let (eye, forward, fov_y) = kumite_game::view_camera(&view);
                 let mut cam = match self.debug.free_cam {
@@ -5593,7 +5606,11 @@ impl App {
                     },
                 };
                 // the stage around what the camera frames: the fighters as shown (the replay's)
-                let shown = |i: usize| game.display.map_or(game.fight.fighters[i].root(), |d| d[i].root);
+                // (the ranking's: both at 0, 0x3B77B8)
+                let shown = |i: usize| match ranking {
+                    Some(_) => glam::Vec3::ZERO,
+                    None => game.display.map_or(game.fight.fighters[i].root(), |d| d[i].root),
+                };
                 stage_view(&mut cam, scene, [shown(0), shown(1)].map(|p| p / kumite_game::UNITS), self.debug.free_cam.is_some());
                 // the hit light on the fighters (the scene has none)
                 if cutscene.is_none() {
@@ -6077,7 +6094,7 @@ impl App {
                             if let Some(list) = p.commands.as_ref() {
                                 ttt::draw_command_list(&painter, &view, art, d, list, 0, ttt::command_body(&f.bout, 0), true);
                             } else if p.open {
-                                ttt::draw_practice(&painter, &view, art, d, p, name);
+                                ttt::draw_practice(&painter, &view, art, d, p);
                             } else if !matches!(f.bout.phase, Phase::TeamIntro { .. }) {
                                 // (none over the team intro, as PCSX2 shows it)
                                 ttt::draw_practice_hud(&painter, &hud_view, art, d, p);
@@ -6855,6 +6872,9 @@ fn draw_pause(ctx: &egui::Context, art: &Art, items: &[String], cursor: usize, p
     }
 }
 
+/// `--keys`' SELECT (Backspace held for a step; headless only).
+const SELECT_KEY: usize = usize::MAX;
+
 /// `--keys "30:start,60:b1,90:shot"`: menu keys (up down left right start back b1..b5) or a screenshot
 /// (`shot`) at drawn-frame numbers.
 /// `--keys "30:down,40:p3:start"`: frame:key (1P's), or frame:pN:key (player N's).
@@ -6875,6 +6895,11 @@ fn parse_keys(s: &str) -> Result<Vec<(u64, usize, Option<Key>)>> {
             "back" => Some(Key::Back),
             "b1" | "b2" | "b3" | "b4" | "b5" => Some(Key::Button(k[1..].parse::<usize>()? - 1)),
             "shot" => None,
+            // (SELECT held for one step, headless: a shot's None for the player SELECT_KEY)
+            "select" => {
+                out.push((f.parse()?, SELECT_KEY, None));
+                continue;
+            }
             other => anyhow::bail!("--keys: unknown key {other:?}"),
         };
         out.push((f.parse()?, player, key));
@@ -7500,6 +7525,7 @@ impl App {
                 while self.key_script.first().is_some_and(|(f, _, _)| *f <= self.frames) {
                     match self.key_script.remove(0) {
                         (_, p, Some(k)) => keys.push((p, k)),
+                        (_, SELECT_KEY, None) => {}
                         (_, _, None) => self.debug.actions.push(Action::Screenshot),
                     }
                 }
@@ -7972,8 +7998,9 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             return Ok(());
         }
         // Tekken Tag's ranking naming a new record (--variant 1: SURVIVAL's, 4 wins; 2: GAME OVER's CHARACTER USAGE,
-        // Xiaoyu 3 picks and Eddy 1; else TIME ATTACK's, 6'00"00)
+        // Xiaoyu 3 picks and Eddy 1; else TIME ATTACK's, 6'00"00), over the fight's arena (--stage)
         Some("ttt-name") => {
+            app.load(&r, None, Vec::new())?;
             let variant = std::env::args().skip_while(|a| a != "--variant").nth(1);
             let survival = variant.as_deref() == Some("1");
             let record = ttt::Record { score: if survival { 4 } else { 21600 }, members: vec![7, 4], name: String::new() };
@@ -8147,9 +8174,16 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
     // fights and menu screens alike run N steps (menus animate: blinking, the scrolling wall, the timer);
     // --keys apply at their step here
     for i in 0..frames {
+        app.keys.remove(&KeyCode::Backspace);
         while app.key_script.first().is_some_and(|(f, _, _)| *f <= i) {
-            if let (_, p, Some(k)) = app.key_script.remove(0) {
-                app.input_key(p, k);
+            match app.key_script.remove(0) {
+                (_, p, Some(k)) => {
+                    app.input_key(p, k);
+                }
+                (_, SELECT_KEY, None) => {
+                    app.keys.insert(KeyCode::Backspace);
+                }
+                _ => {}
             }
         }
         // (a replay's seeks: at once, as each drawn frame does)
@@ -8352,7 +8386,7 @@ Debug and testing:
                                debug overlays
   --record-demo FILE           record the session's inputs; --demo FILE replays one
   --replay ID|latest           watch a replay (REPLAYS lists them; ID: its file's name)
-  --keys \"FRAME:KEY,...\"       scripted menu keys (up down left right start back b1..b5, shot)
+  --keys \"FRAME:KEY,...\"       scripted menu keys (up down left right start back b1..b5, select, shot)
   --quit-after N               quit after N drawn frames
   --seed N                     the game's random seed
   --round-time SECONDS, --rounds N
