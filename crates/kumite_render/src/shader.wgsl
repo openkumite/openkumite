@@ -43,6 +43,11 @@ struct Globals {
     sky_eye: vec4<f32>,
     view_x: vec4<f32>,
     view_y: vec4<f32>,
+    // Tekken Tag's arena fog: its colour (linear), the coefficient's line (255 + slope x depth in mm; w = 1 when on)
+    fog_colour: vec4<f32>,
+    fog_line: vec4<f32>,
+    // x 1: the 3D pass on the frame's sRGB bytes (Tekken Tag's: the PS2's GS modulates and blends them)
+    gamma: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var tex: texture_2d<f32>;
@@ -57,6 +62,8 @@ struct VsOut {
     @location(3) normal: vec3<f32>,
     // Tekken Tag's arena: above 0 on a triangle the PS2 does not draw (a corner outside its guard band, below)
     @location(4) dropped: f32,
+    // Tekken Tag's arena: how much of the fog colour (0: none)
+    @location(5) fog: f32,
 };
 
 // Standard 4-joint linear blend skinning.
@@ -135,7 +142,7 @@ fn fs_floor_shadow(i: VsOut) -> @location(0) vec4<f32> {
     let c = textureSample(tex, samp, clamp(uv, vec2(0.0), vec2(1.0)));
     let a = g.shadow_map.w * f32(all(uv >= vec2(0.0)) && all(uv <= vec2(1.0)));
     let f = (1.0 - a * c.r) * (1.0 - a * c.g) * (1.0 - a * c.b) * (1.0 - a * c.a);
-    return vec4(srgb_to_linear(vec3(f)), 1.0);
+    return vec4(select(srgb_to_linear(vec3(f)), vec3(f), g.gamma.x > 0.5), 1.0);
 }
 
 @fragment
@@ -153,6 +160,14 @@ fn vs_world(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2
     o.world = pos;
     o.normal = vec3(0.0);
     return o;
+}
+
+// A texel as the pass draws: the frame's linear colour, or (g.gamma) its sRGB bytes
+fn texel(uv: vec2<f32>) -> vec4<f32> {
+    let t = textureSample(tex, samp, uv);
+    if (g.gamma.x < 0.5) { return t; }
+    let c = t.rgb;
+    return vec4(select(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3(0.0031308)), t.a);
 }
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
@@ -177,9 +192,18 @@ fn vs_static(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(
 
 // Tekken Tag's arena: the texture coordinates its VU1 microcode makes (n.w, the batch's flags): 1 (0x16E) and 2
 // (0x195) the normal in the camera's axes (x right, y down) x 0.25 (VU1 constant 0.25), + 0.5 or the stored ones;
-// 8 (0x128) the reflection of the way to the eye, its height first x 3 (vf31.w), as ((x + 1) / 2, (z + 1) / 2)
-fn env_uv(uv: vec2<f32>, n: vec4<f32>, p: vec3<f32>, eye: vec3<f32>) -> vec2<f32> {
+// 8 (0x128) the reflection of the way to the eye, its height first x 3 (vf31.w), as ((x + 1) / 2, (z + 1) / 2); 4
+// (0x1BC, flags 4 and 0x400) that reflection unscaled as a panorama: its bearing atan2(z, x) / 2 pi + 0.5 (EATANxz /
+// EATANxy and the signs), -(y / 2 + 0.5)
+fn env_uv(uv: vec2<f32>, normal: vec4<f32>, p: vec3<f32>, eye: vec3<f32>) -> vec2<f32> {
+    // (16 more on a fogged strip)
+    let n = vec4(normal.xyz, normal.w % 16.0);
     if (n.w < 0.5) { return uv; }
+    if (n.w > 3.0 && n.w < 5.0) {
+        let v = normalize(eye - p);
+        let r = 2.0 * n.xyz * dot(v, n.xyz) - v;
+        return vec2(atan2(r.z, r.x) / 6.2831853 + 0.5, -(r.y * 0.5 + 0.5));
+    }
     if (n.w > 4.0) {
         let e = eye - p;
         let v = normalize(vec3(e.x, 3.0 * e.y, e.z));
@@ -188,6 +212,13 @@ fn env_uv(uv: vec2<f32>, n: vec4<f32>, p: vec3<f32>, eye: vec3<f32>) -> vec2<f32
     }
     let s = 0.25 * vec2(dot(n.xyz, g.view_x.xyz), -dot(n.xyz, g.view_y.xyz));
     return s + select(vec2(0.5), uv, n.w > 1.5);
+}
+
+// Tekken Tag's arena: a fogged strip's (normal.w 16 or more; its PRIM's FGE) share of the fog colour, the GS's
+// 1 - f / 255 for the VU1 block's f = 255 + slope x w (mm), clamped
+fn fog_of(normal: vec4<f32>, w: f32) -> f32 {
+    if (g.fog_line.w < 0.5 || normal.w < 15.5) { return 0.0; }
+    return 1.0 - clamp(g.fog_line.x + g.fog_line.y * w * 1000.0, 0.0, 255.0) / 255.0;
 }
 
 // Tekken Tag's floor cell's level of detail (0x340408): the mean depth of its square's corners in front of the camera
@@ -238,6 +269,7 @@ fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32
     let outside = o.clip.w < 0.001 || abs(s.x) > 2047.0 / 224.0 || abs(s.y) > 2047.0 / 224.0;
     o.dropped = select(0.0, 1.0, g.floor_cell.z > 0.5 && outside);
     o.uv = env_uv(uv, normal, p, g.eye.xyz);
+    o.fog = fog_of(normal, o.clip.w);
     o.color = color;
     o.world = p;
     o.normal = vec3(0.0);
@@ -263,6 +295,7 @@ fn vs_sky(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) 
     var o: VsOut;
     o.clip = g.sky_view_proj * vec4(pos, 1.0);
     o.uv = env_uv(uv, normal, pos, g.sky_eye.xyz);
+    o.fog = fog_of(normal, o.clip.w);
     o.color = color;
     o.world = vec3(0.0);
     o.normal = vec3(0.0);
@@ -271,9 +304,9 @@ fn vs_sky(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) 
 
 @fragment
 fn fs_unlit(i: VsOut) -> @location(0) vec4<f32> {
-    let t = textureSample(tex, samp, i.uv);
+    let t = texel(i.uv);
     if (t.a < 0.5) { discard; }
-    return vec4(t.rgb * i.color.rgb, 1.0);
+    return vec4(mix(t.rgb * i.color.rgb, g.fog_colour.rgb, i.fog), 1.0);
 }
 
 // Stage meshes: unlit, cut to the floor patch when one is set.
@@ -292,9 +325,9 @@ fn fs_static(i: VsOut) -> @location(0) vec4<f32> {
         if (g.cutaway2.w > 0.5 && dot(i.world - g.eye.xyz, f) < near - g.cutaway.w) { discard; }
     }
     if (g.near_cut.y > 0.5 && i.world.y > 0.05 && i.world.z > g.near_cut.x) { discard; }
-    let t = textureSample(tex, samp, i.uv);
+    let t = texel(i.uv);
     if (t.a < 0.5) { discard; }
-    return vec4(t.rgb * i.color.rgb * floor_light(i.world), 1.0);
+    return vec4(mix(t.rgb * i.color.rgb * floor_light(i.world), g.fog_colour.rgb, i.fog), 1.0);
 }
 
 fn in_tube(p: vec3<f32>, fighter: vec3<f32>, margin: f32) -> bool {
@@ -334,7 +367,7 @@ fn floor_light(p: vec3<f32>) -> f32 {
 // (the engine lights per vertex with NCCS/NCCT; this is a stand-in until normals are ported).
 @fragment
 fn fs_lit(i: VsOut) -> @location(0) vec4<f32> {
-    let t = textureSample(tex, samp, i.uv);
+    let t = texel(i.uv);
     if (t.a < 0.5) { discard; }
     return vec4(lit(i, t.rgb), 1.0);
 }
@@ -342,7 +375,7 @@ fn fs_lit(i: VsOut) -> @location(0) vec4<f32> {
 // A character's blended primitive (Tekken Tag's): lit the same, over the picture by the texture's alpha.
 @fragment
 fn fs_lit_blend(i: VsOut) -> @location(0) vec4<f32> {
-    let t = textureSample(tex, samp, i.uv);
+    let t = texel(i.uv);
     return vec4(lit(i, t.rgb), t.a);
 }
 
@@ -396,14 +429,14 @@ fn fs_line(i: LineOut) -> @location(0) vec4<f32> {
 // half: texture × colour over the picture at the colour's alpha (the dust's 50 %).
 @fragment
 fn fs_particle_add(i: VsOut) -> @location(0) vec4<f32> {
-    let t = textureSample(tex, samp, i.uv);
+    let t = texel(i.uv);
     if (t.a < 0.5) { discard; }
     return vec4(t.rgb * i.color.rgb, 0.0);
 }
 
 @fragment
 fn fs_particle_alpha(i: VsOut) -> @location(0) vec4<f32> {
-    let t = textureSample(tex, samp, i.uv);
+    let t = texel(i.uv);
     if (t.a < 0.5) { discard; }
     return vec4(t.rgb * i.color.rgb, i.color.a);
 }
@@ -411,13 +444,13 @@ fn fs_particle_alpha(i: VsOut) -> @location(0) vec4<f32> {
 // Tekken Tag's arenas' particles as the GS draws them (texture x vertex colour, ALPHA 0x44 by its alpha, or added)
 @fragment
 fn fs_particle_soft_alpha(i: VsOut) -> @location(0) vec4<f32> {
-    let t = textureSample(tex, samp, i.uv);
+    let t = texel(i.uv);
     return vec4(t.rgb * i.color.rgb, t.a * i.color.a);
 }
 
 @fragment
 fn fs_particle_soft_add(i: VsOut) -> @location(0) vec4<f32> {
-    let t = textureSample(tex, samp, i.uv);
+    let t = texel(i.uv);
     return vec4(t.rgb * i.color.rgb, 0.0);
 }
 
@@ -426,13 +459,13 @@ fn fs_particle_soft_add(i: VsOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_stage_add(i: VsOut) -> @location(0) vec4<f32> {
     if (i.dropped > 0.0) { discard; }
-    let t = textureSample(tex, samp, i.uv);
-    return vec4(t.rgb * i.color.rgb * t.a * i.color.a, 0.0);
+    let t = texel(i.uv);
+    return vec4(mix(t.rgb * i.color.rgb, g.fog_colour.rgb, i.fog) * t.a * i.color.a, 0.0);
 }
 
 @fragment
 fn fs_stage_shade(i: VsOut) -> @location(0) vec4<f32> {
     if (i.dropped > 0.0) { discard; }
-    let t = textureSample(tex, samp, i.uv);
+    let t = texel(i.uv);
     return vec4(0.0, 0.0, 0.0, t.a * i.color.a);
 }
