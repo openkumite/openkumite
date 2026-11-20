@@ -324,14 +324,22 @@ fn devils_laser_strikes() {
         b.step([Pad::default(); 2]);
     }
     let mut at = None;
+    // (drawn as the PS2's 0x3A8D08: strips along it, the eye flare its first 15 frames; a pack of format 65 on)
+    let mut v = kumite_game::vfx::Vfx::new(&a);
+    let drawn = v.data.as_ref().is_some_and(|d| d.characters.get(&DEVIL).is_some_and(|c| c.burst.is_some()));
+    let (mut strips, mut flares) = (0, 0);
     for pad in parse_script("n*4,1+2+3+4*2,n*80,n+1+2*2,n*60").unwrap() {
         b.step([pad, Pad::default()]);
+        v.step(&b.game);
+        strips = strips.max(v.ribbons.len());
+        flares += usize::from(v.sprites().iter().any(|s| s.sheet > 0 && (s.size - 0.899).abs() < 0.01));
         let f = &b.game.fight.fighters;
         if at.is_none() && f[1].alias == 3626 {
             at = Some((f[0].current.index, f[0].frame));
         }
     }
     assert!(at.is_some_and(|(m, k)| m == 4175 && (35..=38).contains(&k)), "Hwoarang falls at {at:?}");
+    assert!(!drawn || (strips > 2 && flares == 15), "{strips} strips, {flares} frames of the flare");
 }
 
 /// The strikes take the game's joint places (0x439A80), not the drawn skeleton's: Jack-2's knee is 390 down his
