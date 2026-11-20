@@ -146,6 +146,29 @@ fn a_jump_goes_toward_the_opponent() {
     assert!((950.0..1100.0).contains(&went), "{went}");
 }
 
+/// A ground roll's basis turns toward where the opponent was at its start (+0x110 from the other's root, 0x36A814):
+/// King rolls sideways off his d/f+1+4 (PCSX2: x +309, z +1105 over alias 219), not round in a circle.
+#[test]
+fn a_ground_roll_goes_sideways() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [KING, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let (mut start, mut back) = (None, 0.0f32);
+    for pad in parse_script("d/f+1+4*2,n*80,1+2*2,n*40").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        if f.alias == 219 {
+            let s = *start.get_or_insert(f.root());
+            // (Lei is on +x: a circle swings back past the start)
+            back = back.min(f.root().x - s.x);
+        }
+    }
+    let d = b.game.fight.fighters[0].root() - start.expect("the roll");
+    assert!(d.z.abs() > 800.0 && back > -100.0, "{d}, back {back}");
+}
+
 /// King's first model.
 const KING: usize = 390;
 

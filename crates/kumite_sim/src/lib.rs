@@ -499,7 +499,7 @@ pub struct Fighter {
     acc: f32,
     since: u32,
     pub evasive: u32,
-    /// Root position at the commit (+0xAC/+0xB0, ground rolls).
+    /// Root position at the commit (+0xAC/+0xB0, ground rolls; Tekken Tag: the opponent's).
     commit_root: Vec3,
     /// Root pin (+0xB8): 2 after a landing (only the root's height is added to the origin) until the next move.
     pin: u8,
@@ -1065,7 +1065,9 @@ impl Fighter {
             self.air = None;
             (self.juggle, self.juggle_bias) = (0, 0);
         }
-        self.commit_root = self.root();
+        // Tekken Tag keeps the opponent's root (+0x110 / +0x114 from the other's +0x51C, 0x36A814): a ground roll's
+        // basis turns toward where the opponent was
+        self.commit_root = if gd.tag_moves { self.opponent.root } else { self.root() };
         self.lateral = 0.0;
         if self.mode == 0xA {
             let (anim, _) = self.animation(gd);
