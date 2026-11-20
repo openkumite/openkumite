@@ -1345,7 +1345,8 @@ fn arena_texture_channels() {
     let Some(a) = assets() else { return };
     let one = a.stage(1).unwrap();
     assert!(!one.channels.is_empty() && one.channels.iter().all(|c| (c.frames, c.speed, c.start) == (60, 0x40, 0)), "convert the game again");
-    assert!(a.stage(4).unwrap().channels.is_empty());
+    // (arena 4: only its still channels, which its lightning plays)
+    assert!(a.stage(4).unwrap().channels.iter().all(|c| c.channel.is_some() && c.speed == 0));
 }
 
 /// Op 25: in ending 20 Bryan (slot 1) holds arena 5's object 0 at his hand (node 38) for 1080 frames.
