@@ -130,6 +130,9 @@ pub struct Camera {
     pub eye: Vec3,
     pub target: Vec3,
     pub fov_y: f32,
+    /// The picture stretched up and down by so much (Tekken Tag: the PS2 projects as square pixels onto its 640 x 448
+    /// screen, which a 4:3 television shows 480 / 448 as high).
+    pub y_stretch: f32,
     /// The picture turned anticlockwise about the line of sight (radians).
     pub roll: f32,
     /// The backdrop drum's placement (world, metres) and its view-space Y scale.
@@ -213,6 +216,7 @@ impl Camera {
             eye,
             target,
             fov_y,
+            y_stretch: 1.0,
             roll: 0.0,
             sky: Mat4::IDENTITY,
             sky_y_scale: 1.0,
@@ -234,6 +238,11 @@ impl Camera {
             light: None,
             shadow: None,
         }
+    }
+
+    /// The projection for a picture of `aspect` (width / height).
+    pub fn projection(&self, aspect: f32) -> Mat4 {
+        Mat4::from_scale(Vec3::new(1.0, self.y_stretch, 1.0)) * glam::camera::rh::proj::directx::perspective(self.fov_y, aspect, 0.05, 400.0)
     }
 
     /// The view matrix: a right-handed look-at, y up, then the roll.
@@ -1196,7 +1205,7 @@ impl Renderer {
         mut overlay: Option<&mut dyn Overlay>,
     ) -> Result<RenderStats> {
         let mut stats = RenderStats::default();
-        let proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, self.aspect(), 0.05, 400.0);
+        let proj = cam.projection(self.aspect());
         let view = cam.view();
         let sky_view_proj = proj * Mat4::from_scale(Vec3::new(1.0, cam.sky_y_scale, 1.0)) * view * cam.sky;
         // the drum's panels in the order the game's ordering table draws them: far first

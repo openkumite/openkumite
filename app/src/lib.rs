@@ -5578,9 +5578,15 @@ impl App {
             }
             _ => (Camera::new(glam::Vec3::Z, glam::Vec3::ZERO, 0.8), Vec::new()),
         };
+        // Tekken Tag's 3D: square pixels on the PS2's 640 x 448 (0x38DA28: x and y both H x 1.25), shown 4:3 (fitted to
+        // two EMBU shots in PCSX2)
+        let mut cam = cam;
+        if self.roster.ttt.is_some() {
+            cam.y_stretch = 480.0 / 448.0;
+        }
         if let Some(s) = self.scene.as_mut() {
             s.eye = cam.eye;
-            s.view_proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, r.aspect(), 0.05, 400.0) * cam.view();
+            s.view_proj = cam.projection(r.aspect()) * cam.view();
         }
         let (sky, statics, models): (Vec<_>, Vec<_>, Vec<_>) = match (&self.scene, &self.fight) {
             (None, None) => (vec![], vec![], self.posers.shown.iter().filter_map(|p| self.poser_models.get(&p.record)).collect()),
@@ -5639,7 +5645,7 @@ impl App {
                 }
                 _ => vec![],
             };
-            let proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, r.aspect(), 0.05, 400.0);
+            let proj = cam.projection(r.aspect());
             f.quads(proj * cam.view(), r.aspect(), cam.eye, &blockers)
         });
         // Tekken Tag's ending: op 24's negative over the scene
@@ -5674,7 +5680,7 @@ impl App {
         }
         // the projection the renderer uses, for texts at 3D positions
         {
-            let proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, r.aspect(), 0.05, 400.0);
+            let proj = cam.projection(r.aspect());
             let view = cam.view();
             self.hud.view_proj = Some(proj * view);
         }
@@ -6292,7 +6298,7 @@ impl RenderStatsExt for kumite_render::RenderStats {
 /// renderer: right-handed look-at, the window's aspect).
 fn project_point(cam: &Camera, size: [u32; 2], window: egui::Rect, view: &art::Screen, p: glam::Vec3) -> Option<(f32, f32)> {
     let aspect = size[0] as f32 / size[1].max(1) as f32;
-    let proj = glam::camera::rh::proj::directx::perspective(cam.fov_y, aspect, 0.05, 400.0);
+    let proj = cam.projection(aspect);
     let look = cam.view();
     let c = proj * look * p.extend(1.0);
     if c.w <= 0.0 {

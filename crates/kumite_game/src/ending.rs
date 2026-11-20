@@ -15,7 +15,7 @@
 //! Ops 17 / 18 throw 0x3A2758's bursts from an actor's node (see [`Burst`]); ops 21-24 lay 2D objects over the picture
 //! (see [`Overlay`]); 4's and 27's 0x3465E0, 26 and 31 change nothing drawn. The arena's background characters are a
 //! set of the scene's own or none (0x3D85D8, [`EndingScene::people`]); the EMBU's screen films from farther
-//! ([`EndingScene::camera`]).
+//! ([`EndingScene::camera`]) and turns the arena half round.
 //!
 //! Op 12 shows Jin's mark (his texture channel 0's frame 0, [`EndingScene::marks`]).
 //!
@@ -400,7 +400,17 @@ impl EndingScene {
                 (ch.clip(&format!("embu_{track}"))?, usize::try_from(f).ok().filter(|_| f <= to)?)
             }
         };
-        Some((m, ch.pose(clip, frame, false), Mat4::IDENTITY))
+        Some((m, ch.pose(clip, frame, false), self.turn()))
+    }
+
+    /// The EMBU's screen (11) draws the arena turned half round (0x36712C: its matrix 0x8794A0 a turn of pi about y,
+    /// identity in the endings): the actors and the camera turned so about it instead.
+    fn turn(&self) -> Mat4 {
+        if self.ending.is_none() {
+            Mat4::from_rotation_y(std::f32::consts::PI)
+        } else {
+            Mat4::IDENTITY
+        }
     }
 
     /// Slot `s`'s node `n` (the game's numbering, the model's nodes') in metres; none for an empty slot or 0x4000 up.
@@ -422,6 +432,7 @@ impl EndingScene {
         let to_m = |x: f32, y: f32, z: f32| Vec3::new(x, -y, -z) / UNITS;
         // H on Tekken Tag's 512-pixel-wide screen, as its fight camera's (crate::view_camera takes Tekken 3's 368)
         let h = (f[6] * 368.0 / 512.0) as i64;
-        (to_m(f[0], f[1], f[2]), to_m(f[3], f[4], f[5]), crate::view_camera(&crate::View { h: h.max(1), ..Default::default() }).2)
+        let turn = self.turn();
+        (turn.transform_point3(to_m(f[0], f[1], f[2])), turn.transform_point3(to_m(f[3], f[4], f[5])), crate::view_camera(&crate::View { h: h.max(1), ..Default::default() }).2)
     }
 }

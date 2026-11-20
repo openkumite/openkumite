@@ -1105,7 +1105,9 @@ fn play_ending(a: &Assets, d: &kumite_game::ending::EndingData, e: usize) -> Vec
 }
 
 /// The EMBU's camera as PCSX2 showed it at its counter 1100, one ahead of the view (our frame 1099): the view 0x415808's eye (-339, -2152,
-/// -2338) game units; and its people: none in the first cast, set 30 in the second.
+/// -2338) game units, here turned half round about the arena (screen 11 turns the arena so: PCSX2 shows the pagoda
+/// and the gate's steps on path 0 at counter 420, where the arena as it stands has the lion); and its people: none in
+/// the first cast, set 30 in the second.
 #[test]
 fn the_embus_camera_is_the_ps2s() {
     let Some(a) = assets() else { return };
@@ -1115,7 +1117,7 @@ fn the_embus_camera_is_the_ps2s() {
         s.step();
     }
     let (eye, _, _) = s.camera();
-    assert!((eye - glam::Vec3::new(-0.339, 2.152, 2.338)).abs().max_element() < 0.002, "{eye}");
+    assert!((eye - glam::Vec3::new(0.339, 2.152, -2.338)).abs().max_element() < 0.002, "{eye}");
     assert!(s.people.is_none());
     assert_eq!(kumite_game::ending::EndingScene::embu(&a, &d, 1).unwrap().people.unwrap()["set"], 30);
 }
