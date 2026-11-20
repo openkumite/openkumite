@@ -162,6 +162,7 @@ struct Scene {
     camera_drum: bool,
     floor_patch: Option<[f32; 2]>,
     floor_light: Option<(u32, f32, [f32; 32])>,
+    floor_levels: Option<kumite_assets::FloorLevels>,
     statics: Vec<StaticMesh>,
     models: Vec<SkinnedModel>,
     /// Force: the actors' GPU models by (actor, model record), made as bodies come in.
@@ -1382,6 +1383,7 @@ impl App {
             camera_drum: false,
             floor_patch: None,
             floor_light: None,
+            floor_levels: None,
             floor_period: None,
             statics: vec![],
             models: vec![],
@@ -1441,8 +1443,9 @@ impl App {
                     .collect();
                 let walls = |w: &kumite_assets::StageWalls| Arc::new(kumite_sim::Walls { origin: w.origin, cell: w.cell, size: w.size, rows: w.rows.clone() });
                 (scene.walls, scene.camera_walls) = (st.walls.as_ref().map(walls), st.camera_walls.as_ref().map(walls));
-                let conv =
-                    |m: &kumite_assets::Mesh| -> Vec<StaticVertex> { m.vertices.iter().map(|v| StaticVertex { pos: place(glam::Vec3::from(v.pos)).to_array(), uv: v.uv, color: v.color }).collect() };
+                let conv = |m: &kumite_assets::Mesh| -> Vec<StaticVertex> {
+                    m.vertices.iter().map(|v| StaticVertex { pos: place(glam::Vec3::from(v.pos)).to_array(), uv: v.uv, color: v.color, cell: v.cell }).collect()
+                };
                 scene.sky = st.sky.iter().map(|m| r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone()).blended(m.blend)).collect();
                 let moving = |(mesh, m): (usize, &kumite_assets::Mesh)| {
                     let kind = match m.motion.clone()? {
@@ -1454,7 +1457,7 @@ impl App {
                             // (the placement as an affine map: its origin and axes)
                             let o = place(glam::Vec3::ZERO);
                             let place = glam::Mat4::from_cols((place(glam::Vec3::X) - o).extend(0.0), (place(glam::Vec3::Y) - o).extend(0.0), (place(glam::Vec3::Z) - o).extend(0.0), o.extend(1.0));
-                            let vertices = m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color }).collect();
+                            let vertices = m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color, cell: v.cell }).collect();
                             MovingKind::Track { vertices, chain, place }
                         }
                     };
@@ -1477,7 +1480,7 @@ impl App {
                     .filter(|p| st.textures.get(p.image).is_some_and(|t| t.width.max(t.height) <= r.max_texture()))
                     .and_then(|p| Some((p, tex.get(p.image)?.clone(), st.textures.get(p.image).map(|t| [t.width as f32, t.height as f32])?, r.texture(1, 1, &[255; 4]))));
                 scene.background = st.background;
-                (scene.camera_drum, scene.floor_patch, scene.floor_light) = (st.camera_drum, st.floor_patch, st.floor_light);
+                (scene.camera_drum, scene.floor_patch, scene.floor_light, scene.floor_levels) = (st.camera_drum, st.floor_patch, st.floor_light, st.floor_levels);
                 if let Some((m, at)) = st.strip.as_ref().filter(|(m, _)| !m.indices.is_empty()) {
                     scene.sky = vec![r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone())];
                     scene.moving.clear();
@@ -4030,7 +4033,7 @@ impl App {
                 let st = kumite_assets::Stage::load(&self.assets.root.join(file))?;
                 let tex: Vec<_> = st.textures.iter().map(|t| r.texture(t.width, t.height, &t.rgba)).collect();
                 let meshes = st.sky.iter().filter_map(|m| {
-                    let v: Vec<StaticVertex> = m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color }).collect();
+                    let v: Vec<StaticVertex> = m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color, cell: v.cell }).collect();
                     stage.sky.push(r.sorted_mesh(&v, &m.indices, tex.get(m.texture)?.clone()));
                     Some((stage.sky.len() - 1, v))
                 });
@@ -6574,6 +6577,8 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
         let h = n * tile / 2.0;
         cam.floor_clip = Some([cx - h, cx + h, cz - h, cz + h]);
     }
+    cam.floor_levels =
+        scene.floor_levels.map(|l| kumite_render::FloorLevels { limits: l.limits, half: l.half, cell: l.cell, window: l.window.unwrap_or([0.0; 2]), reach: l.reach, centre: [mid.x, mid.z] });
     // the floor is laid around the midpoint (0x8004994C), so the arena never ends
     if let Some([px, pz]) = scene.floor_period {
         let snap = |v: f32, p: f32| (v / p).round() * p;
@@ -6700,7 +6705,7 @@ fn sky_backdrop(cam: &Camera, scene: &Scene) -> Vec<(Arc<kumite_render::Texture>
     // (x to either side of the picture: a window up to four times as wide)
     const SIDE: f32 = 4.0;
     let quad = |rows: [f32; 2], u: [f32; 2], v: [f32; 2], colour: [f32; 3]| -> Vec<StaticVertex> {
-        let at = |x: f32, k: usize| StaticVertex { pos: [x, 1.0 - rows[k] / 240.0, 0.0], uv: [if x < 0.0 { u[0] } else { u[1] }, v[k]], color: [colour[0], colour[1], colour[2], 1.0] };
+        let at = |x: f32, k: usize| StaticVertex { pos: [x, 1.0 - rows[k] / 240.0, 0.0], uv: [if x < 0.0 { u[0] } else { u[1] }, v[k]], color: [colour[0], colour[1], colour[2], 1.0], cell: [0.0; 4] };
         vec![at(-SIDE, 0), at(-SIDE, 1), at(SIDE, 0), at(SIDE, 0), at(-SIDE, 1), at(SIDE, 1)]
     };
     // (a colour of the game's, as the textures' are: to the linear light the picture is drawn in)
@@ -6739,7 +6744,7 @@ fn effect_quads(sprites: &[kumite_game::vfx::Sprite], (cols, rows): (u32, u32), 
         if s.mirror {
             std::mem::swap(&mut u0, &mut u1);
         }
-        let corner = |dx: f32, dy: f32, u: f32, v: f32| StaticVertex { pos: (pos + right * dx * h + up * dy * h).to_array(), uv: [u, v], color: s.color };
+        let corner = |dx: f32, dy: f32, u: f32, v: f32| StaticVertex { pos: (pos + right * dx * h + up * dy * h).to_array(), uv: [u, v], color: s.color, cell: [0.0; 4] };
         let quad = [corner(-1.0, 1.0, u0, v0), corner(1.0, 1.0, u1, v0), corner(-1.0, -1.0, u0, v1), corner(1.0, -1.0, u1, v1)];
         let out = match s.blend {
             Blend::Add => &mut *add,
@@ -7967,7 +7972,7 @@ fn checker_floor(r: &Renderer) -> StaticMesh {
             let b = v.len() as u32;
             let u = if (x + z) & 1 == 0 { 0.25 } else { 0.75 };
             for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                v.push(StaticVertex { pos: [(x + dx) as f32 * t, 0.0, (z + dz) as f32 * t], uv: [u, 0.5], color: [1.0; 4] });
+                v.push(StaticVertex { pos: [(x + dx) as f32 * t, 0.0, (z + dz) as f32 * t], uv: [u, 0.5], color: [1.0; 4], cell: [0.0; 4] });
             }
             i.extend([b, b + 2, b + 1, b + 1, b + 2, b + 3]);
         }
