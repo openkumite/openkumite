@@ -132,6 +132,8 @@ pub struct Data {
     pub force: bool,
     /// SURVIVAL's CPU profiles (ai.json `survival`): max wins, difficulty, lowest and highest level.
     survival: Vec<[usize; 4]>,
+    /// `--ttt-unlocks original`: characters selectable by the unlock schedule as on the PS2 (else every one).
+    pub original_unlocks: bool,
 }
 
 impl Data {
@@ -166,6 +168,7 @@ impl Data {
             force,
             survival: ai["survival"]["rows"].as_array().into_iter().flatten().map(|r| [int(&r["max_wins"]), int(&r["difficulty"]), int(&r["levels"][0]), int(&r["levels"][1])]).collect(),
             raw,
+            original_unlocks: false,
         }))
     }
 
@@ -192,7 +195,7 @@ impl Data {
         self.start.contains(&c) || self.schedule.iter().any(|&(s, k, ch)| s <= stage && k == kind && ch == c)
     }
     pub fn selectable(&self, stage: u32, c: usize) -> bool {
-        self.has(1, stage, c)
+        !self.original_unlocks || self.has(1, stage, c)
     }
     fn in_pool(&self, stage: u32, c: usize) -> bool {
         self.has(0, stage, c)
@@ -4281,7 +4284,15 @@ mod tests {
     use super::*;
 
     /// A front end in miniature: four characters, two selectable from the start, the schedule's next ones.
+    /// ... with the PS2's unlocks (`--ttt-unlocks original`).
     fn data() -> Arc<Data> {
+        let mut d = every();
+        Arc::get_mut(&mut d).unwrap().original_unlocks = true;
+        d
+    }
+
+    /// ... with every character selectable (the default).
+    fn every() -> Arc<Data> {
         let fe = serde_json::json!({"front_end": {
             "select": {"selectable": [0, 1], "slots": [{"x": 0, "y": 0, "character": 0, "right": 1}, {"x": 53, "y": 0, "character": 1, "right": 2},
                 {"x": 106, "y": 0, "character": 2, "right": 3}, {"x": 159, "y": 0, "character": null}], "hidden_slots": [],
@@ -4547,6 +4558,17 @@ mod tests {
         let mut r = r;
         r.ttt = Some(d.clone());
         assert!(matches!(front.key(0, Key::Start, &r, &mut seed), Outcome::TttFight(run) if run.stage == 100));
+    }
+
+    #[test]
+    fn every_character_selectable_by_default() {
+        let (d, r, p) = (every(), roster(), Progress::default());
+        assert!((0..4).all(|c| d.selectable(0, c)) && !d.in_pool(0, 3));
+        // the schedule's character 2 takes a pick at stage 0
+        let mut s = Select::new(ARCADE, &d, None);
+        s.sides[0].cursor = 2;
+        s.key(0, Key::Button(0), &d, &r, &p);
+        assert_eq!(s.sides[0].picks, vec![(2, 0)]);
     }
 
     #[test]

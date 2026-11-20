@@ -150,6 +150,7 @@ openkumite --screen select --shot select.png     # render a menu screen
 openkumite --keys "30:start,60:b1,400:shot" --quit-after 600   # scripted run
 openkumite --replay latest --shot out.png --frames 600 --keys "400:right"   # a replay, seeking 5 s on at step 400
 openkumite --mode vs --ai 1,2 --ai-style 1:rushdown,2:random   # the AI plays seats 1..4 (--ai-difficulty, --ai-level)
+openkumite --ttt-unlocks original                # Tekken Tag: characters unlocked as on the PS2 (default: all)
 ```
 
 Headless example tools live in `crates/kumite_game/examples/` (`cpu_match`, `trace`, `ko_trace`, ...).

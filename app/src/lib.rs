@@ -8083,6 +8083,8 @@ Game:
   --player NAME|ID             ... with this character
   --costume C                  ... in this costume
   --difficulty 0..2            ... at this difficulty
+  --ttt-unlocks all|original   Tekken Tag: every character selectable (default), or unlocked as on the PS2 (the
+                               save's progress is kept either way)
   --mute                       no sound (M toggles it in the game)
 
 Straight into a mode (debugging; past the menus):
@@ -8284,7 +8286,10 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
     let gd = assets.root.join("gamedata");
     let _ = SHADOWS.set(assets.gamedata("shadows.json").unwrap_or_default());
     let sandbox = !flag("--mode") && !flag("--online") && !flag("--host") && !flag("--join") && ["--fight", "--models", "--stage", "--p1", "--p2", "--intro", "--no-intro"].iter().any(|f| flag(f));
-    let roster = Roster::load(&gd);
+    let mut roster = Roster::load(&gd);
+    if let Some(d) = roster.ttt.as_mut().and_then(Arc::get_mut) {
+        d.original_unlocks = arg("--ttt-unlocks").as_deref() == Some("original");
+    }
     // (by default the roster's first two characters' first costumes)
     let first = |k: usize| roster.characters.get(k).and_then(|c| c.costumes.first().copied()).unwrap_or(0);
     let models = match arg("--models") {
