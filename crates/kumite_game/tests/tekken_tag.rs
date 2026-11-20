@@ -1119,7 +1119,7 @@ fn the_embus_camera_is_the_ps2s() {
     let (eye, _, _) = s.camera();
     assert!((eye - glam::Vec3::new(0.339, 2.152, -2.338)).abs().max_element() < 0.002, "{eye}");
     assert!(s.people.is_none());
-    assert_eq!(kumite_game::ending::EndingScene::embu(&a, &d, 1).unwrap().people.unwrap()["set"], 30);
+    assert_eq!(kumite_game::ending::EndingScene::embu(&a, &d, 1).unwrap().people.expect("the EMBU's people: a pack before converter format 40, convert the game again")["set"], 30);
 }
 
 #[test]
