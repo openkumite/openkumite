@@ -1061,6 +1061,11 @@ impl Bowl {
         self.new_turn();
     }
 
+    /// In the throw (state 1 until the ball passes z 4000, or its pause, state 9: 0x3E9400).
+    pub fn throwing(&self) -> bool {
+        self.replay.from.is_none() && matches!(self.phase, Phase::Position | Phase::Aim | Phase::Power | Phase::Throw(_) | Phase::OverCharged(_) | Phase::Charge(_))
+    }
+
     /// The winner (state 10): the higher total; None on a draw.
     pub fn winner(&self) -> Option<usize> {
         let totals: Vec<u16> = self.cards.iter().map(Card::total).collect();

@@ -20,7 +20,7 @@ struct Globals {
     cutaway: vec4<f32>,
     cutaway2: vec4<f32>,
     // a level laid along a route (Force's extra stages): above the floor, nothing beyond z = x (the camera's
-    // side) is drawn (y = 1: on)
+    // side) is drawn (y = 1: on); z: Tekken Tag's scenery not drawn nearer (Camera::scenery_cut)
     near_cut: vec4<f32>,
     // the stage's light for the fighters (w = 1 when there is one): key colour, ambient, material (128 = 1)
     key_color: vec4<f32>,
@@ -293,6 +293,11 @@ fn grass_move(p: vec3<f32>, y: f32) -> vec3<f32> {
     return m * min(y / info.z, 1.0);
 }
 
+// Tekken Tag's arena scenery's z guard (Camera::scenery_cut): a corner nearer than the cut drops its triangle
+fn cut_near(depth: f32, cell: vec4<f32>) -> bool {
+    return g.near_cut.z > 0.0 && abs(cell.w) < 0.5 && depth < g.near_cut.z;
+}
+
 // A stage mesh's vertex, moved with the floor; a floor cell's vertex of another level than its cell's, or of a cell
 // beyond the reach, goes off the picture (its triangle with it).
 fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32>, normal: vec4<f32>) -> VsOut {
@@ -311,7 +316,7 @@ fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32
     // with a corner outside
     let s = o.clip.xy / o.clip.w * vec2(g.floor_centre.z, 1.0);
     let outside = o.clip.w < 0.001 || abs(s.x) > 2047.0 / 224.0 || abs(s.y) > 2047.0 / 224.0;
-    o.dropped = select(0.0, 1.0, g.floor_cell.z > 0.5 && outside);
+    o.dropped = select(0.0, 1.0, (g.floor_cell.z > 0.5 && outside) || cut_near(o.clip.w, cell));
     o.uv = env_uv(uv, normal, p, g.eye.xyz);
     o.fog = fog_of(normal, o.clip.w);
     o.color = color;
@@ -335,9 +340,10 @@ fn vs_backdrop(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @locatio
 // The backdrop drum: rotation-only view, so it stays centred on the camera; drawn first, no depth.
 @vertex
 fn vs_sky(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>,
-          @location(4) normal: vec4<f32>) -> VsOut {
+          @location(3) cell: vec4<f32>, @location(4) normal: vec4<f32>) -> VsOut {
     var o: VsOut;
     o.clip = g.sky_view_proj * vec4(pos, 1.0);
+    o.dropped = select(0.0, 1.0, cut_near(o.clip.w, cell));
     o.uv = env_uv(uv, normal, pos, g.sky_eye.xyz);
     o.fog = fog_of(normal, o.clip.w);
     o.color = color;
@@ -348,6 +354,7 @@ fn vs_sky(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) 
 
 @fragment
 fn fs_unlit(i: VsOut) -> @location(0) vec4<f32> {
+    if (i.dropped > 0.0) { discard; }
     let t = texel(i.uv);
     let a = cut(t.a);
     return vec4(mix(t.rgb * i.color.rgb, g.fog_colour.rgb, i.fog), a);
