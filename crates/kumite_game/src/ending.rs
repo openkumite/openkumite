@@ -20,10 +20,10 @@
 //!
 //! Op 28 opens, beats and folds True Ogre's and Devil's wings. Op 25 puts an arena's object in a hand ([`EndingScene::props`]). Op 12 shows Jin's mark (his texture channel 0's frame 0, [`EndingScene::marks`]).
 //!
-//! Op 10 plays the actor's own effect (0x3A2BC0, [`Burst`]).
+//! Op 16 fires Devil's beam ([`EndingScene::beams`]). Op 10 plays the actor's own effect (0x3A2BC0, [`Burst`]).
 //!
 //! Not played: ops 15 (True
-//! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 30 (objects 0x3ACF50); the EMBU's 9-11; ops 17 / 18 at nodes 0x4000-0x4002
+//! Ogre's fire, 0x3A4EE8), 30 (objects 0x3ACF50); the EMBU's 9-11; ops 17 / 18 at nodes 0x4000-0x4002
 //! (op 25's prop matrix 0x444CD0, 20 objects 0x3ACCD0); the face track (its joints are not mapped).
 
 use crate::UNITS;
@@ -179,6 +179,11 @@ pub struct EndingScene {
     pub marks: [bool; 2],
     /// Per actor slot: its wings (op 28), stepped every frame.
     wings: [crate::face::WingState; 2],
+    /// Per actor slot: op 16's beam (0x8A7B70: its type, the frame count, -1 its start, and its frames).
+    lasers: [Option<(u32, i32, i32)>; 2],
+    /// The beams this frame: actor slot, its model record, the beam's type, start and end (metres; none on its first
+    /// frame), its eyes.
+    pub beams: Vec<(usize, usize, u32, Option<(Vec3, Vec3)>, Vec3)>,
     /// The music started (the EMBU's op 13: its BGM).
     pub music: Option<usize>,
     /// The bursts thrown this frame.
@@ -264,6 +269,8 @@ impl EndingScene {
             ranges: [None; 2],
             marks: [false; 2],
             wings: Default::default(),
+            lasers: [None; 2],
+            beams: Vec::new(),
             music: None,
             bursts: Vec::new(),
             flashes: Vec::new(),
@@ -337,6 +344,8 @@ impl EndingScene {
                         self.bursts.push(Burst { kind: 4, model, pos, dir: None, high: false, spin: 0.0 });
                     }
                 }
+                // slot a & 1's beam: type b for c frames (0x378368)
+                16 => self.lasers[(a & 1) as usize] = Some((b.max(0) as u32, -1, last)),
                 // slot a & 1's texture channel 0 to frame 1 (b = 0) or 0 (0x3AB924)
                 12 => self.marks[(a & 1) as usize] = b != 0,
                 // slot a & 1's wings to state b (0x3AB8D0: True Ogre's and Devil's +0xB052)
@@ -350,6 +359,18 @@ impl EndingScene {
         }
         for w in &mut self.wings {
             w.step();
+        }
+        // the beams (0x378398): the start, then the type's line (as a fight's) along the head's heading (0x378760:
+        // its -x), a frame on each frame, for its frames
+        self.beams.clear();
+        for s in 0..2 {
+            let Some((kind, k, frames)) = self.lasers[s] else { continue };
+            let (Some(head), Some(&model)) = (self.head(s), self.slots[s].0.and_then(|m| self.records.get(m))) else { continue };
+            let eyes = head.w_axis.truncate();
+            let d = head.transform_vector3(-Vec3::X);
+            let line = (k >= 0).then(|| kumite_sim::laser_line(kind, eyes * UNITS, d.x.atan2(d.z), k)).flatten();
+            self.beams.push((s, model, kind, line.map(|(p, q)| (p / UNITS, q / UNITS)), eyes));
+            self.lasers[s] = (k + 1 < frames).then_some((kind, k + 1, frames));
         }
         let ending = self.ending.is_some() && self.camera_frame() >= self.frames().len();
         self.done |= ending || c >= MAX_FRAMES;
@@ -500,6 +521,13 @@ impl EndingScene {
     }
 
     /// Slot `s`'s node `n` (the game's numbering, the model's nodes') in metres; none for an empty slot or 0x4000 up.
+    /// Actor slot `s`'s head node's matrix in the world.
+    fn head(&self, s: usize) -> Option<Mat4> {
+        let (m, pose, place) = self.pose(s)?;
+        let n = self.characters.get(m)?.nodes.iter().position(|n| n.name == "head")?;
+        Some(place * *pose.get(n)?)
+    }
+
     fn node_at(&self, s: usize, n: i32) -> Option<Vec3> {
         let (_, pose, place) = self.pose(s)?;
         Some(place.transform_point3(pose.get(usize::try_from(n).ok()?)?.w_axis.truncate()))
