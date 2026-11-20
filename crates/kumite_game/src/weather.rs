@@ -659,7 +659,7 @@ impl Weather {
                     let pos = at + aside * l.copies;
                     let alpha = level - fade * (pos - eye).dot(forward);
                     if alpha > 0.0 {
-                        out.push(Sprite { pos, size: l.size, cell, color: [1.0, 1.0, 1.0, alpha.min(1.0)], blend: Blend::Half, mirror: false, nearer: 0.0 });
+                        out.push(Sprite { pos, size: l.size, cell, color: [1.0, 1.0, 1.0, alpha.min(1.0)], blend: Blend::Half, mirror: false, nearer: 0.0, sheet: 0 });
                     }
                 }
             }
