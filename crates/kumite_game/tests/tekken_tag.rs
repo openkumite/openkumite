@@ -169,6 +169,31 @@ fn a_ground_roll_goes_sideways() {
     assert!(d.z.abs() > 800.0 && back > -100.0, "{d}, back {back}");
 }
 
+/// The back-turned commands as in PCSX2: Xiaoyu's f+3+4 ends turned away (its +0x12 turn, 30°, added the game's way
+/// round, 0x36AA48), so b+1+2 is the back-turned one (alias 381); Hwoarang's n+1+2 turns him exactly half round,
+/// which the game's s16 +0x3E reads as -0x8000: back turned right (0x29), so f+1 is alias 374.
+#[test]
+fn back_turned_commands_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let run = |model: usize, script: &str| {
+        let mut b = Bout::new(Game::load(&a, [model, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+        while b.phase != Phase::Fight {
+            b.step([Pad::default(); 2]);
+        }
+        let mut seen = Vec::new();
+        for pad in parse_script(script).unwrap() {
+            b.step([pad, Pad::default()]);
+            seen.push(b.game.fight.fighters[0].alias);
+        }
+        seen
+    };
+    assert!(run(XIAOYU, "n*2,f+3+4*2,n*80,b+1+2*2,n*10").contains(&381));
+    assert!(run(HWOARANG, "n*2,n+1+2*2,n*80,n+3+4*2,n*80,f+1*2,n*10").contains(&374));
+}
+
+/// Hwoarang's first model.
+const HWOARANG: usize = 420;
+
 /// King's first model.
 const KING: usize = 390;
 

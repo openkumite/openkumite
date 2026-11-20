@@ -962,7 +962,10 @@ impl Fighter {
             self.root_yaw += PI;
         }
         if (end || buffered) && t != 0x22 && old_turn != 0 {
-            self.yaw += old_turn as f32 * ANGLE;
+            // the game's angles run the other way round on OpenKumite's flipped z (Tekken Tag's 0x36AA48 adds +0x12
+            // to +0x3C); shortcut: Tekken 3 keeps its sign, as its turns are mostly half a turn, until checked there
+            let turn = if gd.tag_moves { -(old_turn as f32) } else { old_turn as f32 };
+            self.yaw += turn * ANGLE;
             self.root_yaw = self.yaw;
         }
         let (a2a, off, target) = {
@@ -1702,6 +1705,8 @@ impl Fighter {
                                 // is flipped, so the sign turns over)
         let (a2a, _, _) = self.geometry();
         let off = wrap_pi(a2a - self.yaw) / ANGLE;
+        // Tekken Tag: +0x3E is an s16, so half a turn is -0x8000 (back turned right, 0x29)
+        let off = if gd.tag_moves { off.round() as i32 as i16 as f32 } else { off };
         let back = off.abs() > 0x4000 as f32;
         let quadrant_of = |off: f32| ((off + 0x2000 as f32).rem_euclid(65536.0) / 0x4000 as f32) as u32;
         let quadrant = quadrant_of(off);
