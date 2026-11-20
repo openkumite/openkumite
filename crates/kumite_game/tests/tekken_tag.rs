@@ -246,6 +246,62 @@ fn ogres_slot_0x13_strikes() {
     assert!(b.game.fight.fighters[1].health < before, "Lei is hit");
 }
 
+/// Yoshimitsu's sword is strike slots 22 / 23 (0x34F3D8: hand B's (100, 0, 720) and (100, 0, 360)): his d, d/f, f+1
+/// slash (moves 2350 / 2351, both segments ending at 22) reaches Hwoarang from the fight's start: he reels (alias
+/// 3224) on frame 50, PCSX2's 51.
+#[test]
+fn yoshimitsus_sword_strikes() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [YOSHIMITSU, HWOARANG]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let hit = parse_script("n*4,d*2,d/f*2,f+1*2,n*80").unwrap().into_iter().position(|pad| {
+        b.step([pad, Pad::default()]);
+        b.game.fight.fighters[1].alias == 3224
+    });
+    assert!(hit.is_some_and(|k| (48..=53).contains(&k)), "Hwoarang reels on frame {hit:?}");
+}
+
+/// The strikes take the game's joint places (0x439A80), not the drawn skeleton's: Jack-2's knee is 390 down his
+/// thigh, not 440, so his 1+3 (alias 3811, foot A) grabs Hwoarang 780 away (alias 3924) as in PCSX2 (frame 64).
+#[test]
+fn jack2s_grab_reaches_with_the_games_joints() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [603, HWOARANG]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let grab = parse_script("f*40,n*2,1+3*2,n*60").unwrap().into_iter().position(|pad| {
+        b.step([pad, Pad::default()]);
+        b.game.fight.fighters[0].alias == 3924
+    });
+    assert!(grab.is_some_and(|k| (60..=66).contains(&k)), "the grab on frame {grab:?}");
+}
+
+/// The body push measures each side's step from where the last push left it (0x377338 against 0x8A7A90): Paul's
+/// u/f+3 walks Hwoarang's guard back and they part 1004 apart in PCSX2 (1102 when the step left the push out).
+#[test]
+fn the_push_after_a_guard_parts_them_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [PAUL, HWOARANG]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, LAW).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    for pad in parse_script("n*2,u+1+2*2,n*80,u+3+4*2,n*80,u/f+1*2,n*80,u/f+3*2,n*40").unwrap() {
+        b.step([pad, Pad::default()]);
+    }
+    let f = &b.game.fight.fighters;
+    let apart = f[0].root().distance(f[1].root());
+    assert!((apart - 1004.0).abs() < 30.0, "{apart}");
+}
+
 /// Ogre's and True Ogre's first models.
 const OGRE_FIRST: usize = 528;
 const TRUE_OGRE: usize = 591;
@@ -328,6 +384,9 @@ fn tag_out_runs_off_and_the_partner_comes_in() {
     let alias: Vec<usize> = r.iter().map(|x| x.0).collect();
     let tagging = alias.iter().position(|&x| x == RUN_OFF).unwrap_or_else(|| panic!("the tag button starts the run off: {alias:?}"));
     let swap = r.iter().position(|x| x.1 == 1).expect("the swap");
+    // the camera frames Paul's position, not his running root, so he leaves the screen 14 frames into the run as in
+    // PCSX2
+    assert!((12..=16).contains(&(swap - tagging)), "the partner comes in {} frames into the run", swap - tagging);
     // Law comes in on his own entrance where Paul left
     assert_eq!((r[swap].0, r[swap].2), (ENTRANCE, Some(1)));
     assert!(r[swap].3.distance(r[swap - 1].3) < 150.0, "the partner enters at the same spot: {} -> {}", r[swap - 1].3, r[swap].3);

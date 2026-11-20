@@ -2087,8 +2087,8 @@ impl Fighter {
 
     /// Tekken Tag's strike this frame (0x34F288): each pair's segment from bone `start` to bone `end` of the pose, or
     /// from the end bone's place a frame before when `start` is 0.
-    /// Ogre's (body 14) slot 0x13 is slot 6. shortcut: slots 18-23 (Yoshimitsu's sword, the others' extras) and the
-    /// projectiles' 0x18 / 0x19 give no segment; map them when the app poses them.
+    /// Ogre's (body 14) slot 0x13 is slot 6. shortcut: the projectiles' slots 0x18 / 0x19 (0x346310) give no segment,
+    /// port them with the projectiles
     fn pair_segments(&self, gd: &GameData, bones: &[Vec3]) -> Vec<(Vec3, Vec3)> {
         let mv = self.current_move(gd);
         let Some(a) = mv.attack.as_ref().filter(|a| !a.pairs.is_empty()) else { return vec![] };
@@ -3058,6 +3058,8 @@ impl Fight {
             let f = &mut self.fighters[i];
             f.position += d * 0.5;
             f.pushed = true;
+            // (the next frame measures from here: 0x8A7A90 keeps the place after the push)
+            f.push_prev = Some(f.root());
         }
     }
 

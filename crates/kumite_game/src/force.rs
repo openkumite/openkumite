@@ -404,6 +404,11 @@ impl ForceStage {
     /// Set the fight up for the stage (0x8002A508 / 0x8002AC0C): the player at the origin facing +x, both
     /// soldier positions out of play; the round rules (one round, only the player's K.O. ends it).
     pub fn setup(&mut self, game: &mut Game) {
+        // Force is Tekken 3's: a Tekken Tag player strikes and is struck on its drawn skeleton, as it pushes by Tekken
+        // 3's rule (not Tekken Tag's joint places)
+        if let Some(b) = std::sync::Arc::get_mut(&mut game.bodies[0]) {
+            b.joints.clear();
+        }
         let f = &mut game.fight.fighters[0];
         f.position = Vec3::ZERO;
         f.yaw = std::f32::consts::FRAC_PI_2;
