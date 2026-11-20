@@ -667,6 +667,8 @@ struct App {
     pending_renderer: std::rc::Rc<std::cell::RefCell<Option<Renderer>>>,
     /// Hit sparks, dust, shakes, the hit light.
     vfx: Option<kumite_game::vfx::Vfx>,
+    /// Tekken Tag's characters' effect sheets as loaded, by file (none: not readable).
+    effect_sheets: HashMap<String, Option<Arc<kumite_render::Texture>>>,
     /// The pads' vibration (the original's patterns, gamedata/rumble.json), and whether a fight was on last step
     /// (leaving it stops everything, as 0x80028F5C at a mode change).
     rumble: kumite_game::rumble::Rumble,
@@ -1437,7 +1439,7 @@ impl App {
             bench: vec![],
             bench_active: [0; 2],
             bench_posing: None,
-            effects: effect_atlas(r, &self.assets.root.join("pictures")),
+            effects: effect_atlas(r, &self.assets.root.join("pictures/effects/atlas.png")),
             faces_shown: Default::default(),
             walls: None,
             camera_walls: None,
@@ -4107,7 +4109,10 @@ impl App {
                 if let Some(v) = self.vfx.as_mut() {
                     v.tick();
                     for b in &s.bursts {
-                        v.burst_at(b.kind, b.pos, b.dir, b.high, b.spin);
+                        match b.kind {
+                            4 => v.effect_at(6, b.pos, b.model, 0, glam::Vec3::ZERO),
+                            _ => v.burst_at(b.kind, b.pos, b.dir, b.high, b.spin),
+                        }
                     }
                 }
                 // (the EMBU starts its music from its script)
@@ -5854,12 +5859,28 @@ impl App {
             }
         }
         // effect sprites, as quads facing the camera
-        let (mut p_alpha, mut p_add, mut soft_alpha, mut soft_add) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut p_alpha, mut p_add, mut soft_alpha, mut soft_add, mut sheets) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         if let (Some(v), true) =
             (self.vfx.as_ref(), self.fight.is_some() || self.embu.is_some() || self.tag.is_some() || self.bowl.is_some() || self.ttt_ending.as_ref().is_some_and(|e| e.scene.is_some()))
         {
             // (Tekken Tag's dust: blended at its texture's alpha, as the arenas' soft particles)
-            effect_quads(&v.sprites(), v.atlas(), &cam, &mut p_alpha, &mut p_add, &mut soft_alpha);
+            let (atlas, mut others): (Vec<_>, Vec<_>) = v.sprites().into_iter().partition(|s| s.sheet == 0);
+            effect_quads(&atlas, v.atlas(), &cam, &mut p_alpha, &mut p_add, &mut soft_alpha);
+            // (Tekken Tag's characters' own sheets)
+            others.sort_by_key(|s| s.sheet);
+            let mut ids: Vec<usize> = others.iter().map(|s| s.sheet).chain(v.ribbons.iter().map(|b| b.sheet)).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            for id in ids {
+                let Some((file, cols, rows)) = v.data.as_ref().and_then(|d| d.sheets.get(id.wrapping_sub(1))) else { continue };
+                let root = &self.assets.root;
+                let Some(t) = self.effect_sheets.entry(file.clone()).or_insert_with(|| effect_atlas(r, &root.join("pictures/effects").join(file))).clone() else { continue };
+                let (mut a, mut b) = (Vec::new(), Vec::new());
+                let group: Vec<_> = others.iter().filter(|s| s.sheet == id).copied().collect();
+                effect_quads(&group, (*cols, *rows), &cam, &mut Vec::new(), &mut b, &mut a);
+                ribbon_quads(v.ribbons.iter().filter(|b| b.sheet == id), (*cols, *rows), &cam, &mut b);
+                sheets.push((t, a, b));
+            }
             // (the arena's weather where its stage is drawn)
             // (0x346830 / 0x345A00: none nearer the eye than the farther fighter, player +0x620)
             if let Some(w) = self.scene.as_ref().filter(|_| !statics.is_empty()).and_then(|s| s.weather.as_ref()) {
@@ -5907,6 +5928,7 @@ impl App {
             flat_add: &flat_add,
             soft_alpha: &soft_alpha,
             soft_add: &soft_add,
+            sheets: &sheets,
         });
         let t = Instant::now();
         let size = r.size();
@@ -6940,9 +6962,9 @@ fn parse_play(s: &str) -> Result<Vec<(u64, usize, String)>> {
 }
 
 /// The effect atlas from the converted hit-spark sheets' index maps (EXE pictures 007 / 008).
-fn effect_atlas(r: &Renderer, pictures: &Path) -> Option<Arc<kumite_render::Texture>> {
+fn effect_atlas(r: &Renderer, file: &Path) -> Option<Arc<kumite_render::Texture>> {
     // the effect cells in the game's palettes (export_effects)
-    let mut dec = png::Decoder::new(std::io::Cursor::new(kumite_fs::read(&pictures.join("effects/atlas.png")).ok()?));
+    let mut dec = png::Decoder::new(std::io::Cursor::new(kumite_fs::read(file).ok()?));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = dec.read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()?];
@@ -7021,6 +7043,19 @@ fn effect_quads(sprites: &[kumite_game::vfx::Sprite], (cols, rows): (u32, u32), 
             Blend::Alpha => &mut *blend,
         };
         out.extend([quad[0], quad[2], quad[1], quad[1], quad[2], quad[3]]);
+    }
+}
+
+/// Strips along segments (Devil's beam), as wide across the picture as their half width each side, added.
+fn ribbon_quads<'a>(ribbons: impl Iterator<Item = &'a kumite_game::vfx::Ribbon>, (cols, rows): (u32, u32), cam: &Camera, add: &mut Vec<StaticVertex>) {
+    for b in ribbons {
+        // across the segment as the eye sees it
+        let side = (b.to - b.from).cross(cam.eye - (b.from + b.to) * 0.5).normalize_or_zero() * b.half;
+        let (u0, v0) = ((b.cell % cols) as f32 / cols as f32, (b.cell / cols) as f32 / rows as f32);
+        let (u1, v1) = (u0 + 1.0 / cols as f32, v0 + 1.0 / rows as f32);
+        let corner = |p: glam::Vec3, u: f32, v: f32| StaticVertex { pos: p.to_array(), uv: [u, v], color: [1.0; 4], cell: [0.0; 4], normal: [0.0; 4] };
+        let q = [corner(b.from - side, u0, v0), corner(b.to - side, u1, v0), corner(b.from + side, u0, v1), corner(b.to + side, u1, v1)];
+        add.extend([q[0], q[2], q[1], q[1], q[2], q[3]]);
     }
 }
 
@@ -8675,6 +8710,7 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         attract_demo_level: attract["demo_fight"]["ai_level"].as_u64().unwrap_or(0) as usize,
         attract_steps: attract["cycle"]["steps"].as_array().cloned().unwrap_or_default(),
         vfx: None,
+        effect_sheets: HashMap::new(),
         rumble: kumite_game::rumble::Rumble::new(None),
         rumble_fight: false,
         tag_stage: None,
