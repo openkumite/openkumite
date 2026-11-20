@@ -258,7 +258,7 @@ struct Globals {
     // Tekken Tag's shadow picture: its centre's x, z (metres), 1 / its half size, the darkening (0: none)
     shadow_map: [f32; 4],
     // Tekken Tag's floor cells: the depth limits; the half size of a cell's square (x, z), 1 = on, the reach; the
-    // window (cells x, z) and the cell's size; the window's centre (x, z) and its first cell (x, z)
+    // window (cells x, z) and the cell's size; the window's centre (x, z), the picture's aspect
     floor_levels: [f32; 4],
     floor_cell: [f32; 4],
     floor_window: [f32; 4],
@@ -1209,11 +1209,7 @@ impl Renderer {
             floor_levels: cam.floor_levels.map_or([0.0; 4], |l| l.limits),
             floor_cell: cam.floor_levels.map_or([0.0; 4], |l| [l.half[0], l.half[1], 1.0, l.reach]),
             floor_window: cam.floor_levels.map_or([0.0; 4], |l| [l.window[0], l.window[1], l.cell[0], l.cell[1]]),
-            // (0x341218: the window starts at the centre's cell, rounded)
-            floor_centre: cam.floor_levels.map_or([0.0; 4], |l| {
-                let first = |k: usize| (l.centre[k] / l.cell[k] + 0.5).floor();
-                [l.centre[0], l.centre[1], first(0), first(1)]
-            }),
+            floor_centre: cam.floor_levels.map_or([0.0; 4], |l| [l.centre[0], l.centre[1], proj.y_axis.y / proj.x_axis.x, 0.0]),
             shadow_colour: cam.shadow.map_or([0.0; 4], |s| {
                 // sRGB to the frame's linear colour
                 let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
