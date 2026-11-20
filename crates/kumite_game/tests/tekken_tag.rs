@@ -283,6 +283,37 @@ fn jack2s_grab_reaches_with_the_games_joints() {
     assert!(grab.is_some_and(|k| (60..=66).contains(&k)), "the grab on frame {grab:?}");
 }
 
+/// The drawn skeleton is the game's joint places too (0x3478F0): Jack-2's knee is 390 down his thigh.
+#[test]
+fn jack2_is_drawn_with_the_games_joints() {
+    let Some(a) = assets() else { return };
+    let jack = a.character(603).unwrap();
+    let shin = jack.nodes.iter().find(|n| n.name == "shin_A").unwrap();
+    assert!((shin.translation.length() * 1000.0 - 390.0).abs() < 1.0, "the knee {}", shin.translation.length() * 1000.0);
+}
+
+/// Paul's belt ends sway (0x34D258): off their bind pose as he walks, never under the floor.
+#[test]
+fn pauls_belt_sways() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [PAUL, HWOARANG]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    let belt = b.game.bodies[0].character.cloth.first().map(|c| c.node).expect("Paul's belt");
+    let mut cloth = kumite_game::Cloth::default();
+    let mut moved = 0.0f32;
+    for (k, pad) in parse_script("n*60,f*60,n*60").unwrap().into_iter().enumerate() {
+        b.step([pad, Pad::default()]);
+        let (mut pose, place) = b.game.pose(0);
+        let rest = pose[belt];
+        cloth.apply(&b.game.bodies[0].character, b.game.fight.frame, place, &mut pose);
+        let tip = (place * pose[belt]).transform_point3(glam::Vec3::X * 0.12);
+        assert!(pose[belt].is_finite() && tip.y > -0.001, "frame {k}: the tip {tip}");
+        if (60..120).contains(&k) {
+            moved = moved.max((pose[belt].w_axis - rest.w_axis).length().max((pose[belt].x_axis - rest.x_axis).length()));
+        }
+    }
+    assert!(moved > 0.05, "the belt kept its bind pose ({moved})");
+}
+
 /// The body push measures each side's step from where the last push left it (0x377338 against 0x8A7A90): Paul's
 /// u/f+3 walks Hwoarang's guard back and they part 1004 apart in PCSX2 (1102 when the step left the push out).
 #[test]

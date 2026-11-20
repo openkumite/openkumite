@@ -470,6 +470,8 @@ struct Fight {
     cutscene: Option<Cutscene>,
     /// The hanging / flapping joints' go-over between clips (drawing).
     secondary: std::cell::RefCell<[kumite_game::SecondaryBlend; 2]>,
+    /// Each drawn model's swaying nodes (Tekken Tag's).
+    cloth: std::cell::RefCell<Vec<kumite_game::Cloth>>,
     /// Force's co-op partner: its sound bank and character id (Ball 2 ON 2: P1's partner).
     partner: Option<(String, usize)>,
     /// Ball 2 ON 2: P2's partner's (actor 2) sound bank and character id.
@@ -489,6 +491,18 @@ pub(crate) struct Heard {
 }
 
 impl Fight {
+    /// Fighter `i`'s swaying nodes in `pose` (Tekken Tag's: [`kumite_game::Cloth`]), moved once a game frame.
+    fn sway(&self, i: usize, pose: &mut [glam::Mat4], place: glam::Mat4) {
+        let game = self.cutscene.as_ref().map_or(&self.bout.game, |c| &c.scene.game);
+        let mut cloth = self.cloth.borrow_mut();
+        if cloth.len() <= i {
+            cloth.resize_with(i + 1, Default::default);
+        }
+        if let (Some(c), Some(body)) = (cloth.get_mut(i), game.bodies.get(i)) {
+            c.apply(&body.character, game.fight.frame, place, pose);
+        }
+    }
+
     /// The fighters' sounds of the step just made (see [`Heard::step`]).
     fn step_sounds(&mut self, sound: &kumite_game::sound::SoundData) -> Vec<kumite_game::sound::Sound> {
         let banks = [self.banks[0].as_str(), self.banks[1].as_str()];
@@ -1164,6 +1178,7 @@ impl App {
             extra_voice: None,
             seats: None,
             secondary: Default::default(),
+            cloth: Default::default(),
         });
         // Ball 2 ON 2: the partners' voices
         if let (Some(f), Some(partners)) = (self.fight.as_mut(), setup_partners) {
@@ -1710,6 +1725,14 @@ impl App {
 
     /// One fixed 60 Hz logic step.
     fn step(&mut self) {
+        // (the swaying nodes move each frame, drawn or not: a frame not drawn would hold them)
+        if let Some(fight) = self.fight.as_ref() {
+            let game = fight.cutscene.as_ref().map_or(&fight.bout.game, |c| &c.scene.game);
+            for i in 0..game.bodies.len() {
+                let (mut pose, place) = game.pose(i);
+                fight.sway(i, &mut pose, place);
+            }
+        }
         // (the fighters and the last frame's landings, for the arena's leaves)
         let fighters: Vec<glam::Vec3> = match (self.fight.as_ref(), self.tag.as_ref()) {
             (Some(fight), _) => fight.bout.game.fight.fighters.iter().map(|a| a.root() / kumite_game::UNITS).collect(),
@@ -4427,6 +4450,7 @@ impl App {
             extra_voice: None,
             seats: None,
             secondary: Default::default(),
+            cloth: Default::default(),
         });
         self.screen = None;
         // a co-op partner goes on with the run (and 3P, 4P)
@@ -5484,6 +5508,7 @@ impl App {
                     if i < 2 {
                         fight.secondary.borrow_mut()[i].apply(&game.bodies[i].character, game.shown_clip(i), game.fight.frame, &mut pose);
                     }
+                    fight.sway(i, &mut pose, place);
                     if !game.visible[i] {
                         // not drawn (the win pose shows the winner only, the loser shot the loser)
                         place = glam::Mat4::from_scale(glam::Vec3::ZERO);

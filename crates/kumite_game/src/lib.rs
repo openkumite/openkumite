@@ -179,6 +179,88 @@ impl SecondaryBlend {
     }
 }
 
+/// Tekken Tag's swaying nodes (belts, hair, cloth, tails: [`kumite_assets::ClothNode`]) as 0x34D258 moves them each
+/// drawn frame (drawing only). A node's tip (its length along its x) is averaged over its `frames` from where last
+/// frame's matrix put it; the node turns towards `keep` x that tip's direction + `gravity` x down + the rest x its bind
+/// direction (in its bind axes: about z, then y, each within its limits; bit 2, about y, then z), then a tip under the
+/// floor is laid on it.
+/// shortcut: no collision with the body's capsules (pack part 9) nor the arena's wind (0x34E018), upgrade when a
+/// belt through a leg shows
+#[derive(Clone, Debug, Default)]
+pub struct Cloth {
+    frame: Option<u64>,
+    /// Each node's averaged tip and its last world matrix.
+    last: Vec<(Vec3, Mat4)>,
+}
+
+impl Cloth {
+    /// `pose`: the character's node matrices (character space) for game frame `frame`, `place` its world matrix;
+    /// the swaying nodes changed in place. A frame shown again keeps its matrices (a pause holds them).
+    pub fn apply(&mut self, character: &Character, frame: u64, place: Mat4, pose: &mut [Mat4]) {
+        let cloth = &character.cloth;
+        let to_char = place.inverse();
+        if cloth.is_empty() || !to_char.is_finite() {
+            return;
+        }
+        let first = self.last.len() != cloth.len() || self.frame.is_none_or(|f| frame < f || frame > f + 2);
+        if self.frame == Some(frame) && !first {
+            for (c, &(_, m)) in cloth.iter().zip(&self.last) {
+                if let Some(p) = pose.get_mut(c.node) {
+                    *p = to_char * m;
+                }
+            }
+            return;
+        }
+        self.frame = Some(frame);
+        if first {
+            self.last = vec![(Vec3::ZERO, Mat4::IDENTITY); cloth.len()];
+        }
+        let nodes = &character.nodes;
+        for (c, last) in cloth.iter().zip(self.last.iter_mut()) {
+            let (Some(n), Some(parent)) = (nodes.get(c.node), nodes.get(c.node).and_then(|n| n.parent).and_then(|p| pose.get(p).copied())) else { continue };
+            let rest = place * parent * Mat4::from_rotation_translation(n.rotation, n.translation);
+            let tip = Vec3::X * c.length;
+            let mut world = rest;
+            if first {
+                last.0 = rest.transform_point3(tip);
+            } else {
+                let frames = c.frames.max(1) as f32;
+                last.0 = (last.0 * (frames - 1.0) + last.1.transform_point3(tip)) / frames;
+                let back = Mat3::from_mat4(rest).inverse();
+                let towards = (back * (last.0 - rest.w_axis.truncate())).normalize_or_zero();
+                let v = towards * c.keep + back * Vec3::NEG_Y * c.gravity + Vec3::X * (1.0 - c.keep - c.gravity);
+                world = rest * cloth_turn(c, v, true);
+                // a tip under the floor: laid on it, as far out as its length reaches
+                let (pivot, end) = (rest.w_axis.truncate(), world.transform_point3(tip));
+                if end.y < 0.0 {
+                    let flat = Vec3::new(end.x - pivot.x, 0.0, end.z - pivot.z).normalize_or_zero();
+                    let out = (c.length * c.length - pivot.y * pivot.y).max(0.0).sqrt();
+                    world = rest * cloth_turn(c, back * Vec3::new(flat.x * out, -pivot.y, flat.z * out), false);
+                }
+            }
+            last.1 = world;
+            if let Some(p) = pose.get_mut(c.node) {
+                *p = to_char * world;
+            }
+        }
+    }
+}
+
+/// The turn taking a node's x to `v` (its bind axes), within its limits when `limited`.
+fn cloth_turn(c: &kumite_assets::ClothNode, v: Vec3, limited: bool) -> Mat4 {
+    let clamp = |a: f32, max: f32, min: f32| if limited && max != min { a.min(max).max(min) } else { a };
+    let [ymax, ymin, zmax, zmin] = c.limits;
+    if c.flags & 4 != 0 {
+        let y = clamp((-v.z).datan2(v.x), ymax, ymin);
+        let z = clamp(v.y.datan2((v.x * v.x + v.z * v.z).sqrt()), zmax, zmin);
+        Mat4::from_rotation_y(y) * Mat4::from_rotation_z(z)
+    } else {
+        let y = clamp((-v.z).datan2((v.x * v.x + v.y * v.y).sqrt()), ymax, ymin);
+        let z = clamp(v.y.datan2(v.x), zmax, zmin);
+        Mat4::from_rotation_z(z) * Mat4::from_rotation_y(y)
+    }
+}
+
 /// Who drives the camera.
 #[derive(Clone, Debug)]
 pub enum CameraMode {

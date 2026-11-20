@@ -170,6 +170,25 @@ pub struct Wings {
     pub frames: Vec<[[f32; 7]; 6]>,
 }
 
+/// A Tekken Tag fighter's swaying node (a belt, hair, cloth, a tail: the skin's extras `cloth`, from its pack's part
+/// 10), as 0x34D258 moves it each drawn frame.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct ClothNode {
+    pub node: usize,
+    /// How much of its last frame's direction it keeps, and how much gravity pulls it (the rest goes back to its
+    /// bind direction).
+    pub keep: f32,
+    pub gravity: f32,
+    /// The frames its tip's place is averaged over.
+    pub frames: i32,
+    /// Its tip, this far along its x axis (m).
+    pub length: f32,
+    /// Its turns about y (max, min) and z (max, min) in radians; a pair alike: unlimited.
+    pub limits: [f32; 4],
+    /// Bit 2: turned about y first, then z.
+    pub flags: u8,
+}
+
 pub struct Character {
     pub name: String,
     pub nodes: Vec<Node>,
@@ -191,6 +210,8 @@ pub struct Character {
     pub wings: Option<Wings>,
     pub clips: Vec<Clip>,
     clip_index: HashMap<String, usize>,
+    /// Tekken Tag's swaying nodes (none elsewhere).
+    pub cloth: Vec<ClothNode>,
 }
 
 impl Character {
@@ -310,8 +331,10 @@ impl Character {
         let extras = doc.textures().next().and_then(|t| serde_json::from_str::<serde_json::Value>(t.extras().as_ref()?.get()).ok());
         let mark = extras.and_then(|e| serde_json::from_value(e["mark"].clone()).ok());
         let extras = doc.skins().next().and_then(|s| serde_json::from_str::<serde_json::Value>(s.extras().as_ref()?.get()).ok());
-        let wings = extras.and_then(|e| serde_json::from_value::<Wings>(e["wings"].clone()).ok()).filter(|w| w.nodes.iter().all(|&n| n < nodes.len()) && !w.frames.is_empty());
-        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, texture, mark, wings, clips, clip_index })
+        let wings = extras.as_ref().and_then(|e| serde_json::from_value::<Wings>(e["wings"].clone()).ok()).filter(|w| w.nodes.iter().all(|&n| n < nodes.len()) && !w.frames.is_empty());
+        let cloth: Vec<ClothNode> = extras.and_then(|e| serde_json::from_value(e["cloth"].clone()).ok()).unwrap_or_default();
+        let cloth = cloth.into_iter().filter(|c| nodes.get(c.node).is_some_and(|n| n.parent.is_some())).collect();
+        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, texture, mark, wings, clips, clip_index, cloth })
     }
 
     /// The wings at their track's `frame` (clamped to its end): each wing node turned and scaled so in its parent, its
@@ -421,6 +444,7 @@ impl Character {
             wings: self.wings.clone(),
             clips: self.clips_of(donor),
             clip_index: donor.clip_index.clone(),
+            cloth: self.cloth.clone(),
         }
     }
 
