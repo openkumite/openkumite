@@ -1946,6 +1946,17 @@ pub struct GraphicsMenu {
 const GRAPHICS_ROWS: usize = 12;
 /// The rows shown at once.
 const GRAPHICS_SHOWN: usize = 10;
+/// The TEXTURES row's values.
+const TEXTURES: [&str; 3] = ["SHARP", "SMOOTH", "FILTERED"];
+
+/// The texture filter (a [`TEXTURES`] index).
+fn texture_filter(g: &crate::graphics::Graphics) -> usize {
+    if g.enhance.mipmaps {
+        2
+    } else {
+        usize::from(g.smooth_textures)
+    }
+}
 
 impl GraphicsMenu {
     pub fn new(settings: crate::graphics::Graphics, display: crate::graphics::Display, difficulty: usize) -> Self {
@@ -1978,7 +1989,7 @@ impl GraphicsMenu {
             ("STATS", Some(if g.stats { "ON" } else { "OFF" }.to_string())),
             ("LOOK", Some(g.enhance.look().label().to_string())),
             ("ANTI-ALIASING", Some(if g.enhance.msaa > 1 { format!("{}X", g.enhance.msaa) } else { "OFF".to_string() })),
-            ("TEXTURES", Some(if g.smooth_textures { "SMOOTH" } else { "SHARP" }.to_string())),
+            ("TEXTURES", Some(TEXTURES[texture_filter(g)].to_string())),
             ("RECOMMENDED", None),
             ("DEFAULT", None),
             ("EXIT", None),
@@ -2053,7 +2064,7 @@ impl GraphicsMenu {
                         let i = counts.iter().position(|&n| n == g.enhance.msaa).unwrap_or(0);
                         g.enhance.msaa = counts[step(i, counts.len(), right)];
                     }
-                    8 => g.smooth_textures = !g.smooth_textures,
+                    8 => (g.smooth_textures, g.enhance.mipmaps) = [(false, false), (true, false), (false, true)][step(texture_filter(g), 3, right)],
                     _ => return None,
                 }
                 sfx::play(sfx::cursor());
