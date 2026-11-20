@@ -178,6 +178,10 @@ pub struct Camera {
     pub cutaway_all: bool,
     /// Stage surfaces above the floor beyond this z (metres; the camera's side of a route) are not drawn.
     pub near_cut: Option<f32>,
+    /// Tekken Tag's arena scenery (not its floor, nor a mesh whose vertices' `cell.w` is negative): a triangle with a
+    /// corner nearer than this depth (metres; 0: none) is not drawn, as the microcode's z guard (VU1 block row
+    /// 10.w, gp-0x67B0) drops it.
+    pub scenery_cut: f32,
     /// The stage's light for the fighters (None: a plain key light).
     pub light: Option<StageLight>,
     /// The fighters' shadows on the floor (None: none).
@@ -238,6 +242,7 @@ impl Camera {
             cutaway: None,
             cutaway_all: false,
             near_cut: None,
+            scenery_cut: 0.0,
             light: None,
             shadow: None,
         }
@@ -271,7 +276,7 @@ struct Globals {
     fade: [[f32; 4]; 8],
     cutaway: [f32; 4],   // x, y, z (metres) of fighter 1, margin (0 = off)
     cutaway2: [f32; 4],  // x, y, z of fighter 2, 1 = cut all nearer than the nearer fighter
-    near_cut: [f32; 4],  // z beyond which stage surfaces above the floor go, 1 = on
+    near_cut: [f32; 4],  // z beyond which stage surfaces above the floor go, 1 = on; Camera::scenery_cut
     key_color: [f32; 4], // the stage light's key colour, w = 1 when there is one
     ambient: [f32; 4],
     material: [f32; 4],
@@ -438,12 +443,20 @@ pub struct StaticMesh {
     /// 0 drawn over what is behind it; 1 added to it, 2 multiplying it (Tekken Tag's lights and gloss, its painted
     /// shadows: drawn after the stage, depth-tested, never written).
     blend: u8,
+    /// A sky mesh drawn after the stage's strips, as the PS2 draws an arena's objects after the arena (0x3D10D0
+    /// after 0x3DE6C0): its painted shadows do not darken them.
+    late: bool,
 }
 
 impl StaticMesh {
     /// The mesh as one added to (1) or multiplying (2) what is behind it.
     pub fn blended(self, blend: u8) -> Self {
         Self { blend, ..self }
+    }
+
+    /// The mesh drawn after the stage's strips (`late`).
+    pub fn late(self) -> Self {
+        Self { late: true, ..self }
     }
 
     /// Another texture on the mesh (a stage's flame: its next picture).
@@ -1289,6 +1302,7 @@ impl Renderer {
             texture,
             sorted: None,
             blend: 0,
+            late: false,
         }
     }
 
@@ -1304,6 +1318,7 @@ impl Renderer {
             texture,
             sorted: Some((positions, tris)),
             blend: 0,
+            late: false,
         }
     }
 
@@ -1395,7 +1410,7 @@ impl Renderer {
             fade: cam.floor_light.map_or([[0.0; 4]; 8], |l| std::array::from_fn(|i| std::array::from_fn(|k| l.table[i * 4 + k]))),
             cutaway: cam.cutaway.map_or([0.0; 4], |(p, m)| [p[0].x, p[0].y, p[0].z, m]),
             cutaway2: cam.cutaway.map_or([0.0; 4], |(p, _)| [p[1].x, p[1].y, p[1].z, f32::from(u8::from(cam.cutaway_all))]),
-            near_cut: cam.near_cut.map_or([0.0; 4], |z| [z, 1.0, 0.0, 0.0]),
+            near_cut: [cam.near_cut.unwrap_or(0.0), f32::from(u8::from(cam.near_cut.is_some())), cam.scenery_cut, 0.0],
             key_color: cam.light.map_or([0.0; 4], |l| [l.key.x, l.key.y, l.key.z, if l.more.is_some() { 2.0 } else { 1.0 }]),
             ambient: cam.light.map_or([0.0; 4], |l| l.ambient.extend(0.0).to_array()),
             material: cam.light.map_or([0.0; 4], |l| l.material.extend(0.0).to_array()),
@@ -1599,7 +1614,7 @@ impl Renderer {
             let order = if cam.sky_first { [(&pipes.sky_pipeline, sky), (&pipes.static_pipeline, statics)] } else { [(&pipes.static_pipeline, statics), (&pipes.sky_pipeline, sky)] };
             for (pipeline, meshes) in order.into_iter().filter(|o| !(sky_depth && std::ptr::eq(o.0, &pipes.sky_pipeline))) {
                 pass.set_pipeline(pipeline);
-                for m in meshes.iter().filter(|m| m.blend == 0) {
+                for m in meshes.iter().filter(|m| m.blend == 0 && !m.late) {
                     pass.set_bind_group(1, m.texture.group(smooth), &[]);
                     pass.set_vertex_buffer(0, m.vbuf.slice(..));
                     pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -1618,7 +1633,7 @@ impl Renderer {
                 let mut pass = begin(&mut enc, (label, wgpu::LoadOp::Load, depth));
                 pass.set_bind_group(0, &self.globals_group, &[]);
                 pass.set_pipeline(pipeline);
-                for m in meshes.iter().filter(|m| m.blend == 0) {
+                for m in meshes.iter().filter(|m| m.blend == 0 && !m.late) {
                     pass.set_bind_group(1, m.texture.group(smooth), &[]);
                     pass.set_vertex_buffer(0, m.vbuf.slice(..));
                     pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -1632,12 +1647,18 @@ impl Renderer {
             }
         }
         // the stage's added and multiplying strips (Tekken Tag's), over the stage it lights or shades
-        let strips: Vec<(usize, &StaticMesh)> = statics.iter().map(|m| (0, *m)).chain(sky.iter().map(|m| (2, *m))).filter(|(_, m)| m.blend > 0).collect();
+        let strips: Vec<(usize, &StaticMesh)> = statics.iter().map(|m| (0, *m)).chain(sky.iter().map(|m| (2, *m))).filter(|(_, m)| m.blend > 0 && !m.late).collect();
+        // (then the late meshes: opaque with the stage's depth, then their own strips)
+        let late = sky.iter().filter(|m| m.late);
+        let late = late.clone().filter(|m| m.blend == 0).map(|m| (usize::MAX, *m)).chain(late.filter(|m| m.blend > 0).map(|m| (2, *m)));
+        let strips: Vec<(usize, &StaticMesh)> = strips.into_iter().chain(late).collect();
         if !strips.is_empty() {
             let mut pass = begin(&mut enc, ("stage strips", wgpu::LoadOp::Load, wgpu::LoadOp::Load));
             pass.set_bind_group(0, &self.globals_group, &[]);
             for (base, m) in strips {
-                let Some(pipeline) = pipes.stage_blends.get(base + usize::from(m.blend) - 1) else { continue };
+                let opaque = if sky_depth { &pipes.sky_depth_pipeline } else { &pipes.sky_pipeline };
+                let pipeline = if base == usize::MAX { Some(opaque) } else { pipes.stage_blends.get(base + usize::from(m.blend) - 1) };
+                let Some(pipeline) = pipeline else { continue };
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, m.texture.group(smooth), &[]);
                 pass.set_vertex_buffer(0, m.vbuf.slice(..));

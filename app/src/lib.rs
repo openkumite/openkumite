@@ -4074,13 +4074,14 @@ impl App {
             stage.models.clear();
             let models = scene.characters.iter().zip(&players).map(|(ch, p)| skinned_character(&r, ch, p.0)).collect();
             let mates = scene.partners.iter().zip(&partners).map(|(m, p)| Some(skinned_character(&r, &m.as_ref()?.0, p.as_ref()?.0))).collect();
-            // a model's meshes join the hall's (each its texture), with their vertices as made
+            // a model's meshes join the hall's (each its texture), with their vertices as made (cell.w -1: an object,
+            // not the scenery the throw's z guard cuts), drawn after the hall's strips as the PS2's objects
             let add = |file: &str, stage: &mut Scene| -> Result<Vec<(usize, Vec<StaticVertex>)>> {
                 let st = kumite_assets::Stage::load(&self.assets.root.join(file))?;
                 let tex: Vec<_> = st.textures.iter().map(|t| r.texture(t.width, t.height, &t.rgba)).collect();
                 let meshes = st.sky.iter().filter_map(|m| {
-                    let v: Vec<StaticVertex> = m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color, cell: v.cell, normal: v.normal }).collect();
-                    stage.sky.push(r.sorted_mesh(&v, &m.indices, tex.get(m.texture)?.clone()));
+                    let v: Vec<StaticVertex> = m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color, cell: [0.0, 0.0, 0.0, -1.0], normal: v.normal }).collect();
+                    stage.sky.push(r.sorted_mesh(&v, &m.indices, tex.get(m.texture)?.clone()).late());
                     Some((stage.sky.len() - 1, v))
                 });
                 Ok(meshes.collect())
@@ -5636,6 +5637,10 @@ impl App {
                     None => Camera::new(e, t, fov_y),
                 };
                 (cam.sky_y_scale, cam.sky_cull, cam.sky_depth, cam.background) = (1.0, false, true, Some(scene.background));
+                // in the throw the hall's scenery has a z guard of 2 x 7000 / z(7000) on 0x433440's projection
+                // (0x341EEC), which its own (0x433480's z) meets 5297 mm from the eye: the light cones before the lane
+                // are not drawn
+                cam.scenery_cut = if run.scene.bowl.throwing() { 5.297 } else { 0.0 };
                 scene_lighting(&mut cam, scene);
                 (cam, Vec::new())
             }
