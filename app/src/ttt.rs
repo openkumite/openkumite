@@ -3065,6 +3065,8 @@ pub struct Practice {
     pub commands: Option<CommandList>,
     /// CHAIN TRAINING's run (0x8B8010).
     chain: Chain,
+    /// FREESTYLE's COMMAND CAPTURE (0x4318C8).
+    capture: Capture,
     /// The damage each side took, and the last hit's on the dummy (damage, base damage).
     total: [i32; 2],
     last: (i32, i32),
@@ -3120,9 +3122,10 @@ impl Practice {
         }
     }
 
+    /// The menu opens on CANCEL (row 1), as PCSX2 shows it.
     pub fn open(&mut self, d: &Data) {
         sfx::play(sound(d, "decide"));
-        (self.open, self.cursor) = (true, 0);
+        (self.open, self.cursor) = (true, 1);
     }
 
     /// A key while the menu is open: up / down the rows, left / right MODE SELECT's modes or a row's values (round),
@@ -3176,6 +3179,108 @@ impl Practice {
             }
         }
         PracticeAction::None
+    }
+}
+
+/// COMMAND CAPTURE (FREESTYLE, 0x37FB70, `practice.hud.capture`): its state (0 nothing on, 1 READY, 3 REC, 4 REC
+/// LIMIT, 5 between two plays, 7 PLAY), the recording (runs of one pad: frames and the pad as facing right, at most
+/// `runs`), what plays (its run and the frames left of it, in a loop or once), a state's frames left, SELECT and the
+/// buttons held the frame before, and the frames (the texts blink by them).
+#[derive(Clone, Debug, Default)]
+struct Capture {
+    state: u8,
+    runs: Vec<(u32, kumite_sim::input::Pad)>,
+    play: (usize, u32),
+    looping: bool,
+    timer: u32,
+    select: bool,
+    held: u8,
+    frame: u32,
+}
+
+/// A pad as it is seen facing right (forward to the right), and back.
+fn facing(pad: kumite_sim::input::Pad, right: bool) -> kumite_sim::input::Pad {
+    if right {
+        pad
+    } else {
+        kumite_sim::input::Pad { left: pad.right, right: pad.left, ..pad }
+    }
+}
+
+impl Practice {
+    /// COMMAND CAPTURE each frame (FREESTYLE; 0x37FB70): with SELECT (`select`) held, circle starts READY, which
+    /// records the player's pad (`pad`, the player facing right or not: `right`) from its first input until SELECT or
+    /// the limit (REC LIMIT, its sound at its beeps); cross plays the recording to the dummy once, square in a loop
+    /// (the last run's frames between); SELECT alone stops. The dummy's pad while it plays (facing `dummy_right`).
+    pub fn capture_step(&mut self, d: &Data, select: bool, pad: kumite_sim::input::Pad, right: bool, dummy_right: bool) -> Option<kumite_sim::input::Pad> {
+        let c = &d.raw["practice"]["hud"]["capture"];
+        let k = &mut self.capture;
+        k.frame = k.frame.wrapping_add(1);
+        let new = pad.buttons & !k.held;
+        let select_new = select && !k.select;
+        (k.held, k.select) = (pad.buttons, select);
+        if self.mode != 0 || self.open || self.commands.is_some() {
+            return None;
+        }
+        // (the PS2's square, cross and circle: buttons 1, 3 and 4)
+        let (looped, once, rec) = if select { (new & 1 != 0, new & 4 != 0, new & 8 != 0) } else { (false, false, false) };
+        let stop = select_new && !(looped || once || rec);
+        let play = |k: &mut Capture| (k.state, k.play) = (7, (0, k.runs.first().map_or(0, |r| r.0)));
+        match k.state {
+            0 if rec => (k.state, k.runs) = (1, vec![]),
+            0 if (looped || once) && !k.runs.is_empty() => {
+                k.looping = looped;
+                play(k);
+            }
+            1 | 3 if stop => k.state = 0,
+            1 | 3 => {
+                let any = pad.up || pad.down || pad.left || pad.right || pad.buttons != 0;
+                if k.state == 3 || any {
+                    k.state = 3;
+                    let p = facing(pad, right);
+                    match k.runs.last_mut() {
+                        Some(r) if r.1 == p => r.0 += 1,
+                        _ => k.runs.push((1, p)),
+                    }
+                    if k.runs.len() >= int(&c["runs"]) {
+                        (k.state, k.timer) = (4, int(&c["limit"]["frames"]) as u32);
+                    }
+                }
+            }
+            4 | 5 | 7 if stop => k.state = 0,
+            4 => {
+                if c["limit"]["beeps"].as_array().is_some_and(|b| b.iter().any(|t| int(t) as u32 == k.timer)) {
+                    sfx::play(int(&c["limit"]["sound"]) as u16);
+                }
+                k.timer = k.timer.saturating_sub(1);
+            }
+            5 => {
+                if k.timer > 0 {
+                    k.timer -= 1;
+                } else {
+                    play(k);
+                }
+            }
+            7 => {
+                let Some(&(_, out)) = k.runs.get(k.play.0) else {
+                    k.state = 0;
+                    return None;
+                };
+                k.play.1 = k.play.1.saturating_sub(1);
+                if k.play.1 == 0 {
+                    k.play.0 += 1;
+                    match k.runs.get(k.play.0) {
+                        Some(r) => k.play.1 = r.0,
+                        // (0x37C878: the wait before the next play)
+                        None if k.looping => (k.state, k.timer) = (5, k.runs.last().map_or(0, |r| r.0)),
+                        None => k.state = 0,
+                    }
+                }
+                return Some(facing(out, dummy_right));
+            }
+            _ => {}
+        }
+        None
     }
 }
 
@@ -3364,19 +3469,18 @@ pub fn draw_practice_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
         at(&h["damage"], &format!("DMG:{dmg} ({:03}%)", if base > 0 { dmg * 100 / base } else { 0 }));
     }
     at(&h["mode"], d.raw["practice"]["modes"][p.mode]["title"].as_str().unwrap_or_default());
-    // FREESTYLE's COMMAND CAPTURE (0x37FE58) and its keys: SELECT, then the small font's "+", the circle button and
-    // "=REC" (the small font's top 20 over the foot). shortcut: recording and playing it back are not done
+    // FREESTYLE's COMMAND CAPTURE (0x37FE58) by its state: nothing on, its name (higher with a recording) over SELECT
+    // + o = REC (and SELECT + x = PLAY with a recording); else the state's text blinking and SELECT = STOP. The keys:
+    // SELECT, then the small font's texts and button icons (its top 20 over the foot)
     let c = &h["capture"];
-    if p.mode == 0 && c.is_object() {
-        at(c, c["text"].as_str().unwrap_or_default());
-        let k = &c["keys"];
-        let y = num(&k["xy"][1]);
-        let mut x = chrome(painter, v, art, d, k["select"].as_str().unwrap_or_default(), num(&k["xy"][0]), y, Some(int(&k["colour"])), num(&k["size"]));
-        for part in k["small"].as_array().into_iter().flatten() {
+    let k = &c["keys"];
+    let keys = |parts: &Value, x: f32, y: f32| {
+        let mut x = chrome(painter, v, art, d, k["select"].as_str().unwrap_or_default(), x, y, Some(int(&k["colour"])), num(&k["size"]));
+        for part in parts.as_array().into_iter().flatten() {
             let text = part[0].as_str().unwrap_or_default();
-            if text == "o" {
+            if let Some(cell) = k["buttons"][text].as_i64() {
                 // (the icons in the small font's colour: `003_003_cNN.png` beside its `003_002_cNN.png`)
-                let cell = int(&k["button"]) as f32 * 16.0;
+                let cell = cell as f32 * 16.0;
                 let coloured = d.raw["fonts"]["small"]["colours"][int(&part[1])].as_str().map(|f| f.replace("003_002", "003_003"));
                 if let Some((tex, [tw, th])) = coloured.and_then(|f| art.pic(&f)).or_else(|| art.pic("003_003.png")) {
                     let uv = Rect::from_min_max(Pos2::new(cell / tw as f32, 0.0), Pos2::new((cell + 16.0) / tw as f32, 16.0 / th as f32));
@@ -3388,6 +3492,34 @@ pub fn draw_practice_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
             }
             x += small_width(d, text);
         }
+    };
+    if p.mode != 0 || !c.is_object() {
+        return;
+    }
+    let cap = &p.capture;
+    let (kx, ky) = (num(&k["xy"][0]), num(&k["xy"][1]));
+    if cap.state == 0 {
+        let recorded = !cap.runs.is_empty();
+        let y = if recorded { num(&c["recorded_y"]) } else { num(&c["xy"][1]) };
+        chrome(painter, v, art, d, c["text"].as_str().unwrap_or_default(), num(&c["xy"][0]), y, Some(int(&c["colour"])), num(&c["size"]));
+        keys(&k["small"], kx, y + ky - num(&c["xy"][1]));
+        if recorded {
+            keys(&k["play"], kx, y + 2.0 * (ky - num(&c["xy"][1])));
+        }
+        return;
+    }
+    let s = &c["states"];
+    let label = &s[match cap.state {
+        1 => "ready",
+        3 => "rec",
+        4 => "limit",
+        _ => "play",
+    }];
+    if cap.frame & int(&s["blink"]) as u32 != 0 {
+        chrome(painter, v, art, d, label[0].as_str().unwrap_or_default(), num(&s["xy"][0]), num(&s["xy"][1]), Some(int(&label[1])), num(&s["size"]));
+    }
+    if cap.state != 1 {
+        keys(&c["stop"]["small"], num(&c["stop"]["xy"][0]), num(&c["stop"]["xy"][1]));
     }
 }
 
@@ -4619,6 +4751,7 @@ mod tests {
                     {"label": "TRAINING DUMMY", "kind": "list", "values": ["STAND", "STAND GUARD"], "default": 0}]},
                 {"rows": [{"label": "MODE SELECT", "kind": "mode"}, {"label": "CPU LEVEL", "kind": "list", "values": ["EASY", "NORMAL"], "default": 1},
                     {"label": "RESET", "kind": "reset"}]}],
+                "hud": {"capture": {"runs": 3, "limit": {"frames": 2, "beeps": [], "sound": 0}}},
                 "chain": {"ready": {"frames": 2, "voices": [0, 0]}, "time": {"max": 100}, "done_sound": 0, "end": {"frames": 3, "voice": 0, "result": 2}}},
             "volumes": {"bgm": [0, 32, 40, 48, 56, 64, 72, 80, 96, 112, 128], "se": 10},
             "options": [{"default": 1, "values": ["EASY", "NORMAL"]}, {"default": 1, "values": ["1", "2", "3"]}, {"default": 2, "values": ["30", "40", "60"]}],
@@ -5095,6 +5228,37 @@ mod tests {
         }
     }
 
+    /// COMMAND CAPTURE: SELECT + circle READY, recording from the first input as runs of one pad (as facing right)
+    /// until SELECT; SELECT + cross plays it to the dummy once (as the dummy faces), then nothing on; the limit stops a
+    /// recording.
+    #[test]
+    fn command_capture_records_and_plays_once() {
+        use kumite_sim::input::Pad;
+        let d = data();
+        let mut p = Practice::new(&d);
+        let (circle, cross) = (Pad { buttons: 8, ..Pad::default() }, Pad { buttons: 4, ..Pad::default() });
+        let fwd = Pad { left: true, ..Pad::default() };
+        assert_eq!(p.capture_step(&d, true, circle, true, false), None);
+        p.capture_step(&d, false, Pad::default(), true, false);
+        assert_eq!(p.capture.state, 1);
+        // (the player facing left: left is forward)
+        for pad in [fwd, fwd, Pad::default()] {
+            p.capture_step(&d, false, pad, false, false);
+        }
+        p.capture_step(&d, true, Pad::default(), false, false);
+        assert_eq!((p.capture.state, p.capture.runs.len(), p.capture.runs[0].0), (0, 2, 2));
+        p.capture_step(&d, true, cross, true, false);
+        let out: Vec<_> = (0..4).map(|_| p.capture_step(&d, false, Pad::default(), true, false)).collect();
+        assert_eq!(out, [Some(fwd), Some(fwd), Some(Pad::default()), None]);
+        assert_eq!(p.capture.state, 0);
+        // (three runs at most here: REC LIMIT)
+        p.capture_step(&d, true, circle, true, true);
+        for k in 0..4 {
+            p.capture_step(&d, false, Pad { buttons: 1 << (k % 2), ..Pad::default() }, true, true);
+        }
+        assert_eq!((p.capture.state, p.capture.runs.len()), (4, 3));
+    }
+
     /// CHAIN TRAINING: READY! for its frames, then the move done by one of its aliases, the time counting; after the
     /// last the end; START starts it again.
     #[test]
@@ -5119,7 +5283,7 @@ mod tests {
         let d = data();
         let mut p = Practice::new(&d);
         p.open(&d);
-        for k in [Key::Down, Key::Down, Key::Right] {
+        for k in [Key::Down, Key::Right] {
             assert_eq!(p.key(&d, k), PracticeAction::None);
         }
         assert_eq!(p.dummy(&d), 1);

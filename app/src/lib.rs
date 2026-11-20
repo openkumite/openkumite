@@ -1670,6 +1670,11 @@ impl App {
         }
     }
 
+    /// Tekken Tag's SELECT (COMMAND CAPTURE): Backspace or the first gamepad's SELECT held.
+    fn select_held(&self) -> bool {
+        self.keys.contains(&KeyCode::Backspace) || self.gamepads.as_ref().and_then(|g| g.held()[0].clone()).is_some_and(|h| h.contains(&controls::PadButton::Select))
+    }
+
     /// The keyboard's pads (KEY CONFIG's layouts): one player alone has both, two players one each.
     fn keyboard_pads(&self, two_players: bool) -> [Pad; 2] {
         self.records.controls.keyboard_pads(two_players, |k| self.keys.contains(&k) || self.tapped.contains(&k))
@@ -1981,6 +1986,7 @@ impl App {
         let p1 = if self.script.is_empty() || !fighting { kb1 } else { self.script.remove(0) };
         let p2_script = (!self.p2_script.is_empty() && fighting).then(|| self.p2_script.remove(0));
         self.tapped.clear();
+        let select = self.select_held();
         let Some(fight) = self.fight.as_mut() else { return };
         if let Some(audio) = self.audio.as_mut() {
             audio.duck(fight.pause.is_some());
@@ -2033,6 +2039,14 @@ impl App {
                 11 => kb2,
                 dummy => ttt::practice_pad(dummy, f, 1),
             };
+        }
+        // FREESTYLE's COMMAND CAPTURE: SELECT (Backspace, a gamepad's SELECT) with the player's pad; what it plays is
+        // the dummy's pad
+        if let (Some(p), Some(d), None) = (fight.ttt_practice.as_mut(), self.roster.ttt.as_deref(), p2_script) {
+            let f = &fight.bout.game.fight;
+            if let Some(pad) = p.capture_step(d, select, pads[0], f.facing_right(0), f.facing_right(1)) {
+                pads[1] = pad;
+            }
         }
         // the practice dummy: its TRAINING DUMMY action, the second pad (CONTROLLER) or the CPU (VS CPU)
         if let (Some(p), None) = (fight.practice.as_ref(), p2_script) {
@@ -5136,6 +5150,7 @@ impl App {
             }
             return true;
         }
+        let select = self.select_held();
         let Some(fight) = self.fight.as_mut() else { return true };
         // START skips the boss-change scene
         if let Some(cs) = fight.cutscene.as_mut() {
@@ -5172,7 +5187,8 @@ impl App {
                 if p.chain_key(key) {
                     return true;
                 }
-                if matches!(key, Key::Start | Key::Back) {
+                // (SELECT is COMMAND CAPTURE's, not the menu's)
+                if key == Key::Start || (key == Key::Back && !select) {
                     p.open(&d);
                 }
                 return true;
