@@ -98,6 +98,21 @@ pub struct Vertex {
     pub pos: [f32; 3],
     pub uv: [f32; 2],
     pub color: [f32; 4],
+    /// Tekken Tag's floor cell: its centre (x, z), its level of detail (0: every level) and the floor's count of
+    /// levels (0: not a floor cell)
+    pub cell: [f32; 4],
+}
+
+/// Tekken Tag's floor cells (0x340070, 0x341218, 0x340408), metres: a cell shows the level of detail of its square's
+/// mean depth (the square `half` each way from its centre) past `limits`; laid in a window of `window` cells of
+/// `cell` around the fight, cells as far as `reach` from it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FloorLevels {
+    pub limits: [f32; 4],
+    pub half: [f32; 2],
+    pub cell: [f32; 2],
+    pub window: Option<[f32; 2]>,
+    pub reach: f32,
 }
 
 /// A node of the skeleton with its rest transform.
@@ -530,6 +545,8 @@ pub struct Stage {
     pub floor_patch: Option<[f32; 2]>,
     /// The extra stages' floor lighting: mode, shade and the fade table (every 32nd entry), when the stage has it.
     pub floor_light: Option<(u32, f32, [f32; 32])>,
+    /// Tekken Tag's floor cells (scene extras `floor_levels`): their levels of detail and the window they are laid in.
+    pub floor_levels: Option<FloorLevels>,
     pub placements: Vec<Placement>,
     /// Per texture (image): the glb asks for linear filtering (with mipmaps) and tiling both ways, as the
     /// extra levels do; the game's own stages ask for nearest and clamp.
@@ -590,7 +607,22 @@ impl Stage {
                     bail!("a primitive's attributes disagree");
                 }
                 let texture = prim.material().pbr_metallic_roughness().base_color_texture().map_or(0, |t| t.texture().source().index());
-                let vertices = pos.iter().zip(&uv).zip(&col).map(|((&p, &uv), &color)| Vertex { pos: xf.transform_point3(Vec3::from(p)).to_array(), uv, color }).collect();
+                // a floor's cells (TEXCOORD_1 the centre's x, z, TEXCOORD_2 the level and the count)
+                let cells: Vec<[f32; 4]> = match (r.read_tex_coords(1), r.read_tex_coords(2)) {
+                    (Some(c), Some(l)) => c
+                        .into_f32()
+                        .zip(l.into_f32())
+                        .map(|([x, z], [l, n])| {
+                            let c = xf.transform_point3(Vec3::new(x, 0.0, z));
+                            [c.x, c.z, l, n]
+                        })
+                        .collect(),
+                    _ => vec![[0.0; 4]; pos.len()],
+                };
+                if cells.len() < pos.len() {
+                    bail!("a primitive's attributes disagree");
+                }
+                let vertices = pos.iter().zip(&uv).zip(&col).zip(&cells).map(|(((&p, &uv), &color), &cell)| Vertex { pos: xf.transform_point3(Vec3::from(p)).to_array(), uv, color, cell }).collect();
                 let indices: Vec<u32> = r.read_indices().context("indices")?.into_u32().collect();
                 if indices.iter().any(|&i| i as usize >= pos.len()) {
                     bail!("an index past the vertices");
@@ -639,6 +671,7 @@ impl Stage {
             camera_drum: false,
             floor_patch: None,
             floor_light: None,
+            floor_levels: None,
             placements: vec![],
             filtered: vec![false; images.len()],
             tiled: vec![false; images.len()],
@@ -695,6 +728,16 @@ impl Stage {
             st.strip = strip_at.map(|a| (Mesh::default(), a));
             st.floor_period = v["floor_period"].as_array().and_then(|a| Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32]));
             st.camera_drum = v["camera_drum"].as_bool().unwrap_or(false);
+            let fl = &v["floor_levels"];
+            let num = |x: &serde_json::Value| x.as_f64().map(|v| v as f32);
+            st.floor_levels = (|| {
+                let limits = [num(&fl["limits"][0])?, num(&fl["limits"][1])?, num(&fl["limits"][2])?, num(&fl["limits"][3])?];
+                let cell = [num(&fl["cell"][0])?, num(&fl["cell"][1])?];
+                let window = (|| Some([num(&fl["window"][0])?, num(&fl["window"][1])?]))().filter(|w| w.iter().all(|n| (1.0..=64.0).contains(n)));
+                let corner = num(&fl["corner"])?;
+                Some(FloorLevels { limits, half: cell.map(|c| c * corner / 2.0), cell, window, reach: num(&fl["reach"]).unwrap_or(f32::MAX) })
+            })()
+            .filter(|l| l.cell.iter().all(|c| *c > 0.0));
             st.floor_patch = v["floor_patch"].as_array().and_then(|a| Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32]));
             st.extra_level = v["level"].as_str().map(str::to_string);
             let grid = |w: &serde_json::Value| {

@@ -31,6 +31,12 @@ struct Globals {
     shadow_colour: vec4<f32>,
     // Tekken Tag's shadow picture: its centre's x, z (metres), 1 / its half size, the darkening (0: none)
     shadow_map: vec4<f32>,
+    // Tekken Tag's floor cells: the depth limits (metres); the half size of a cell's square (x, z), 1 when on, the
+    // reach; the window (cells x, z; 0: none) and the cell's size; the window's centre (x, z), its first cell (x, z)
+    floor_levels: vec4<f32>,
+    floor_cell: vec4<f32>,
+    floor_window: vec4<f32>,
+    floor_centre: vec4<f32>,
     // Tekken Tag's two other lights: towards light 1, its colour, towards light 2, its colour
     lights: array<vec4<f32>, 4>,
 };
@@ -105,8 +111,9 @@ fn fs_shadow_map(i: VsOut) -> @location(0) vec4<f32> {
 // The floor drawn again over itself (0x342128: the game draws it with the shadow picture projected along the light),
 // a hair nearer, so it passes where the floor shows.
 @vertex
-fn vs_floor_shadow(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VsOut {
-    var o = static_vertex(pos, uv, color);
+fn vs_floor_shadow(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>,
+                   @location(3) cell: vec4<f32>) -> VsOut {
+    var o = static_vertex(pos, uv, color, cell);
     o.clip.z = o.clip.z - 0.00002 * o.clip.w;
     return o;
 }
@@ -156,15 +163,55 @@ fn fs_blob(i: VsOut) -> @location(0) vec4<f32> {
 }
 
 @vertex
-fn vs_static(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VsOut {
-    return static_vertex(pos, uv, color);
+fn vs_static(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>,
+             @location(3) cell: vec4<f32>) -> VsOut {
+    return static_vertex(pos, uv, color, cell);
 }
 
-// A stage mesh's vertex, moved with the floor.
-fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>) -> VsOut {
+// Tekken Tag's floor cell's level of detail (0x340408): the mean depth of its square's corners in front of the camera
+// (none: 65.535 m); past limit k it is level k + 2 when the floor has that level (from the last down), else level 1.
+fn cell_level(cell: vec4<f32>, shift: vec2<f32>) -> f32 {
+    let c = (g.floor * vec4(cell.x + shift.x, 0.0, cell.y + shift.y, 1.0)).xyz;
+    let h = g.floor_cell.xy;
+    var sum = 0.0;
+    var n = 0.0;
+    for (var k = 0; k < 4; k++) {
+        let s = vec2(select(-1.0, 1.0, (k & 1) == 1), select(-1.0, 1.0, (k & 2) == 2));
+        let w = (g.view_proj * vec4(c.x + s.x * h.x, c.y, c.z + s.y * h.y, 1.0)).w;
+        if (w > 0.0) { sum += w; n += 1.0; }
+    }
+    let d = select(65.535, sum / max(n, 1.0), n > 0.0);
+    let last = cell.w - 1.0;
+    if (last >= 5.0 && d > g.floor_levels.w) { return 5.0; }
+    if (last >= 4.0 && d > g.floor_levels.z) { return 4.0; }
+    if (last >= 3.0 && d > g.floor_levels.y) { return 3.0; }
+    if (last >= 2.0 && d > g.floor_levels.x) { return 2.0; }
+    return 1.0;
+}
+
+// A Tekken Tag floor cell's move into the window (0x341218): cell j of the window's N lies at (j - N / 2) x the
+// size; a cell is moved by whole windows to the window starting at the centre's cell.
+fn cell_shift(cell: vec4<f32>) -> vec2<f32> {
+    let n = g.floor_window.xy;
+    if (n.x < 0.5) { return vec2(0.0); }
+    let size = g.floor_window.zw;
+    let j = round(cell.xy / size + n / 2.0);
+    let first = g.floor_centre.zw;
+    return n * ceil((first - j) / n) * size;
+}
+
+// A stage mesh's vertex, moved with the floor; a floor cell's vertex of another level than its cell's, or of a cell
+// beyond the reach, goes off the picture (its triangle with it).
+fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32>) -> VsOut {
     var o: VsOut;
-    let p = (g.floor * vec4(pos, 1.0)).xyz;
+    let on = g.floor_cell.z > 0.5 && cell.w > 0.5;
+    let shift = select(vec2(0.0), cell_shift(cell), on);
+    let p = (g.floor * vec4(pos.x + shift.x, pos.y, pos.z + shift.y, 1.0)).xyz;
     o.clip = g.view_proj * vec4(p, 1.0);
+    let away = distance(cell.xy + shift, g.floor_centre.xy) > g.floor_cell.w;
+    if (on && (away || (cell.z > 0.5 && cell.z != cell_level(cell, shift)))) {
+        o.clip = vec4(0.0, 0.0, 2.0, 1.0);
+    }
     o.uv = uv;
     o.color = color;
     o.world = p;

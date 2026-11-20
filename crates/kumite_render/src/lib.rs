@@ -116,6 +116,9 @@ pub struct StaticVertex {
     pub pos: [f32; 3],
     pub uv: [f32; 2],
     pub color: [f32; 4],
+    /// Tekken Tag's floor cell: its centre (x, z, metres, moved with the floor), its level of detail (0: every
+    /// level) and the floor's count of levels; zeros elsewhere
+    pub cell: [f32; 4],
 }
 
 /// Camera in metre space (y up), like the web viewer.
@@ -147,6 +150,8 @@ pub struct Camera {
     pub floor: Mat4,
     /// The hit light on the fighters: colour × strength and its position (metres).
     pub hit_light: Option<([f32; 3], Vec3)>,
+    /// Tekken Tag's floor cells: their levels of detail and their window.
+    pub floor_levels: Option<FloorLevels>,
     /// The stage meshes cut to x0..x1, z0..z1 (metres): the original's finite floor patch, where it shows.
     pub floor_clip: Option<[f32; 4]>,
     /// The extra stages' floor lighting (export_stages / 0x80082E60, 0x8008364C), when the stage has it.
@@ -164,6 +169,20 @@ pub struct Camera {
     pub light: Option<StageLight>,
     /// The fighters' shadows on the floor (None: none).
     pub shadow: Option<Shadow>,
+}
+
+/// Tekken Tag's floor cells (metres): a cell shows the level of detail its square's mean depth picks (0x340408: the
+/// square `half` each way from its centre; past `limits[k]` level k + 2 when the floor has it); with a `window` of
+/// cells of size `cell` (0: none), each cell is moved by whole windows into the window on `centre` (0x341218), and
+/// not drawn further than `reach` from it.
+#[derive(Clone, Copy, Debug)]
+pub struct FloorLevels {
+    pub limits: [f32; 4],
+    pub half: [f32; 2],
+    pub cell: [f32; 2],
+    pub window: [f32; 2],
+    pub reach: f32,
+    pub centre: [f32; 2],
 }
 
 /// The extra stages' floor lighting: mode 0 fades with the view depth (128 + T[(sz - 10000) * 6710 >> 16] * shade /
@@ -197,6 +216,7 @@ impl Camera {
             floor: Mat4::IDENTITY,
             hit_light: None,
             floor_clip: None,
+            floor_levels: None,
             floor_light: None,
             cutaway: None,
             cutaway_all: false,
@@ -237,6 +257,12 @@ struct Globals {
     shadow_colour: [f32; 4],
     // Tekken Tag's shadow picture: its centre's x, z (metres), 1 / its half size, the darkening (0: none)
     shadow_map: [f32; 4],
+    // Tekken Tag's floor cells: the depth limits; the half size of a cell's square (x, z), 1 = on, the reach; the
+    // window (cells x, z) and the cell's size; the window's centre (x, z) and its first cell (x, z)
+    floor_levels: [f32; 4],
+    floor_cell: [f32; 4],
+    floor_window: [f32; 4],
+    floor_centre: [f32; 4],
     // Tekken Tag's two other lights: towards each, its colour
     lights: [[f32; 4]; 4],
 }
@@ -605,7 +631,7 @@ impl Renderer {
         let static_layout = layout(&[Some(&globals_layout), Some(&texture_layout)]);
 
         let skin_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Uint16x4, 3 => Float32x4, 4 => Float32x3];
-        let static_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4];
+        let static_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4];
         use wgpu::CompareFunction::{Always, Less, LessEqual};
         let make = |label: &str,
                     layout: &wgpu::PipelineLayout,
@@ -1180,6 +1206,14 @@ impl Renderer {
             material: cam.light.map_or([0.0; 4], |l| l.material.extend(0.0).to_array()),
             shadow: cam.shadow.filter(|s| s.toward.y > 0.05).map_or([0.0; 4], |s| [s.toward.x / s.toward.y, s.toward.z / s.toward.y, s.floor, 1.0]),
             shadow_map: map_shadow.map_or([0.0; 4], |a| [cam.target.x, cam.target.z, 1.0 / SHADOW_HALF, a]),
+            floor_levels: cam.floor_levels.map_or([0.0; 4], |l| l.limits),
+            floor_cell: cam.floor_levels.map_or([0.0; 4], |l| [l.half[0], l.half[1], 1.0, l.reach]),
+            floor_window: cam.floor_levels.map_or([0.0; 4], |l| [l.window[0], l.window[1], l.cell[0], l.cell[1]]),
+            // (0x341218: the window starts at the centre's cell, rounded)
+            floor_centre: cam.floor_levels.map_or([0.0; 4], |l| {
+                let first = |k: usize| (l.centre[k] / l.cell[k] + 0.5).floor();
+                [l.centre[0], l.centre[1], first(0), first(1)]
+            }),
             shadow_colour: cam.shadow.map_or([0.0; 4], |s| {
                 // sRGB to the frame's linear colour
                 let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
@@ -1459,7 +1493,7 @@ impl Renderer {
                 }
             }
             if let (Some(c), Some(white)) = (self.negative, self.white.as_ref()) {
-                let v = |x: f32, y: f32| StaticVertex { pos: [x, y, 0.0], uv: [0.0; 2], color: [c[0], c[1], c[2], 1.0] };
+                let v = |x: f32, y: f32| StaticVertex { pos: [x, y, 0.0], uv: [0.0; 2], color: [c[0], c[1], c[2], 1.0], cell: [0.0; 4] };
                 let vbuf = self.buffer(bytemuck::cast_slice(&[v(-1.0, -1.0), v(3.0, -1.0), v(-1.0, 3.0)]), wgpu::BufferUsages::VERTEX);
                 pass.set_pipeline(&self.negative_pipeline);
                 pass.set_bind_group(1, &white.bind_group, &[]);
