@@ -4047,6 +4047,8 @@ impl App {
             }
             log::info!("Tekken Bowl: {} player(s)", players.len());
             self.scene = Some(stage);
+            // (the effects' atlas, for the hall's smoke and SPECIAL EFFECTS' burst)
+            self.vfx = Some(kumite_game::vfx::Vfx::new(&self.assets));
             let teams = players.iter().zip(&partners).map(|(p, m)| [p.1, m.map_or(p.1, |m| m.1)]).collect();
             self.bowl = Some(BowlRun {
                 scene,
@@ -4084,6 +4086,9 @@ impl App {
         run.scene.bowl.effects = !ttt::progress().bowl_off[1];
         let pad = pads[who.min(1)];
         run.scene.step(Pad { start, buttons: pad.buttons | if select { kumite_sim::bowl::SELECT } else { 0 }, ..pad });
+        if let (Some(at), Some(w)) = (run.scene.burst.take(), self.scene.as_mut().and_then(|s| s.weather.as_mut())) {
+            w.burst(at);
+        }
         run.place();
         // (a spectator the ball hit leaves the hall)
         if let Some(s) = self.scene.as_mut() {
@@ -5629,7 +5634,9 @@ impl App {
         r.backdrop = self.scene.as_ref().filter(|_| !sky.is_empty()).map_or_else(Vec::new, |s| sky_backdrop(&cam, s));
         // effect sprites, as quads facing the camera
         let (mut p_alpha, mut p_add, mut soft_alpha, mut soft_add) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        if let (Some(v), true) = (self.vfx.as_ref(), self.fight.is_some() || self.embu.is_some() || self.tag.is_some() || self.ttt_ending.as_ref().is_some_and(|e| e.scene.is_some())) {
+        if let (Some(v), true) =
+            (self.vfx.as_ref(), self.fight.is_some() || self.embu.is_some() || self.tag.is_some() || self.bowl.is_some() || self.ttt_ending.as_ref().is_some_and(|e| e.scene.is_some()))
+        {
             // (Tekken Tag's dust: blended at its texture's alpha, as the arenas' soft particles)
             effect_quads(&v.sprites(), v.atlas(), &cam, &mut p_alpha, &mut p_add, &mut soft_alpha);
             // (the arena's weather where its stage is drawn)
@@ -7777,6 +7784,13 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
                     _ => Pad::default(),
                 };
                 b.scene.step(pad);
+                // (the hall's smoke and SPECIAL EFFECTS' burst)
+                if let Some(w) = app.scene.as_mut().and_then(|s| s.weather.as_mut()) {
+                    if let Some(at) = b.scene.burst.take() {
+                        w.burst(at);
+                    }
+                    w.step();
+                }
             }
             if let Some(b) = app.bowl.as_mut() {
                 b.place();
