@@ -413,3 +413,49 @@ fn force_under_tekken_tag() {
         assert_eq!(boss.hashes, force_stage(&a, player, true, 60 * 40).hashes, "model {player}: the same twice");
     }
 }
+
+/// Every reaction a Force soldier can receive under Tekken Tag has a motion: each fighter (each body's first model,
+/// Gon's and Doctor B.'s too) against each soldier, every victim alias of the reactions, the air reactions and the throws' victims, and
+/// the moves they go on to, played on the soldier: its own motion or, for a move its aliases take from the player's
+/// list, the player's (`Game::clip_owner`).
+#[test]
+fn every_reaction_has_a_motion_on_a_soldier() {
+    let Some(a) = assets() else { return };
+    let Ok(data) = a.gamedata::<kumite_game::force::ForceData>("force.json") else {
+        eprintln!("skipped: no Tekken Force in the slice");
+        return;
+    };
+    let index: serde_json::Value = a.gamedata("movesets/index.json").unwrap();
+    let mut players: Vec<(u64, usize)> = Vec::new();
+    for m in index["models"].as_array().unwrap() {
+        let body = m["body"].as_u64().unwrap();
+        if !players.iter().any(|p| p.0 == body) {
+            players.push((body, m["model_record"].as_u64().unwrap() as usize));
+        }
+    }
+    let soldiers: Vec<usize> = (0..2).map(|k| record_of(&a, data.soldier_selection_base + data.soldier_costumes[0][k].min(3), None)).collect();
+    let (mut missing, mut played) = (Vec::new(), 0);
+    for &(_, player) in &players {
+        for &soldier in &soldiers {
+            let mut g = Game::load(&a, [player, soldier]).unwrap();
+            g.step([Pad::default(); 2]);
+            let gd = g.fight.data.clone();
+            let r = &gd.reactions;
+            let mut todo: Vec<usize> =
+                r.entries.iter().flat_map(|e| e.victims.iter().copied()).chain(r.air_reactions.entries.iter().map(|e| e.alias)).chain(r.throw_victims.entries.iter().copied()).collect();
+            let mut seen = std::collections::BTreeSet::new();
+            while let Some(alias) = todo.pop() {
+                if alias == 0 || !seen.insert(alias) || !g.fight.fighters[1].play_alias(alias) {
+                    continue;
+                }
+                played += 1;
+                if g.clip(1).is_none() {
+                    missing.push((player, soldier, alias, g.fight.fighters[1].animation(&gd).0.to_string()));
+                }
+                todo.push(g.fight.fighters[1].current_move(&gd).next.alias);
+            }
+        }
+    }
+    eprintln!("{} players, {} soldiers: {played} moves played", players.len(), soldiers.len());
+    assert!(played > 1000 && missing.is_empty(), "{} without a motion: {:?}", missing.len(), &missing[..missing.len().min(40)]);
+}

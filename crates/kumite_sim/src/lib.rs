@@ -1196,11 +1196,7 @@ impl Fighter {
                     // Tekken Tag rebases the origin as the basis turns (+0x126, 0x37068C): the root stays and the
                     // roll goes on from there, so its path curves instead of swinging round the start
                     if self.tag_rules(gd) {
-                        let (s, c) = step.dsin_cos();
-                        let o = self.offset;
-                        let turned = Vec3::new(o.x * c + o.z * s, 0.0, -o.x * s + o.z * c);
-                        self.position += o - turned;
-                        self.offset = turned;
+                        self.rebase(step);
                     }
                 }
             }
@@ -1208,12 +1204,28 @@ impl Fighter {
             // the step
             0xA if frame <= len => {
                 let o = if self.character.is_some_and(|c| gd.characters.sidestep_lean.contains(&c)) && off >= deg(135.0) { 0x71C } else { 0x11C7 };
-                self.yaw = target + self.lateral * (o as f32 * ANGLE) * frame as f32 / len as f32;
+                // Tekken Tag leans the other way but in Tekken 3's 0x71C case (0x3706D4), and rebases the origin as the
+                // basis turns (+0x126): the step's path follows the facing round the opponent
+                let lean = if self.tag_rules(gd) && o == 0x11C7 { -self.lateral } else { self.lateral };
+                self.yaw = target + lean * (o as f32 * ANGLE) * frame as f32 / len as f32;
+                if self.tag_rules(gd) {
+                    self.rebase(self.yaw - self.root_yaw);
+                }
                 self.root_yaw = self.yaw;
             }
             _ => {}
         }
         self.evasive = self.evasive.saturating_sub(1);
+    }
+
+    /// The root basis turns by `step` with the root kept where it is (Tekken Tag's +0x126, 0x37068C): the origin takes
+    /// the difference, so the move goes on from there.
+    fn rebase(&mut self, step: f32) {
+        let (s, c) = step.dsin_cos();
+        let o = self.offset;
+        let turned = Vec3::new(o.x * c + o.z * s, 0.0, -o.x * s + o.z * c);
+        self.position += o - turned;
+        self.offset = turned;
     }
 
     /// Limit a tracking step so the move's total turn stays within `limit`; reaching it ends the tracking (mode 6).
@@ -1276,11 +1288,14 @@ impl Fighter {
         if j0 == 0 || v == 0 || self.frame + 1 < j0 || self.frame > j1 {
             return;
         }
-        let (s, c) = self.yaw.dsin_cos();
-        // Tekken Tag's sine is 0x7FFF to one (0x36FE00: v * sin / 0x7FFF), Tekken 3's 4096 (v * sin / 32768)
-        let (one, div) = if self.tag_rules(gd) { (32767.0, 32767) } else { (4096.0, 32768) };
-        let table = |x: f32| (x * one).round() as i64;
-        for (k, t) in [table(s), table(c)].into_iter().enumerate() {
+        // Tekken Tag's sine is its 4096 table times 8 (0x357F18) over 0x7FFF (0x36FE00), Tekken 3's 4096 over 32768
+        let (t, div) = if self.tag_rules(gd) {
+            (tag_sin_cos(self.yaw).map(i64::from), 32767)
+        } else {
+            let (s, c) = self.yaw.dsin_cos();
+            ([s, c].map(|x| (x * 4096.0).round() as i64), 32768)
+        };
+        for (k, t) in t.into_iter().enumerate() {
             // (v * t) / div truncated, then the whole units out and the fraction kept
             self.air_frac[k] += (v as i64 * t / div) as i32;
             let whole = self.air_frac[k] >> 8;
@@ -1296,17 +1311,18 @@ impl Fighter {
     /// Tekken Tag's jump toward the opponent (0x36FC04): from the jump window's first frame the fighter moves each frame
     /// by the pair distance (at most 0xC00) less 500 over the frames left to the window's end, toward the opponent;
     /// at the end the origin takes the root.
-    fn jump_toward(&mut self, gd: &GameData) {
+    fn jump_toward(&mut self, gd: &GameData, before: Vec3) {
         let Some(step) = self.jump_home else { return };
         let b = &self.current_move(gd).bytes_18;
         let (j0, j1) = (b.jump_start, b.jump_end);
         match step {
             None if self.frame >= j0 => {
-                let d = self.opponent.root - self.root();
+                // (the pair distance of the frame before, gp-0x74C8)
+                let d = self.opponent.root - before;
                 let dist = (d.x * d.x + d.z * d.z).sqrt().min(3072.0) as i32 - 500;
-                let speed = (dist / (j1 as i32 - self.frame as i32).max(1)) as f32;
-                let (s, c) = d.x.datan2(d.z).dsin_cos();
-                self.jump_home = Some(Some(Vec3::new((speed * s).trunc(), 0.0, (speed * c).trunc())));
+                let speed = dist / (j1 as i32 - self.frame as i32).max(1);
+                let [s, c] = tag_sin_cos(d.x.datan2(d.z)).map(|t| (speed * t / 0x7FFF) as f32);
+                self.jump_home = Some(Some(Vec3::new(s, 0.0, c)));
             }
             Some(v) => {
                 self.position += v;
@@ -2010,6 +2026,7 @@ impl Fighter {
         // root pinned after a landing adds only its height
         let (anim, f) = self.animation(gd);
         let partner = self.current.bank == Bank::Partner;
+        let before = self.root();
         if let Some(r) = anims.root(anim, f, partner) {
             let (s, c) = self.root_yaw.dsin_cos();
             self.offset = if self.pin == 0 { Vec3::new(r.x * c + r.z * s, 0.0, -r.x * s + r.z * c) } else { Vec3::ZERO };
@@ -2018,7 +2035,7 @@ impl Fighter {
         self.fly();
         if self.air.is_none() {
             self.drift(gd);
-            self.jump_toward(gd);
+            self.jump_toward(gd, before);
         }
         let height = self.position.y + self.anim_root_y;
         self.root_fall = self.last_height - height;
@@ -2095,9 +2112,43 @@ impl Fighter {
         if self.connected || self.frame < mv.active[0] || self.frame > mv.active[1] {
             return vec![];
         }
+        if let Some(l) = self.laser(gd, bones) {
+            return vec![l];
+        }
         let ogre = self.tag_rules(gd) && self.character == Some(14);
         let at = |b: &[Vec3], k: u32| b.get(if ogre && k == 0x13 { 6 } else { k as usize }).copied();
         a.pairs.iter().filter_map(|&[s, e]| Some((if s == 0 { at(&self.last_bones, e)? } else { at(bones, s)? }, at(bones, e)?))).collect()
+    }
+}
+
+impl Fighter {
+    /// Devil's laser (0x378150, body 29, a strike to slot 0x18): from the head (slot 2) at the move's place (table
+    /// 0x506248: along the facing, up), growing each frame of the active window by its step (0x378810, move 4175: 200
+    /// along the facing; 0x378A28, moves 4177 / 4179: 102 along it and 110 down; 0x378E70, move 4180: 300 at 15° up),
+    /// its end kept on the floor (0x378500); on the first active frame it is a point (0x3780C8).
+    /// shortcut: move 6728's sweep (0x378C48, drawn by the game's own random numbers) is left out
+    pub fn laser(&self, gd: &GameData, bones: &[Vec3]) -> Option<(Vec3, Vec3)> {
+        let mv = self.current_move(gd);
+        let a = mv.attack.as_ref()?;
+        if !self.tag_rules(gd) || self.character != Some(29) || a.pairs.first().map(|p| p[1]) != Some(0x18) {
+            return None;
+        }
+        let head = *bones.get(2)?;
+        let cut = |v: i32, t: i32| v * t / 0x8000;
+        let [up15, out15] = tag_sin_cos(-0xAAA as f32 * ANGLE);
+        // (step along the facing and up; the place back along the facing and up)
+        let (along, up, back, high) = match self.current.index {
+            4175 => (200, 0, 50, 170),
+            4177 | 4179 => (102, -110, -100, 160),
+            4180 => (cut(300, out15), -cut(300, up15), -40, 170),
+            _ => return None,
+        };
+        let k = (self.frame as i32 - mv.active[0] as i32).max(0);
+        let [s, c] = tag_sin_cos(self.yaw);
+        let start = head + Vec3::new(-cut(back, s) as f32, high as f32, -cut(back, c) as f32);
+        let mut end = start + Vec3::new(cut(along, s) as f32, up as f32, cut(along, c) as f32) * k as f32;
+        end.y = end.y.max(0.0);
+        Some((start, end))
     }
 }
 
@@ -2243,6 +2294,13 @@ pub enum KoRule {
 }
 
 /// What a fighter sees of another (the snapshot `Fighter::opponent` holds).
+/// Tekken Tag's sine and cosine of an angle (0x357F18 / 0x357F58): its 4096 table at the angle's top 12 bits,
+/// within ±0xFFF, times 8 (0x7FF8 at most).
+fn tag_sin_cos(a: f32) -> [i32; 2] {
+    let a = (a / ANGLE).round() as i32 >> 4;
+    [ball::sin12(a), ball::cos12(a)].map(|v| v.clamp(-0xFFF, 0xFFF) * 8)
+}
+
 fn sight_of(o: &Fighter, gd: &GameData) -> Opponent {
     let posture = o.posture(gd);
     let airborne = posture & posture::AIRBORNE != 0 || o.air.is_some() || o.airborne_flag(gd);
@@ -2965,9 +3023,7 @@ impl Fight {
 
     /// Tekken Tag's body push (0x377338): the deepest overlap of the push spheres (in 3D; sized by the moves, 0x377B58)
     /// is shared by how far each moved since the last push, each backing off along its facing's axis (turned towards
-    /// the other) and carried by the other's step along its axis; half of it a frame.
-    /// shortcut: the trade rule (both attacking, coming together: the whole push, at least 400) is not ported; port it
-    /// with the actors' velocities +0x4 / +0xC.
+    /// the other) and carried by the other's step along its axis; half of it a frame, all of it in a trade.
     fn separate_tag(&mut self, bodies: [&BodyVolumes; 2]) {
         let gd = self.data.clone();
         let ctrl: [u32; 2] = std::array::from_fn(|i| self.fighters[i].current_move(&gd).push_control.raw & 0xFFFF);
@@ -3025,38 +3081,73 @@ impl Fight {
             }
             r
         });
-        let mut depth = 0.0f32;
+        // in the game's integers (0x377338): the spheres' places and radii as its s16, the square roots as
+        // 0x3985D8's (float, truncated), the sines 4096 to one, each product's twelfth bits cut toward zero
+        let isqrt = |v: i32| (v.max(0) as f32).sqrt() as i32;
+        let s16 = |v: i32| v as i16 as i32;
+        let point = |v: Vec3| [v.x as i32, v.y as i32, v.z as i32];
+        let mut depth = 0;
         for (p, rp) in bodies[0].push.iter().zip(&radii[0]) {
             for (q, rq) in bodies[1].push.iter().zip(&radii[1]) {
-                if *rp > 0.0 && *rq > 0.0 {
-                    depth = depth.max(rp + rq - p.centre.distance(q.centre));
+                let (rp, rq) = (*rp as i32, *rq as i32);
+                if rp > 0 && rq > 0 {
+                    let (a, b, r) = (point(p.centre), point(q.centre), rp + rq);
+                    let d = [0, 1, 2].map(|k| s16(b.get(k).copied().unwrap_or(0) - a.get(k).copied().unwrap_or(0)));
+                    if d.iter().all(|x| x.abs() < r) {
+                        depth = depth.max(s16(r - isqrt(d.iter().map(|x| x * x).sum())));
+                    }
                 }
             }
         }
-        let roots = [self.fighters[0].root(), self.fighters[1].root()];
-        let moved: [f32; 2] = std::array::from_fn(|i| self.fighters[i].push_prev.map_or(0.0, |p| roots[i].distance(p)));
-        for (f, r) in self.fighters.iter_mut().zip(roots) {
-            f.push_prev = Some(r);
+        let roots = [self.fighters[0].root(), self.fighters[1].root()].map(point);
+        let angle = |f: &Fighter| (f.yaw * 4096.0 / std::f32::consts::TAU).round() as i32;
+        let cut = |v: i32| v / 4096;
+        // a trade: both attacking, their points 200 ahead within 500 of each other and passed (their places' gap
+        // against the points'): the whole push, at least 400, at once
+        let mut whole = false;
+        if self.fighters.iter().all(|f| f.current_move(&gd).active[0] != 0) && (depth > 0 || (roots[0][1] - roots[1][1]).abs() < 300) {
+            let ahead = |i: usize| {
+                let a = angle(&self.fighters[i]);
+                [roots[i][0] + cut(200 * ball::sin12(a)), roots[i][2] + cut(200 * ball::cos12(a))]
+            };
+            let (p, q) = (ahead(0), ahead(1));
+            let (dx, dz) = (q[0] - p[0], q[1] - p[1]);
+            let (a, b) = (self.fighters[0].position, self.fighters[1].position);
+            if dx.abs() < 500 && dz.abs() < 500 && (b.x as i32 - a.x as i32) * dx + (b.z as i32 - a.z as i32) * dz < 0 {
+                (whole, depth) = (true, depth.max(400));
+            }
         }
-        if depth <= 0.0 {
+        let moved: [i32; 2] = std::array::from_fn(|i| {
+            let p = self.fighters[i].push_prev.map_or(roots[i], point);
+            isqrt((0..3).map(|k| s16(roots[i].get(k).copied().unwrap_or(0) - p.get(k).copied().unwrap_or(0)).pow(2)).sum()) & 0xFFFF
+        });
+        for f in &mut self.fighters {
+            f.push_prev = Some(f.root());
+        }
+        if depth <= 0 {
             return;
         }
-        let to = roots[1] - roots[0];
-        let axis = |f: &Fighter, toward: Vec3| {
-            let a = Vec3::new(f.yaw.dsin(), 0.0, f.yaw.dcos());
-            if a.dot(toward) < 0.0 {
-                -a
+        let to = [roots[1][0] - roots[0][0], roots[1][2] - roots[0][2]];
+        // each one's axis: its facing, turned round when it points away from the other (more than a quarter turn)
+        let axis = |f: &Fighter, sign: i32| {
+            let a = angle(f);
+            let (s, c) = (ball::sin12(a), ball::cos12(a));
+            if (s * to[0] + c * to[1]) * sign < 0 {
+                [-s, -c]
             } else {
-                a
+                [s, c]
             }
         };
-        let ax = [axis(&self.fighters[0], to), axis(&self.fighters[1], -to)];
-        let (w0, w1) = if moved == [0.0; 2] { (1.0, 1.0) } else { (moved[0], moved[1]) };
-        let share = [depth * w0 / (w0 + w1), depth * w1 / (w0 + w1)];
+        let ax = [axis(&self.fighters[0], 1), axis(&self.fighters[1], -1)];
+        let (m0, m1) = if moved == [0, 0] { (1, 1) } else { (moved[0], moved[1]) };
+        let share = [depth * m0 / (m0 + m1), depth * m1 / (m0 + m1)];
         for i in 0..2 {
-            let d = ax[1 - i] * moved[1 - i] - ax[i] * share[i];
+            let (o, a) = (ax[1 - i], ax[i]);
+            let d = [cut(o[0] * moved[1 - i]) - cut(a[0] * share[i]), cut(o[1] * moved[1 - i]) - cut(a[1] * share[i])];
             let f = &mut self.fighters[i];
-            f.position += d * 0.5;
+            let half = if whole { 1 } else { 2 };
+            f.position.x += (d[0] / half) as f32;
+            f.position.z += (d[1] / half) as f32;
             f.pushed = true;
             // (the next frame measures from here: 0x8A7A90 keeps the place after the push)
             f.push_prev = Some(f.root());
