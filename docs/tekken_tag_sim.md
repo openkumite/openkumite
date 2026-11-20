@@ -18,7 +18,14 @@ Tekken 3's data never goes through it. The whole move and cancel tables are the 
   4's height); 31 / 32 the throw link; 33 a restart facing the opponent in mode 8 (`TRANSITION_FACE`); 34 / 35 a
   turn over 8 frames, at most 10 degrees a frame, to the screen axis or across it (`TRANSITION_AXIS`,
   `TRANSITION_ACROSS`); 36-45 Tekken 3's 0x22-0x2B; 46 use END; the turn bit 0x8000 and bit 0x4000.
-- Commands, sequences, dash, backdash, shared lists (call / return).
+- Commands, sequences, dash, backdash, shared lists (call / return). Tekken Tag's own (`GameData::tag_moves`): the
+  END look-ahead tries the next list without a new press inside the window (0x368F78), a dash is a tap, a gap and a
+  tap within 20 frames (0x36CAF8), a motion input whose last step is a direction alone is looked for back over its
+  window and wants each step's presses exactly (0x36CDD8), jumps (transitions 0x10 / 0x12 / 0x13) travel toward the
+  opponent by the pair distance (at most 0xC00) less 500 over the jump window (0x36FC04), a ground roll's basis
+  turns toward where the opponent was at its start (0x36A814), a move's commit turn (+0x12) adds the game's way
+  round (0x36AA48), and half a turn off the opponent reads as back turned right (+0x3E is an s16). Checked against
+  PCSX2 move by move (the stance's commands, throws and tag throws of every fighter, same pads frame by frame).
 - Flag bits (unthrowable, not reversible, guard by input, ki charge, root commit and the others with a Tekken 3
   pair).
 - Timed property ops 1-10, damage to the opponent (0x0C) and to self (0x0D).

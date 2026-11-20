@@ -138,6 +138,9 @@ pub struct GameData {
     pub tag: TagRules,
     /// Tekken Tag's body push (0x377338), not Tekken 3's.
     pub tag_push: bool,
+    /// Tekken Tag's move rules, not Tekken 3's: the END look-ahead without a new press inside the window (0x368F78),
+    /// the dash's window (0x36CAF8), motion inputs (0x36CDD8), jumps toward the opponent (0x36FC04).
+    pub tag_moves: bool,
 }
 
 /// Tekken Tag's tag rules (rules.json `tag` and `health.recoverable`; ok_tekken_tag_converter FIGHT_DATA.md section
@@ -352,6 +355,7 @@ impl GameData {
             chip_add: 2,
             tag_juggles: false,
             tag_push: false,
+            tag_moves: false,
             tag: TagRules::default(),
         })
     }
@@ -495,7 +499,7 @@ pub struct Fighter {
     acc: f32,
     since: u32,
     pub evasive: u32,
-    /// Root position at the commit (+0xAC/+0xB0, ground rolls).
+    /// Root position at the commit (+0xAC/+0xB0, ground rolls; Tekken Tag: the opponent's).
     commit_root: Vec3,
     /// Root pin (+0xB8): 2 after a landing (only the root's height is added to the origin) until the next move.
     pin: u8,
@@ -556,6 +560,9 @@ pub struct Fighter {
     pub juggle: u32,
     /// The jump drift's fractions (0x8009E600 / 0x8009E610 per player, 1/256 units).
     air_frac: [i32; 2],
+    /// Tekken Tag's jump toward the opponent (+0xF0, its step +0xE8 / +0xEC): set by transitions 0x10 / 0x12 / 0x13,
+    /// the step fixed at the jump window's start.
+    jump_home: Option<Option<Vec3>>,
     /// Hit-stop: frames the move is frozen (attacker record +0x2C).
     pub freeze: u32,
     /// Paired with the opponent by a throw / hold (+0xC4); `thrown` = this fighter is the victim (+0x74 < 0).
@@ -687,6 +694,7 @@ impl Fighter {
             air: None,
             juggle: 0,
             air_frac: [0; 2],
+            jump_home: None,
             freeze: 0,
             locked: false,
             thrown: false,
@@ -942,6 +950,7 @@ impl Fighter {
         if t == TRANSITION_GETUP {
             self.getup_lock = 24;
         }
+        self.jump_home = (self.tag_rules(gd) && matches!(t, 0x10 | 0x12 | 0x13)).then_some(None);
         // facing: bit 7 turns around first; END and buffered links add the old animation's net turn (+0x12)
         if t != 0x11 {
             self.turn = turn;
@@ -953,7 +962,10 @@ impl Fighter {
             self.root_yaw += PI;
         }
         if (end || buffered) && t != 0x22 && old_turn != 0 {
-            self.yaw += old_turn as f32 * ANGLE;
+            // the game's angles run the other way round on OpenKumite's flipped z (Tekken Tag's 0x36AA48 adds +0x12
+            // to +0x3C); shortcut: Tekken 3 keeps its sign, as its turns are mostly half a turn, until checked there
+            let turn = if self.tag_rules(gd) { -(old_turn as f32) } else { old_turn as f32 };
+            self.yaw += turn * ANGLE;
             self.root_yaw = self.yaw;
         }
         let (a2a, off, target) = {
@@ -1056,7 +1068,9 @@ impl Fighter {
             self.air = None;
             (self.juggle, self.juggle_bias) = (0, 0);
         }
-        self.commit_root = self.root();
+        // Tekken Tag keeps the opponent's root (+0x110 / +0x114 from the other's +0x51C, 0x36A814): a ground roll's
+        // basis turns toward where the opponent was
+        self.commit_root = if self.tag_rules(gd) { self.opponent.root } else { self.root() };
         self.lateral = 0.0;
         if self.mode == 0xA {
             let (anim, _) = self.animation(gd);
@@ -1267,6 +1281,32 @@ impl Fighter {
         }
     }
 
+    /// Tekken Tag's jump toward the opponent (0x36FC04): from the jump window's first frame the fighter moves each frame
+    /// by the pair distance (at most 0xC00) less 500 over the frames left to the window's end, toward the opponent;
+    /// at the end the origin takes the root.
+    fn jump_toward(&mut self, gd: &GameData) {
+        let Some(step) = self.jump_home else { return };
+        let b = &self.current_move(gd).bytes_18;
+        let (j0, j1) = (b.jump_start, b.jump_end);
+        match step {
+            None if self.frame >= j0 => {
+                let d = self.opponent.root - self.root();
+                let dist = (d.x * d.x + d.z * d.z).sqrt().min(3072.0) as i32 - 500;
+                let speed = (dist / (j1 as i32 - self.frame as i32).max(1)) as f32;
+                let (s, c) = d.x.datan2(d.z).dsin_cos();
+                self.jump_home = Some(Some(Vec3::new((speed * s).trunc(), 0.0, (speed * c).trunc())));
+            }
+            Some(v) => {
+                self.position += v;
+                if self.frame >= j1 {
+                    let r = self.root();
+                    (self.position.x, self.position.z, self.jump_home) = (r.x, r.z, None);
+                }
+            }
+            None => {}
+        }
+    }
+
     /// The move this fighter goes to next (the queued one, else the current move's next alias) is a lying one
     /// (posture 0x204; the practice dummy's 0x800B82E4).
     pub fn next_is_lying(&self, gd: &GameData) -> bool {
@@ -1338,6 +1378,12 @@ impl Fighter {
         self.position + self.offset
     }
 
+    /// Tekken Tag's move rules (`GameData::tag_moves`) for its own fighters; Tekken 3's crossover fighters (bodies 34
+    /// on, the Tekken 3 slice) keep Tekken 3's, which their lists were made for.
+    fn tag_rules(&self, gd: &GameData) -> bool {
+        gd.tag_moves && self.character.is_some_and(|c| c < 34)
+    }
+
     /// The current move's END link (its list's END entry), without trying the other entries.
     fn end_link(&self, gd: &GameData) -> Option<usize> {
         let mv = self.current_move(gd);
@@ -1404,9 +1450,11 @@ impl Fighter {
             }
         } else if let Some(e) = end_entry.filter(|_| self.frame_step > 0) {
             // END look-ahead (0x8002DB0C): from 5 frames before the END window until it closes, an attack of the
-            // END destination's own list is buffered and takes over at the window's first frame
+            // END destination's own list is buffered and takes over at the window's first frame; Tekken Tag tries
+            // that list inside the window with or without a press (0x368F78)
             let early = self.early_end.is_some_and(|f| self.frame >= f);
-            if (self.frame + 5 >= e.win_start || early) && self.frame <= e.win_end && self.input.pressed != 0 {
+            let open = self.tag_rules(gd) && self.frame >= e.win_start;
+            if (self.frame + 5 >= e.win_start || early) && self.frame <= e.win_end && (self.input.pressed != 0 || open) {
                 if let Some(dest) = self.resolve(e.dest) {
                     // the next list's back-turned conditions see the facing after this animation's net turn
                     let saved = (self.current, self.frame, self.yaw);
@@ -1516,7 +1564,10 @@ impl Fighter {
         }
         let ok = match c.kind {
             CancelKind::Command => self.input.matches_command(c.cmd),
-            CancelKind::Sequence => gd.shared.sequences.entries.iter().find(|s| s.cmd == c.cmd).is_some_and(|s| self.input.matches_sequence(s)),
+            CancelKind::Sequence => {
+                gd.shared.sequences.entries.iter().find(|s| s.cmd == c.cmd).is_some_and(|s| if self.tag_rules(gd) { self.input.matches_tag_sequence(s) } else { self.input.matches_sequence(s) })
+            }
+            CancelKind::Dash | CancelKind::Backdash if self.tag_rules(gd) => self.input.matches_tag_dash(c.kind == CancelKind::Dash),
             CancelKind::Dash => self.input.matches_dash(true),
             CancelKind::Backdash => self.input.matches_dash(false),
             _ => false,
@@ -1662,6 +1713,8 @@ impl Fighter {
                                 // is flipped, so the sign turns over)
         let (a2a, _, _) = self.geometry();
         let off = wrap_pi(a2a - self.yaw) / ANGLE;
+        // Tekken Tag: +0x3E is an s16, so half a turn is -0x8000 (back turned right, 0x29)
+        let off = if self.tag_rules(gd) { off.round() as i32 as i16 as f32 } else { off };
         let back = off.abs() > 0x4000 as f32;
         let quadrant_of = |off: f32| ((off + 0x2000 as f32).rem_euclid(65536.0) / 0x4000 as f32) as u32;
         let quadrant = quadrant_of(off);
@@ -1953,6 +2006,7 @@ impl Fighter {
         self.fly();
         if self.air.is_none() {
             self.drift(gd);
+            self.jump_toward(gd);
         }
         let height = self.position.y + self.anim_root_y;
         self.root_fall = self.last_height - height;

@@ -132,6 +132,34 @@ impl InputState {
         true
     }
 
+    /// Tekken Tag's motion input (0x36CDD8): a last step with buttons is pressed now, a last step of a direction alone
+    /// is looked for in the window too; scanning back over at most `window` frames, each step on its own frame with
+    /// exactly its new presses (0x36CD78), and a frame with other new presses ends the search.
+    pub fn matches_tag_sequence(&self, seq: &Sequence) -> bool {
+        let Some((last, rest)) = seq.steps.split_last() else { return false };
+        let (steps, mut ago) = if last.raw & !0xF == 0 {
+            (&seq.steps[..], 0)
+        } else if self.step_now(last, 0) {
+            (rest, 1)
+        } else {
+            return false;
+        };
+        let mut left = steps.len();
+        for _ in 0..seq.window.min(HISTORY as u32 - 1) {
+            let Some(step) = left.checked_sub(1).and_then(|k| steps.get(k)) else { return true };
+            let (new, dir) = self.past(ago);
+            let want: u32 = step.buttons.iter().filter(|b| (1..=4).contains(*b)).map(|b| 1 << (b - 1)).sum();
+            let pressed = if step.any_of { want == 0 || new & want != 0 } else { new & 15 == want };
+            if dir == step.dir && pressed {
+                left -= 1;
+            } else if new != 0 {
+                return false;
+            }
+            ago += 1;
+        }
+        left == 0
+    }
+
     fn step_now(&self, step: &Step, ago: usize) -> bool {
         let (new, dir) = self.past(ago);
         if step.dir != 0 && step.dir != dir {
@@ -164,6 +192,31 @@ impl InputState {
         }
         ago < 12 && self.past(ago).1 == d
     }
+
+    /// Tekken Tag's dash / backdash (0x36CAF8, window 20): the second tap starts this frame after neutral, and the
+    /// gap and the first tap, all but its first frame, last under 20 frames together (a long walk then a tap is not
+    /// a dash).
+    pub fn matches_tag_dash(&self, forward: bool) -> bool {
+        let d = if forward { 6 } else { 4 };
+        if self.dir != d || self.past(1).1 != 5 {
+            return false;
+        }
+        let (mut left, mut ago) = (19, 2);
+        // the gap, then the first tap: each frame but the tap's newest uses one of the window
+        let mut tap = false;
+        while left > 0 {
+            let v = self.past(ago).1;
+            ago += 1;
+            if !tap && v == d {
+                tap = true;
+            } else if v == if tap { d } else { 5 } {
+                left -= 1;
+            } else {
+                return tap;
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +243,22 @@ mod tests {
         assert!(s.matches_command(TAG_COMMAND) && s.matches_command(0x0010) && !s.matches_command(0x0001));
         feed(&mut s, &[Pad { buttons: TAG | 2, ..Default::default() }]);
         assert!(!s.matches_command(TAG_COMMAND) && s.pressed == 2);
+    }
+
+    /// Tekken Tag's dash: a tap, a gap, a tap within 20 frames; a long walk then a tap is not one (PCSX2).
+    #[test]
+    fn tag_dash_takes_a_tap_not_a_walk() {
+        let dash = |first: usize, gap: usize| {
+            let mut s = InputState::default();
+            let (f, n) = (Pad { right: true, ..Default::default() }, Pad::default());
+            feed(&mut s, &[n; 3]);
+            feed(&mut s, &vec![f; first]);
+            feed(&mut s, &vec![n; gap]);
+            feed(&mut s, &[f]);
+            s.matches_tag_dash(true)
+        };
+        assert!(dash(2, 3) && dash(1, 19) && dash(11, 9));
+        assert!(!dash(40, 4) && !dash(1, 20) && !dash(12, 9));
     }
 
     #[test]

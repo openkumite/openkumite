@@ -109,6 +109,111 @@ fn a_strike_reaches_in_the_pose_of_its_frame() {
     assert_eq!(reach, Some(1550.0), "the jab's full reach");
 }
 
+/// Inside its END window a move takes the stance's commands without a new press (0x368F78): Xiaoyu's 2+3+4 pose
+/// (alias 116, END window from frame 1) walks back on a held back at once, as in PCSX2, not at its last frame.
+#[test]
+fn a_move_takes_a_held_direction_in_its_end_window() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [XIAOYU, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut seen = Vec::new();
+    for pad in parse_script("n*2,2+3+4*2,n*10,b*4").unwrap() {
+        b.step([pad, Pad::default()]);
+        seen.push(b.game.fight.fighters[0].alias);
+    }
+    assert_eq!(seen[3], 116, "{seen:?}");
+    assert_eq!(&seen[14..], [65; 4], "{seen:?}");
+}
+
+/// A jump goes toward the opponent (0x36FC04): Paul's u+2 (alias 4712, transition 0x10) covers the start distance
+/// less 500 over its jump window, about 1030 by its 30th frame as in PCSX2; its motion's root does not move.
+#[test]
+fn a_jump_goes_toward_the_opponent() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [PAUL, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let x0 = b.game.fight.fighters[0].root().x;
+    for pad in parse_script("u+2*2,n*29").unwrap() {
+        b.step([pad, Pad::default()]);
+    }
+    let f = &b.game.fight.fighters[0];
+    let went = f.root().x - x0;
+    assert_eq!(f.alias, 4712);
+    assert!((950.0..1100.0).contains(&went), "{went}");
+}
+
+/// A ground roll's basis turns toward where the opponent was at its start (+0x110 from the other's root, 0x36A814):
+/// King rolls sideways off his d/f+1+4 (PCSX2: x +309, z +1105 over alias 219), not round in a circle.
+#[test]
+fn a_ground_roll_goes_sideways() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [KING, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let (mut start, mut back) = (None, 0.0f32);
+    for pad in parse_script("d/f+1+4*2,n*80,1+2*2,n*40").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        if f.alias == 219 {
+            let s = *start.get_or_insert(f.root());
+            // (Lei is on +x: a circle swings back past the start)
+            back = back.min(f.root().x - s.x);
+        }
+    }
+    let d = b.game.fight.fighters[0].root() - start.expect("the roll");
+    assert!(d.z.abs() > 800.0 && back > -100.0, "{d}, back {back}");
+}
+
+/// The back-turned commands as in PCSX2: Xiaoyu's f+3+4 ends turned away (its +0x12 turn, 30°, added the game's way
+/// round, 0x36AA48), so b+1+2 is the back-turned one (alias 381); Hwoarang's n+1+2 turns him exactly half round,
+/// which the game's s16 +0x3E reads as -0x8000: back turned right (0x29), so f+1 is alias 374.
+#[test]
+fn back_turned_commands_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let run = |model: usize, script: &str| {
+        let mut b = Bout::new(Game::load(&a, [model, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+        while b.phase != Phase::Fight {
+            b.step([Pad::default(); 2]);
+        }
+        let mut seen = Vec::new();
+        for pad in parse_script(script).unwrap() {
+            b.step([pad, Pad::default()]);
+            seen.push(b.game.fight.fighters[0].alias);
+        }
+        seen
+    };
+    assert!(run(XIAOYU, "n*2,f+3+4*2,n*80,b+1+2*2,n*10").contains(&381));
+    assert!(run(HWOARANG, "n*2,n+1+2*2,n*80,n+3+4*2,n*80,f+1*2,n*10").contains(&374));
+}
+
+/// A motion input whose last step is a direction alone is looked for back over its window (0x36CDD8): Gun Jack's
+/// n, b, d/b, d, d/f (alias 2906) comes out once he is back in his stance, as in PCSX2.
+#[test]
+fn a_motion_input_ending_in_a_direction_waits_for_the_stance() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [GUN_JACK, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut seen = Vec::new();
+    for pad in parse_script("n*2,b*2,d/b*2,d*2,d/f*2,n*20").unwrap() {
+        b.step([pad, Pad::default()]);
+        seen.push(b.game.fight.fighters[0].alias);
+    }
+    assert!(seen.contains(&2906), "{seen:?}");
+}
+
+/// Gun Jack's first model.
+const GUN_JACK: usize = 555;
+
+/// Hwoarang's first model.
+const HWOARANG: usize = 420;
+
 /// King's first model.
 const KING: usize = 390;
 
@@ -452,6 +557,43 @@ fn a_finishing_move_has_its_camera_once_the_other_is_down() {
     let (Some(down), Some(up)) = (run(true), run(false)) else { return };
     assert!(down.iter().any(|s| (7..=15).contains(s)), "{down:?}");
     assert!(up.iter().all(|&s| s == 1), "{up:?}");
+}
+
+/// A row's shot is the down fighter's damage flags' (0x394460): Paul's alias 935 has a camera only when its K.O. was
+/// a counter hit (+0x13A, the third shot); a plain K.O. takes the first, none.
+#[test]
+fn a_counter_hit_ko_takes_its_rows_third_shot() {
+    let Some(a) = assets() else { return };
+    let run = |counter: bool| {
+        let mut g = Game::load(&a, [PAUL, LEI]).unwrap();
+        g.camera.data().director.as_ref()?;
+        if !a.gamedata::<serde_json::Value>("camera.json").is_ok_and(|c| c["fighter_cameras"]["rows"].is_array()) {
+            return None;
+        }
+        for _ in 0..60 {
+            g.step([Pad::default(); 2]);
+        }
+        let f = &mut g.fight.fighters;
+        let along = (f[1].position - f[0].position).normalize();
+        f[1].position = f[0].position + along * 900.0;
+        f[1].health = kumite_sim::ONE;
+        f[0].play_alias(935);
+        // Lei's slow strike (active from frame 31): Paul's lands in its start-up; else Lei stands without guard
+        if counter {
+            f[1].play_alias(307);
+        }
+        f[1].guard_input = false;
+        let mut states = Vec::new();
+        for _ in 0..30 {
+            g.step([Pad::default(); 2]);
+            states.push(g.camera.special());
+        }
+        assert!(g.fight.fighters[1].health <= 0, "the K.O.");
+        Some(states)
+    };
+    let (Some(counter), Some(plain)) = (run(true), run(false)) else { return };
+    assert!(counter.iter().any(|s| (7..=15).contains(s)), "{counter:?}");
+    assert!(plain.iter().all(|&s| s == 1), "{plain:?}");
 }
 
 /// The K.O. replay runs on Tekken Tag's own shots (0x3D0748): a still eye per pass, a new one each pass; the same
@@ -886,7 +1028,9 @@ fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: imp
 /// The arcade's CPU against a fighter who stands still or holds back, damage a fight minute as measured on the PS2
 /// (PCSX2, the default NORMAL, single matches against Xiaoyu: stage 1 level 0 about 190 still, 30-50 holding back;
 /// stage 4 level 3 200-240 / 140-160; stage 8 level 7 (Unknown) 240 / 140), here a cell's eight matches each; a seed
-/// replays the same. (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands.)
+/// replays the same. (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands. Stage 4 still
+/// is above it too, 334: the END window without a new press (0x368F78, checked in PCSX2) shortens the CPU's
+/// recoveries; what the PS2's CPU presses in them is not decoded.)
 #[test]
 fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     let Some(a) = assets() else { return };
@@ -897,7 +1041,7 @@ fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     });
     let dmg: Vec<(u32, u32)> = cells.iter().map(|c| (c.0, c.1)).collect();
     eprintln!("damage a minute, still / holding back: {dmg:?}");
-    for (k, (still, back)) in [((120, 240), (40, 130)), ((200, 300), (110, 190)), ((200, 290), (110, 180))].into_iter().enumerate() {
+    for (k, (still, back)) in [((120, 240), (40, 130)), ((200, 340), (110, 190)), ((200, 290), (110, 180))].into_iter().enumerate() {
         assert!((still.0..=still.1).contains(&dmg[k].0) && (back.0..=back.1).contains(&dmg[k].1), "cell {k}: {:?}", dmg[k]);
         assert!(dmg[k].1 < dmg[k].0, "holding back takes less");
     }
