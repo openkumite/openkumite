@@ -1,6 +1,7 @@
 //! Tekken Tag's arenas' own effects (stages.json `weather`, the tasks 0x3A2640 starts by arena; the converter's
 //! EFFECTS.md 5): the smoke and steam streams of particles on their paths (Hwoarang's and Law-B's blown by the
-//! arena's wind), the Unknown's circling wisps and Nina's and King's blinking beacons. Drawn only: none of it
+//! arena's wind), the Unknown's circling wisps and Nina's and King's blinking beacons; arena 4's lightning and arena
+//! 12's signs, the still texture channels their tasks play ([`Weather::flash`]). Drawn only: none of it
 //! touches the fight, and it draws its own random numbers (the PS2's rand(), 0x40FBD0).
 
 use crate::vfx::{Blend, Sprite};
@@ -178,6 +179,37 @@ struct Beacon {
     rate: f32,
 }
 
+/// Arena 4's lightning (task 0x3A76C0, stages.json `weather.lightning`) and arena 12's signs (tasks 0x3A7590,
+/// `weather.signs`): the frame each still texture channel shows, the thunder, the fighters' lights turned.
+#[derive(Default)]
+struct Flashes {
+    /// The frame lists (s16 a frame, to a negative) by EMBU op 7's table: 0 the long flicker, 1-3 the middle ones,
+    /// 4-5 the short ones, 6-8 the bolts.
+    lists: Vec<Vec<i16>>,
+    /// The bolts' points (channels 0-3), the flickers' (channels 4-6) with the bolt each lights.
+    bolts: Vec<Vec3>,
+    flickers: Vec<(Vec3, usize)>,
+    thunder: Vec<u16>,
+    roll: u16,
+    /// How near the screen's centre (pixels of 640 x 448) a bolt and a flicker are heard and light the fighters.
+    near: [f32; 2],
+    /// The random task runs (0x3A72A8: not on the EMBU's screen).
+    task: bool,
+    started: bool,
+    /// Per bolt (0x8D5DE0): its list and the place in it while it flashes.
+    bolt: Vec<Option<(usize, usize)>>,
+    /// Per flicker (0x8D5DB0): its count and, while it flickers, its list and place.
+    flicker: Vec<(u32, Option<(usize, usize)>)>,
+    /// EMBU op 7's (0x3A7EB0): channel, list, place.
+    ops: Vec<(usize, usize, usize)>,
+    /// The signs (0x3A7590): channel, its frames, state, count (256ths of a frame).
+    signs: Vec<(usize, usize, u8, u32)>,
+    /// Each channel's frame (None: as the stage has it).
+    frames: [Option<usize>; 8],
+    /// A bolt lights the fighters (0x353C78: their lights 0 and 1 with x and z negated).
+    lit: bool,
+}
+
 /// An arena's weather as it is now.
 pub struct Weather {
     sets: Vec<Set>,
@@ -190,6 +222,9 @@ pub struct Weather {
     /// The tasks' frame count (0: not started).
     count: u32,
     seed: u32,
+    flashes: Flashes,
+    /// Thunder started (sound entries), for the caller to play.
+    pub sounds: Vec<u16>,
 }
 
 fn f(v: &Value) -> f32 {
@@ -237,7 +272,26 @@ impl Weather {
                 level: f(&g["level"]),
             })
             .collect();
-        let mut me = Self { sets, streams, particles: vec![], wind, groups, wisps: vec![], beacons: vec![], count: 0, seed: 0 };
+        let l = &v["lightning"];
+        let lists: Vec<Vec<i16>> = l["lists"].as_array().into_iter().flatten().map(|x| x.as_array().into_iter().flatten().map(|v| v.as_i64().unwrap_or(-1) as i16).collect()).collect();
+        let bolts: Vec<Vec3> = l["bolts"].as_array().into_iter().flatten().map(vec3).collect();
+        let flickers: Vec<(Vec3, usize)> = l["flickers"].as_array().into_iter().flatten().map(|x| (vec3(&x["at"]), x["bolt"].as_u64().unwrap_or(0) as usize)).collect();
+        let signs = v["signs"].as_array().into_iter().flatten().filter_map(|c| Some((c.as_u64()? as usize, 0, 0, 0))).collect();
+        let flashes = Flashes {
+            // (a list the code steps through ends in a negative)
+            task: lists.len() == 9 && lists.iter().all(|l| l.last().is_some_and(|&v| v < 0)) && bolts.len() <= 4 && flickers.len() <= 3,
+            bolt: vec![None; bolts.len()],
+            flicker: vec![(0, None); flickers.len()],
+            lists,
+            bolts,
+            flickers,
+            thunder: l["thunder"].as_array().into_iter().flatten().map(|t| t.as_u64().unwrap_or(0) as u16).collect(),
+            roll: l["roll"].as_u64().unwrap_or(0) as u16,
+            near: [f(&l["near"][0]), f(&l["near"][1])],
+            signs,
+            ..Flashes::default()
+        };
+        let mut me = Self { sets, streams, particles: vec![], wind, groups, wisps: vec![], beacons: vec![], count: 0, seed: 0, flashes, sounds: vec![] };
         // the wisps (0x3A16C0, 0x3A18F8 as each one starts)
         for (group, g) in list("wisps").enumerate() {
             for k in 0..g["count"].as_u64().unwrap_or(0).min(256) {
@@ -258,7 +312,172 @@ impl Weather {
             let rate = if period > 0.0 { std::f32::consts::TAU / period } else { 0.0 };
             me.beacons.push(Beacon { set: b["set"].as_u64().unwrap_or(0) as usize, at: vec3(&b["at"]), size: f(&b["size"]), level: f(&b["level"]), phase, rate });
         }
-        (!me.streams.is_empty() || !me.wisps.is_empty() || !me.beacons.is_empty()).then_some(me)
+        (!me.streams.is_empty() || !me.wisps.is_empty() || !me.beacons.is_empty() || me.flashes.task || !me.flashes.signs.is_empty()).then_some(me)
+    }
+
+    /// The EMBU's screen (11) starts no lightning task (0x3A72A8): only its op 7 flashes.
+    pub fn without_lightning(&mut self) {
+        self.flashes.task = false;
+    }
+
+    /// Sign channel `channel` has `frames` frames (the stage's texture channel).
+    pub fn sign_frames(&mut self, channel: usize, frames: usize) {
+        for s in self.flashes.signs.iter_mut().filter(|s| s.0 == channel) {
+            s.1 = frames;
+        }
+    }
+
+    /// EMBU op 7 (0x3A7FA8): channel `channel` plays list `list` (op 7's table), then rests (channels 0-3 on frame 1,
+    /// 4-6 on frame 3).
+    pub fn flash_op(&mut self, channel: i32, list: i32) {
+        if let (Ok(c @ 0..7), Ok(l)) = (usize::try_from(channel), usize::try_from(list)) {
+            if self.flashes.lists.get(l).is_some_and(|l| l.first().is_some_and(|&v| v >= 0)) {
+                self.flashes.ops.push((c, l, 0));
+            }
+        }
+    }
+
+    /// The frame texture channel `channel` shows (None: the stage's own).
+    pub fn channel_frame(&self, channel: usize) -> Option<usize> {
+        self.flashes.frames.get(channel).copied().flatten()
+    }
+
+    /// A bolt lights the fighters (their lights 0 and 1 with x and z negated, 0x353758).
+    pub fn lit(&self) -> bool {
+        self.flashes.lit
+    }
+
+    /// A frame of arena 4's lightning and arena 12's signs, the camera `view_proj` (y up, the arena's axes). The
+    /// lightning (0x3A76C0): each bolt flashes at 6 in 1000 a frame through one of the three bolt lists, with its
+    /// thunder when its point is within `near`[0] of the screen's centre; each flicker counts its frames from rand %
+    /// 240: at 240 back to 0 and at 30 in 100 the long list (the roll of thunder), from 168 at 20 in 1000 a middle
+    /// list, before at 10 in 1000 a short one; its frame 0 shows its bolt's frame 0. A list's frame 0 near the
+    /// centre turns the fighters' lights; its end rests the channel (a bolt on frame 1, a flicker on 3) and turns
+    /// them back. Each sign (0x3A7590) at 7 in 1000 a frame plays its frames once at half speed.
+    pub fn flash(&mut self, view_proj: glam::Mat4) {
+        let Self { flashes: fl, seed, sounds, .. } = self;
+        let mut rand = || {
+            *seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
+            *seed & 0x7FFF_FFFF
+        };
+        let near = |at: Vec3, reach: f32| {
+            let c = view_proj * at.extend(1.0);
+            c.w > 0.0 && (c.x / c.w * 320.0).hypot(c.y / c.w * 224.0) < reach
+        };
+        let at = |lists: &[Vec<i16>], l: usize, i: usize| lists.get(l).and_then(|l| l.get(i)).copied().unwrap_or(-1);
+        if fl.task {
+            if !fl.started {
+                // (state 0: the flickers' counts from rand % 240; the bolts' counters, unread, from rand % 1000)
+                fl.started = true;
+                for f in &mut fl.flicker {
+                    f.0 = rand() % 240;
+                }
+                for _ in &fl.bolt {
+                    rand();
+                }
+            } else {
+                for k in 0..fl.bolt.len() {
+                    let heard = near(fl.bolts[k], fl.near[0]);
+                    match fl.bolt[k] {
+                        None => {
+                            if rand() % 1000 < 6 {
+                                let r = (rand() % 3) as usize;
+                                fl.bolt[k] = Some((6 + r, 0));
+                                if let Some(&t) = fl.thunder.get(r).filter(|_| heard) {
+                                    sounds.push(t);
+                                }
+                            }
+                        }
+                        Some((l, i)) => {
+                            let v = at(&fl.lists, l, i);
+                            fl.frames[k] = Some(v.max(0) as usize);
+                            if heard {
+                                fl.lit = v == 0;
+                            }
+                            fl.bolt[k] = Some((l, i + 1));
+                            if at(&fl.lists, l, i + 1) < 0 {
+                                (fl.bolt[k], fl.frames[k], fl.lit) = (None, Some(1), false);
+                            }
+                        }
+                    }
+                }
+                for k in 0..fl.flicker.len() {
+                    let ((point, bolt), channel) = (fl.flickers[k], 4 + k);
+                    let heard = near(point, fl.near[1]);
+                    match fl.flicker[k] {
+                        (count, None) => {
+                            let count = count + 1;
+                            fl.flicker[k].0 = count;
+                            if count >= 240 {
+                                fl.flicker[k].0 = 0;
+                                if rand() % 100 < 30 {
+                                    fl.flicker[k].1 = Some((0, 0));
+                                    if heard {
+                                        sounds.push(fl.roll);
+                                    }
+                                }
+                            } else if count >= 168 {
+                                if rand() % 1000 < 20 {
+                                    fl.flicker[k].1 = Some((1 + (rand() % 3) as usize, 0));
+                                }
+                            } else if rand() % 1000 < 10 {
+                                fl.flicker[k].1 = Some((4 + (rand() & 1) as usize, 0));
+                            }
+                        }
+                        (_, Some((l, i))) => {
+                            let v = at(&fl.lists, l, i);
+                            fl.frames[channel] = Some(v.max(0) as usize);
+                            if v == 0 {
+                                // (its bolt's frame 0, that bolt's own flash ended)
+                                if let Some(b) = fl.bolt.get_mut(bolt) {
+                                    *b = None;
+                                }
+                                fl.frames[bolt.min(7)] = Some(0);
+                                fl.lit |= heard;
+                            } else {
+                                fl.frames[bolt.min(7)] = Some(1);
+                            }
+                            fl.flicker[k].1 = Some((l, i + 1));
+                            if at(&fl.lists, l, i + 1) < 0 {
+                                (fl.flicker[k].1, fl.frames[channel], fl.lit) = (None, Some(3), false);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // EMBU op 7's: a frame of the list each, then the channel at rest
+        for (c, l, i) in &mut fl.ops {
+            fl.frames[*c] = Some(at(&fl.lists, *l, *i).max(0) as usize);
+            *i += 1;
+        }
+        let lists = &fl.lists;
+        let frames = &mut fl.frames;
+        fl.ops.retain(|&(c, l, i)| {
+            let on = at(lists, l, i) >= 0;
+            if !on {
+                frames[c] = Some(if c < 4 { 1 } else { 3 });
+            }
+            on
+        });
+        // the signs: held on frame 0, now and then played once at 0x80 (frame t >> 8), back to 0 past the last
+        for (c, n, state, t) in &mut fl.signs {
+            match state {
+                0 => *state = 1,
+                1 if rand() % 1000 < 7 => (*state, *t) = (2, 0),
+                2 => {
+                    *t += 0x80;
+                    if (*t >> 8) as usize > *n {
+                        *state = 1;
+                    }
+                }
+                _ => {}
+            }
+            let k = (*t >> 8) as usize;
+            if let Some(f) = frames.get_mut(*c) {
+                *f = Some(if *state == 2 && k < *n { k } else { 0 });
+            }
+        }
     }
 
     /// The PS2's rand() (0x40FBD0).
@@ -431,6 +650,51 @@ mod tests {
         assert_eq!((s.len(), s[0].cell, s[0].pos), (2, 30, Vec3::new(0.0, 1.0, 8.0)));
         w.step();
         assert_eq!(w.sprites()[0].pos, Vec3::new(8.16, 1.0, 8.0));
+    }
+
+    #[test]
+    fn arena_4s_lightning_and_arena_12s_signs_play_their_still_channels() {
+        let short: Vec<Value> = vec![json!([1, 1, 2, -1]); 6];
+        let bolt = json!([0, 1, 0, -1]);
+        let lists: Vec<Value> = short.into_iter().chain([bolt.clone(), bolt.clone(), bolt]).collect();
+        let v = json!({"lightning": {"lists": lists, "bolts": [[0.0, 0.0, -10.0]], "flickers": [{"at": [0.0, 0.0, -10.0], "bolt": 0}],
+            "thunder": [0x1072, 0x1074, 0x1075], "roll": 0x1073, "near": [625.0, 312.5]}, "signs": [2]});
+        let mut w = Weather::new(&v).unwrap();
+        let looking = glam::camera::rh::proj::directx::perspective(1.0, 1.0, 0.1, 100.0);
+        // the EMBU: no task, only op 7 (channel 4, list 1: frames 1, 1, then 3: the list ends on the frame it shows
+        // its last, 0x3A7EB0, before 0x3A6C80 sends it)
+        w.without_lightning();
+        w.sign_frames(2, 3);
+        w.flash_op(4, 1);
+        let shown: Vec<Option<usize>> = (0..4)
+            .map(|_| {
+                w.flash(looking);
+                w.channel_frame(4)
+            })
+            .collect();
+        assert_eq!(shown, [Some(1), Some(1), Some(3), Some(3)]);
+        assert!(!w.lit() && w.sounds.is_empty());
+        // a sign plays its 3 frames once, each 2 frames, back on 0
+        let mut seen = vec![];
+        for _ in 0..3000 {
+            w.flash(looking);
+            seen.push(w.channel_frame(2).unwrap_or(9));
+            if seen.ends_with(&[0, 0, 1, 1, 2, 2, 0]) {
+                break;
+            }
+        }
+        assert!(seen.ends_with(&[0, 0, 1, 1, 2, 2, 0]), "{seen:?}");
+        // the task: a bolt in sight flashes (frame 0 lights the fighters) with its thunder, then rests on frame 1
+        let mut w = Weather::new(&v).unwrap();
+        let mut lit = false;
+        for _ in 0..3000 {
+            w.flash(looking);
+            lit |= w.lit();
+            if !w.sounds.is_empty() && w.channel_frame(0) == Some(1) {
+                break;
+            }
+        }
+        assert!(lit && w.sounds.iter().all(|s| (0x1072..=0x1075).contains(s)), "{:?}", w.sounds);
     }
 
     #[test]

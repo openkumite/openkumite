@@ -829,6 +829,9 @@ fn the_round_call_starts_the_fight_on_frame_151_then_91() {
         assert_eq!(said, calls.map(|(k, f)| (k, f.to_string())), "round {round}'s call");
         b.resume_match(1, [0, 0]);
     }
+    // (the calls' level measured in PCSX2: 0.77 of their volume byte 29's)
+    let call = s.announce(kumite_game::bout::Announcement::Round(1), [true; 2]).unwrap();
+    assert!((call.volume - 29.0 / 51.0 * 0.77).abs() < 1e-6, "{}", call.volume);
     let music = s.arena_music(0).unwrap();
     assert!(music.file.ends_with("audio/music/22.flac") && music.looped, "{}", music.file.display());
     // (arena 0's BGM 9: its loop point and volume 9830, the PS2's level)
@@ -1228,6 +1231,32 @@ fn the_embus_camera_is_the_ps2s() {
     assert_eq!(kumite_game::ending::EndingScene::embu(&a, &d, 1).unwrap().people.expect("the EMBU's people: a pack before converter format 40, convert the game again")["set"], 30);
 }
 
+/// Arena 4's lightning: the EMBU's op 7 flashes channel 4 (list 0) at its frame 120 and channel 0 (a bolt's list) at
+/// 122; the arena's stage plays its still channels 0-6 (the bolts' resting on their cleared frame 1) and its
+/// weather has the lightning; arena 12's the signs.
+#[test]
+fn arena_4s_lightning_flashes_in_the_embu() {
+    let Some(a) = assets() else { return };
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    let mut s = kumite_game::ending::EndingScene::embu(&a, &d, 0).unwrap();
+    let mut flashes = vec![];
+    while s.frame() < 130 {
+        s.step();
+        flashes.extend(s.flashes.iter().map(|&f| (s.frame(), f)));
+    }
+    assert_eq!(flashes, [(120, (4, 0)), (122, (0, 6))]);
+    let st = a.stage(4).unwrap();
+    let still: Vec<(Option<usize>, u32, usize)> = st.channels.iter().map(|c| (c.channel, c.start, c.frames)).collect();
+    assert!((0..7).all(|k| still.iter().any(|&(c, _, _)| c == Some(k))), "arena 4's channels (convert the game again): {still:?}");
+    assert!(still.iter().all(|&(c, start, n)| c.is_none_or(|k| (start, n) == if k < 4 { (1, 2) } else { (3, 4) })), "{still:?}");
+    let stages: serde_json::Value = serde_json::from_slice(&std::fs::read(a.root.join("gamedata/stages.json")).unwrap()).unwrap();
+    let mut w = kumite_game::weather::Weather::new(&stages["stages"][4]["weather"]).unwrap();
+    w.flash_op(0, 6);
+    w.flash(glam::Mat4::IDENTITY);
+    assert_eq!(w.channel_frame(0), Some(0));
+    assert!(kumite_game::weather::Weather::new(&stages["stages"][12]["weather"]).is_some());
+}
+
 #[test]
 fn an_ending_plays_to_its_end() {
     let Some(a) = assets() else { return };
@@ -1316,7 +1345,8 @@ fn arena_texture_channels() {
     let Some(a) = assets() else { return };
     let one = a.stage(1).unwrap();
     assert!(!one.channels.is_empty() && one.channels.iter().all(|c| (c.frames, c.speed, c.start) == (60, 0x40, 0)), "convert the game again");
-    assert!(a.stage(4).unwrap().channels.is_empty());
+    // (arena 4: only its still channels, which its lightning plays)
+    assert!(a.stage(4).unwrap().channels.iter().all(|c| c.channel.is_some() && c.speed == 0));
 }
 
 /// Op 25: in ending 20 Bryan (slot 1) holds arena 5's object 0 at his hand (node 38) for 1080 frames.

@@ -413,7 +413,7 @@ impl SoundData {
         }?;
         // Tekken Tag: sound entries (1 << 12 | id) the round code plays (0x36EC50, 0x36EEE0)
         if let Some(t) = &self.tag {
-            return t.sound(index, 0, 0, false);
+            return t.sound(index, 0, 0, false).map(|s| Sound { volume: s.volume * TTT_ANNOUNCER_LEVEL, ..s });
         }
         self.table(index)
     }
@@ -802,6 +802,11 @@ struct TagGroup {
     bank: Option<u32>,
     samples: Vec<TagSample>,
 }
+/// Tekken Tag's round calls and results under their volume byte (29): measured in PCSX2's capture of an arcade fight
+/// (round 1's call, a time up), they play at 0.38 of their WAV against the music's 0.53 (BGM 16, 10649): 2.3 dB below
+/// volume / 51.
+const TTT_ANNOUNCER_LEVEL: f32 = 0.77;
+
 /// The Tekken Tag sample volume heard as OpenKumite's full effect volume.
 const VOLUME_FULL: u32 = 51;
 
