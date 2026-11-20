@@ -160,12 +160,7 @@ impl EffectsData {
                 Vec3::new(k(0), -k(1), -k(2)) // game space (y down, z away) -> world
             })
             .collect();
-        let bursts = v["bursts"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .map(|(name, b)| (name.clone(), burst(b, 0)))
-            .collect();
+        let bursts = v["bursts"].as_object().into_iter().flatten().map(|(name, b)| (name.clone(), burst(b, 0))).collect();
         Some(Self {
             cols: v["atlas"]["cols"].as_u64()? as u32,
             rows: v["atlas"]["rows"].as_u64()? as u32,
@@ -491,6 +486,8 @@ impl Vfx {
     /// Advance the effects one frame without a fight (the embu).
     pub fn tick(&mut self) {
         self.advance();
+        self.ribbons.clear();
+        self.flares.clear();
     }
 
     /// The heavy-hit particles along the strike (0x8006DF34): 6 easing ones and 20 fast straight ones.

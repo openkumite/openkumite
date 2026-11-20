@@ -4107,6 +4107,16 @@ impl App {
                             _ => v.burst_at(b.kind, b.pos, b.dir, b.high, b.spin),
                         }
                     }
+                    // op 16's beams at their full width (0x378600 in a scene); on their first frame the start alone
+                    for k in 0..2 {
+                        match s.beams.iter().find(|b| b.0 == k) {
+                            Some(&(_, model, kind, line, eyes)) => {
+                                let (p, q) = line.unwrap_or((eyes, eyes));
+                                v.laser(8 + k, model, p, q, eyes, 1.0, kind != 1);
+                            }
+                            None => v.laser_off(8 + k),
+                        }
+                    }
                 }
                 // (the EMBU starts its music from its script)
                 if let (Some(bgm), Some(audio), Some(sound)) = (s.music.take(), self.audio.as_mut(), self.sound.as_ref()) {

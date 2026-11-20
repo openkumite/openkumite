@@ -1623,7 +1623,9 @@ impl Renderer {
         // anti-aliased: the passes draw into the samples, resolved into the scene's target
         let msaa = self.scene.as_ref().and_then(|t| t.msaa.as_ref().map(|m| (m.2.clone(), m.3.clone(), t.reload[usize::from(gamma)].clone())));
         // the glow's pipelines and targets, wanted with something added to glow
-        let glows = self.settings.glow && (particles.is_some_and(|p| !p.additive.is_empty() || !p.soft_add.is_empty() || !p.flat_add.is_empty() || p.sheets.iter().any(|s| !s.2.is_empty())) || statics.iter().chain(sky).any(|m| m.blend == 1));
+        let glows = self.settings.glow
+            && (particles.is_some_and(|p| !p.additive.is_empty() || !p.soft_add.is_empty() || !p.flat_add.is_empty() || p.sheets.iter().any(|s| !s.2.is_empty()))
+                || statics.iter().chain(sky).any(|m| m.blend == 1));
         if glows {
             let size = scene.as_ref().map_or([self.config.width, self.config.height], |s| s.3).map(|d| (d / 2).max(1));
             self.glow_target(size);
