@@ -3228,8 +3228,10 @@ pub fn draw_practice_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
         for part in k["small"].as_array().into_iter().flatten() {
             let text = part[0].as_str().unwrap_or_default();
             if text == "o" {
+                // (the icons in the small font's colour: `003_003_cNN.png` beside its `003_002_cNN.png`)
                 let cell = int(&k["button"]) as f32 * 16.0;
-                if let Some((tex, [tw, th])) = art.pic("003_003.png") {
+                let coloured = d.raw["fonts"]["small"]["colours"][int(&part[1])].as_str().map(|f| f.replace("003_002", "003_003"));
+                if let Some((tex, [tw, th])) = coloured.and_then(|f| art.pic(&f)).or_else(|| art.pic("003_003.png")) {
                     let uv = Rect::from_min_max(Pos2::new(cell / tw as f32, 0.0), Pos2::new((cell + 16.0) / tw as f32, 16.0 / th as f32));
                     let [rx, ry, rw, rh] = sv([x, y - 20.0, 16.0, 16.0]);
                     painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, Color32::WHITE);
