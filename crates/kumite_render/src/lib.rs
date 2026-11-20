@@ -391,16 +391,26 @@ pub struct RenderSettings {
     pub mipmaps: bool,
     /// Tekken Tag's shadows soft: their picture finer, its edge averaged over 3 cm.
     pub soft_shadows: bool,
+    /// The added lights (sparks, flames, the stages' lamps) glow: blurred and added again.
+    pub glow: bool,
 }
 
 impl Default for RenderSettings {
     fn default() -> Self {
-        Self { scale: 1.0, vsync: true, smooth_textures: false, msaa: 1, mipmaps: false, soft_shadows: false }
+        Self { scale: 1.0, vsync: true, smooth_textures: false, msaa: 1, mipmaps: false, soft_shadows: false, glow: false }
     }
 }
 
 /// The 3D scene's own target when the render scale is not 1 or it is anti-aliased: colour (with a non-sRGB view for
 /// the HUD drawn under the fighters), depth, and the bind group the final pass samples it through.
+/// The glow's targets at half the scene's size: its picture and the blur's (and their bind groups), the depth.
+struct Glow {
+    size: [u32; 2],
+    views: [wgpu::TextureView; 2],
+    groups: [wgpu::BindGroup; 2],
+    depth: wgpu::TextureView,
+}
+
 struct SceneTarget {
     size: [u32; 2],
     colour: wgpu::Texture,
@@ -480,7 +490,23 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     return o;
 }
 @fragment fn fs(i: Out) -> @location(0) vec4<f32> { return textureSample(tex, samp, i.uv); }
+// the glow (OpenKumite's): the added light past a quarter (not a floor's faint gloss) blurred along x, then y (9 taps
+// 1.5 texels apart, gaussian), then added to the scene
+fn blur(uv: vec2<f32>, dir: vec2<f32>, cut: f32) -> vec4<f32> {
+    let px = 1.5 * dir / vec2<f32>(textureDimensions(tex));
+    let w = array(0.227, 0.194, 0.121, 0.054, 0.016);
+    var c = max(textureSample(tex, samp, uv) - cut, vec4(0.0)) * w[0];
+    for (var k = 1; k < 5; k++) {
+        c += (max(textureSample(tex, samp, uv + px * f32(k)) - cut, vec4(0.0)) + max(textureSample(tex, samp, uv - px * f32(k)) - cut, vec4(0.0))) * w[k];
+    }
+    return c;
+}
+@fragment fn fs_blur_x(i: Out) -> @location(0) vec4<f32> { return blur(i.uv, vec2(1.0, 0.0), 0.25); }
+@fragment fn fs_blur_y(i: Out) -> @location(0) vec4<f32> { return blur(i.uv, vec2(0.0, 1.0), 0.0); }
+@fragment fn fs_glow(i: Out) -> @location(0) vec4<f32> { return vec4(textureSample(tex, samp, i.uv).rgb * 0.8, 0.0); }
 ";
+/// The glow's picture (its half-resolution targets).
+const GLOW: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Tekken Tag's shadow picture: its texels a side, and the half size of the floor it covers (metres).
 const SHADOW_MAP: u32 = 1024;
@@ -520,6 +546,12 @@ pub struct Renderer {
     blit_nearest: wgpu::Sampler,
     blit_linear: wgpu::Sampler,
     blit_pipeline: wgpu::RenderPipeline,
+    /// The glow ([`RenderSettings::glow`]): its blurs (x, y), its adding into the scene (the frame's format, its
+    /// plain one), the 3D pass's pipelines for its picture (made when first wanted), its targets.
+    glow_blur: [wgpu::RenderPipeline; 2],
+    glow_add: [wgpu::RenderPipeline; 2],
+    glow_pipes: Option<Pipes>,
+    glow: Option<Glow>,
     settings: RenderSettings,
     scene: Option<SceneTarget>,
     /// The 3D pass's pipelines: drawing in the frame's linear colour, and (Tekken Tag's) in its sRGB bytes, so that
@@ -741,6 +773,26 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        // (the glow's passes: the blit's triangle)
+        let post = |fs: &str, format: wgpu::TextureFormat, blend: Option<wgpu::BlendState>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(fs),
+                layout: Some(&blit_layout),
+                vertex: wgpu::VertexState { module: &blit_shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &blit_shader,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let glow_blur = ["fs_blur_x", "fs_blur_y"].map(|fs| post(fs, GLOW, None));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("openkumite"), source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()) });
         let layout = |groups: &[Option<&wgpu::BindGroupLayout>]| device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: groups, immediate_size: 0 });
         let skinned_layout = layout(&[Some(&globals_layout), Some(&texture_layout), Some(&bones_layout)]);
@@ -776,7 +828,7 @@ impl Renderer {
             })
             .to_vec();
         // the 3D pass's pipelines for a colour target format and a sample count (kept: anti-aliasing changes it)
-        let (dev, reload_layout) = (device.clone(), blit_layout.clone());
+        let (dev, reload_layout, blit_shader) = (device.clone(), blit_layout.clone(), blit_shader.clone());
         let make_pipes = move |format: wgpu::TextureFormat, samples: u32| -> Pipes {
             let device = &dev;
             let skin_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<SkinVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &skin_attrs }];
@@ -898,6 +950,9 @@ impl Renderer {
         let plain = config.format.remove_srgb_suffix();
         let gamma = if plain == config.format || config.view_formats.contains(&plain) { plain } else { frame_format };
         let pipes = [make_pipes(frame_format, 1), make_pipes(gamma, 1)];
+        let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+        let keep = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+        let glow_add = [frame_format, gamma].map(|f| post("fs_glow", f, Some(wgpu::BlendState { color: add, alpha: keep })));
         // the anti-aliasing the scene's formats can have (and resolve)
         let samples_ok = |n: u32| {
             let ok = |f: wgpu::TextureFormat, resolve: bool| {
@@ -928,6 +983,10 @@ impl Renderer {
             blit_nearest,
             blit_linear,
             blit_pipeline,
+            glow_blur,
+            glow_add,
+            glow_pipes: None,
+            glow: None,
             settings: RenderSettings::default(),
             scene: None,
             pipes,
@@ -1046,6 +1105,34 @@ impl Renderer {
             t.msaa = Some((samples, format, make("scene samples", format), make("scene samples depth", DEPTH)));
         }
         self.scene.as_ref()
+    }
+
+    /// The glow's pipelines and targets, made or remade for its size.
+    fn glow_target(&mut self, size: [u32; 2]) {
+        if self.glow_pipes.is_none() {
+            self.glow_pipes = Some((self.make_pipes)(GLOW, 1));
+        }
+        if self.glow.as_ref().is_some_and(|g| g.size == size) {
+            return;
+        }
+        let make = |format, usage| {
+            self.device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("glow"),
+                    size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        let views = [(); 2].map(|_| make(GLOW, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING));
+        let groups = [0, 1].map(|k| self.bind(&views[k], &self.blit_linear));
+        let depth = make(DEPTH, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        self.glow = Some(Glow { size, views, groups, depth });
     }
 
     /// The GPU's largest texture side: frames and the 3D scene's target are at most this.
@@ -1488,6 +1575,12 @@ impl Renderer {
         });
         // anti-aliased: the passes draw into the samples, resolved into the scene's target
         let msaa = self.scene.as_ref().and_then(|t| t.msaa.as_ref().map(|m| (m.2.clone(), m.3.clone(), t.reload[usize::from(gamma)].clone())));
+        // the glow's pipelines and targets, wanted with something added to glow
+        let glows = self.settings.glow && (particles.is_some_and(|p| !p.additive.is_empty() || !p.soft_add.is_empty() || !p.flat_add.is_empty()) || statics.iter().chain(sky).any(|m| m.blend == 1));
+        if glows {
+            let size = scene.as_ref().map_or([self.config.width, self.config.height], |s| s.3).map(|d| (d / 2).max(1));
+            self.glow_target(size);
+        }
         let pipes = &self.pipes[usize::from(gamma)];
         let view_tex = match &scene {
             Some(s) if gamma => s.1.clone(),
@@ -1800,6 +1893,87 @@ impl Renderer {
             }
         }
         resolve(&mut enc);
+        // the glow: the added lights drawn again into its picture at half size (behind the stage and the fighters,
+        // drawn first), blurred, added to the scene
+        if let (true, Some(gp), Some(gl)) = (glows, self.glow_pipes.as_ref(), self.glow.as_ref()) {
+            let target = |enc: &mut wgpu::CommandEncoder, label, view: &wgpu::TextureView, depth: Option<wgpu::LoadOp<f32>>, colour: wgpu::LoadOp<wgpu::Color>| {
+                enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(label),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: colour, store: wgpu::StoreOp::Store } })],
+                    depth_stencil_attachment: depth.map(|load| wgpu::RenderPassDepthStencilAttachment {
+                        view: &gl.depth,
+                        depth_ops: Some(wgpu::Operations { load, store: wgpu::StoreOp::Store }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime()
+            };
+            let black = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
+            {
+                let mut pass = target(&mut enc, "glow depth", &gl.views[0], Some(wgpu::LoadOp::Clear(1.0)), black);
+                pass.set_bind_group(0, &self.globals_group, &[]);
+                pass.set_pipeline(&gp.static_pipeline);
+                for m in statics.iter().filter(|m| m.blend == 0) {
+                    pass.set_bind_group(1, m.texture.group(smooth), &[]);
+                    pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                    pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..m.count, 0, 0..1);
+                }
+                pass.set_pipeline(&gp.skinned_pipeline);
+                for m in models {
+                    pass.set_bind_group(1, m.texture.group(smooth), &[]);
+                    pass.set_bind_group(2, &m.bones_group, &[]);
+                    pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                    pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..m.blend_from, 0, 0..1);
+                }
+            }
+            {
+                let mut pass = target(&mut enc, "glow", &gl.views[0], Some(wgpu::LoadOp::Load), black);
+                pass.set_bind_group(0, &self.globals_group, &[]);
+                for (base, m) in statics.iter().map(|m| (0, *m)).chain(sky.iter().map(|m| (2, *m))).filter(|(_, m)| m.blend == 1) {
+                    let Some(pipeline) = gp.stage_blends.get(base) else { continue };
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(1, m.texture.group(smooth), &[]);
+                    pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                    pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..m.count, 0, 0..1);
+                }
+                // (the particles' added kinds, in the glow's pipelines)
+                let added = |pipe: &wgpu::RenderPipeline| [(&pipes.particle_add, &gp.particle_add), (&pipes.soft_add, &gp.soft_add)].into_iter().find(|(p, _)| std::ptr::eq(*p, pipe)).map(|(_, g)| g);
+                if let Some(white) = self.white.as_ref() {
+                    pass.set_bind_group(1, &white.bind_group, &[]);
+                    for (pipe, buf, n) in &flat_bufs {
+                        let Some(g) = added(pipe) else { continue };
+                        pass.set_pipeline(g);
+                        pass.set_vertex_buffer(0, buf.slice(..));
+                        pass.draw(0..*n, 0..1);
+                    }
+                }
+                if let Some(p) = particles {
+                    pass.set_bind_group(1, &p.texture.bind_group, &[]);
+                    for (pipe, buf, n) in &particle_bufs {
+                        let Some(g) = added(pipe) else { continue };
+                        pass.set_pipeline(g);
+                        pass.set_vertex_buffer(0, buf.slice(..));
+                        pass.draw(0..*n, 0..1);
+                    }
+                }
+            }
+            for (k, pipeline) in self.glow_blur.iter().enumerate() {
+                let mut pass = target(&mut enc, "glow blur", &gl.views[1 - k], None, black);
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &gl.groups[k], &[]);
+                pass.draw(0..3, 0..1);
+            }
+            let mut pass = target(&mut enc, "glow add", resolved.as_ref().unwrap_or(&view_tex), None, wgpu::LoadOp::Load);
+            pass.set_pipeline(&self.glow_add[usize::from(gamma)]);
+            pass.set_bind_group(0, &gl.groups[0], &[]);
+            pass.draw(0..3, 0..1);
+        }
         // the scene to the window
         if let (Some(t), Some(_)) = (self.scene.as_ref(), &scene) {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
