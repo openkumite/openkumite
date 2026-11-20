@@ -339,6 +339,29 @@ impl Weather {
         }
     }
 
+    /// SPECIAL EFFECTS' burst (0x3A2298): a particle on every path of the arena's set 1 (the PS2's set 7) from `at`
+    /// (metres), 8.16 times its path (gp-0x7E88), brightness 180 and size 75 (as streams' `level` x 128 and `size`
+    /// x 175), added.
+    pub fn burst(&mut self, at: Vec3) {
+        let Some(paths) = self.sets.get(1).map(|s| s.paths.len()) else { return };
+        let stream = self.streams.len();
+        self.streams.push(Stream {
+            set: 1,
+            every: u32::MAX,
+            at,
+            turn: [0.0, 1.0],
+            scale: Vec3::splat(8.16),
+            colour: [1.0; 3],
+            level: 180.0 / 128.0,
+            size: 75.0 / 175.0,
+            add: true,
+            wind: 0.0,
+            most: usize::MAX,
+            prewarm: false,
+        });
+        self.particles.extend((0..paths).map(|path| Particle { stream, path, age: 0, drift: Vec3::ZERO }));
+    }
+
     /// What to draw now (0x345A00): a quad of `size` x the path's at each particle, its brightness the level x (1 -
     /// the fade), none at size 0 or fully faded; blended ones as alpha, added ones as colour.
     pub fn sprites(&self) -> Vec<Sprite> {
@@ -393,6 +416,21 @@ mod tests {
         }
         // (each gone after its 5 frames: at most 3 at a time)
         assert!(w.particles.len() <= 3);
+    }
+
+    #[test]
+    fn the_burst_starts_a_particle_on_every_path_of_set_1() {
+        let path: Vec<Value> = (0..3).map(|k| json!([k as f64, 0.0, 0.0, 1.0, 0.0])).collect();
+        let v = json!({"sets": [{"cell": 26, "paths": []}, {"cell": 30, "paths": [path.clone(), path]}],
+            "streams": [{"set": 0, "every": 32, "at": [0.0, 0.0, 0.0], "heading": 0.0, "scale": [1.0, 1.0, 1.0], "colour": [1.0, 1.0, 1.0],
+                "level": 1.0, "size": 1.0, "add": false, "wind": 0.0, "most": null, "prewarm": false}]});
+        let mut w = Weather::new(&v).unwrap();
+        w.burst(Vec3::new(0.0, 1.0, 8.0));
+        w.step();
+        let s = w.sprites();
+        assert_eq!((s.len(), s[0].cell, s[0].pos), (2, 30, Vec3::new(0.0, 1.0, 8.0)));
+        w.step();
+        assert_eq!(w.sprites()[0].pos, Vec3::new(8.16, 1.0, 8.0));
     }
 
     #[test]

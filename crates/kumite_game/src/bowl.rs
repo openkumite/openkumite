@@ -52,6 +52,7 @@ pub struct Record {
     pub name: String,
     pub bodies: [usize; 2],
     pub score: u16,
+    pub card: kumite_sim::bowl::Card,
 }
 
 impl Records {
@@ -124,8 +125,10 @@ pub struct BowlScene {
     pivot: Vec3,
     /// The throw's and the roll's camera (0x1FC51B0, game units): its pivot, yaw (radians) and distance.
     view: (Vec3, f32, f32),
-    /// The frame of SPECIAL EFFECTS' explosion, which shakes the camera.
+    /// The frame of SPECIAL EFFECTS' explosion, which shakes the camera; where its burst goes (metres), for the
+    /// arena's effects to take.
     shake_at: Option<u64>,
+    pub burst: Option<Vec3>,
 }
 
 /// The camera's pitch (0x3E9C10: -0.2 rad, looking down), the fixed view behind the lane (mode 0: its pivot and
@@ -245,6 +248,7 @@ impl BowlScene {
             pivot: Vec3::ZERO,
             view: (Vec3::from(LANE_VIEW.0), 0.0, LANE_VIEW.1),
             shake_at: None,
+            burst: None,
         })
     }
 
@@ -260,8 +264,12 @@ impl BowlScene {
             0
         };
         self.bowl.step(pad);
+        // (0x3E9808: the burst 300 from the deck's middle along (x, -y, z - 8000) of the eye)
         if self.bowl.events.contains(&kumite_sim::bowl::Event::Sound(kumite_sim::bowl::EXPLOSION)) {
             self.shake_at = Some(self.bowl.frame);
+            let e = self.camera().0 * UNITS;
+            let e = Vec3::new(-e.x, -e.y, e.z);
+            self.burst = Some(to_m(Vec3::new(0.0, -225.0, 8000.0) + Vec3::new(e.x, -e.y, e.z - 8000.0).normalize_or_zero() * 300.0));
         }
         // (SELECT switched the hand: its other motions)
         let k = self.bowl.current;
@@ -438,7 +446,7 @@ mod tests {
     #[test]
     fn a_score_takes_its_place_among_the_top_five() {
         let r = Records { size: 5, ..Records::default() };
-        let rec = |score| Record { name: "PAU".into(), bodies: [0, 1], score };
+        let rec = |score| Record { name: "PAU".into(), bodies: [0, 1], score, ..Default::default() };
         let mut list: Vec<Record> = [268, 214, 157, 103, 30].map(rec).to_vec();
         // above an equal score, the last one out; too low: no place; the second player not above the first's
         assert_eq!(r.insert(&mut list, 0, rec(157)), Some(2));

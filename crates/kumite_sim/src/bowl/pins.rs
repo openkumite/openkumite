@@ -52,12 +52,12 @@ pub struct Pin {
     pub vel: Vec3,
     prev: Vec3,
     disp: Vec3,
-    /// +0x40: the tilt from upright and the heading (radians); +0x50 their speeds (and the third axis'); +0x60 at
-    /// the frame's start; +0x70 the frame's change.
-    pub angles: [f32; 2],
+    /// +0x40: the tilt from upright, the heading and (+0x4C) the twist about its own axis (radians); +0x50 the
+    /// speeds of the turn about x, y, z; +0x60 the angles at the frame's start; +0x70 the frame's change.
+    pub angles: [f32; 3],
     pub rate: Vec3,
-    prev_angles: [f32; 2],
-    delta: [f32; 2],
+    prev_angles: [f32; 3],
+    delta: [f32; 3],
     /// +0x80: the spheres' centres and the base (+0x140); at the frame's start (+0xC0, +0x150); their moves (+0x100,
     /// +0x160).
     points: [Vec3; 5],
@@ -82,6 +82,35 @@ fn wrap(a: f32) -> f32 {
     } else {
         r
     }
+}
+
+/// `a` brought once into [-pi, pi] (0x3EC388's own test).
+fn wrap_once(a: f32) -> f32 {
+    let (pi, tau) = (std::f32::consts::PI, std::f32::consts::TAU);
+    if a > pi {
+        a - tau
+    } else if a < -pi {
+        a + tau
+    } else {
+        a
+    }
+}
+
+/// A matrix row turned about x, y or z by `a` (the VU0 blocks of 0x3E9038 / 0x3EC388: each row's other two
+/// coordinates).
+fn turn_x(r: Vec3, a: f32) -> Vec3 {
+    let (s, c) = a.dsin_cos();
+    Vec3::new(r.x, c * r.y - s * r.z, s * r.y + c * r.z)
+}
+
+fn turn_y(r: Vec3, a: f32) -> Vec3 {
+    let (s, c) = a.dsin_cos();
+    Vec3::new(s * r.z + c * r.x, r.y, c * r.z - s * r.x)
+}
+
+fn turn_z(r: Vec3, a: f32) -> Vec3 {
+    let (s, c) = a.dsin_cos();
+    Vec3::new(c * r.x - s * r.y, s * r.x + c * r.y, r.z)
 }
 
 /// asin, NaN-free (the PS2's arguments stay within [-1, 1]; rounding could step out).
@@ -124,10 +153,10 @@ impl Pin {
             vel: Vec3::ZERO,
             prev: pos,
             disp: Vec3::ZERO,
-            angles: [0.0; 2],
+            angles: [0.0; 3],
             rate: Vec3::ZERO,
-            prev_angles: [0.0; 2],
-            delta: [0.0; 2],
+            prev_angles: [0.0; 3],
+            delta: [0.0; 3],
             points: [Vec3::ZERO; 5],
             prev_points: [Vec3::ZERO; 5],
             point_disp: [Vec3::ZERO; 5],
@@ -150,11 +179,12 @@ impl Pin {
         Vec3::new(sy * sx, cx, cy * sx)
     }
 
-    /// Its orientation (the model's axes in the world: the matrix' rows as columns).
+    /// Its orientation as drawn (0x3E91D0: the twist about y, the tilt about x, the heading about y; the model's
+    /// axes in the world: the matrix' rows as columns).
     pub fn rot(&self) -> Mat3 {
-        let (sx, cx) = wrap(self.angles[0]).dsin_cos();
-        let (sy, cy) = wrap(self.angles[1]).dsin_cos();
-        Mat3::from_cols(Vec3::new(cy, 0.0, -sy), Vec3::new(sy * sx, cx, cy * sx), Vec3::new(sy * cx, -sx, cy * cx))
+        let [x, y, w] = self.angles.map(wrap);
+        let row = |r: Vec3| turn_y(turn_x(turn_y(r, w), x), y);
+        Mat3::from_cols(row(Vec3::X), row(Vec3::Y), row(Vec3::Z))
     }
 
     /// Its base's centre (the centre stands `base` above it).
@@ -170,7 +200,7 @@ impl Pin {
     /// 0x3ECAD8: the frame's moves, the spheres and the base where the pin is now.
     fn update(&mut self) {
         self.disp = self.pos - self.prev;
-        self.delta = [self.angles[0] - self.prev_angles[0], self.angles[1] - self.prev_angles[1]];
+        self.delta = std::array::from_fn(|k| self.angles[k] - self.prev_angles[k]);
         let u = self.axis();
         for (k, h) in POINTS.iter().chain([&BASE]).enumerate() {
             if let (Some(p), Some(q), Some(d)) = (self.points.get_mut(k), self.prev_points.get(k), self.point_disp.get_mut(k)) {
@@ -191,8 +221,8 @@ impl Pin {
     }
 
     /// 0x3EC388: the angles turned by `w` (about x, y, z): the heading by y; the tilt by the turn across the
-    /// heading, the heading again by the turn along it.
-    // shortcut: the twist about the pin's own axis (+0x4C, drawn only) is not kept; a pin turns without it
+    /// heading, the heading again by the turn along it; the twist by where the identity's z row ends up turned by
+    /// the new tilt, the turn along, back by the heading's step and the final tilt.
     fn turn(&mut self, w: Vec3) {
         let [ax, ay] = [wrap(self.angles[0]), wrap(self.angles[1])];
         self.angles[1] += w.y;
@@ -203,27 +233,28 @@ impl Pin {
         let along = swz * cy + swx * sy;
         let tilt = asin(across);
         self.angles[0] += tilt;
+        let mut z = turn_z(turn_x(Vec3::Z, wrap_once(self.angles[0])), asin(along));
         let cx = ax.dcos();
         let sx = (1.0 - cx * cx).sqrt() * if ax < 0.0 { -1.0 } else { 1.0 };
         let (f24, f22) = (sx * along, cx * along);
-        let mut f20 = ax + tilt;
-        let pi = std::f32::consts::PI;
-        if f20 > pi {
-            f20 -= std::f32::consts::TAU;
-        } else if f20 < -pi {
-            f20 += std::f32::consts::TAU;
-        }
+        let f20 = wrap_once(ax + tilt);
         self.angles[0] += asin(f24 * f22);
         if cx != 0.0 && along != 0.0 {
             let s = f20.dsin();
-            self.angles[1] += if f20 >= 0.0 { -f22.datan2(s) } else { f22.datan2(-s) };
+            let step = if f20 >= 0.0 { -f22.datan2(s) } else { f22.datan2(-s) };
+            self.angles[1] += step;
+            z = turn_y(z, -step);
+        }
+        let z = turn_x(z, -wrap_once(self.angles[0]));
+        if z.x != 0.0 || z.z != 0.0 {
+            self.angles[2] += z.x.datan2(z.z);
         }
     }
 
     /// 0x3ECA38: back to time `t` of the frame (its start plus that much of its move).
     fn back_to(&mut self, t: f32) {
         self.pos = self.prev + self.disp * t;
-        self.angles = [self.prev_angles[0] + self.delta[0] * t, self.prev_angles[1] + self.delta[1] * t];
+        self.angles = std::array::from_fn(|k| self.prev_angles[k] + self.delta[k] * t);
     }
 
     /// 0x3ECA80: on by `t` of a frame at its velocities.
@@ -613,6 +644,16 @@ mod tests {
         }
         assert!(p.standing && !p.moving(), "{p:?}");
         assert!((p.pos.y + BASE).abs() < 1e-3 && p.angles[0] == 0.0);
+    }
+
+    #[test]
+    fn the_twist_turns_the_pin_about_its_own_axis() {
+        let mut p = Pin::racked([0.0, 8000.0], -BASE);
+        p.angles = [0.7, -1.9, 2.3];
+        assert!(p.rot().y_axis.distance(p.axis()) < 1e-5);
+        let before = p.rot();
+        p.angles[2] = 0.0;
+        assert!(p.rot().y_axis.distance(before.y_axis) < 1e-5 && p.rot().x_axis.distance(before.x_axis) > 0.1);
     }
 
     #[test]

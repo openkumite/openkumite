@@ -323,7 +323,7 @@ impl BowlRun {
         let mut from = 0;
         let placed = (sc.bowl.cards.iter().zip(&self.teams))
             .map(|(card, team)| {
-                let place = sc.records.insert(&mut top, from, kumite_game::bowl::Record { name: String::new(), bodies: *team, score: card.total() });
+                let place = sc.records.insert(&mut top, from, kumite_game::bowl::Record { name: String::new(), bodies: *team, score: card.total(), card: card.clone() });
                 from = place.map_or(from, |p| p + 1);
                 place
             })
@@ -337,8 +337,8 @@ impl BowlRun {
 /// gp-0x6042, any face button closes it).
 #[derive(Clone, Copy)]
 enum BowlPage {
-    /// TOP 5 BOWLERS from the pause, the row under the cursor.
-    Top(usize),
+    /// TOP 5 BOWLERS from the pause, the row under the cursor and whether its SCORE SHEET is open.
+    Top(usize, bool),
     Options(usize),
     Card,
     /// After the results: THE KING OF IRONBOWL, a placed player's name being entered (the player, the letter under
@@ -4047,6 +4047,8 @@ impl App {
             }
             log::info!("Tekken Bowl: {} player(s)", players.len());
             self.scene = Some(stage);
+            // (the effects' atlas, for the hall's smoke and SPECIAL EFFECTS' burst)
+            self.vfx = Some(kumite_game::vfx::Vfx::new(&self.assets));
             let teams = players.iter().zip(&partners).map(|(p, m)| [p.1, m.map_or(p.1, |m| m.1)]).collect();
             self.bowl = Some(BowlRun {
                 scene,
@@ -4084,6 +4086,9 @@ impl App {
         run.scene.bowl.effects = !ttt::progress().bowl_off[1];
         let pad = pads[who.min(1)];
         run.scene.step(Pad { start, buttons: pad.buttons | if select { kumite_sim::bowl::SELECT } else { 0 }, ..pad });
+        if let (Some(at), Some(w)) = (run.scene.burst.take(), self.scene.as_mut().and_then(|s| s.weather.as_mut())) {
+            w.burst(at);
+        }
         run.place();
         // (a spectator the ball hit leaves the hall)
         if let Some(s) = self.scene.as_mut() {
@@ -4975,13 +4980,20 @@ impl App {
             use kumite_sim::bowl::Phase as P;
             let item = b.pause.and_then(|(c, _)| ttt::BOWL_PAUSE_ITEMS.get(c).copied());
             match (b.page.as_mut(), key) {
-                // (0x3F3118: up and down move the cursor round the five, START leaves)
-                (Some(BowlPage::Top(c)), Key::Up | Key::Down) => {
+                // (0x3F3118: up and down move the cursor round the five, a button opens the row's SCORE SHEET and
+                // closes it, START leaves)
+                (Some(BowlPage::Top(c, false)), Key::Up | Key::Down) => {
                     menu::sfx::play(menu::sfx::cursor());
                     *c = (*c + if key == Key::Up { 4 } else { 1 }) % 5;
                 }
-                (Some(BowlPage::Top(_)), Key::Start) | (Some(BowlPage::Card), Key::Button(_)) => b.page = None,
-                (Some(BowlPage::Top(_)), _) => {}
+                (Some(BowlPage::Top(_, open)), Key::Button(_)) => {
+                    if !*open {
+                        menu::sfx::play(menu::sfx::pick());
+                    }
+                    *open = !*open;
+                }
+                (Some(BowlPage::Top(..)), Key::Start) | (Some(BowlPage::Card), Key::Button(_)) => b.page = None,
+                (Some(BowlPage::Top(..)), _) => {}
                 (Some(BowlPage::Card), _) => {}
                 // the name entry (0x3F2EB8, Tekken Tag's letters: 0x3D0450): the letters go round, a button takes the
                 // one under the cursor ("<" the last back, "=" ends), three end it; then the next placed player's
@@ -5027,7 +5039,7 @@ impl App {
                 }
                 (None, Key::Button(_)) if b.reset.is_none() && matches!(item, Some(4 | 5)) => {
                     menu::sfx::play(menu::sfx::pick());
-                    b.page = Some(if item == Some(4) { BowlPage::Top(0) } else { BowlPage::Options(0) });
+                    b.page = Some(if item == Some(4) { BowlPage::Top(0, false) } else { BowlPage::Options(0) });
                 }
                 (None, _) if b.pause.is_some() => {
                     if ttt::pause_key(&d, &ttt::BOWL_PAUSE_ITEMS, &mut b.pause, &mut b.reset, key) {
@@ -5622,7 +5634,9 @@ impl App {
         r.backdrop = self.scene.as_ref().filter(|_| !sky.is_empty()).map_or_else(Vec::new, |s| sky_backdrop(&cam, s));
         // effect sprites, as quads facing the camera
         let (mut p_alpha, mut p_add, mut soft_alpha, mut soft_add) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        if let (Some(v), true) = (self.vfx.as_ref(), self.fight.is_some() || self.embu.is_some() || self.tag.is_some() || self.ttt_ending.as_ref().is_some_and(|e| e.scene.is_some())) {
+        if let (Some(v), true) =
+            (self.vfx.as_ref(), self.fight.is_some() || self.embu.is_some() || self.tag.is_some() || self.bowl.is_some() || self.ttt_ending.as_ref().is_some_and(|e| e.scene.is_some()))
+        {
             // (Tekken Tag's dust: blended at its texture's alpha, as the arenas' soft particles)
             effect_quads(&v.sprites(), v.atlas(), &cam, &mut p_alpha, &mut p_add, &mut soft_alpha);
             // (the arena's weather where its stage is drawn)
@@ -5791,9 +5805,9 @@ impl App {
                             _ => {}
                         }
                         match (b.page, b.pause) {
-                            (Some(BowlPage::Top(c)), _) => {
+                            (Some(BowlPage::Top(c, open)), _) => {
                                 let top = ttt::progress().bowlers.unwrap_or_else(|| b.scene.records.defaults.clone());
-                                ttt::bowl_pause_top(&painter, &view, art, d, &b.scene, &top, c);
+                                ttt::bowl_pause_top(&painter, &view, art, d, &b.scene, &top, c, open.then_some(frames));
                             }
                             (Some(BowlPage::Options(c)), _) => ttt::draw_bowl_options(&painter, &view, art, d, &b.scene, c),
                             (Some(BowlPage::Card), _) => ttt::bowl_pause_card(&painter, &view, art, d, &b.scene, frames),
@@ -7770,6 +7784,13 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
                     _ => Pad::default(),
                 };
                 b.scene.step(pad);
+                // (the hall's smoke and SPECIAL EFFECTS' burst)
+                if let Some(w) = app.scene.as_mut().and_then(|s| s.weather.as_mut()) {
+                    if let Some(at) = b.scene.burst.take() {
+                        w.burst(at);
+                    }
+                    w.step();
+                }
             }
             if let Some(b) = app.bowl.as_mut() {
                 b.place();
@@ -7778,7 +7799,8 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             if let (Some(b), Some(page)) = (app.bowl.as_mut(), std::env::args().skip_while(|a| a != "--page").nth(1)) {
                 b.pause = matches!(page.as_str(), "pause" | "top" | "options").then_some((0, 0));
                 b.page = match page.as_str() {
-                    "top" => Some(BowlPage::Top(1)),
+                    "top" => Some(BowlPage::Top(1, false)),
+                    "sheet" => Some(BowlPage::Top(0, true)),
                     "options" => Some(BowlPage::Options(0)),
                     "card" => Some(BowlPage::Card),
                     "records" => Some(BowlPage::Records(Some((0, 3)))),
