@@ -138,8 +138,9 @@ pub struct GameData {
     pub tag: TagRules,
     /// Tekken Tag's body push (0x377338), not Tekken 3's.
     pub tag_push: bool,
-    /// Tekken Tag's END look-ahead (0x368F78): inside the END window the next list is tried without a new press.
-    pub tag_end_window: bool,
+    /// Tekken Tag's move rules, not Tekken 3's: the END look-ahead without a new press inside the window (0x368F78),
+    /// the dash's window (0x36CAF8), jumps toward the opponent (0x36FC04).
+    pub tag_moves: bool,
 }
 
 /// Tekken Tag's tag rules (rules.json `tag` and `health.recoverable`; ok_tekken_tag_converter FIGHT_DATA.md section
@@ -354,7 +355,7 @@ impl GameData {
             chip_add: 2,
             tag_juggles: false,
             tag_push: false,
-            tag_end_window: false,
+            tag_moves: false,
             tag: TagRules::default(),
         })
     }
@@ -559,6 +560,9 @@ pub struct Fighter {
     pub juggle: u32,
     /// The jump drift's fractions (0x8009E600 / 0x8009E610 per player, 1/256 units).
     air_frac: [i32; 2],
+    /// Tekken Tag's jump toward the opponent (+0xF0, its step +0xE8 / +0xEC): set by transitions 0x10 / 0x12 / 0x13,
+    /// the step fixed at the jump window's start.
+    jump_home: Option<Option<Vec3>>,
     /// Hit-stop: frames the move is frozen (attacker record +0x2C).
     pub freeze: u32,
     /// Paired with the opponent by a throw / hold (+0xC4); `thrown` = this fighter is the victim (+0x74 < 0).
@@ -690,6 +694,7 @@ impl Fighter {
             air: None,
             juggle: 0,
             air_frac: [0; 2],
+            jump_home: None,
             freeze: 0,
             locked: false,
             thrown: false,
@@ -945,6 +950,7 @@ impl Fighter {
         if t == TRANSITION_GETUP {
             self.getup_lock = 24;
         }
+        self.jump_home = (gd.tag_moves && matches!(t, 0x10 | 0x12 | 0x13)).then_some(None);
         // facing: bit 7 turns around first; END and buffered links add the old animation's net turn (+0x12)
         if t != 0x11 {
             self.turn = turn;
@@ -1270,6 +1276,32 @@ impl Fighter {
         }
     }
 
+    /// Tekken Tag's jump toward the opponent (0x36FC04): from the jump window's first frame the fighter moves each frame
+    /// by the pair distance (at most 0xC00) less 500 over the frames left to the window's end, toward the opponent;
+    /// at the end the origin takes the root.
+    fn jump_toward(&mut self, gd: &GameData) {
+        let Some(step) = self.jump_home else { return };
+        let b = &self.current_move(gd).bytes_18;
+        let (j0, j1) = (b.jump_start, b.jump_end);
+        match step {
+            None if self.frame >= j0 => {
+                let d = self.opponent.root - self.root();
+                let dist = (d.x * d.x + d.z * d.z).sqrt().min(3072.0) as i32 - 500;
+                let speed = (dist / (j1 as i32 - self.frame as i32).max(1)) as f32;
+                let (s, c) = d.x.datan2(d.z).dsin_cos();
+                self.jump_home = Some(Some(Vec3::new((speed * s).trunc(), 0.0, (speed * c).trunc())));
+            }
+            Some(v) => {
+                self.position += v;
+                if self.frame >= j1 {
+                    let r = self.root();
+                    (self.position.x, self.position.z, self.jump_home) = (r.x, r.z, None);
+                }
+            }
+            None => {}
+        }
+    }
+
     /// The move this fighter goes to next (the queued one, else the current move's next alias) is a lying one
     /// (posture 0x204; the practice dummy's 0x800B82E4).
     pub fn next_is_lying(&self, gd: &GameData) -> bool {
@@ -1410,7 +1442,7 @@ impl Fighter {
             // END destination's own list is buffered and takes over at the window's first frame; Tekken Tag tries
             // that list inside the window with or without a press (0x368F78)
             let early = self.early_end.is_some_and(|f| self.frame >= f);
-            let open = gd.tag_end_window && self.frame >= e.win_start;
+            let open = gd.tag_moves && self.frame >= e.win_start;
             if (self.frame + 5 >= e.win_start || early) && self.frame <= e.win_end && (self.input.pressed != 0 || open) {
                 if let Some(dest) = self.resolve(e.dest) {
                     // the next list's back-turned conditions see the facing after this animation's net turn
@@ -1522,6 +1554,7 @@ impl Fighter {
         let ok = match c.kind {
             CancelKind::Command => self.input.matches_command(c.cmd),
             CancelKind::Sequence => gd.shared.sequences.entries.iter().find(|s| s.cmd == c.cmd).is_some_and(|s| self.input.matches_sequence(s)),
+            CancelKind::Dash | CancelKind::Backdash if gd.tag_moves => self.input.matches_tag_dash(c.kind == CancelKind::Dash),
             CancelKind::Dash => self.input.matches_dash(true),
             CancelKind::Backdash => self.input.matches_dash(false),
             _ => false,
@@ -1958,6 +1991,7 @@ impl Fighter {
         self.fly();
         if self.air.is_none() {
             self.drift(gd);
+            self.jump_toward(gd);
         }
         let height = self.position.y + self.anim_root_y;
         self.root_fall = self.last_height - height;

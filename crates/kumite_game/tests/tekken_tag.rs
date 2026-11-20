@@ -127,6 +127,25 @@ fn a_move_takes_a_held_direction_in_its_end_window() {
     assert_eq!(&seen[14..], [65; 4], "{seen:?}");
 }
 
+/// A jump goes toward the opponent (0x36FC04): Paul's u+2 (alias 4712, transition 0x10) covers the start distance
+/// less 500 over its jump window, about 1030 by its 30th frame as in PCSX2; its motion's root does not move.
+#[test]
+fn a_jump_goes_toward_the_opponent() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [PAUL, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let x0 = b.game.fight.fighters[0].root().x;
+    for pad in parse_script("u+2*2,n*29").unwrap() {
+        b.step([pad, Pad::default()]);
+    }
+    let f = &b.game.fight.fighters[0];
+    let went = f.root().x - x0;
+    assert_eq!(f.alias, 4712);
+    assert!((950.0..1100.0).contains(&went), "{went}");
+}
+
 /// King's first model.
 const KING: usize = 390;
 
