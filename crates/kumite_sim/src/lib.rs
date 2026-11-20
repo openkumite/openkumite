@@ -3058,6 +3058,8 @@ impl Fight {
             let f = &mut self.fighters[i];
             f.position += d * 0.5;
             f.pushed = true;
+            // (the next frame measures from here: 0x8A7A90 keeps the place after the push)
+            f.push_prev = Some(f.root());
         }
     }
 

@@ -283,6 +283,25 @@ fn jack2s_grab_reaches_with_the_games_joints() {
     assert!(grab.is_some_and(|k| (60..=66).contains(&k)), "the grab on frame {grab:?}");
 }
 
+/// The body push measures each side's step from where the last push left it (0x377338 against 0x8A7A90): Paul's
+/// u/f+3 walks Hwoarang's guard back and they part 1004 apart in PCSX2 (1102 when the step left the push out).
+#[test]
+fn the_push_after_a_guard_parts_them_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [PAUL, HWOARANG]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, LAW).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    for pad in parse_script("n*2,u+1+2*2,n*80,u+3+4*2,n*80,u/f+1*2,n*80,u/f+3*2,n*40").unwrap() {
+        b.step([pad, Pad::default()]);
+    }
+    let f = &b.game.fight.fighters;
+    let apart = f[0].root().distance(f[1].root());
+    assert!((apart - 1004.0).abs() < 30.0, "{apart}");
+}
+
 /// Ogre's and True Ogre's first models.
 const OGRE_FIRST: usize = 528;
 const TRUE_OGRE: usize = 591;
