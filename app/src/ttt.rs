@@ -2591,6 +2591,8 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
     let sel = &d.raw["select"];
     let quick = quick_select(d, p);
     if quick {
+        // (no arena behind it, 0x3D9410: the options' backdrop, as PCSX2 shows it)
+        options_backdrop(painter, v, art, d, num(&d.raw["menu"]["dim"]));
         draw_quick_select(painter, v, art, d, s.mode);
     }
     let l = &sel["lightning"];
@@ -2609,6 +2611,24 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
     if !quick {
         image(painter, v, art, frame, [0.0, 0.0, fw, fh], Color32::WHITE);
         image(painter, v, art, frame, [W - 1.0, 0.0, -fw, fh], Color32::WHITE);
+    }
+    // QUICK SELECT's members' faces (0x3BECC0, `quick.faces`): each side's picks, then the face under its cursor, then
+    // the random face (1 ON 1: the first member alone).
+    // shortcut: the faces' frame (0x3BF080) and the cursor face's pulse are left out
+    if quick {
+        let f = &sel["quick"]["faces"];
+        let members = if matches!(s.mode, ONE_ARCADE | ONE_VS) { 1 } else { 2 };
+        for k in (0..2).filter(|&k| s.sides.get(k).is_some_and(|side| side.player.is_some())) {
+            let faces = shown(k);
+            for m in 0..members {
+                let file = match faces.get(m) {
+                    Some(&i) => d.picture(&["select", "faces", &body(i).to_string()]),
+                    None => d.picture(&["select", "random_face"]),
+                };
+                let size = num(&sel["face_size"]);
+                image(painter, v, art, &file, [num(&f["x"][2 * k + m]), num(&f["y"]), size, size], Color32::WHITE);
+            }
+        }
     }
     // (QUICK SELECT puts the grid 52 lower: 0x3CC6D4, 0x3CCA28)
     let dy = num(&sel["face_dy"]) + if quick { num(&sel["quick"]["face_dy"]) } else { 0.0 };
