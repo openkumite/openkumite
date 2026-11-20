@@ -308,6 +308,7 @@ pub fn load(gamedata: &Path, rules: &serde_json::Value) -> Result<GameData> {
         chip_add: rules["chip_damage"]["add"].as_i64().unwrap_or(0) as i32,
         tag_juggles: true,
         tag_push: true,
+        tag_end_window: true,
         tag: tag_rules(rules),
     })
 }

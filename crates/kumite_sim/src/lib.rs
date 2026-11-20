@@ -138,6 +138,8 @@ pub struct GameData {
     pub tag: TagRules,
     /// Tekken Tag's body push (0x377338), not Tekken 3's.
     pub tag_push: bool,
+    /// Tekken Tag's END look-ahead (0x368F78): inside the END window the next list is tried without a new press.
+    pub tag_end_window: bool,
 }
 
 /// Tekken Tag's tag rules (rules.json `tag` and `health.recoverable`; ok_tekken_tag_converter FIGHT_DATA.md section
@@ -352,6 +354,7 @@ impl GameData {
             chip_add: 2,
             tag_juggles: false,
             tag_push: false,
+            tag_end_window: false,
             tag: TagRules::default(),
         })
     }
@@ -1404,9 +1407,11 @@ impl Fighter {
             }
         } else if let Some(e) = end_entry.filter(|_| self.frame_step > 0) {
             // END look-ahead (0x8002DB0C): from 5 frames before the END window until it closes, an attack of the
-            // END destination's own list is buffered and takes over at the window's first frame
+            // END destination's own list is buffered and takes over at the window's first frame; Tekken Tag tries
+            // that list inside the window with or without a press (0x368F78)
             let early = self.early_end.is_some_and(|f| self.frame >= f);
-            if (self.frame + 5 >= e.win_start || early) && self.frame <= e.win_end && self.input.pressed != 0 {
+            let open = gd.tag_end_window && self.frame >= e.win_start;
+            if (self.frame + 5 >= e.win_start || early) && self.frame <= e.win_end && (self.input.pressed != 0 || open) {
                 if let Some(dest) = self.resolve(e.dest) {
                     // the next list's back-turned conditions see the facing after this animation's net turn
                     let saved = (self.current, self.frame, self.yaw);

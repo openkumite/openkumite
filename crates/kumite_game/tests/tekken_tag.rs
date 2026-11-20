@@ -109,6 +109,24 @@ fn a_strike_reaches_in_the_pose_of_its_frame() {
     assert_eq!(reach, Some(1550.0), "the jab's full reach");
 }
 
+/// Inside its END window a move takes the stance's commands without a new press (0x368F78): Xiaoyu's 2+3+4 pose
+/// (alias 116, END window from frame 1) walks back on a held back at once, as in PCSX2, not at its last frame.
+#[test]
+fn a_move_takes_a_held_direction_in_its_end_window() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [XIAOYU, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut seen = Vec::new();
+    for pad in parse_script("n*2,2+3+4*2,n*10,b*4").unwrap() {
+        b.step([pad, Pad::default()]);
+        seen.push(b.game.fight.fighters[0].alias);
+    }
+    assert_eq!(seen[3], 116, "{seen:?}");
+    assert_eq!(&seen[14..], [65; 4], "{seen:?}");
+}
+
 /// King's first model.
 const KING: usize = 390;
 
