@@ -9,7 +9,7 @@
 //!
 //! The LOOK: ORIGINAL (the default: drawn as the original hardware does), ENHANCED (OpenKumite's improvements, all
 //! of them: [`Enhance::ENHANCED`]) or CUSTOM (some of them, chosen on its rows): `--look original|enhanced`,
-//! `--aa off|2x|4x` (anti-aliasing), `--textures filtered` (mipmaps, trilinear and anisotropic).
+//! `--aa off|2x|4x` (anti-aliasing), `--textures filtered` (mipmaps, trilinear and anisotropic), `--hud 4:3|wide`.
 //!
 //! Only what the display and the GPU can show is offered ([`Display`]): the monitor's video modes for full screen,
 //! window sizes that fit the screen, frames and 3D scenes within the GPU's largest texture. In a browser: a canvas
@@ -332,6 +332,8 @@ pub struct Enhance {
     pub msaa: u32,
     /// TEXTURES FILTERED: mipmaps, trilinear and anisotropic (over SHARP or SMOOTH).
     pub mipmaps: bool,
+    /// HUD WIDE: the fight's HUD out to a wider window's edges (else in the 4:3 picture).
+    pub wide_hud: bool,
 }
 
 /// The LOOK row's values.
@@ -343,7 +345,7 @@ pub enum Look {
 }
 
 impl Enhance {
-    pub const ENHANCED: Enhance = Enhance { msaa: 4, mipmaps: true };
+    pub const ENHANCED: Enhance = Enhance { msaa: 4, mipmaps: true, wide_hud: true };
 
     pub fn look(&self) -> Look {
         match *self {
@@ -423,6 +425,13 @@ impl Graphics {
         if let Some(t) = arg("--textures") {
             self.smooth_textures = matches!(t.as_str(), "smooth" | "linear");
             self.enhance.mipmaps = t == "filtered";
+        }
+        if let Some(h) = arg("--hud") {
+            self.enhance.wide_hud = match h.as_str() {
+                "4:3" | "original" => false,
+                "wide" => true,
+                _ => anyhow::bail!("--hud 4:3|wide"),
+            };
         }
         if let Some(a) = arg("--aa") {
             self.enhance.msaa = match a.to_lowercase().as_str() {

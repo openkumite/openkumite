@@ -2392,6 +2392,7 @@ fn image(painter: &egui::Painter, v: &View, art: &Art, file: &str, r: [f32; 4], 
     let [x, y, w, h] = sv(r);
     let (x0, x1) = if w < 0.0 { (x + w, x) } else { (x, x + w) };
     let uv = if w < 0.0 { Rect::from_min_max(Pos2::new(1.0, 0.0), Pos2::new(0.0, 1.0)) } else { Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)) };
+    let v = v.side((x0 + x1) / 2.0);
     painter.image(tex.id(), Rect::from_min_max(v.pos(x0, y), v.pos(x1, y + h)), uv, tint);
 }
 
