@@ -61,6 +61,9 @@ const ARCADE_ROW: usize = usize::MAX;
 const CHANGE_ROW: usize = 3;
 /// GAME OPTIONS' GUARD DAMAGE, HELP MESSAGES, SPEAKER OUT, BGM / SE VOLUME rows.
 const GUARD_ROW: usize = 4;
+/// GAME OPTIONS' CHARACTER SELECT CURSOR (1 HOLD), QUICK SELECT, CHICKEN MARKING rows.
+const CURSOR_ROW: usize = 5;
+const QUICK_ROW: usize = 6;
 const HELP_ROW: usize = 8;
 const SPEAKER_ROW: usize = 9;
 const BGM_ROW: usize = 10;
@@ -297,6 +300,9 @@ pub struct Progress {
     pub survivors: Vec<Record>,
     /// The main menu's entries entered once (a bit by mode; config +0x24): an unlocked one blinks until then.
     pub entered: u32,
+    /// CHARACTER SELECT CURSOR HOLD's memory (0x4157F8, config +0x38 / +0x39): per side the slots of its first and
+    /// second pick (None: the select's `start_slots`, none for the second).
+    pub cursors: [[Option<usize>; 2]; 2],
 }
 
 /// A TIME ATTACK (frames) or SURVIVAL (wins) record: the team's character ids and the name entered.
@@ -330,6 +336,7 @@ static PROGRESS: std::sync::Mutex<Progress> = std::sync::Mutex::new(Progress {
     times: Vec::new(),
     survivors: Vec::new(),
     entered: 0,
+    cursors: [[None; 2]; 2],
 });
 
 pub fn progress() -> Progress {
@@ -761,8 +768,46 @@ fn ladder(d: &Data, roster: &Roster, stage: u32, pool: &[usize], players: &Team,
     out
 }
 
-/// The ranking after GAME OVER (screen 7) until the title: 14.8 s in PCSX2.
-const RANKING_FRAMES: u32 = 880;
+/// The ranking after GAME OVER (screen 7) without an entry, at `frame` of it (0x3C8A88's steps 4-10, `ranking.pace`):
+/// in from black, the last page's rows (`per` a page, `dy` apart) down from over their places `scroll` a frame, each
+/// page held `hold` frames, then the page before, the first held `after` more, out to black. The rows' top (the first
+/// row's foot) and the black's level (1 opaque); None once it is over.
+fn ranking_pace(d: &Data, kind: usize, n: usize, frame: u32) -> Option<(f32, f32)> {
+    let (rk, r) = (&d.raw["ranking"], &d.raw["ranking"]["rows"][kind]);
+    let (pace, base, dy, per) = (&rk["pace"], int(&r["first"]) as i32, int(&r["dy"]) as i32, int(&r["shown"]).max(1));
+    let (fade, scroll, hold, after) = (int(&pace["fade"]).max(1) as i32, int(&pace["scroll"]).max(1) as i32, int(&r["hold"]) as u32, int(&pace["after"]) as u32);
+    let steps = (256 + fade - 1) / fade;
+    let black = |k: i32| 1.0 - (k * fade).min(256) as f32 / 256.0;
+    let mut f = frame as i32;
+    // (in from black, then a frame setting up)
+    if f < steps {
+        return Some(((base - n as i32 * dy) as f32, black(f + 1)));
+    }
+    f -= steps + 1;
+    let mut first = n.saturating_sub(if n.is_multiple_of(per) { per } else { n % per }) as i32;
+    let mut top = base - n as i32 * dy;
+    loop {
+        // (down to the page's place, then held)
+        let target = base - first * dy;
+        let travel = ((target - top) + scroll - 1).max(0) / scroll;
+        if f < travel {
+            return Some(((top + scroll * (f + 1)).min(target) as f32, 0.0));
+        }
+        f -= travel;
+        top = target;
+        if f < hold as i32 {
+            return Some((top as f32, 0.0));
+        }
+        f -= hold as i32;
+        if first == 0 {
+            break;
+        }
+        first = (first - per as i32).max(0);
+    }
+    // (the first page `after` more frames, a frame setting up, out to black)
+    let out = f - after as i32 - 1;
+    (out < steps).then(|| (top as f32, if out < 0 { 0.0 } else { 1.0 - black(out + 1) }))
+}
 
 /// CONTINUE?'s frames (0x3BA560: 9 down to 0, 100 frames a digit).
 const CONTINUE: u32 = 898;
@@ -870,6 +915,8 @@ pub struct Select {
     pub tally: Option<[u32; 2]>,
     /// CONTINUE with CHARACTER CHANGE AT CONTINUE: the run the picks go on with.
     pub cont: Option<Box<Run>>,
+    /// HOLD's memory ([`Progress::cursors`]) as the picks change it.
+    memory: [[Option<usize>; 2]; 2],
 }
 
 impl Select {
@@ -881,8 +928,10 @@ impl Select {
             m if tag(m) || m == BOWL || m == BALL => 2,
             _ => 1,
         };
-        // (the cursors start on `start_slots`: 1P's on Xiaoyu's, as the PS2 shows)
-        let first = |k: usize| int(&d.raw["select"]["start_slots"][k]).min(d.slots.len().saturating_sub(1));
+        // (the cursors start on the first pick's slot HOLD kept (0x3C993C), at first `start_slots`: 1P's on Xiaoyu's, as
+        // the PS2 shows)
+        let memory = progress().cursors;
+        let first = |k: usize| memory[k][0].unwrap_or(int(&d.raw["select"]["start_slots"][k])).min(d.slots.len().saturating_sub(1));
         let p2 = matches!(mode, VS | ONE_VS);
         let side = |player: Option<usize>, k: usize| Side { player, cursor: first(k), picks: vec![], need, done: false, since: 0 };
         let mut sides = [side(Some(0), 0), side(p2.then_some(1), 1)];
@@ -890,7 +939,7 @@ impl Select {
         if mode == PRACTICE {
             sides[1] = side(Some(0), 1);
         }
-        Self { mode, sides, frame: 0, done: 0, tally, cont: None }
+        Self { mode, sides, frame: 0, done: 0, tally, cont: None, memory }
     }
 
     /// The side `player`'s keys move now.
@@ -995,6 +1044,10 @@ impl Select {
                     sfx::play(sound(d, "cancel"));
                     return Some(Page::Menu { cursor: 0, scroll: 0, idle: 0 });
                 }
+                // (HOLD forgets the second pick's slot, 0x3C94C0)
+                if progress.setting(d, CURSOR_ROW) == 1 {
+                    self.memory[s][1] = None;
+                }
             }
         }
         None
@@ -1036,9 +1089,18 @@ impl Select {
         }
         let frame = self.frame;
         let side = &mut self.sides[s];
+        // HOLD keeps the pick's slot (0x3CAB18); after the first pick the cursor goes to the second's kept (0x3CAB8C)
+        if progress.setting(d, CURSOR_ROW) == 1 {
+            if let Some(m) = self.memory[s].get_mut(side.picks.len()) {
+                *m = Some(side.cursor);
+            }
+        }
         side.picks.push((i, index(costume).unwrap_or(0)));
         side.done = side.picks.len() >= side.need;
         side.since = frame;
+        if let (1, false, Some(slot)) = (side.picks.len(), side.done, self.memory[s][1]) {
+            side.cursor = slot;
+        }
         // (0x3CA3BC: select 1 for a pick before the last, select 2 for the last)
         sfx::play(sound(d, if side.done { "last_pick" } else { "pick" }));
         Some(())
@@ -1502,6 +1564,15 @@ impl Front {
                 if let Some(run) = s.tick(&d, roster, progress, seed) {
                     // CHARACTER USAGE: each of the players' picks
                     let mut p = progress.clone();
+                    // (HOLD's memory into the save, 0x3CB6CC; 1 ON 1 keeps the first pick's only)
+                    if p.setting(&d, CURSOR_ROW) == 1 {
+                        for (k, m) in s.memory.iter().enumerate() {
+                            p.cursors[k][0] = m[0];
+                            if !matches!(s.mode, ONE_ARCADE | ONE_VS) {
+                                p.cursors[k][1] = m[1];
+                            }
+                        }
+                    }
                     for c in run.teams.iter().zip(run.humans).filter(|t| t.1).flat_map(|t| t.0).filter_map(|m| roster.characters.get(m.0)) {
                         if p.usage.len() <= c.id {
                             p.usage.resize(c.id + 1, 0);
@@ -1552,7 +1623,7 @@ impl Front {
                 self.frame = 0;
                 return Outcome::TttSaved;
             }
-            Page::Records { attract: true, .. } if self.frame >= RANKING_FRAMES => {
+            Page::Records { attract: true, .. } if ranking_pace(&d, 2, record_rows(&d, progress, 0).len(), self.frame).is_none() => {
                 self.page = Page::Title;
                 self.frame = 0;
             }
@@ -1658,13 +1729,13 @@ impl Front {
             Page::GameOver { .. } => banner_at(painter, v, art, d, &d.raw["arcade"]["continue"]["game_over"], 0),
             Page::Records { page, scroll, attract } => {
                 if *attract && d.raw["ranking"]["usage"].is_object() {
-                    // (after GAME OVER the ranking, screen 7: CHARACTER USAGE rising from its last rows to its first;
-                    // shortcut: evenly from frame 30 to 630, the PS2's pace and the arena behind not decoded)
+                    // (after GAME OVER the ranking, screen 7: CHARACTER USAGE from its last page to its first, at the
+                    // PS2's pace; shortcut: the arena behind is not decoded)
                     let rows: Vec<Record> = record_rows(d, progress, 0).into_iter().map(|(members, score, name)| Record { score, members, name }).collect();
-                    let r = &d.raw["ranking"]["rows"][2];
-                    let span = num(&r["dy"]) * rows.len().saturating_sub(int(&r["shown"])) as f32;
-                    let rise = span * (1.0 - self.frame.saturating_sub(30) as f32 / 600.0).max(0.0);
+                    let (top, black) = ranking_pace(d, 2, rows.len(), self.frame).unwrap_or((0.0, 1.0));
+                    let rise = num(&d.raw["ranking"]["rows"][2]["first"]) - top;
                     draw_ranking(painter, v, art, d, 2, &rows, (usize::MAX, 0), rise, self.frame);
+                    painter.rect_filled(v.rect, 0.0, Color32::from_black_alpha((black * 255.0) as u8));
                     return;
                 } else if *attract {
                     image(painter, v, art, &d.picture(&["title", "picture"]), [0.0, 0.0, W, H], Color32::WHITE);
@@ -2090,7 +2161,6 @@ fn draw_ranking(painter: &egui::Painter, v: &View, art: &Art, d: &Data, kind: us
     let rk = &d.raw["ranking"];
     let p = |v: &Value| [num(&v[0]), num(&v[1])];
     let [bx, by] = p(&rk["banner_xy"]);
-    sprite(painter, v, art, rk["banners"][kind].as_str().unwrap_or_default(), bx, by, Color32::WHITE);
     let [c0, c1] = p(&rk["clip"]);
     let [_, top, _, h] = sv([0.0, c0, 0.0, c1 - c0]);
     let clip = painter.with_clip_rect(Rect::from_min_max(v.pos(0.0, top), v.pos(SCREEN_W, top + h)));
@@ -2189,6 +2259,8 @@ fn draw_ranking(painter: &egui::Painter, v: &View, art: &Art, d: &Data, kind: us
             chrome(&clip, v, art, d, &left.to_string(), num(&n["x"]), y + num(&n["dy"]), Some(int(&n["colour"])), num(&n["size"]));
         }
     }
+    // (the banner over the rows, 0x3C93A0 after them)
+    sprite(painter, v, art, rk["banners"][kind].as_str().unwrap_or_default(), bx, by, Color32::WHITE);
 }
 
 /// The cursor's bar (0x3B15F8; the pause's `bar` colour): from `x0` (nothing) to `x1` (its colour) to `x2` (nothing),
@@ -2485,12 +2557,41 @@ fn small_in(painter: &egui::Painter, v: &View, art: &Art, d: &Data, colour: Opti
 /// side that took them, RANDOM's showing its roll); each side's name plates (0x3CC3E0) and "1ST"; the timer
 /// (0x3CC190, blinking in its last seconds); the cursors, pulsing (0x3CC9E0), with their tags; the screen darkening
 /// to the fight. Each side's 3D characters ([`Posers`]) stand between the lightning and the rest.
+/// QUICK SELECT on (and its layout in the data): the select without its lightning, frame, 3D characters or timer.
+fn quick_select(d: &Data, p: &Progress) -> bool {
+    p.setting(d, QUICK_ROW) == 1 && d.raw["select"]["quick"].is_object()
+}
+
+/// QUICK SELECT's own layer (`select.quick`): the mode's title centred by its width (0x3BBC40), the white lines fading
+/// out under the plates (0x3BE8C0).
+fn draw_quick_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, mode: u32) {
+    let q = &d.raw["select"]["quick"];
+    let (text, t) = (d.raw["select"]["titles"][mode as usize].as_str().unwrap_or_default(), &q["titles"][mode as usize]);
+    chrome(painter, v, art, d, text, ((W - num(&t[0])) / 2.0).floor(), num(&q["title_y"]), Some(int(&t[1])), num(&q["title_size"]));
+    let (l, one) = (&q["line"], matches!(mode, ONE_ARCADE | ONE_VS));
+    let points = q[if mode == TEAM { "team_lines" } else { "lines" }].as_array().cloned().unwrap_or_default();
+    let on = Color32::from_white_alpha((int(&l["alpha"]) * 255 / 128).min(255) as u8);
+    for (k, pt) in points.iter().take(if one { 2 } else { points.len() }).enumerate() {
+        let (x, y) = (num(&pt[0]), num(&pt[1]) + if one { num(&q["one_on_one_dy"]) } else { 0.0 });
+        let (near, far) = (num(&l["near"]), num(&l["far"]));
+        let (y0, y1) = (y + num(&l["y"][0]), y + num(&l["y"][1]));
+        // (even: from 4 right of the point leftwards; odd: from 4 left of it rightwards)
+        let (a, b) = if k % 2 == 0 { (x - far, x + near) } else { (x - near, x + far) };
+        let cs = if k % 2 == 0 { [Color32::TRANSPARENT, on, Color32::TRANSPARENT, on] } else { [on, Color32::TRANSPARENT, on, Color32::TRANSPARENT] };
+        Art::shade(painter, v, sv([a, y0, b - a, y1 - y0]), cs);
+    }
+}
+
 fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &Roster, p: &Progress, s: &Select) {
     let sel = &d.raw["select"];
+    let quick = quick_select(d, p);
+    if quick {
+        draw_quick_select(painter, v, art, d, s.mode);
+    }
     let l = &sel["lightning"];
     let pics: Vec<&str> = l["pictures"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
     // (stretched twice with the GS's bilinear filter, as the PS2 shows it)
-    if let Some((tex, _)) = pics.get(s.frame as usize % pics.len().max(1)).and_then(|file| art.pic_linear(file)) {
+    if let Some((tex, _)) = pics.get(s.frame as usize % pics.len().max(1)).and_then(|file| art.pic_linear(file)).filter(|_| !quick) {
         let [x, y, w, h] = sv([0, 1, 2, 3].map(|k| num(&l["rect"][k])));
         painter.image(tex.id(), Rect::from_min_max(v.pos(x, y), v.pos(x + w, y + h)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), ps2(num(&l["level"])).0);
     }
@@ -2500,9 +2601,12 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
     crate::debug::mark_under(painter);
     let frame = sel["frame"]["picture"].as_str().unwrap_or_default();
     let [fw, fh] = [num(&sel["frame"]["size"][0]), num(&sel["frame"]["size"][1])];
-    image(painter, v, art, frame, [0.0, 0.0, fw, fh], Color32::WHITE);
-    image(painter, v, art, frame, [W - 1.0, 0.0, -fw, fh], Color32::WHITE);
-    let dy = num(&sel["face_dy"]);
+    if !quick {
+        image(painter, v, art, frame, [0.0, 0.0, fw, fh], Color32::WHITE);
+        image(painter, v, art, frame, [W - 1.0, 0.0, -fw, fh], Color32::WHITE);
+    }
+    // (QUICK SELECT puts the grid 52 lower: 0x3CC6D4, 0x3CCA28)
+    let dy = num(&sel["face_dy"]) + if quick { num(&sel["quick"]["face_dy"]) } else { 0.0 };
     let size = num(&sel["face_size"]);
     let level = |k: &str| num(&sel["face_level"][k]);
     for (k, slot) in d.slots.iter().enumerate() {
@@ -2553,7 +2657,7 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
     // the timer: its seconds as (t + 59) / 60 - 1, off `off` frames every `period` in the last `below`; after the last
     // pick too (0x3CC190, as the PS2 shows it)
     let t = &sel["timer"];
-    if let Some(frames) = t["frames"].as_u64() {
+    if let Some(frames) = t["frames"].as_u64().filter(|_| !quick) {
         let left = (frames as u32).saturating_sub(s.frame);
         let secs = left.div_ceil(60).saturating_sub(1);
         let b = &t["blink"];
@@ -2634,7 +2738,7 @@ impl Posers {
     /// on.
     pub fn step(&mut self, assets: &kumite_assets::Assets, d: &Data, roster: &Roster, s: &Select) {
         let progress = &progress();
-        let wanted = if d.raw["select"]["models"].is_object() { s.posers(d, roster, progress) } else { vec![] };
+        let wanted = if d.raw["select"]["models"].is_object() && !quick_select(d, progress) { s.posers(d, roster, progress) } else { vec![] };
         self.shown.retain(|m| wanted.iter().any(|w| w.0 == m.slot && w.1 == m.record));
         for (slot, record, picked) in wanted {
             match self.shown.iter_mut().find(|m| m.slot == slot) {
@@ -2986,11 +3090,9 @@ impl Practice {
         self.values.get(self.mode)?.get(k).copied()
     }
 
-    /// FREESTYLE's TRAINING DUMMY (0 STAND elsewhere), by its value's name.
-    pub fn dummy<'a>(&self, d: &'a Data) -> &'a str {
-        let k = self.value(d, "TRAINING DUMMY").unwrap_or(0);
-        let row = self.rows(d).iter().find(|r| r["label"] == "TRAINING DUMMY");
-        row.and_then(|r| r["values"][k].as_str()).unwrap_or("STAND")
+    /// FREESTYLE's TRAINING DUMMY value (0 STAND elsewhere; 5 AUTO GUARD, 11 CONTROLLER).
+    pub fn dummy(&self, d: &Data) -> usize {
+        self.value(d, "TRAINING DUMMY").unwrap_or(0)
     }
 
     /// VS CPU: the CPU's difficulty (CPU LEVEL).
@@ -3058,17 +3160,40 @@ impl Practice {
     }
 }
 
-/// The practice dummy's pad by TRAINING DUMMY: standing, crouching, guarding (back), GUARD ALL / AUTO GUARD low
-/// against a low attack. shortcut: the recovery rolls, QUICK TAG OUT and SPRING FORWARD stand; upgrade: decode the
-/// dummy's code (0x506528's users).
-pub fn practice_pad(dummy: &str, facing_right: bool, low: bool) -> kumite_sim::input::Pad {
-    use kumite_sim::input::Pad;
-    let back = |p: Pad| if facing_right { Pad { left: true, ..p } } else { Pad { right: true, ..p } };
+/// The practice dummy's pad by TRAINING DUMMY (`dummy`: its value; 0x37DC98 writes the dummy's pad +0x430): lying,
+/// it holds up to get up (0x37DDE0); else STAND GUARD holds back while the player's move hits high or mid and is not
+/// past its last active frame (0x37E010), CROUCH holds down (0x37DFF0), CROUCH GUARD down and down-back against a
+/// low (0x37E180), GUARD ALL down-back against a low and back against a high or mid (0x37E090). AUTO GUARD stands
+/// guarding without the input (+0x12C: the caller's guard input flag). The recoveries (QUICK ROLL 3+4 into the
+/// foreground, 1+2 into the background, QUICK TAG OUT the tag button, SPRING FORWARD forward, QUICK ROLL BACK back)
+/// in a juggle reaction (the move's posture class 9 / 10, 0x37E0E8) press theirs on a frame it is taken (0x37E1D8).
+/// shortcut: "juggled" is the posture class alone (the PS2 also needs +0xF7, set by the hit; not tracked here).
+pub fn practice_pad(dummy: usize, f: &kumite_sim::Fight, me: usize) -> kumite_sim::input::Pad {
+    use kumite_sim::input::{Pad, TAG};
+    let (gd, d, p) = (&f.data, &f.fighters[me], &f.fighters[1 - me]);
+    let right = f.facing_right(me);
+    let dir = |fwd: bool, down: bool| Pad { down, right: fwd == right, left: fwd != right, ..Pad::default() };
+    if (6..=10).contains(&dummy) && matches!((d.current_move(gd).posture.raw >> 11) & 0x1F, 9 | 10) {
+        let pad = match dummy {
+            6 => Pad { buttons: 0xC, ..Pad::default() },
+            7 => Pad { buttons: 0x3, ..Pad::default() },
+            8 => Pad { buttons: TAG, ..Pad::default() },
+            9 => dir(true, false),
+            _ => dir(false, false),
+        };
+        return if d.accepts(gd, pad, right) { pad } else { Pad::default() };
+    }
+    if d.current_move(gd).posture.raw & 0x204 != 0 {
+        return Pad { up: true, ..Pad::default() };
+    }
+    // (the player's attack guarded standing (mask 0x10) or crouching (0x08), not past its last active frame)
+    let pm = p.current_move(gd);
+    let hits = |bit: u32| pm.attack_mask.mask & bit != 0 && p.frame <= pm.active[1];
     match dummy {
-        "CROUCH" => Pad { down: true, ..Pad::default() },
-        "STAND GUARD" => back(Pad::default()),
-        "CROUCH GUARD" => back(Pad { down: true, ..Pad::default() }),
-        "GUARD ALL" | "AUTO GUARD" => back(Pad { down: low, ..Pad::default() }),
+        1 if hits(0x10) => dir(false, false),
+        3 | 4 if hits(0x08) => dir(false, true),
+        2 | 3 => Pad { down: true, ..Pad::default() },
+        4 if hits(0x10) => dir(false, false),
         _ => Pad::default(),
     }
 }
@@ -3092,6 +3217,29 @@ pub fn draw_practice_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
         at(&h["damage"], &format!("DMG:{dmg} ({:03}%)", if base > 0 { dmg * 100 / base } else { 0 }));
     }
     at(&h["mode"], d.raw["practice"]["modes"][p.mode]["title"].as_str().unwrap_or_default());
+    // FREESTYLE's COMMAND CAPTURE (0x37FE58) and its keys: SELECT, then the small font's "+", the circle button and
+    // "=REC" (the small font's top 20 over the foot). shortcut: recording and playing it back are not done
+    let c = &h["capture"];
+    if p.mode == 0 && c.is_object() {
+        at(c, c["text"].as_str().unwrap_or_default());
+        let k = &c["keys"];
+        let y = num(&k["xy"][1]);
+        let mut x = chrome(painter, v, art, d, k["select"].as_str().unwrap_or_default(), num(&k["xy"][0]), y, Some(int(&k["colour"])), num(&k["size"]));
+        for part in k["small"].as_array().into_iter().flatten() {
+            let text = part[0].as_str().unwrap_or_default();
+            if text == "o" {
+                let cell = int(&k["button"]) as f32 * 16.0;
+                if let Some((tex, [tw, th])) = art.pic("003_003.png") {
+                    let uv = Rect::from_min_max(Pos2::new(cell / tw as f32, 0.0), Pos2::new((cell + 16.0) / tw as f32, 16.0 / th as f32));
+                    let [rx, ry, rw, rh] = sv([x, y - 20.0, 16.0, 16.0]);
+                    painter.image(tex.id(), v.rect(rx, ry, rw, rh), uv, Color32::WHITE);
+                }
+            } else {
+                small_in(painter, v, art, d, Some(int(&part[1])), text, x, y - 20.0, Color32::WHITE);
+            }
+            x += small_width(d, text);
+        }
+    }
 }
 
 /// Practice's menu (`practice`) in the pause's window: the mode's name, its rows in their colours (the cursor's over
@@ -4105,7 +4253,7 @@ mod tests {
             "team_battle": {"refill_percent": 15},
             "records": {"defaults": {"survivors": [{"members": [0, 1], "score": 5, "name": "PAU"}, {"members": [2, 3], "score": 1, "name": "KIN"}]},
                 "letters": "ABC<=", "name_len": 3},
-            "ranking": {"frames": 10},
+            "ranking": {"frames": 10, "rows": [{}, {}, {"dy": 75, "first": 135, "shown": 5, "hold": 130}], "pace": {"fade": 8, "scroll": 12, "after": 60}},
             "practice": {"modes": [
                 {"rows": [{"label": "MODE SELECT", "kind": "mode"}, {"label": "CANCEL", "kind": "close"},
                     {"label": "TRAINING DUMMY", "kind": "list", "values": ["STAND", "STAND GUARD"], "default": 0}]},
@@ -4385,6 +4533,35 @@ mod tests {
         assert!(d.selectable(p.stage, 2));
     }
 
+    /// The ranking's pace (0x3C8A88): 32 frames in from black; 7 rows: the last 2 down 150 from above at 12 a frame
+    /// (13 frames), 130 held, the first 5 down 375 (32 frames), 130 held, 60 more, 32 out to black.
+    #[test]
+    fn ranking_pages_down_at_the_ps2s_pace() {
+        let d = data();
+        let at = |f: u32| ranking_pace(&d, 2, 7, f);
+        assert_eq!(at(0), Some((135.0 - 525.0, 1.0 - 8.0 / 256.0)));
+        assert_eq!(at(33), Some((-390.0 + 12.0, 0.0)));
+        assert_eq!(at(33 + 12), Some((-240.0, 0.0)));
+        assert_eq!(at(33 + 13 + 129), Some((-240.0, 0.0)));
+        assert_eq!(at(33 + 13 + 130 + 31), Some((135.0, 0.0)));
+        let end = 33 + 13 + 130 + 32 + 130 + 60 + 1 + 32;
+        assert!(at(end - 1).is_some_and(|(top, black)| top == 135.0 && black == 1.0) && at(end).is_none());
+    }
+
+    /// CHARACTER SELECT CURSOR HOLD: a pick keeps its slot, the cursor goes on to the second pick's slot kept, back
+    /// forgets it (0x3CAB18, 0x3CAB8C, 0x3C94C0).
+    #[test]
+    fn select_cursor_hold_keeps_the_picks_slots() {
+        let (d, r) = (data(), roster());
+        let p = Progress { settings: vec![0, 0, 1], ..Progress::default() };
+        let mut s = Select::new(ARCADE, &d, None);
+        (s.memory, s.sides[0].cursor) = ([[None, Some(1)], [None; 2]], 0);
+        s.key(0, Key::Button(0), &d, &r, &p);
+        assert_eq!((s.memory[0], s.sides[0].cursor), ([Some(0), Some(1)], 1));
+        s.key(0, Key::Back, &d, &r, &p);
+        assert_eq!(s.memory[0], [Some(0), None]);
+    }
+
     /// The select's sounds (group 0: 3 cursor, 4 select 1, 5 select 2), RANDOM's roll and the timer (FRONTEND.md 9).
     #[test]
     fn select_sounds_random_roll_and_timer() {
@@ -4521,13 +4698,12 @@ mod tests {
         for k in [Key::Down, Key::Down, Key::Right] {
             assert_eq!(p.key(&d, k), PracticeAction::None);
         }
-        assert_eq!(p.dummy(&d), "STAND GUARD");
+        assert_eq!(p.dummy(&d), 1);
         p.cursor = 0;
         p.key(&d, Key::Left);
         assert_eq!((p.mode, p.cpu(&d)), (1, Some(1)));
         assert_eq!(p.key(&d, Key::Up), PracticeAction::None);
         assert!(p.key(&d, Key::Button(0)) == PracticeAction::Reset && !p.open);
-        assert_eq!(practice_pad("CROUCH GUARD", true, false), kumite_sim::input::Pad { left: true, down: true, ..Default::default() });
     }
 
     /// The main menu's rows slide a row's height in 4 a frame; no move while they slide (0x3BD2E0).

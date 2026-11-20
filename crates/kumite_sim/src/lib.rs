@@ -1488,6 +1488,22 @@ impl Fighter {
         None
     }
 
+    /// Whether `pad` this frame would take a command of the current move's list, or within the END look-ahead's
+    /// window one of the END destination's from its frame 1 (Tekken Tag's 0x37E1D8: the practice dummy presses its
+    /// recovery only then).
+    pub fn accepts(&self, gd: &GameData, pad: Pad, facing_right: bool) -> bool {
+        let mut f = self.clone();
+        f.input.update(pad, facing_right);
+        if f.first_cancel(gd).is_some() {
+            return true;
+        }
+        let cancels = &f.moves(gd, f.current.bank).cancels;
+        let end = cancels.get(f.current_move(gd).cancel_start..).and_then(|c| c.iter().find(|c| c.kind == CancelKind::End)).cloned();
+        let Some(dest) = end.filter(|e| f.frame_step > 0 && f.frame + 5 >= e.win_start && f.frame <= e.win_end).and_then(|e| f.resolve(e.dest)) else { return false };
+        (f.current, f.frame) = (dest, 1);
+        f.first_cancel(gd).is_some()
+    }
+
     fn try_cancel(&self, gd: &GameData, c: &Cancel) -> Option<(usize, u32)> {
         if self.frame < c.win_start || self.frame > c.win_end {
             return None;

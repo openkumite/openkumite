@@ -1001,7 +1001,13 @@ impl App {
                 bout.set_cpu(1, Some((s.difficulty, s.level)));
             }
             Some(Mode::Practice) => {
-                bout = bout.free_fight();
+                // (Tekken Tag's practice starts as a fight does, team intro, TAG BATTLE and READY!, as PCSX2 shows it;
+                // then it never ends)
+                if self.roster.ttt.is_some() {
+                    (bout.free, bout.rounds_to_win) = (true, 1);
+                } else {
+                    bout = bout.free_fight();
+                }
             }
         }
         // Tekken Tag: the CPU plays the sides no player picked for
@@ -1997,12 +2003,16 @@ impl App {
         }
         // Tekken Tag's practice dummy: its TRAINING DUMMY, the second pad (CONTROLLER), or VS CPU's CPU
         if let (Some(p), Some(d), None) = (fight.ttt_practice.as_ref(), self.roster.ttt.as_deref(), p2_script) {
+            let dummy = p.dummy(d);
+            // (AUTO GUARD and CONTROLLER guard without the input, 0x37AF30's +0x12C; VS CPU's CPU as set_cpu has it)
+            if p.mode != 1 {
+                fight.bout.game.fight.fighters[1].guard_input = matches!(dummy, 5 | 11);
+            }
             let f = &fight.bout.game.fight;
-            let low = f.fighters[0].current_move(&f.data).attack_mask.mask == 0x10F;
-            pads[1] = match p.dummy(d) {
+            pads[1] = match dummy {
                 _ if p.mode == 1 => Pad::default(),
-                "CONTROLLER" => kb2,
-                dummy => ttt::practice_pad(dummy, f.facing_right(1), low),
+                11 => kb2,
+                dummy => ttt::practice_pad(dummy, f, 1),
             };
         }
         // the practice dummy: its TRAINING DUMMY action, the second pad (CONTROLLER) or the CPU (VS CPU)
@@ -5843,7 +5853,8 @@ impl App {
                             let name = f.setup.as_ref().and_then(|s| roster.characters.get(s.players[0].0)).map_or("", |c| c.name.as_str());
                             if p.open {
                                 ttt::draw_practice(&painter, &view, art, d, p, name);
-                            } else {
+                            } else if !matches!(f.bout.phase, Phase::TeamIntro { .. }) {
+                                // (none over the team intro, as PCSX2 shows it)
                                 ttt::draw_practice_hud(&painter, &view, art, d, p);
                             }
                         }
