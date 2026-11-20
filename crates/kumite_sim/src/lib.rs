@@ -1288,11 +1288,14 @@ impl Fighter {
         if j0 == 0 || v == 0 || self.frame + 1 < j0 || self.frame > j1 {
             return;
         }
-        let (s, c) = self.yaw.dsin_cos();
-        // Tekken Tag's sine is 0x7FFF to one (0x36FE00: v * sin / 0x7FFF), Tekken 3's 4096 (v * sin / 32768)
-        let (one, div) = if self.tag_rules(gd) { (32767.0, 32767) } else { (4096.0, 32768) };
-        let table = |x: f32| (x * one).round() as i64;
-        for (k, t) in [table(s), table(c)].into_iter().enumerate() {
+        // Tekken Tag's sine is its 4096 table times 8 (0x357F18) over 0x7FFF (0x36FE00), Tekken 3's 4096 over 32768
+        let (t, div) = if self.tag_rules(gd) {
+            (tag_sin_cos(self.yaw).map(i64::from), 32767)
+        } else {
+            let (s, c) = self.yaw.dsin_cos();
+            ([s, c].map(|x| (x * 4096.0).round() as i64), 32768)
+        };
+        for (k, t) in t.into_iter().enumerate() {
             // (v * t) / div truncated, then the whole units out and the fraction kept
             self.air_frac[k] += (v as i64 * t / div) as i32;
             let whole = self.air_frac[k] >> 8;
@@ -1308,17 +1311,18 @@ impl Fighter {
     /// Tekken Tag's jump toward the opponent (0x36FC04): from the jump window's first frame the fighter moves each frame
     /// by the pair distance (at most 0xC00) less 500 over the frames left to the window's end, toward the opponent;
     /// at the end the origin takes the root.
-    fn jump_toward(&mut self, gd: &GameData) {
+    fn jump_toward(&mut self, gd: &GameData, before: Vec3) {
         let Some(step) = self.jump_home else { return };
         let b = &self.current_move(gd).bytes_18;
         let (j0, j1) = (b.jump_start, b.jump_end);
         match step {
             None if self.frame >= j0 => {
-                let d = self.opponent.root - self.root();
+                // (the pair distance of the frame before, gp-0x74C8)
+                let d = self.opponent.root - before;
                 let dist = (d.x * d.x + d.z * d.z).sqrt().min(3072.0) as i32 - 500;
-                let speed = (dist / (j1 as i32 - self.frame as i32).max(1)) as f32;
-                let (s, c) = d.x.datan2(d.z).dsin_cos();
-                self.jump_home = Some(Some(Vec3::new((speed * s).trunc(), 0.0, (speed * c).trunc())));
+                let speed = dist / (j1 as i32 - self.frame as i32).max(1);
+                let [s, c] = tag_sin_cos(d.x.datan2(d.z)).map(|t| (speed * t / 0x7FFF) as f32);
+                self.jump_home = Some(Some(Vec3::new(s, 0.0, c)));
             }
             Some(v) => {
                 self.position += v;
@@ -2022,6 +2026,7 @@ impl Fighter {
         // root pinned after a landing adds only its height
         let (anim, f) = self.animation(gd);
         let partner = self.current.bank == Bank::Partner;
+        let before = self.root();
         if let Some(r) = anims.root(anim, f, partner) {
             let (s, c) = self.root_yaw.dsin_cos();
             self.offset = if self.pin == 0 { Vec3::new(r.x * c + r.z * s, 0.0, -r.x * s + r.z * c) } else { Vec3::ZERO };
@@ -2030,7 +2035,7 @@ impl Fighter {
         self.fly();
         if self.air.is_none() {
             self.drift(gd);
-            self.jump_toward(gd);
+            self.jump_toward(gd, before);
         }
         let height = self.position.y + self.anim_root_y;
         self.root_fall = self.last_height - height;
@@ -2255,6 +2260,13 @@ pub enum KoRule {
 }
 
 /// What a fighter sees of another (the snapshot `Fighter::opponent` holds).
+/// Tekken Tag's sine and cosine of an angle (0x357F18 / 0x357F58): its 4096 table at the angle's top 12 bits,
+/// within ±0xFFF, times 8 (0x7FF8 at most).
+fn tag_sin_cos(a: f32) -> [i32; 2] {
+    let a = (a / ANGLE).round() as i32 >> 4;
+    [ball::sin12(a), ball::cos12(a)].map(|v| v.clamp(-0xFFF, 0xFFF) * 8)
+}
+
 fn sight_of(o: &Fighter, gd: &GameData) -> Opponent {
     let posture = o.posture(gd);
     let airborne = posture & posture::AIRBORNE != 0 || o.air.is_some() || o.airborne_flag(gd);

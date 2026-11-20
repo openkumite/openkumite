@@ -144,6 +144,16 @@ fn a_jump_goes_toward_the_opponent() {
     let went = f.root().x - x0;
     assert_eq!(f.alias, 4712);
     assert!((950.0..1100.0).contains(&went), "{went}");
+    // against Hwoarang (audit 0_cmd02, the PS2's two frames of pad latency): the last frame's pair distance, 1976
+    // less 500 over 29 frames, 50, times the sine 0x7FF8 over 0x7FFF: 49 a frame, -1000 to 29 as in PCSX2
+    let mut b = Bout::new(Game::load(&a, [PAUL, HWOARANG]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    for pad in parse_script("n*4,u+2*2,n*28").unwrap() {
+        b.step([pad, Pad::default()]);
+    }
+    assert_eq!(b.game.fight.fighters[0].root().x, 29.0);
 }
 
 /// A sidestep circles the opponent (0x370698): it leans out of the step and its origin follows the turning basis
