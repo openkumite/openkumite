@@ -294,6 +294,23 @@ fn yoshimitsus_sword_strikes() {
     assert!(hit.is_some_and(|k| (48..=53).contains(&k)), "Hwoarang reels on frame {hit:?}");
 }
 
+/// The strike slots past 17 that 0x3AFAA0 adds, at the drawn nodes the motions turn: True Ogre's 20 behind his hips
+/// (PCSX2 at the fight's start: 478 behind the root, 704 up), Roger's tail from his pelvis (18: 167 behind, 818 up),
+/// not at the head nor the world's origin.
+#[test]
+fn the_tails_strike_slots_are_where_the_ps2_has_them() {
+    let Some(a) = assets() else { return };
+    for (model, slot, want) in [(TRUE_OGRE, 20, glam::Vec3::new(-478.0, 704.0, -174.0)), (ROGER, 18, glam::Vec3::new(-167.0, 818.0, -140.0))] {
+        let mut b = Bout::new(Game::load(&a, [model, HWOARANG]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+        while b.phase != Phase::Fight {
+            b.step([Pad::default(); 2]);
+        }
+        let (pose, place) = b.game.pose(0);
+        let at = kumite_game::volumes(&b.game.bodies[0], &pose, place).bones[slot] - b.game.fight.fighters[0].root();
+        assert!(at.distance(want) < 150.0, "model {model} slot {slot}: {at}");
+    }
+}
+
 /// Devil's laser (0x378150: slot 0x18, from his head, 200 longer each active frame): his n+1+2 (move 4175) from
 /// -554 reaches Hwoarang at 944 and he falls (alias 3626) on frame 36 of it, as in PCSX2 (its 37th: audit
 /// 29_cmd00); the strike to slot 0x18 had no segment.
@@ -429,6 +446,8 @@ const JULIA: usize = 480;
 const KING: usize = 390;
 /// Devil's first model.
 const DEVIL: usize = 663;
+/// Roger's first model.
+const ROGER: usize = 567;
 
 /// The arcade cells' models (the 1P's partner, the CPU teams).
 const YOSHIMITSU: usize = 396;

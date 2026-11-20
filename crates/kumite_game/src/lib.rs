@@ -566,9 +566,12 @@ fn joint_places(j: &serde_json::Value, record: usize, id: u64) -> Vec<(usize, Ve
 /// Tekken Tag's strike slots past the 18 joints (player +0x630 + 0x50 a slot) a body has with a moveset: (slot, the
 /// joint slot it hangs on, its place in that joint's axes, metres).
 /// 0x34F3D8 puts them in before each frame's strikes (0x5F5E50): the sword fighter's (moveset 4) 22 and 23 on hand B,
-/// moveset 26's and 32's 22 on hand A, Ogre's moveset's 23 on the head of bodies 20 and 15; 0x3AFAA0 hangs body 20's
-/// 20 on its head (0x439A80).
-/// shortcut: body 20's 19 and body 17's 19 / 20 hang on joints its cloth sway turns (0x34C508) and are left out
+/// moveset 26's and 32's 22 on hand A, Ogre's moveset's 23 on the head of bodies 20 and 15. 0x3AFAA0 adds joints
+/// (0x439A80's places, the drawn glbs' nodes 98-100): True Ogre's 18 on hand A, 19 on 18, 20 on the pelvis (PCSX2: his
+/// 20 behind the hips); Roger's tail, 18 on the pelvis, 19 on 18, 20 on 19. A slot on a slot past 17 is turned as
+/// that one's node.
+/// shortcut: their sway (0x34C508) and True Ogre's wing code (0x3626B8: his 18 / 19 take arm A's tracks, PCSX2's are
+/// some 600 from these) are left out: Roger's tail tip is some 270 from PCSX2's in a sweep
 fn strike_slots(body: u64, moveset: i64) -> Vec<(usize, usize, Vec3)> {
     let at = |slot, joint, [x, y, z]: [f32; 3]| (slot, joint, Vec3::new(x, y, z) / UNITS);
     let mut out = Vec::new();
@@ -578,8 +581,10 @@ fn strike_slots(body: u64, moveset: i64) -> Vec<(usize, usize, Vec3)> {
         14 if body == 20 || body == 15 => out.push(at(23, 2, [800.0, 0.0, 600.0])),
         _ => {}
     }
-    if body == 20 {
-        out.push(at(20, 2, [368.0, 510.0, 0.0]));
+    match body {
+        20 => out.extend([at(18, 6, [273.0, 2.0, 0.0]), at(19, 18, [171.0, 0.0, 0.0]), at(20, 11, [368.0, 510.0, 0.0])]),
+        17 => out.extend([at(18, 11, [175.0, 218.0, 0.0]), at(19, 18, [368.0, 0.0, 0.0]), at(20, 19, [328.0, 0.0, 0.0])]),
+        _ => {}
     }
     out
 }
@@ -1622,10 +1627,28 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
     if !bones.is_empty() {
         bones.resize(24, Vec3::ZERO);
     }
+    // (slots 18-20 past 17 are the drawn nodes at their places, which the motions turn: the joint's child nearest the
+    // place, then that node's; a slot on one of them follows it)
+    let nodes = &body.character.nodes;
+    let mut more: Vec<(usize, Vec3, Option<usize>)> = Vec::new();
     for &(slot, joint, at) in &body.extra {
-        if let (Some(&q), Some(b)) = (slots.get(joint), bones.get_mut(slot)) {
-            *b = place.transform_point3(q + turn(joint).transform_vector3(at)) * UNITS;
+        let on = match slots.get(joint) {
+            Some(&q) => Some((q, body.bones.get(joint).copied())),
+            None => more.iter().find(|m| m.0 == joint).map(|m| (m.1, m.2)),
+        };
+        let Some((q, parent)) = on else { continue };
+        let node = parent.filter(|_| (18..=20).contains(&slot)).and_then(|pn| {
+            let d = |n: usize| nodes[n].translation.distance(at);
+            (0..nodes.len()).filter(|&n| nodes[n].parent == Some(pn) && d(n) < 0.03).min_by(|&a, &b| d(a).total_cmp(&d(b)))
+        });
+        let p = match node.and_then(|n| pose.get(n)) {
+            Some(m) => m.w_axis.truncate(),
+            None => q + turn(joint).transform_vector3(at),
+        };
+        if let Some(b) = bones.get_mut(slot) {
+            *b = place.transform_point3(p) * UNITS;
         }
+        more.push((slot, p, node));
     }
     let make = |layout: &[(usize, Vec3, f32, usize)]| -> Vec<Sphere> {
         layout
