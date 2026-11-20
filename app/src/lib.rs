@@ -5843,7 +5843,13 @@ impl App {
                         } else {
                             "off"
                         },
-                        textures: if g.smooth_textures { "smooth" } else { "sharp" },
+                        textures: if g.enhance.mipmaps {
+                            "filtered"
+                        } else if g.smooth_textures {
+                            "smooth"
+                        } else {
+                            "sharp"
+                        },
                         // (a browser does not tell the GPU's name)
                         adapter: if adapter.starts_with(" (") { format!("hidden by the browser{}", adapter) } else { adapter.clone() },
                         gpu: format!("{:?}", r.device_type()),
@@ -8172,7 +8178,8 @@ Graphics (also OPTION > GRAPHICS):
   --resolution WxH             the window's size or the full-screen mode (only what the screen can show)
   --render-scale S             the 3D scene's resolution over the window's: 0.25..2 (or 150%)
   --vsync on|off
-  --textures sharp|smooth      the original's nearest texels, or filtered
+  --textures sharp|smooth|filtered
+                               the original's nearest texels, linear, or mipmapped (trilinear, anisotropic)
   --look original|enhanced     the original's picture, or OpenKumite's improvements (the rows below)
   --aa off|2x|4x               anti-aliasing
   --stages arcade|ps           the arcade game's stages (where the Game data has them), or the PlayStation game's

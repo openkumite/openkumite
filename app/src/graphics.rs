@@ -9,7 +9,7 @@
 //!
 //! The LOOK: ORIGINAL (the default: drawn as the original hardware does), ENHANCED (OpenKumite's improvements, all
 //! of them: [`Enhance::ENHANCED`]) or CUSTOM (some of them, chosen on its rows): `--look original|enhanced`,
-//! `--aa off|2x|4x` (anti-aliasing).
+//! `--aa off|2x|4x` (anti-aliasing), `--textures filtered` (mipmaps, trilinear and anisotropic).
 //!
 //! Only what the display and the GPU can show is offered ([`Display`]): the monitor's video modes for full screen,
 //! window sizes that fit the screen, frames and 3D scenes within the GPU's largest texture. In a browser: a canvas
@@ -330,6 +330,8 @@ impl Default for Graphics {
 pub struct Enhance {
     /// Anti-aliasing: the 3D scene's samples a pixel (0 or 1: none; 2, 4).
     pub msaa: u32,
+    /// TEXTURES FILTERED: mipmaps, trilinear and anisotropic (over SHARP or SMOOTH).
+    pub mipmaps: bool,
 }
 
 /// The LOOK row's values.
@@ -341,7 +343,7 @@ pub enum Look {
 }
 
 impl Enhance {
-    pub const ENHANCED: Enhance = Enhance { msaa: 4 };
+    pub const ENHANCED: Enhance = Enhance { msaa: 4, mipmaps: true };
 
     pub fn look(&self) -> Look {
         match *self {
@@ -376,7 +378,7 @@ impl Graphics {
     }
 
     pub fn render(&self) -> kumite_render::RenderSettings {
-        kumite_render::RenderSettings { scale: self.scale, vsync: self.vsync, smooth_textures: self.smooth_textures, msaa: self.enhance.msaa.max(1) }
+        kumite_render::RenderSettings { scale: self.scale, vsync: self.vsync, smooth_textures: self.smooth_textures, msaa: self.enhance.msaa.max(1), mipmaps: self.enhance.mipmaps }
     }
 
     /// The command line's settings over these (`arg`: an option's value, `flag`: whether it is given).
@@ -410,15 +412,17 @@ impl Graphics {
         if let Some(s) = arg("--stages") {
             self.arcade_stages = s == "arcade";
         }
-        if let Some(t) = arg("--textures") {
-            self.smooth_textures = matches!(t.as_str(), "smooth" | "linear" | "filtered");
-        }
+        // (the LOOK first: its rows' options apply over it)
         if let Some(l) = arg("--look") {
             self.enhance = match l.as_str() {
                 "original" => Enhance::default(),
                 "enhanced" => Enhance::ENHANCED,
                 _ => anyhow::bail!("--look original|enhanced"),
             };
+        }
+        if let Some(t) = arg("--textures") {
+            self.smooth_textures = matches!(t.as_str(), "smooth" | "linear");
+            self.enhance.mipmaps = t == "filtered";
         }
         if let Some(a) = arg("--aa") {
             self.enhance.msaa = match a.to_lowercase().as_str() {
@@ -538,5 +542,9 @@ mod tests {
         assert_eq!((g.enhance.look(), g.render().msaa), (Look::Custom, 2));
         assert_eq!(args(&["--aa", "off"]).unwrap().render().msaa, 1);
         assert!(args(&["--aa", "3x"]).is_err());
+        let g = args(&["--textures", "filtered"]).unwrap();
+        assert!(g.render().mipmaps && !g.render().smooth_textures);
+        // (a row's option over the LOOK, whatever their order)
+        assert!(!args(&["--textures", "sharp", "--look", "enhanced"]).unwrap().render().mipmaps);
     }
 }

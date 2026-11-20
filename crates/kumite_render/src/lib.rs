@@ -351,15 +351,20 @@ pub struct Texture {
     bind_group: wgpu::BindGroup,
     /// The same texture through the smooth (linear) sampler, for [`RenderSettings::smooth_textures`].
     bind_group_smooth: wgpu::BindGroup,
+    /// Through its mipmaps, trilinear and anisotropic, for [`RenderSettings::mipmaps`].
+    bind_group_filtered: wgpu::BindGroup,
     texture: wgpu::Texture,
+    /// With mipmaps: its texels (the face animation's copies make the levels again).
+    texels: Option<std::sync::Mutex<Vec<u8>>>,
 }
 
 impl Texture {
-    fn group(&self, smooth: bool) -> &wgpu::BindGroup {
-        if smooth {
-            &self.bind_group_smooth
-        } else {
-            &self.bind_group
+    /// Its bind group for the texture filter (0 sharp, 1 smooth, 2 filtered).
+    fn group(&self, filter: usize) -> &wgpu::BindGroup {
+        match filter {
+            0 => &self.bind_group,
+            1 => &self.bind_group_smooth,
+            _ => &self.bind_group_filtered,
         }
     }
 }
@@ -375,11 +380,13 @@ pub struct RenderSettings {
     pub smooth_textures: bool,
     /// Anti-aliasing: the 3D scene's samples a pixel (1: none; 2 or 4, as the GPU has them).
     pub msaa: u32,
+    /// Textures made from now on have mipmaps (3 levels), drawn trilinear and 16x anisotropic.
+    pub mipmaps: bool,
 }
 
 impl Default for RenderSettings {
     fn default() -> Self {
-        Self { scale: 1.0, vsync: true, smooth_textures: false, msaa: 1 }
+        Self { scale: 1.0, vsync: true, smooth_textures: false, msaa: 1, mipmaps: false }
     }
 }
 
@@ -461,6 +468,8 @@ const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Tekken Tag's shadow picture: its texels a side, and the half size of the floor it covers (metres).
 const SHADOW_MAP: u32 = 1024;
 const SHADOW_HALF: f32 = 6.0;
+/// Mipmapped textures' levels: the texels and three halvings (more would blend an atlas's parts together).
+const MIPS: u32 = 4;
 
 pub struct Renderer {
     /// What the window surfaces are made with (Android makes its window again after the background).
@@ -486,6 +495,8 @@ pub struct Renderer {
     sampler_smooth: wgpu::Sampler,
     /// Sharp texels tiling both ways, and the same filtered.
     sampler_tiled: [wgpu::Sampler; 2],
+    /// Trilinear, 16x anisotropic: the atlas's addressing, and tiling both ways.
+    sampler_aniso: [wgpu::Sampler; 2],
     /// The scene's upscale (nearest: a lower resolution shows its pixels) and downscale (linear) to the window.
     blit_nearest: wgpu::Sampler,
     blit_linear: wgpu::Sampler,
@@ -678,6 +689,18 @@ impl Renderer {
             })
         };
         let sampler_tiled = [tiled(wgpu::FilterMode::Nearest), tiled(wgpu::FilterMode::Linear)];
+        let sampler_aniso = [wgpu::AddressMode::ClampToEdge, wgpu::AddressMode::Repeat].map(|v| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("aniso"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: v,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                anisotropy_clamp: 16,
+                ..Default::default()
+            })
+        });
         let blit_nearest = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("blit nearest"), ..Default::default() });
         let blit_linear =
             device.create_sampler(&wgpu::SamplerDescriptor { label: Some("blit linear"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
@@ -769,8 +792,9 @@ impl Renderer {
                         depth_compare: wgpu::CompareFunction,
                         topology: wgpu::PrimitiveTopology,
                         blend: Option<wgpu::BlendState>| {
-                // anti-aliased, the cut-outs' edges as coverage (the alpha itself not written)
-                let coverage = samples > 1 && matches!(fs, "fs_lit" | "fs_static" | "fs_unlit");
+                // anti-aliased, the cut-outs' edges as coverage (the alpha itself not written); not the backdrops'
+                // (fs_unlit: their half-transparent texels' edges would show as lines)
+                let coverage = samples > 1 && matches!(fs, "fs_lit" | "fs_static");
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(label),
                     layout: Some(layout),
@@ -901,6 +925,7 @@ impl Renderer {
             sampler_filtered,
             sampler_smooth,
             sampler_tiled,
+            sampler_aniso,
             blit_nearest,
             blit_linear,
             blit_pipeline,
@@ -1095,20 +1120,22 @@ impl Renderer {
 
     /// Upload an RGBA8 texture (sRGB colours, alpha 0 = transparent texel).
     pub fn texture(&self, width: u32, height: u32, rgba: &[u8]) -> Arc<Texture> {
-        self.upload(width, height, rgba, [&self.sampler, &self.sampler_smooth])
+        self.upload(width, height, rgba, [&self.sampler, &self.sampler_smooth, &self.sampler_aniso[0]])
     }
 
     /// Upload an RGBA8 texture that tiles both ways, its texels sharp (or smooth by the setting).
     pub fn texture_tiled(&self, width: u32, height: u32, rgba: &[u8]) -> Arc<Texture> {
-        self.upload(width, height, rgba, [&self.sampler_tiled[0], &self.sampler_tiled[1]])
+        self.upload(width, height, rgba, [&self.sampler_tiled[0], &self.sampler_tiled[1], &self.sampler_aniso[1]])
     }
 
-    fn upload(&self, width: u32, height: u32, rgba: &[u8], [sharp, smooth]: [&wgpu::Sampler; 2]) -> Arc<Texture> {
+    fn upload(&self, width: u32, height: u32, rgba: &[u8], [sharp, smooth, filtered]: [&wgpu::Sampler; 3]) -> Arc<Texture> {
         let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        // (the levels by the setting when it is made; one for a texel)
+        let levels = if self.settings.mipmaps { MIPS.min(32 - width.max(height).leading_zeros()) } else { 1 };
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size,
-            mip_level_count: 1,
+            mip_level_count: levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -1121,10 +1148,31 @@ impl Renderer {
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * width), rows_per_image: Some(height) },
             size,
         );
-        let view = tex.create_view(&Default::default());
+        // (sharp and smooth: the texels alone, as the original's)
+        let view = tex.create_view(&wgpu::TextureViewDescriptor { mip_level_count: Some(1), ..Default::default() });
         let bind_group = self.bind(&view, sharp);
         let bind_group_smooth = self.bind(&view, smooth);
-        Arc::new(Texture { bind_group, bind_group_smooth, texture: tex })
+        let bind_group_filtered = self.bind(&tex.create_view(&Default::default()), filtered);
+        let texels = (levels > 1).then(|| std::sync::Mutex::new(rgba.to_vec()));
+        let texture = Texture { bind_group, bind_group_smooth, bind_group_filtered, texture: tex, texels };
+        self.write_mips(&texture, rgba);
+        Arc::new(texture)
+    }
+
+    /// A mipmapped texture's levels from its texels ([`halve`]).
+    fn write_mips(&self, texture: &Texture, rgba: &[u8]) {
+        let (mut w, mut h) = (texture.texture.width(), texture.texture.height());
+        let mut px = rgba.to_vec();
+        for level in 1..texture.texture.mip_level_count() {
+            let Some((nw, nh, out)) = halve(w, h, &px) else { return };
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &texture.texture, mip_level: level, origin: Default::default(), aspect: Default::default() },
+                &out,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * nw), rows_per_image: Some(nh) },
+                wgpu::Extent3d { width: nw, height: nh, depth_or_array_layers: 1 },
+            );
+            (w, h, px) = (nw, nh, out);
+        }
     }
 
     /// Upload an RGBA8 texture for linear filtering with mipmaps (box-filtered on the CPU), tiling both ways.
@@ -1180,7 +1228,8 @@ impl Renderer {
         let view = tex.create_view(&Default::default());
         let bind_group = self.bind(&view, &self.sampler_filtered);
         let bind_group_smooth = self.bind(&view, &self.sampler_filtered);
-        Arc::new(Texture { bind_group, bind_group_smooth, texture: tex })
+        let bind_group_filtered = self.bind(&view, &self.sampler_filtered);
+        Arc::new(Texture { bind_group, bind_group_smooth, bind_group_filtered, texture: tex, texels: None })
     }
 
     /// Replace the texels of rectangle (x, y, w, h) of `texture` with `rgba` (RGBA8 rows): the face animation's
@@ -1192,6 +1241,16 @@ impl Renderer {
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
+        // mipmapped: the rectangle into its texels, the levels made again
+        let Some(Ok(mut texels)) = texture.texels.as_ref().map(|t| t.lock()) else { return };
+        let tw = texture.texture.width() as usize;
+        for (row, line) in rgba.chunks_exact(4 * w as usize).take(h as usize).enumerate() {
+            let at = ((y as usize + row) * tw + x as usize) * 4;
+            if let Some(dest) = texels.get_mut(at..at + line.len()) {
+                dest.copy_from_slice(line);
+            }
+        }
+        self.write_mips(texture, &texels);
     }
 
     /// A character's GPU model: `indices` from `blend_from` on are its blended primitives'.
@@ -1415,7 +1474,8 @@ impl Renderer {
         };
         // the 3D (and the HUD under the fighters) into the scene's target at the render scale, or the frame
         let overlay_format = self.overlay_format();
-        let smooth = self.settings.smooth_textures;
+        // (the texture filter: 0 sharp, 1 smooth, 2 filtered)
+        let smooth = if self.settings.mipmaps { 2 } else { usize::from(self.settings.smooth_textures) };
         let scene = self.scene_target(if gamma { overlay_format } else { self.frame_format }).map(|t| {
             let ov = wgpu::TextureViewDescriptor { format: Some(overlay_format), ..Default::default() };
             (t.colour.create_view(&Default::default()), t.colour.create_view(&ov), t.depth.clone(), t.size)
@@ -1817,6 +1877,32 @@ impl Renderer {
     }
 }
 
+/// The next mip level of RGBA8 texels (None: fewer texels than `w` x `h`): each texel the four above it, their
+/// colours weighted by their alpha (a cut-out's transparent texels do not darken its edges), the alpha averaged.
+fn halve(w: u32, h: u32, px: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+    let mut out = vec![0u8; (nw * nh * 4) as usize];
+    for (i, o) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let (x, y) = (i as u32 % nw, i as u32 / nw);
+        let (mut c, mut a, mut k) = ([0u32; 3], 0u32, 0u32);
+        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            let at = (((2 * y + dy).min(h - 1) * w + (2 * x + dx).min(w - 1)) * 4) as usize;
+            let t = px.get(at..at + 4)?;
+            // (+1: a block all transparent keeps its colours' average)
+            let weight = u32::from(t[3]) + 1;
+            (a, k) = (a + u32::from(t[3]), k + weight);
+            for (c, t) in c.iter_mut().zip(t) {
+                *c += u32::from(*t) * weight;
+            }
+        }
+        for (o, c) in o.iter_mut().zip(c) {
+            *o = (c / k) as u8;
+        }
+        o[3] = (a / 4) as u8;
+    }
+    Some((nw, nh, out))
+}
+
 fn make_offscreen(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("offscreen"),
@@ -1848,6 +1934,14 @@ fn make_depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mip level keeps a cut-out's colour at its edge (the transparent texels' black does not bleed in).
+    #[test]
+    fn mips_weigh_by_alpha() {
+        let px = [200, 100, 50, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(halve(2, 2, &px), Some((1, 1, vec![197, 98, 49, 63])));
+        assert_eq!(halve(2, 2, &px[..8]), None);
+    }
 
     /// A roll turns the picture anticlockwise: what is to the right of the target goes up.
     #[test]
