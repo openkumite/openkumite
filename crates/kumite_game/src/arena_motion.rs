@@ -81,6 +81,8 @@ pub struct ArenaMotion {
     /// strength and frames; a slot free since the last was taken (gp-0x6960).
     impulses: [Option<(Vec3, f32, u32)>; 4],
     impulse_free: bool,
+    /// Each fighter's height last frame and fastest fall a frame since its last landing (m; player +0x122, 0x371BDC).
+    falls: Vec<(f32, f32)>,
     wind: Option<crate::weather::Wind>,
     gain: f32,
     leaves: Vec<Leaf>,
@@ -108,6 +110,7 @@ impl ArenaMotion {
             grass: None,
             impulses: [None; 4],
             impulse_free: true,
+            falls: vec![],
             wind: None,
             gain: f(&v["lanterns"]["gain"]),
             leaves: vec![],
@@ -256,13 +259,19 @@ impl ArenaMotion {
                 }
             }
         }
+        self.falls.resize(fighters.len(), (0.0, 0.0));
+        for (f, p) in self.falls.iter_mut().zip(fighters) {
+            *f = (p.y, f.1.max(f.0 - p.y));
+        }
         for p in landings.iter().filter(|_| self.grass.is_some()) {
+            // the landing fighter's fall: 30 x min(1, its fastest / 300 mm)^2, then none again
+            let k = (0..fighters.len()).min_by(|&a, &b| flat_len(fighters[a].x - p.x, fighters[a].z - p.z).total_cmp(&flat_len(fighters[b].x - p.x, fighters[b].z - p.z)));
+            let fall = k.and_then(|k| self.falls.get_mut(k)).map_or(0.0, |f| std::mem::take(&mut f.1));
             if !self.impulse_free {
-                break;
+                continue;
             }
-            // shortcut: every landing at full strength (30 x (speed / 300)^2: player +0x122 not read), as the leaves'
             match self.impulses.iter_mut().find(|i| i.is_none()) {
-                Some(i) => *i = Some((*p, 30.0, 0)),
+                Some(i) => *i = Some((*p, 30.0 * (fall * 1000.0 / 300.0).min(1.0).powi(2), 0)),
                 None => self.impulse_free = false,
             }
         }
@@ -581,7 +590,9 @@ mod tests {
         assert!(moves(&m).iter().all(|c| c[0] == 0.0 && c[2] == 0.0));
         // a landing at the centre; the middle corner takes the wind half a cell back, at (-0.5, 0.5) m: pushed -x
         // and (the wind's z the picture's -z) -z
-        m.step(Vec3::ZERO, Mat4::IDENTITY, &[], &[Vec3::ZERO]);
+        // (a fighter falling 300 mm a frame onto it)
+        m.step(Vec3::ZERO, Mat4::IDENTITY, &[Vec3::new(0.0, 0.3, 0.0)], &[]);
+        m.step(Vec3::ZERO, Mat4::IDENTITY, &[Vec3::ZERO], &[Vec3::ZERO]);
         let c = moves(&m)[4];
         assert!(c[0] < 0.0 && c[2] < 0.0, "{c:?}");
         for _ in 0..300 {
