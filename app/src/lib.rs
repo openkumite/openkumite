@@ -137,6 +137,8 @@ struct Scene {
     /// The `sky` meshes that move (an arcade stage's carousel, helicopter rotors and flames), and the 60 Hz steps
     /// since the stage was loaded.
     moving: Vec<Moving>,
+    /// Tekken Tag's looping texture channels: each one, its texture, its frames' texels and the frame it shows.
+    channels: Vec<(kumite_assets::TextureChannel, Arc<kumite_render::Texture>, Vec<kumite_assets::Image>, Option<usize>)>,
     frame: u64,
     /// The floor map's repeat period (m), when the floor follows the fighters.
     floor_period: Option<[f32; 2]>,
@@ -779,6 +781,14 @@ impl Scene {
         let fades: HashMap<String, f32> = places.iter().map(|(n, _, f)| (n.clone(), *f)).collect();
         let over: HashMap<String, glam::Mat4> = places.into_iter().map(|(n, m, _)| (n, m)).collect();
         let shears: HashMap<String, glam::Vec3> = self.objects.as_ref().map(|m| m.shears().into_iter().collect()).unwrap_or_default();
+        // (Tekken Tag's texture channels: the frame's texels into their texture's rectangle when it changes)
+        for (c, texture, frames, shown) in &mut self.channels {
+            let k = kumite_assets::channel_frame(c.frames as u32, c.speed, c.start, frame);
+            if let (false, Some(f)) = (*shown == Some(k), frames.get(k)) {
+                r.update_texture(texture, c.rect, &f.rgba);
+                *shown = Some(k);
+            }
+        }
         for m in &self.moving {
             let Some(mesh) = self.sky.get_mut(m.mesh) else { continue };
             match &m.kind {
@@ -1380,6 +1390,7 @@ impl App {
         let mut scene = Scene {
             sky: vec![],
             moving: vec![],
+            channels: vec![],
             frame: 0,
             sky_base_y: 0.0,
             sky_y_scale: 1.0,
@@ -1476,6 +1487,7 @@ impl App {
                     Some(Moving { mesh, kind })
                 };
                 scene.moving = st.sky.iter().enumerate().filter_map(moving).collect();
+                scene.channels = (st.channels.iter()).filter_map(|c| Some((c.clone(), tex.get(c.image)?.clone(), st.textures.get(c.first..c.first + c.frames)?.to_vec(), None))).collect();
                 // (the moved objects' places in their parents as the stage stands)
                 let rest = |name: &str| {
                     let mut chains = scene.moving.iter().filter_map(|m| if let MovingKind::Track { chain, .. } = &m.kind { Some(chain) } else { None });

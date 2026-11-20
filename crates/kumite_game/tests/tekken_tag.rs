@@ -1262,6 +1262,16 @@ fn devils_wings_open_in_ending_32() {
     assert!((tip[0] - tip[1]).length() < 1e-5 && (tip[1] - tip[2]).length() > 1e-4, "{tip:?}");
 }
 
+/// The arenas' looping texture channels (0x3A6C80): arena 1's one channel of 60 frames at a quarter frame a frame;
+/// arena 4's lightning stands still (none looping).
+#[test]
+fn arena_texture_channels() {
+    let Some(a) = assets() else { return };
+    let one = a.stage(1).unwrap();
+    assert!(!one.channels.is_empty() && one.channels.iter().all(|c| (c.frames, c.speed, c.start) == (60, 0x40, 0)), "convert the game again");
+    assert!(a.stage(4).unwrap().channels.is_empty());
+}
+
 /// Op 25: in ending 20 Bryan (slot 1) holds arena 5's object 0 at his hand (node 38) for 1080 frames.
 #[test]
 fn bryans_gun_in_ending_20() {

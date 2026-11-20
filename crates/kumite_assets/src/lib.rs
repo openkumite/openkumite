@@ -496,6 +496,29 @@ pub enum Motion {
     Track(Vec<Joint>),
 }
 
+/// A Tekken Tag texture channel over one of a stage's textures: the rectangle (x, y, w, h) its frames change in
+/// texture `image`, the textures holding each frame's texels there (`first`, `frames` of them), its speed (256ths of
+/// a frame a frame) and first frame ([`channel_frame`]).
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct TextureChannel {
+    pub image: usize,
+    pub rect: [u32; 4],
+    pub first: usize,
+    pub frames: usize,
+    pub speed: u32,
+    pub start: u32,
+}
+
+/// The picture a Tekken Tag texture channel of `frames` shows on frame `t` (0x3A6C80, state 4): it starts on `start`
+/// and goes on `speed` / 256 a frame; past the last it goes back to 0 (the fraction dropped).
+pub fn channel_frame(frames: u32, speed: u32, start: u32, t: u64) -> usize {
+    let (end, speed, first) = (u64::from(frames.max(1)) << 8, u64::from(speed.max(1)), u64::from(start.min(frames.saturating_sub(1))) << 8);
+    // (frames to the end from the start, and of a whole loop)
+    let (lead, period) = ((end - first).div_ceil(speed), end.div_ceil(speed));
+    let at = if t < lead { first + t * speed } else { (t - lead) % period * speed };
+    (at >> 8) as usize
+}
+
 /// A stage node: its place in its parent (translation, rotation, scale) and its animation, a key a frame (glTF
 /// channels; the converter writes one a frame): after the last key the first comes again, so the last one is only
 /// where the motion goes on.
@@ -587,6 +610,8 @@ pub struct Stage {
     /// Tekken Tag's arena fog (scene extras `fog`): FOGCOL (0..1) and the coefficient `line[0] + line[1] x depth` (mm,
     /// 255 none); the fogged strips' vertices have 16 added to their normal's w.
     pub fog: Option<([f32; 3], [f32; 2])>,
+    /// Tekken Tag's looping texture channels (scene extras `channels`).
+    pub channels: Vec<TextureChannel>,
     pub placements: Vec<Placement>,
     /// Per texture (image): the glb asks for linear filtering (with mipmaps) and tiling both ways, as the
     /// extra levels do; the game's own stages ask for nearest and clamp.
@@ -732,6 +757,7 @@ impl Stage {
             floor_light: None,
             floor_levels: None,
             fog: None,
+            channels: vec![],
             placements: vec![],
             filtered: vec![false; images.len()],
             tiled: vec![false; images.len()],
@@ -800,6 +826,13 @@ impl Stage {
             .filter(|l| l.cell.iter().all(|c| *c > 0.0));
             let fog = &v["fog"];
             st.fog = (|| Some(([0, 1, 2].map(|k| fog["colour"][k].as_f64().unwrap_or(0.0) as f32 / 255.0), [fog["line"][0].as_f64()? as f32, fog["line"][1].as_f64()? as f32])))();
+            // (each channel's textures among the stage's, its rectangle inside its image)
+            let fits = |c: &TextureChannel| {
+                let (Some(im), Some(last)) = (st.textures.get(c.image), c.first.checked_add(c.frames).filter(|e| *e <= st.textures.len())) else { return false };
+                let [x, y, w, h] = c.rect.map(u64::from);
+                c.frames > 0 && x + w <= u64::from(im.width) && y + h <= u64::from(im.height) && st.textures[c.first..last].iter().all(|t| (u64::from(t.width), u64::from(t.height)) == (w, h))
+            };
+            st.channels = serde_json::from_value::<Vec<TextureChannel>>(v["channels"].clone()).unwrap_or_default().into_iter().filter(fits).collect();
             st.floor_patch = v["floor_patch"].as_array().and_then(|a| Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32]));
             st.extra_level = v["level"].as_str().map(str::to_string);
             let grid = |w: &serde_json::Value| {
@@ -1065,4 +1098,17 @@ fn to_image(d: &gltf::image::Data) -> Result<Image> {
         f => bail!("unsupported texture format {f:?}"),
     };
     Ok(Image { width: d.width, height: d.height, rgba })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::channel_frame;
+
+    #[test]
+    fn a_texture_channel_loops_from_its_start() {
+        // 4 pictures at 0.75 a frame from picture 2: 2, 2, 3, then from 0 (the fraction dropped): 0, 0, 1, 2, 3, 3
+        let shown: Vec<usize> = (0..9).map(|t| channel_frame(4, 0xC0, 2, t)).collect();
+        assert_eq!(shown, [2, 2, 3, 0, 0, 1, 2, 3, 3]);
+        assert_eq!((0..5).map(|t| channel_frame(2, 0x100, 0, t)).collect::<Vec<_>>(), [0, 1, 0, 1, 0]);
+    }
 }
