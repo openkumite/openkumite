@@ -1,8 +1,8 @@
 //! Tekken Tag's arenas' own effects (stages.json `weather`, the tasks 0x3A2640 starts by arena; the converter's
 //! EFFECTS.md 5): the smoke and steam streams of particles on their paths (Hwoarang's and Law-B's blown by the
 //! arena's wind), the Unknown's circling wisps and Nina's and King's blinking beacons; arena 4's lightning and arena
-//! 12's signs, the still texture channels their tasks play ([`Weather::flash`]). Drawn only: none of it
-//! touches the fight, and it draws its own random numbers (the PS2's rand(), 0x40FBD0).
+//! 12's signs, the still texture channels their tasks play ([`Weather::flash`]); Yoshimitsu's snow. Drawn only: none
+//! of it touches the fight, and it draws its own random numbers (the PS2's rand(), 0x40FBD0).
 
 use crate::vfx::{Blend, Sprite};
 use glam::Vec3;
@@ -210,6 +210,19 @@ struct Flashes {
     lit: bool,
 }
 
+/// A layer of snow (0x3E6B10 makes its flakes as the arena loads; VU1 program 0x708 moves and draws them).
+struct Snow {
+    /// Each flake's start (m, about the box's corner), its move a frame (m) and its first frame.
+    flakes: Vec<(Vec3, Vec3, u32)>,
+    size: f32,
+    /// The box (m) the flakes fall in, `ahead` of the eye, its copies `copies` aside in x and z.
+    box_: f32,
+    ahead: f32,
+    copies: f32,
+    /// The frames a flake falls (a power of 2).
+    frames: u32,
+}
+
 /// An arena's weather as it is now.
 pub struct Weather {
     sets: Vec<Set>,
@@ -219,6 +232,9 @@ pub struct Weather {
     groups: Vec<WispGroup>,
     wisps: Vec<Wisp>,
     beacons: Vec<Beacon>,
+    snow: Vec<Snow>,
+    /// The snow's set, its alpha (of 1) and how much of it a metre's depth takes.
+    snow_look: (usize, f32, f32),
     /// The tasks' frame count (0: not started).
     count: u32,
     seed: u32,
@@ -291,7 +307,8 @@ impl Weather {
             signs,
             ..Flashes::default()
         };
-        let mut me = Self { sets, streams, particles: vec![], wind, groups, wisps: vec![], beacons: vec![], count: 0, seed: 0, flashes, sounds: vec![] };
+        let snow_look = (v["snow"]["set"].as_u64().unwrap_or(0) as usize, f(&v["snow"]["level"]), f(&v["snow"]["fade"]));
+        let mut me = Self { sets, streams, particles: vec![], wind, groups, wisps: vec![], beacons: vec![], snow: vec![], snow_look, count: 0, seed: 0, flashes, sounds: vec![] };
         // the wisps (0x3A16C0, 0x3A18F8 as each one starts)
         for (group, g) in list("wisps").enumerate() {
             for k in 0..g["count"].as_u64().unwrap_or(0).min(256) {
@@ -312,7 +329,21 @@ impl Weather {
             let rate = if period > 0.0 { std::f32::consts::TAU / period } else { 0.0 };
             me.beacons.push(Beacon { set: b["set"].as_u64().unwrap_or(0) as usize, at: vec3(&b["at"]), size: f(&b["size"]), level: f(&b["level"]), phase, rate });
         }
-        (!me.streams.is_empty() || !me.wisps.is_empty() || !me.beacons.is_empty() || me.flashes.task || !me.flashes.signs.is_empty()).then_some(me)
+        // the snow (0x3E6B10: x and z at random in the box, falling `fall` a frame from `top`, drifting up to `drift`
+        // a frame along a heading at random, from a frame at random)
+        for l in v["snow"]["layers"].as_array().into_iter().flatten() {
+            let (box_, frames) = (f(&l["box"]), l["frames"].as_u64().unwrap_or(1).clamp(1, 4096).next_power_of_two() as u32);
+            let mut flakes = vec![];
+            for _ in 0..l["count"].as_u64().unwrap_or(0).min(4096) {
+                let (x, z) = ((me.rand01() - 0.5) * box_, (me.rand01() - 0.5) * box_);
+                let a = me.rand01() * std::f32::consts::TAU - std::f32::consts::PI;
+                let r = me.rand01() * f(&l["drift"]);
+                let first = me.rand() & (frames - 1);
+                flakes.push((Vec3::new(x, f(&l["top"]), z), Vec3::new(r * a.cos(), -f(&l["fall"]), r * a.sin()), first));
+            }
+            me.snow.push(Snow { flakes, size: f(&l["size"]), box_, ahead: f(&l["ahead"]), copies: f(&l["copies"]), frames });
+        }
+        (!me.streams.is_empty() || !me.wisps.is_empty() || !me.beacons.is_empty() || me.flashes.task || !me.flashes.signs.is_empty() || !me.snow.is_empty()).then_some(me)
     }
 
     /// The EMBU's screen (11) starts no lightning task (0x3A72A8): only its op 7 flashes.
@@ -609,6 +640,32 @@ impl Weather {
         }
         out
     }
+
+    /// The snow now, seen from `eye` looking along `forward` (VU1 program 0x708): each flake in the box of its layer
+    /// `ahead` of the eye (its start moved by whole boxes, 0x3E7270's corner), `frames` along its fall, drawn at the
+    /// four places `copies` aside; its alpha the level less the fade by its depth.
+    pub fn snow(&self, eye: Vec3, forward: Vec3) -> Vec<Sprite> {
+        let (set, level, fade) = self.snow_look;
+        let Some(cell) = self.sets.get(set).map(|s| s.cell) else { return vec![] };
+        let ahead = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+        let mut out = vec![];
+        for l in self.snow.iter().filter(|l| l.box_ > 0.0) {
+            let corner = eye + ahead * l.ahead + Vec3::splat(l.box_ * 0.5);
+            let fit = |start: f32, corner: f32| start + ((corner - start) / l.box_).floor() * l.box_;
+            for (start, step, first) in &l.flakes {
+                let t = first.wrapping_add(self.count) & (l.frames - 1);
+                let at = Vec3::new(fit(start.x, corner.x), start.y, fit(start.z, corner.z)) + *step * t as f32;
+                for aside in [Vec3::X, Vec3::Z, Vec3::NEG_X, Vec3::NEG_Z] {
+                    let pos = at + aside * l.copies;
+                    let alpha = level - fade * (pos - eye).dot(forward);
+                    if alpha > 0.0 {
+                        out.push(Sprite { pos, size: l.size, cell, color: [1.0, 1.0, 1.0, alpha.min(1.0)], blend: Blend::Half, mirror: false, nearer: 0.0 });
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -695,6 +752,25 @@ mod tests {
             }
         }
         assert!(lit && w.sounds.iter().all(|s| (0x1072..=0x1075).contains(s)), "{:?}", w.sounds);
+    }
+
+    #[test]
+    fn snow_falls_in_its_box_ahead_of_the_eye_drawn_four_times_aside() {
+        let v = json!({"sets": [{"cell": 24, "paths": []}], "snow": {"set": 0, "level": 0.75, "fade": 0.01, "layers": [
+            {"count": 1, "box": 10.0, "top": 5.0, "ahead": 30.0, "copies": 1.0, "fall": 0.1, "drift": 0.0, "frames": 4, "size": 0.06}]}});
+        let mut w = Weather::new(&v).unwrap();
+        w.step();
+        let (eye, forward) = (Vec3::new(100.0, 1.0, 50.0), Vec3::new(0.0, -0.6, -0.8));
+        let s = w.snow(eye, forward);
+        assert_eq!(s.len(), 4);
+        // its place: within the box 30 m ahead (z 20), its copies 1 m aside, `t` frames down from 5 m
+        let at = s[0].pos - Vec3::X;
+        assert!((95.0..=105.0).contains(&at.x) && (15.0..=25.0).contains(&at.z), "{at}");
+        let t = (w.snow[0].flakes[0].2 + 1) & 3;
+        assert!((at.y - (5.0 - 0.1 * t as f32)).abs() < 1e-5);
+        assert_eq!([s[1].pos - at, s[2].pos - at, s[3].pos - at], [Vec3::Z, Vec3::NEG_X, Vec3::NEG_Z]);
+        assert_eq!((s[0].cell, s[0].size), (24, 0.06));
+        assert!((s[0].color[3] - (0.75 - 0.01 * (s[0].pos - eye).dot(forward))).abs() < 1e-6);
     }
 
     #[test]

@@ -5861,7 +5861,9 @@ impl App {
                     _ => vec![],
                 };
                 let far = roots.iter().map(|p| (*p / kumite_game::UNITS - cam.eye).dot(forward)).fold(f32::MIN, f32::max);
-                let behind: Vec<_> = w.sprites().into_iter().filter(|s| (s.pos - cam.eye).dot(forward) >= far).collect();
+                let mut behind: Vec<_> = w.sprites().into_iter().filter(|s| (s.pos - cam.eye).dot(forward) >= far).collect();
+                // (the snow: its own VU1 program, in front of the fighters too)
+                behind.extend(w.snow(cam.eye, forward));
                 effect_quads(&behind, v.atlas(), &cam, &mut soft_alpha, &mut soft_add, &mut Vec::new());
             }
         }
