@@ -1001,7 +1001,13 @@ impl App {
                 bout.set_cpu(1, Some((s.difficulty, s.level)));
             }
             Some(Mode::Practice) => {
-                bout = bout.free_fight();
+                // (Tekken Tag's practice starts as a fight does, team intro, TAG BATTLE and READY!, as PCSX2 shows it;
+                // then it never ends)
+                if self.roster.ttt.is_some() {
+                    (bout.free, bout.rounds_to_win) = (true, 1);
+                } else {
+                    bout = bout.free_fight();
+                }
             }
         }
         // Tekken Tag: the CPU plays the sides no player picked for
@@ -5847,7 +5853,8 @@ impl App {
                             let name = f.setup.as_ref().and_then(|s| roster.characters.get(s.players[0].0)).map_or("", |c| c.name.as_str());
                             if p.open {
                                 ttt::draw_practice(&painter, &view, art, d, p, name);
-                            } else {
+                            } else if !matches!(f.bout.phase, Phase::TeamIntro { .. }) {
+                                // (none over the team intro, as PCSX2 shows it)
                                 ttt::draw_practice_hud(&painter, &view, art, d, p);
                             }
                         }
