@@ -646,8 +646,9 @@ impl Renderer {
         let line_layout = layout(&[Some(&globals_layout)]);
         let tri = wgpu::PrimitiveTopology::TriangleList;
         let skinned_pipeline = make("skinned", &skinned_layout, "vs_skinned", "fs_lit", &skin_vb, true, Less, tri, None);
-        // a character's blended primitive (Tekken Tag's): over what is drawn by its texture's alpha, depth not written
-        let skinned_blend_pipeline = make("skinned blend", &skinned_layout, "vs_skinned", "fs_lit_blend", &skin_vb, false, Less, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
+        // a character's blended primitive (Tekken Tag's): over what is drawn by its texture's alpha, depth not written; its
+        // overlays lie on the opaque layer, which the GS's ZTST GEQUAL lets them cover
+        let skinned_blend_pipeline = make("skinned blend", &skinned_layout, "vs_skinned", "fs_lit_blend", &skin_vb, false, LessEqual, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
         let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, None);
         let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, Always, tri, None);
         let sky_depth_pipeline = make("sky depth", &static_layout, "vs_sky", "fs_unlit", &static_vb, true, Less, tri, None);

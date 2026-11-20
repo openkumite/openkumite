@@ -13,13 +13,14 @@
 //! The hand tracks come in the body clips (the converter's format 26: the finger nodes' turns).
 //!
 //! Ops 17 / 18 throw 0x3A2758's bursts from an actor's node (see [`Burst`]); ops 21-24 lay 2D objects over the picture
-//! (see [`Overlay`]); 4's and 27's 0x3465E0, 26 and 31 change nothing drawn.
+//! (see [`Overlay`]); 4's and 27's 0x3465E0, 26 and 31 change nothing drawn. The arena's background characters are a
+//! set of the scene's own or none (0x3D85D8, [`EndingScene::people`]); the EMBU's screen films from farther
+//! ([`EndingScene::camera`]).
 //!
-//! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 12 (texture channel 0's frame, 0x3A86D8), 15 (True
+//! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 12 (Jin's mark, texture channel 0's frame 0), 15 (True
 //! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 25 (arena props on an actor's node, 0x3D10D0), 28 (Kuma's
 //! and Panda's +0xB052), 30 (objects 0x3ACF50), 32 (gp-0x6E78); the EMBU's 7-12; ops 17 / 18 at nodes 0x4000-0x4002
-//! (op 25's prop matrix 0x444CD0, 20 objects 0x3ACCD0); the face track (its joints are not mapped); the arenas'
-//! background characters.
+//! (op 25's prop matrix 0x444CD0, 20 objects 0x3ACCD0); the face track (its joints are not mapped).
 
 use crate::UNITS;
 use anyhow::{bail, Context, Result};
@@ -40,6 +41,8 @@ pub struct Descriptor {
     pub script: Vec<[i32; 5]>,
     pub camera: String,
     pub body: Vec<String>,
+    /// The background characters it shows (0x3D85D8: `set`, `people`, `walk` as stages.json's), none when null.
+    pub people: Option<Value>,
 }
 
 /// gamedata/endings.json, and who wears which costume (roster.json `selections`).
@@ -68,9 +71,11 @@ impl EndingData {
         let records = roster["selections"]["entries"].as_array().into_iter().flatten().filter_map(|e| Some((e["selection"].as_u64()? as usize, e["model_record"].as_u64()? as usize))).collect();
         let e = &raw["embu"];
         let embu = (e["casts"].as_array().into_iter().flatten().zip(e["arenas"].as_array().into_iter().flatten()))
-            .map(|(cast, arena)| {
+            .enumerate()
+            .map(|(k, (cast, arena))| {
                 let mut d: Descriptor = serde_json::from_value(e.clone()).context("endings.json: embu")?;
                 (d.cast, d.arena) = (serde_json::from_value(cast.clone()).context("endings.json: embu casts")?, arena.as_u64().unwrap_or(0) as usize);
+                d.people = e["people"].get(k).cloned().filter(|p| !p.is_null());
                 Ok(d)
             })
             .collect::<Result<_>>()?;
@@ -148,6 +153,8 @@ pub struct EndingScene {
     /// The ending (None: the EMBU).
     pub ending: Option<usize>,
     pub arena: usize,
+    /// The background characters on it (the descriptor's `people`; none when none).
+    pub people: Option<Value>,
     /// The cast's bodies (with the ending's tracks as clips `ending_EE_K`) and their model records.
     pub characters: Vec<Arc<Character>>,
     pub records: Vec<usize>,
@@ -229,6 +236,7 @@ impl EndingScene {
         Ok(Self {
             ending,
             arena: d.arena,
+            people: d.people.clone(),
             characters,
             records,
             script: d.script.clone(),
@@ -395,7 +403,13 @@ impl EndingScene {
     /// The camera: eye and target in metres (y up), and the vertical field of view.
     pub fn camera(&self) -> (Vec3, Vec3, f32) {
         let path = self.frames();
-        let Some(&f) = path.get(self.camera_frame().min(path.len().saturating_sub(1))) else { return (Vec3::ZERO, Vec3::Z, 1.0) };
+        let Some(&(mut f)) = path.get(self.camera_frame().min(path.len().saturating_sub(1))) else { return (Vec3::ZERO, Vec3::Z, 1.0) };
+        if self.ending.is_none() {
+            // the EMBU's screen (11) films from 1.2 times as far from a target 8 higher, at 0.8 of H (0x3930B4)
+            let d = [f[0] - f[3], f[1] - f[4], f[2] - f[5]];
+            f[4] -= 8.0;
+            (f[0], f[1], f[2], f[6]) = (f[3] + d[0] * 1.2, f[4] + d[1] * 1.2, f[5] + d[2] * 1.2, f[6] * 0.8);
+        }
         let to_m = |x: f32, y: f32, z: f32| Vec3::new(x, -y, -z) / UNITS;
         // H on Tekken Tag's 512-pixel-wide screen, as its fight camera's (crate::view_camera takes Tekken 3's 368)
         let h = (f[6] * 368.0 / 512.0) as i64;

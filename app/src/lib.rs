@@ -1413,7 +1413,7 @@ impl App {
         let arcade_none = arcade.is_none();
         // (the arena's own model: its background characters stand in it)
         if arcade.is_none() {
-            scene.people = self.people(r, stage);
+            scene.people = self.people(r, stage, None);
             scene.flare = self.flare(stage);
             scene.weather = self.stage_json(stage).and_then(|s| kumite_game::weather::Weather::new(&s["weather"]));
         }
@@ -1494,11 +1494,15 @@ impl App {
         scene
     }
 
-    /// Stage `stage`'s background characters (stages.json `people`, Tekken Tag's 0x114FC8): each one's model
-    /// `stages/stage_NN_pK.glb` with the clips of `stage_NN_mK.glb` it plays, run by its script
-    /// (`kumite_game::crowd`). One whose files are missing or bad is left out (logged).
-    fn people(&self, r: &Renderer, stage: usize) -> Vec<Person> {
-        let Some(json) = self.stage_json(stage) else { return vec![] };
+    /// Stage `stage`'s background characters (stages.json `people`, Tekken Tag's 0x114FC8), or those of `set` (an
+    /// ending's: `people` and `walk` as stages.json's): each one's model `stages/stage_NN_pK.glb` with the clips of
+    /// `stage_NN_mK.glb` it plays, run by its script (`kumite_game::crowd`). One whose files are missing or bad is left
+    /// out (logged).
+    fn people(&self, r: &Renderer, stage: usize, set: Option<&serde_json::Value>) -> Vec<Person> {
+        let Some(mut json) = self.stage_json(stage) else { return vec![] };
+        if let Some(set) = set {
+            (json["people"], json["walk"]) = (set["people"].clone(), set["walk"].clone());
+        }
         let Some(list) = json["people"].as_array() else { return vec![] };
         // each person's models: its own and its steps' (0x3D87A8)
         let wears = |q: &serde_json::Value| -> Vec<u64> {
@@ -3930,6 +3934,8 @@ impl App {
         let r = self.renderer.take()?;
         let mut stage = self.stage_scene(&r, s.arena);
         stage.models.clear();
+        // (the people the scene shows instead of the arena's, 0x3D85D8)
+        stage.people = s.people.as_ref().map_or_else(Vec::new, |p| self.people(&r, s.arena, Some(p)));
         let models = s.characters.iter().zip(&s.records).map(|(c, &record)| skinned_character(&r, c, record)).collect();
         (self.scene, self.renderer) = (Some(stage), Some(r));
         let mut vfx = kumite_game::vfx::Vfx::new(&self.assets);
