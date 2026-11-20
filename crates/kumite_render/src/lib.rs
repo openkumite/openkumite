@@ -160,6 +160,8 @@ pub struct Camera {
     pub floor_levels: Option<FloorLevels>,
     /// Tekken Tag's arena fog: FOGCOL (sRGB 0..1) and the coefficient's line (255 + slope x depth in mm).
     pub fog: Option<([f32; 3], [f32; 2])>,
+    /// Eddy's grass: the floor cells' vertices moved by a lattice ([`Grass`]).
+    pub grass: Option<Grass>,
     /// Tekken Tag's: the 3D pass drawn on the frame's sRGB bytes (textures, colours, blending and fog as the PS2's GS
     /// has them), where the frame has a plain view; else in its linear colour.
     pub gamma: bool,
@@ -231,6 +233,7 @@ impl Camera {
             floor_levels: None,
             fog: None,
             gamma: false,
+            grass: None,
             floor_light: None,
             cutaway: None,
             cutaway_all: false,
@@ -293,6 +296,27 @@ struct Globals {
     fog_line: [f32; 4],
     // x 1: the 3D pass on the frame's sRGB bytes (Camera::gamma)
     gamma: [f32; 4],
+    // Eddy's grass: the first corner (x, z), a cell (x, z); corners a row, rows, the lattice's height (m), 1 when on;
+    // each corner's move (m)
+    grass_grid: [f32; 4],
+    grass_info: [f32; 4],
+    grass: [[f32; 4]; GRASS],
+}
+
+/// Eddy's grass lattice's corners at most (17 x 17).
+pub const GRASS: usize = 289;
+
+/// Eddy's grass (0x3D43A8, 0x3E13C8): the floor cells drawn through a lattice of x, z cells and y 0..`size` (m), a
+/// top corner at each corner of the cells from `first` (x, z) by `cell`, `row` a row in `rows`, its move `moves` (m); a vertex
+/// moves by its cell's top corners' moves (bilinearly) x its height / `size`.
+#[derive(Clone, Copy, Debug)]
+pub struct Grass {
+    pub first: [f32; 2],
+    pub cell: [f32; 2],
+    pub row: u32,
+    pub rows: u32,
+    pub size: f32,
+    pub moves: [[f32; 4]; GRASS],
 }
 
 /// The 3D pass's pipelines for one colour target format.
@@ -1366,6 +1390,9 @@ impl Renderer {
                 [lin(c[0]), lin(c[1]), lin(c[2]), 1.0]
             }),
             gamma: [f32::from(u8::from(gamma)), 0.0, 0.0, 0.0],
+            grass_grid: cam.grass.map_or([0.0; 4], |l| [l.first[0], l.first[1], l.cell[0], l.cell[1]]),
+            grass_info: cam.grass.map_or([0.0; 4], |l| [l.row as f32, l.rows as f32, l.size, 1.0]),
+            grass: cam.grass.map_or([[0.0; 4]; GRASS], |l| l.moves),
             fog_line: cam.fog.map_or([0.0; 4], |(_, l)| [l[0], l[1], 0.0, 1.0]),
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));

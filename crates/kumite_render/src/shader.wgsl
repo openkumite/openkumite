@@ -48,6 +48,10 @@ struct Globals {
     fog_line: vec4<f32>,
     // x 1: the 3D pass on the frame's sRGB bytes (Tekken Tag's: the PS2's GS modulates and blends them)
     gamma: vec4<f32>,
+    // Eddy's grass: the first corner (x, z), a cell; corners a row, rows, the lattice's height, 1 when on; the moves
+    grass_grid: vec4<f32>,
+    grass_info: vec4<f32>,
+    grass: array<vec4<f32>, 289>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var tex: texture_2d<f32>;
@@ -264,13 +268,28 @@ fn cell_shift(cell: vec4<f32>) -> vec2<f32> {
     return floor((g.floor_centre.xy - cell.xy) / span + 0.5) * span;
 }
 
+// Eddy's grass (0x3D43A8, 0x3E13C8): a floor vertex's move, its cell's top corners' moves (bilinearly) x its
+// height in the lattice
+fn grass_move(p: vec3<f32>, y: f32) -> vec3<f32> {
+    let info = g.grass_info;
+    if (info.w < 0.5 || y <= 0.0) { return vec3(0.0); }
+    let u = clamp((p.xz - g.grass_grid.xy) / g.grass_grid.zw, vec2(0.0), info.xy - vec2(1.001));
+    let c = vec2<u32>(floor(u));
+    let f = u - floor(u);
+    let row = u32(info.x);
+    let k = c.y * row + c.x;
+    let m = mix(mix(g.grass[k].xyz, g.grass[k + 1u].xyz, f.x), mix(g.grass[k + row].xyz, g.grass[k + row + 1u].xyz, f.x), f.y);
+    return m * min(y / info.z, 1.0);
+}
+
 // A stage mesh's vertex, moved with the floor; a floor cell's vertex of another level than its cell's, or of a cell
 // beyond the reach, goes off the picture (its triangle with it).
 fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32>, normal: vec4<f32>) -> VsOut {
     var o: VsOut;
     let on = g.floor_cell.z > 0.5 && cell.w > 0.5;
     let shift = select(vec2(0.0), cell_shift(cell), on);
-    let p = (g.floor * vec4(pos.x + shift.x, pos.y, pos.z + shift.y, 1.0)).xyz;
+    var p = (g.floor * vec4(pos.x + shift.x, pos.y, pos.z + shift.y, 1.0)).xyz;
+    if (on) { p += grass_move(p, pos.y); }
     o.clip = g.view_proj * vec4(p, 1.0);
     let away = distance(cell.xy + shift, g.floor_centre.xy) > g.floor_cell.w;
     if (on && (away || (cell.z > 0.5 && cell.z != cell_level(cell, shift)))) {
