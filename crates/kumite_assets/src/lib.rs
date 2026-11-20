@@ -162,6 +162,14 @@ impl Shadows {
     }
 }
 
+/// Tekken Tag's wings (0x3DE4E0): six nodes (one wing's root, middle and tip, then the other's), and each frame of
+/// their track their local turn and scale (x, y, z, w, sx, sy, sz).
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct Wings {
+    pub nodes: [usize; 6],
+    pub frames: Vec<[[f32; 7]; 6]>,
+}
+
 pub struct Character {
     pub name: String,
     pub nodes: Vec<Node>,
@@ -179,6 +187,8 @@ pub struct Character {
     /// Tekken Tag's Jin: the texels of his texture channel's other frame, the mark (the texture's extras `mark`: the
     /// rectangle x, y, w, h and where in the texture its marked texels are).
     pub mark: Option<[u32; 6]>,
+    /// Tekken Tag's True Ogre and Devil: their wings (the skin's extras `wings`).
+    pub wings: Option<Wings>,
     pub clips: Vec<Clip>,
     clip_index: HashMap<String, usize>,
 }
@@ -299,7 +309,24 @@ impl Character {
         let name = doc.scenes().next().and_then(|s| s.name().map(str::to_string)).unwrap_or_default();
         let extras = doc.textures().next().and_then(|t| serde_json::from_str::<serde_json::Value>(t.extras().as_ref()?.get()).ok());
         let mark = extras.and_then(|e| serde_json::from_value(e["mark"].clone()).ok());
-        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, texture, mark, clips, clip_index })
+        let extras = doc.skins().next().and_then(|s| serde_json::from_str::<serde_json::Value>(s.extras().as_ref()?.get()).ok());
+        let wings = extras.and_then(|e| serde_json::from_value::<Wings>(e["wings"].clone()).ok()).filter(|w| w.nodes.iter().all(|&n| n < nodes.len()) && !w.frames.is_empty());
+        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, texture, mark, wings, clips, clip_index })
+    }
+
+    /// The wings at their track's `frame` (clamped to its end): each wing node turned and scaled so in its parent, its
+    /// bind position kept, then the world matrices of `world` (a pose's) made again for them.
+    pub fn pose_wings(&self, world: &mut [Mat4], frame: usize) {
+        let Some(w) = &self.wings else { return };
+        let Some(f) = w.frames.get(frame.min(w.frames.len() - 1)) else { return };
+        let mut order: Vec<(usize, &[f32; 7])> = w.nodes.iter().copied().zip(f).collect();
+        // (parents first: a wing's root comes before its middle and tip)
+        order.sort_by_key(|o| o.0);
+        for (i, &[x, y, z, q, sx, sy, sz]) in order {
+            let n = &self.nodes[i];
+            let local = Mat4::from_scale_rotation_translation(Vec3::new(sx, sy, sz), Quat::from_xyzw(x, y, z, q).normalize(), n.translation);
+            world[i] = n.parent.and_then(|p| world.get(p)).map_or(local, |p| *p * local);
+        }
     }
 
     /// A shadow mesh skinned to this skeleton: each vertex in the bind pose, wholly on its joint; the quads split
@@ -391,6 +418,7 @@ impl Character {
             blend_from: self.blend_from,
             texture: self.texture.clone(),
             mark: self.mark,
+            wings: self.wings.clone(),
             clips: self.clips_of(donor),
             clip_index: donor.clip_index.clone(),
         }

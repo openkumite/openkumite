@@ -258,6 +258,8 @@ pub struct Game {
     /// Tekken Tag's fingers, and whether the round is in round states 1-2 (the fight, the K.O.: gp-0x7268).
     pub hands: [hands::Hands; 2],
     pub hand_live: bool,
+    /// Tekken Tag's wings (True Ogre's and Devil's).
+    pub wings: [face::WingState; 2],
     /// The mode's K.O. style (Fight::ko_collapse), kept across rounds.
     pub ko_collapse: bool,
     /// Tekken Tag's GUARD DAMAGE option (Fight::guard_damage), kept across rounds.
@@ -551,6 +553,7 @@ impl Game {
             faces: Default::default(),
             hands: Default::default(),
             hand_live: false,
+            wings: Default::default(),
             ko_collapse: true,
             guard_damage: false,
             tag_carry: [None; 2],
@@ -1317,6 +1320,10 @@ impl Game {
                 (*seed >> 16) & 0x7FFF
             };
             self.faces[i].blink(forced, &mut rand);
+            // (open while airborne and not juggled: 0x370C94's +0x135 and +0xF7)
+            let f = &self.fight.fighters[i];
+            self.wings[i].state = i32::from(f.airborne_flag(gd) && f.juggle == 0);
+            self.wings[i].step();
             if self.face_data.pupils_character.is_some_and(|c| self.characters[i] == Some(c)) && !self.head_off[i] {
                 let head = |k: usize| {
                     let (pose, place) = self.pose_animated(k);
@@ -1402,6 +1409,7 @@ impl Game {
         if let Some(p) = &self.bodies[i].hands {
             self.hands[i].apply(p, &self.bodies[i].character, &mut pose);
         }
+        self.bodies[i].character.pose_wings(&mut pose, self.wings[i].frame);
         (pose, place)
     }
 
