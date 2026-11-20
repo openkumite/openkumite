@@ -39,6 +39,10 @@ struct Globals {
     floor_centre: vec4<f32>,
     // Tekken Tag's two other lights: towards light 1, its colour, towards light 2, its colour
     lights: array<vec4<f32>, 4>,
+    // Tekken Tag's arena: the eye in the drum's placement (metres), the camera's x and y axes
+    sky_eye: vec4<f32>,
+    view_x: vec4<f32>,
+    view_y: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var tex: texture_2d<f32>;
@@ -114,8 +118,8 @@ fn fs_shadow_map(i: VsOut) -> @location(0) vec4<f32> {
 // a hair nearer, so it passes where the floor shows.
 @vertex
 fn vs_floor_shadow(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>,
-                   @location(3) cell: vec4<f32>) -> VsOut {
-    var o = static_vertex(pos, uv, color, cell);
+                   @location(3) cell: vec4<f32>, @location(4) normal: vec4<f32>) -> VsOut {
+    var o = static_vertex(pos, uv, color, cell, normal);
     o.clip.z = o.clip.z - 0.00002 * o.clip.w;
     return o;
 }
@@ -167,8 +171,23 @@ fn fs_blob(i: VsOut) -> @location(0) vec4<f32> {
 
 @vertex
 fn vs_static(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>,
-             @location(3) cell: vec4<f32>) -> VsOut {
-    return static_vertex(pos, uv, color, cell);
+             @location(3) cell: vec4<f32>, @location(4) normal: vec4<f32>) -> VsOut {
+    return static_vertex(pos, uv, color, cell, normal);
+}
+
+// Tekken Tag's arena: the texture coordinates its VU1 microcode makes (n.w, the batch's flags): 1 (0x16E) and 2
+// (0x195) the normal in the camera's axes (x right, y down) x 0.25 (VU1 constant 0.25), + 0.5 or the stored ones;
+// 8 (0x128) the reflection of the way to the eye, its height first x 3 (vf31.w), as ((x + 1) / 2, (z + 1) / 2)
+fn env_uv(uv: vec2<f32>, n: vec4<f32>, p: vec3<f32>, eye: vec3<f32>) -> vec2<f32> {
+    if (n.w < 0.5) { return uv; }
+    if (n.w > 4.0) {
+        let e = eye - p;
+        let v = normalize(vec3(e.x, 3.0 * e.y, e.z));
+        let r = 2.0 * n.xyz * dot(v, n.xyz) - v;
+        return (r.xz + 1.0) * 0.5;
+    }
+    let s = 0.25 * vec2(dot(n.xyz, g.view_x.xyz), -dot(n.xyz, g.view_y.xyz));
+    return s + select(vec2(0.5), uv, n.w > 1.5);
 }
 
 // Tekken Tag's floor cell's level of detail (0x340408): the mean depth of its square's corners in front of the camera
@@ -202,7 +221,7 @@ fn cell_shift(cell: vec4<f32>) -> vec2<f32> {
 
 // A stage mesh's vertex, moved with the floor; a floor cell's vertex of another level than its cell's, or of a cell
 // beyond the reach, goes off the picture (its triangle with it).
-fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32>) -> VsOut {
+fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32>, normal: vec4<f32>) -> VsOut {
     var o: VsOut;
     let on = g.floor_cell.z > 0.5 && cell.w > 0.5;
     let shift = select(vec2(0.0), cell_shift(cell), on);
@@ -218,7 +237,7 @@ fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32
     let s = o.clip.xy / o.clip.w * vec2(g.floor_centre.z, 1.0);
     let outside = o.clip.w < 0.001 || abs(s.x) > 2047.0 / 224.0 || abs(s.y) > 2047.0 / 224.0;
     o.dropped = select(0.0, 1.0, g.floor_cell.z > 0.5 && outside);
-    o.uv = uv;
+    o.uv = env_uv(uv, normal, p, g.eye.xyz);
     o.color = color;
     o.world = p;
     o.normal = vec3(0.0);
@@ -239,10 +258,11 @@ fn vs_backdrop(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @locatio
 
 // The backdrop drum: rotation-only view, so it stays centred on the camera; drawn first, no depth.
 @vertex
-fn vs_sky(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VsOut {
+fn vs_sky(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>,
+          @location(4) normal: vec4<f32>) -> VsOut {
     var o: VsOut;
     o.clip = g.sky_view_proj * vec4(pos, 1.0);
-    o.uv = uv;
+    o.uv = env_uv(uv, normal, pos, g.sky_eye.xyz);
     o.color = color;
     o.world = vec3(0.0);
     o.normal = vec3(0.0);

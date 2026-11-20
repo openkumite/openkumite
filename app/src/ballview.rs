@@ -11,7 +11,7 @@ use kumite_sim::ball::{to_sim, Ball, BallData};
 const UNITS: f32 = kumite_game::UNITS;
 
 fn vertex(p: Vec3, c: [f32; 4]) -> StaticVertex {
-    StaticVertex { pos: (p / UNITS).to_array(), uv: [0.5, 0.5], color: c, cell: [0.0; 4] }
+    StaticVertex { pos: (p / UNITS).to_array(), uv: [0.5, 0.5], color: c, cell: [0.0; 4], normal: [0.0; 4] }
 }
 
 /// A 4096-per-turn angle in radians.

@@ -119,6 +119,9 @@ pub struct StaticVertex {
     /// Tekken Tag's floor cell: its centre (x, z, metres, moved with the floor), its level of detail (0: every
     /// level) and the floor's count of levels; zeros elsewhere
     pub cell: [f32; 4],
+    /// Tekken Tag's arena: the normal and (w) how the microcode makes the texture coordinates from it (shader.wgsl
+    /// `env_uv`; 0: as stored)
+    pub normal: [f32; 4],
 }
 
 /// Camera in metre space (y up), like the web viewer.
@@ -265,6 +268,10 @@ struct Globals {
     floor_centre: [f32; 4],
     // Tekken Tag's two other lights: towards each, its colour
     lights: [[f32; 4]; 4],
+    // Tekken Tag's arena: the eye in the drum's placement (metres), the camera's x and y axes (world)
+    sky_eye: [f32; 4],
+    view_x: [f32; 4],
+    view_y: [f32; 4],
 }
 
 /// RGBA texture with its bind group.
@@ -631,7 +638,7 @@ impl Renderer {
         let static_layout = layout(&[Some(&globals_layout), Some(&texture_layout)]);
 
         let skin_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Uint16x4, 3 => Float32x4, 4 => Float32x3];
-        let static_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4];
+        let static_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4];
         use wgpu::CompareFunction::{Always, Less, LessEqual};
         let make = |label: &str,
                     layout: &wgpu::PipelineLayout,
@@ -1218,6 +1225,9 @@ impl Renderer {
             lights: cam.light.and_then(|l| l.more).map_or([[0.0; 4]; 4], |[(c1, l1), (c2, l2)]| {
                 [l1.normalize_or_zero().extend(0.0).to_array(), c1.extend(0.0).to_array(), l2.normalize_or_zero().extend(0.0).to_array(), c2.extend(0.0).to_array()]
             }),
+            sky_eye: cam.sky.inverse().transform_point3(cam.eye).extend(1.0).to_array(),
+            view_x: view.row(0).to_array(),
+            view_y: view.row(1).to_array(),
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
 
@@ -1489,7 +1499,7 @@ impl Renderer {
                 }
             }
             if let (Some(c), Some(white)) = (self.negative, self.white.as_ref()) {
-                let v = |x: f32, y: f32| StaticVertex { pos: [x, y, 0.0], uv: [0.0; 2], color: [c[0], c[1], c[2], 1.0], cell: [0.0; 4] };
+                let v = |x: f32, y: f32| StaticVertex { pos: [x, y, 0.0], uv: [0.0; 2], color: [c[0], c[1], c[2], 1.0], cell: [0.0; 4], normal: [0.0; 4] };
                 let vbuf = self.buffer(bytemuck::cast_slice(&[v(-1.0, -1.0), v(3.0, -1.0), v(-1.0, 3.0)]), wgpu::BufferUsages::VERTEX);
                 pass.set_pipeline(&self.negative_pipeline);
                 pass.set_bind_group(1, &white.bind_group, &[]);

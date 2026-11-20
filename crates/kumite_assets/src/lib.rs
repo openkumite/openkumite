@@ -101,6 +101,9 @@ pub struct Vertex {
     /// Tekken Tag's floor cell: its centre (x, z), its level of detail (0: every level) and the floor's count of
     /// levels (0: not a floor cell)
     pub cell: [f32; 4],
+    /// Tekken Tag's arena: the normal and (w) how its texture coordinates are made from it (material extras `env`:
+    /// 1, 2 or 8; 0 as stored)
+    pub normal: [f32; 4],
 }
 
 /// Tekken Tag's floor cells (0x340070, 0x341218, 0x340408), metres: a cell shows the level of detail of its square's
@@ -622,7 +625,23 @@ impl Stage {
                 if cells.len() < pos.len() {
                     bail!("a primitive's attributes disagree");
                 }
-                let vertices = pos.iter().zip(&uv).zip(&col).zip(&cells).map(|(((&p, &uv), &color), &cell)| Vertex { pos: xf.transform_point3(Vec3::from(p)).to_array(), uv, color, cell }).collect();
+                // Tekken Tag's arena: the normals of a material whose texture coordinates are made from them (extras `env`)
+                let env = prim.material().extras().as_ref().and_then(|x| serde_json::from_str::<serde_json::Value>(x.get()).ok()).and_then(|x| x["env"].as_f64()).unwrap_or(0.0) as f32;
+                let normals: Vec<[f32; 4]> = match r.read_normals().filter(|_| env > 0.0) {
+                    Some(n) => n.map(|n| [n[0], n[1], n[2], env]).collect(),
+                    None => vec![[0.0; 4]; pos.len()],
+                };
+                if normals.len() < pos.len() {
+                    bail!("a primitive's attributes disagree");
+                }
+                let vertices = pos
+                    .iter()
+                    .zip(&uv)
+                    .zip(&col)
+                    .zip(&cells)
+                    .zip(&normals)
+                    .map(|((((&p, &uv), &color), &cell), &normal)| Vertex { pos: xf.transform_point3(Vec3::from(p)).to_array(), uv, color, cell, normal })
+                    .collect();
                 let indices: Vec<u32> = r.read_indices().context("indices")?.into_u32().collect();
                 if indices.iter().any(|&i| i as usize >= pos.len()) {
                     bail!("an index past the vertices");

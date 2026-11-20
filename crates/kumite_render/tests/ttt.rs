@@ -46,7 +46,7 @@ fn ttt_fighters_on_an_arena() {
             _ => r.texture(t.width, t.height, &t.rgba),
         })
         .collect();
-    let conv = |m: &kumite_assets::Mesh| -> Vec<StaticVertex> { m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color, cell: v.cell }).collect() };
+    let conv = |m: &kumite_assets::Mesh| -> Vec<StaticVertex> { m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color, cell: v.cell, normal: v.normal }).collect() };
     let sky: Vec<_> = stage.sky.iter().map(|m| r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone())).collect();
     let statics: Vec<_> = stage.meshes.iter().map(|m| r.static_mesh(&conv(m), &m.indices, tex[m.texture].clone())).collect();
 

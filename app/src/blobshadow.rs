@@ -54,7 +54,7 @@ pub fn blob(foot_a: [i32; 3], foot_b: [i32; 3], head: [i32; 3], lying: bool, col
         let (x, z) = v[k];
         // only the ridge (v0, v7) carries the colour
         let c = if k == 0 || k == 7 { [amount[0], amount[1], amount[2], 1.0] } else { [0.0, 0.0, 0.0, 1.0] };
-        StaticVertex { pos: [(mx + x) as f32 / UNITS, 0.003, -((mz + z) as f32) / UNITS], uv: [0.0; 2], color: c, cell: [0.0; 4] }
+        StaticVertex { pos: [(mx + x) as f32 / UNITS, 0.003, -((mz + z) as f32) / UNITS], uv: [0.0; 2], color: c, cell: [0.0; 4], normal: [0.0; 4] }
     };
     // the quads (0x80098A54, read from its end), each two triangles as the GPU splits a quad
     [[1, 0, 2, 3], [3, 0, 4, 7], [4, 7, 5, 6], [6, 7, 1, 0]].iter().flat_map(|q| [q[0], q[1], q[2], q[1], q[3], q[2]]).map(vertex).collect()
