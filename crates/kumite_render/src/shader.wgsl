@@ -32,7 +32,7 @@ struct Globals {
     // Tekken Tag's shadow picture: its centre's x, z (metres), 1 / its half size, the darkening (0: none)
     shadow_map: vec4<f32>,
     // Tekken Tag's floor cells: the depth limits (metres); the half size of a cell's square (x, z), 1 when on, the
-    // reach; the window (cells x, z; 0: none) and the cell's size; the window's centre (x, z), its first cell (x, z)
+    // reach; the window (cells x, z; 0: none) and the cell's size; the window's centre (x, z), the picture's aspect
     floor_levels: vec4<f32>,
     floor_cell: vec4<f32>,
     floor_window: vec4<f32>,
@@ -51,6 +51,8 @@ struct VsOut {
     @location(1) color: vec4<f32>,
     @location(2) world: vec3<f32>,
     @location(3) normal: vec3<f32>,
+    // Tekken Tag's arena: above 0 on a triangle the PS2 does not draw (a corner outside its guard band, below)
+    @location(4) dropped: f32,
 };
 
 // Standard 4-joint linear blend skinning.
@@ -122,6 +124,7 @@ fn vs_floor_shadow(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @loc
 // darkening) under each (ALPHA 0x46: Cd - Cd x As, As the arena's TA1), in the displayed colours.
 @fragment
 fn fs_floor_shadow(i: VsOut) -> @location(0) vec4<f32> {
+    if (i.dropped > 0.0) { discard; }
     let h = i.world.y - g.shadow.z;
     let p = vec2(i.world.x - h * g.shadow.x, i.world.z - h * g.shadow.y);
     let uv = vec2(0.5 + 0.5 * (p.x - g.shadow_map.x) * g.shadow_map.z, 0.5 + 0.5 * (p.y - g.shadow_map.y) * g.shadow_map.z);
@@ -189,15 +192,12 @@ fn cell_level(cell: vec4<f32>, shift: vec2<f32>) -> f32 {
     return 1.0;
 }
 
-// A Tekken Tag floor cell's move into the window (0x341218): cell j of the window's N lies at (j - N / 2) x the
-// size; a cell is moved by whole windows to the window starting at the centre's cell.
+// A Tekken Tag floor cell's move into the window (0x341218): by whole windows, to the copy nearest the window's
+// centre (its edges lie past the reach).
 fn cell_shift(cell: vec4<f32>) -> vec2<f32> {
-    let n = g.floor_window.xy;
-    if (n.x < 0.5) { return vec2(0.0); }
-    let size = g.floor_window.zw;
-    let j = round(cell.xy / size + n / 2.0);
-    let first = g.floor_centre.zw;
-    return n * ceil((first - j) / n) * size;
+    let span = g.floor_window.xy * g.floor_window.zw;
+    if (span.x <= 0.0) { return vec2(0.0); }
+    return floor((g.floor_centre.xy - cell.xy) / span + 0.5) * span;
 }
 
 // A stage mesh's vertex, moved with the floor; a floor cell's vertex of another level than its cell's, or of a cell
@@ -212,6 +212,12 @@ fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32
     if (on && (away || (cell.z > 0.5 && cell.z != cell_level(cell, shift)))) {
         o.clip = vec4(0.0, 0.0, 2.0, 1.0);
     }
+    // Tekken Tag's arena microcode does not clip: CLIPw on each corner (GS x, y in 0..4094 about the 2048 centre, 224
+    // the half height; z before 1 mm), FCAND 0x3FFFF over the triangle's three, and the ADC bit drops the triangle
+    // with a corner outside
+    let s = o.clip.xy / o.clip.w * vec2(g.floor_centre.z, 1.0);
+    let outside = o.clip.w < 0.001 || abs(s.x) > 2047.0 / 224.0 || abs(s.y) > 2047.0 / 224.0;
+    o.dropped = select(0.0, 1.0, g.floor_cell.z > 0.5 && outside);
     o.uv = uv;
     o.color = color;
     o.world = p;
@@ -253,6 +259,7 @@ fn fs_unlit(i: VsOut) -> @location(0) vec4<f32> {
 // Stage meshes: unlit, cut to the floor patch when one is set.
 @fragment
 fn fs_static(i: VsOut) -> @location(0) vec4<f32> {
+    if (i.dropped > 0.0) { discard; }
     let c = g.floor_clip;
     if (c.x < c.y && (i.world.x < c.x || i.world.x > c.y || i.world.z < c.z || i.world.z > c.w)) { discard; }
     // walls between the camera and the fight are cut away: above the floor, inside a 2 m tube around the line from
@@ -398,12 +405,14 @@ fn fs_particle_soft_add(i: VsOut) -> @location(0) vec4<f32> {
 // multiply what is behind by As (vertex alpha x texture alpha, 0x80 = 1).
 @fragment
 fn fs_stage_add(i: VsOut) -> @location(0) vec4<f32> {
+    if (i.dropped > 0.0) { discard; }
     let t = textureSample(tex, samp, i.uv);
     return vec4(t.rgb * i.color.rgb * t.a * i.color.a, 0.0);
 }
 
 @fragment
 fn fs_stage_shade(i: VsOut) -> @location(0) vec4<f32> {
+    if (i.dropped > 0.0) { discard; }
     let t = textureSample(tex, samp, i.uv);
     return vec4(0.0, 0.0, 0.0, t.a * i.color.a);
 }
