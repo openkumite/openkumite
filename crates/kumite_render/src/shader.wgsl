@@ -52,6 +52,8 @@ struct Globals {
     grass_grid: vec4<f32>,
     grass_info: vec4<f32>,
     grass: array<vec4<f32>, 289>,
+    // OpenKumite's enhancements: x 1 soft shadows
+    enhance: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var tex: texture_2d<f32>;
@@ -144,10 +146,19 @@ fn fs_floor_shadow(i: VsOut) -> @location(0) vec4<f32> {
     let h = i.world.y - g.shadow.z;
     let p = vec2(i.world.x - h * g.shadow.x, i.world.z - h * g.shadow.y);
     let uv = vec2(0.5 + 0.5 * (p.x - g.shadow_map.x) * g.shadow_map.z, 0.5 + 0.5 * (p.y - g.shadow_map.y) * g.shadow_map.z);
+    var f = shadow_at(uv);
+    if (g.enhance.x > 0.5) {
+        // (OpenKumite's soft shadows: the factor averaged over four filtered taps 3 cm apart)
+        let d = 0.5 * 0.015 * g.shadow_map.z;
+        f = 0.25 * (shadow_at(uv + vec2(-d, -d)) + shadow_at(uv + vec2(d, -d)) + shadow_at(uv + vec2(-d, d)) + shadow_at(uv + vec2(d, d)));
+    }
+    return vec4(select(srgb_to_linear(vec3(f)), vec3(f), g.gamma.x > 0.5), 1.0);
+}
+
+fn shadow_at(uv: vec2<f32>) -> f32 {
     let c = textureSample(tex, samp, clamp(uv, vec2(0.0), vec2(1.0)));
     let a = g.shadow_map.w * f32(all(uv >= vec2(0.0)) && all(uv <= vec2(1.0)));
-    let f = (1.0 - a * c.r) * (1.0 - a * c.g) * (1.0 - a * c.b) * (1.0 - a * c.a);
-    return vec4(select(srgb_to_linear(vec3(f)), vec3(f), g.gamma.x > 0.5), 1.0);
+    return (1.0 - a * c.r) * (1.0 - a * c.g) * (1.0 - a * c.b) * (1.0 - a * c.a);
 }
 
 @fragment

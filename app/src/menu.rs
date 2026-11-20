@@ -1943,7 +1943,7 @@ pub struct GraphicsMenu {
     done: bool,
 }
 
-const GRAPHICS_ROWS: usize = 13;
+const GRAPHICS_ROWS: usize = 14;
 /// The rows shown at once.
 const GRAPHICS_SHOWN: usize = 10;
 /// The TEXTURES row's values.
@@ -1990,6 +1990,7 @@ impl GraphicsMenu {
             ("LOOK", Some(g.enhance.look().label().to_string())),
             ("ANTI-ALIASING", Some(if g.enhance.msaa > 1 { format!("{}X", g.enhance.msaa) } else { "OFF".to_string() })),
             ("TEXTURES", Some(TEXTURES[texture_filter(g)].to_string())),
+            ("SHADOWS", Some(if g.enhance.soft_shadows { "SOFT" } else { "ORIGINAL" }.to_string())),
             ("HUD", Some(if g.enhance.wide_hud { "WIDE" } else { "4:3" }.to_string())),
             ("RECOMMENDED", None),
             ("DEFAULT", None),
@@ -2019,8 +2020,8 @@ impl GraphicsMenu {
                 self.done = true;
             }
             // RECOMMENDED / DEFAULT: the settings chosen for the screen and the GPU, or the defaults
-            Key::Start | Key::Button(_) if matches!(self.cursor, 10 | 11) => {
-                let p = if self.cursor == 10 { crate::graphics::Preset::Recommended } else { crate::graphics::Preset::Default };
+            Key::Start | Key::Button(_) if matches!(self.cursor, 11 | 12) => {
+                let p = if self.cursor == 11 { crate::graphics::Preset::Recommended } else { crate::graphics::Preset::Default };
                 self.settings = self.display.preset_over(p, &self.settings);
                 sfx::play(sfx::confirm());
                 return Some(Outcome::Graphics(self.settings.clone()));
@@ -2066,7 +2067,8 @@ impl GraphicsMenu {
                         g.enhance.msaa = counts[step(i, counts.len(), right)];
                     }
                     8 => (g.smooth_textures, g.enhance.mipmaps) = [(false, false), (true, false), (false, true)][step(texture_filter(g), 3, right)],
-                    9 => g.enhance.wide_hud = !g.enhance.wide_hud,
+                    9 => g.enhance.soft_shadows = !g.enhance.soft_shadows,
+                    10 => g.enhance.wide_hud = !g.enhance.wide_hud,
                     _ => return None,
                 }
                 sfx::play(sfx::cursor());

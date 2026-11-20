@@ -301,6 +301,8 @@ struct Globals {
     grass_grid: [f32; 4],
     grass_info: [f32; 4],
     grass: [[f32; 4]; GRASS],
+    // OpenKumite's enhancements: x 1 soft shadows
+    enhance: [f32; 4],
 }
 
 /// Eddy's grass lattice's corners at most (17 x 17).
@@ -382,11 +384,13 @@ pub struct RenderSettings {
     pub msaa: u32,
     /// Textures made from now on have mipmaps (3 levels), drawn trilinear and 16x anisotropic.
     pub mipmaps: bool,
+    /// Tekken Tag's shadows soft: their picture finer, its edge averaged over 3 cm.
+    pub soft_shadows: bool,
 }
 
 impl Default for RenderSettings {
     fn default() -> Self {
-        Self { scale: 1.0, vsync: true, smooth_textures: false, msaa: 1, mipmaps: false }
+        Self { scale: 1.0, vsync: true, smooth_textures: false, msaa: 1, mipmaps: false, soft_shadows: false }
     }
 }
 
@@ -467,6 +471,8 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Tekken Tag's shadow picture: its texels a side, and the half size of the floor it covers (metres).
 const SHADOW_MAP: u32 = 1024;
+/// ... with soft shadows ([`RenderSettings::soft_shadows`]).
+const SHADOW_MAP_SOFT: u32 = 2048;
 const SHADOW_HALF: f32 = 6.0;
 /// Mipmapped textures' levels: the texels and three halvings (more would blend an atlas's parts together).
 const MIPS: u32 = 4;
@@ -735,16 +741,7 @@ impl Renderer {
         let line_layout = layout(&[Some(&globals_layout)]);
         let tri = wgpu::PrimitiveTopology::TriangleList;
         // Tekken Tag's: a fighter a channel (its triangles cover it once, however they overlap), no depth
-        let shadow_map = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("shadow picture"),
-            size: wgpu::Extent3d { width: SHADOW_MAP, height: SHADOW_MAP, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
+        let (shadow_map, shadow_map_group) = shadow_picture(&device, &texture_layout, &sampler_smooth, SHADOW_MAP);
         let shadow_map_pipelines = [wgpu::ColorWrites::RED, wgpu::ColorWrites::GREEN, wgpu::ColorWrites::BLUE, wgpu::ColorWrites::ALPHA]
             .map(|write_mask| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -765,17 +762,6 @@ impl Renderer {
                 })
             })
             .to_vec();
-        let shadow_map_group = {
-            let view = shadow_map.create_view(&Default::default());
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &texture_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler_smooth) },
-                ],
-            })
-        };
         // the 3D pass's pipelines for a colour target format and a sample count (kept: anti-aliasing changes it)
         let (dev, reload_layout) = (device.clone(), blit_layout.clone());
         let make_pipes = move |format: wgpu::TextureFormat, samples: u32| -> Pipes {
@@ -969,6 +955,10 @@ impl Renderer {
         let s = RenderSettings { scale: s.scale.clamp(0.1, 4.0), msaa, ..s };
         if s.msaa != self.settings.msaa {
             self.pipes = [(self.make_pipes)(self.frame_format, msaa), (self.make_pipes)(self.overlay_format(), msaa)];
+        }
+        if s.soft_shadows != self.settings.soft_shadows {
+            let side = if s.soft_shadows { SHADOW_MAP_SOFT } else { SHADOW_MAP };
+            (self.shadow_map, self.shadow_map_group) = shadow_picture(&self.device, &self.texture_layout, &self.sampler_smooth, side);
         }
         if s.vsync != self.settings.vsync {
             self.config.present_mode = if s.vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
@@ -1453,6 +1443,7 @@ impl Renderer {
             grass_info: cam.grass.map_or([0.0; 4], |l| [l.row as f32, l.rows as f32, l.size, 1.0]),
             grass: cam.grass.map_or([[0.0; 4]; GRASS], |l| l.moves),
             fog_line: cam.fog.map_or([0.0; 4], |(_, l)| [l[0], l[1], 0.0, 1.0]),
+            enhance: [f32::from(u8::from(self.settings.soft_shadows)), 0.0, 0.0, 0.0],
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
 
@@ -1901,6 +1892,27 @@ fn halve(w: u32, h: u32, px: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         o[3] = (a / 4) as u8;
     }
     Some((nw, nh, out))
+}
+
+/// Tekken Tag's shadow picture of `side` texels a side, and its bind group.
+fn shadow_picture(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, side: u32) -> (wgpu::Texture, wgpu::BindGroup) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("shadow picture"),
+        size: wgpu::Extent3d { width: side, height: side, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) }],
+    });
+    (texture, group)
 }
 
 fn make_offscreen(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::Texture {
