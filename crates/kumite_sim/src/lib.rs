@@ -950,7 +950,7 @@ impl Fighter {
         if t == TRANSITION_GETUP {
             self.getup_lock = 24;
         }
-        self.jump_home = (gd.tag_moves && matches!(t, 0x10 | 0x12 | 0x13)).then_some(None);
+        self.jump_home = (self.tag_rules(gd) && matches!(t, 0x10 | 0x12 | 0x13)).then_some(None);
         // facing: bit 7 turns around first; END and buffered links add the old animation's net turn (+0x12)
         if t != 0x11 {
             self.turn = turn;
@@ -964,7 +964,7 @@ impl Fighter {
         if (end || buffered) && t != 0x22 && old_turn != 0 {
             // the game's angles run the other way round on OpenKumite's flipped z (Tekken Tag's 0x36AA48 adds +0x12
             // to +0x3C); shortcut: Tekken 3 keeps its sign, as its turns are mostly half a turn, until checked there
-            let turn = if gd.tag_moves { -(old_turn as f32) } else { old_turn as f32 };
+            let turn = if self.tag_rules(gd) { -(old_turn as f32) } else { old_turn as f32 };
             self.yaw += turn * ANGLE;
             self.root_yaw = self.yaw;
         }
@@ -1070,7 +1070,7 @@ impl Fighter {
         }
         // Tekken Tag keeps the opponent's root (+0x110 / +0x114 from the other's +0x51C, 0x36A814): a ground roll's
         // basis turns toward where the opponent was
-        self.commit_root = if gd.tag_moves { self.opponent.root } else { self.root() };
+        self.commit_root = if self.tag_rules(gd) { self.opponent.root } else { self.root() };
         self.lateral = 0.0;
         if self.mode == 0xA {
             let (anim, _) = self.animation(gd);
@@ -1378,6 +1378,12 @@ impl Fighter {
         self.position + self.offset
     }
 
+    /// Tekken Tag's move rules (`GameData::tag_moves`) for its own fighters; Tekken 3's crossover fighters (bodies 34
+    /// on, the Tekken 3 slice) keep Tekken 3's, which their lists were made for.
+    fn tag_rules(&self, gd: &GameData) -> bool {
+        gd.tag_moves && self.character.is_some_and(|c| c < 34)
+    }
+
     /// The current move's END link (its list's END entry), without trying the other entries.
     fn end_link(&self, gd: &GameData) -> Option<usize> {
         let mv = self.current_move(gd);
@@ -1447,7 +1453,7 @@ impl Fighter {
             // END destination's own list is buffered and takes over at the window's first frame; Tekken Tag tries
             // that list inside the window with or without a press (0x368F78)
             let early = self.early_end.is_some_and(|f| self.frame >= f);
-            let open = gd.tag_moves && self.frame >= e.win_start;
+            let open = self.tag_rules(gd) && self.frame >= e.win_start;
             if (self.frame + 5 >= e.win_start || early) && self.frame <= e.win_end && (self.input.pressed != 0 || open) {
                 if let Some(dest) = self.resolve(e.dest) {
                     // the next list's back-turned conditions see the facing after this animation's net turn
@@ -1559,9 +1565,9 @@ impl Fighter {
         let ok = match c.kind {
             CancelKind::Command => self.input.matches_command(c.cmd),
             CancelKind::Sequence => {
-                gd.shared.sequences.entries.iter().find(|s| s.cmd == c.cmd).is_some_and(|s| if gd.tag_moves { self.input.matches_tag_sequence(s) } else { self.input.matches_sequence(s) })
+                gd.shared.sequences.entries.iter().find(|s| s.cmd == c.cmd).is_some_and(|s| if self.tag_rules(gd) { self.input.matches_tag_sequence(s) } else { self.input.matches_sequence(s) })
             }
-            CancelKind::Dash | CancelKind::Backdash if gd.tag_moves => self.input.matches_tag_dash(c.kind == CancelKind::Dash),
+            CancelKind::Dash | CancelKind::Backdash if self.tag_rules(gd) => self.input.matches_tag_dash(c.kind == CancelKind::Dash),
             CancelKind::Dash => self.input.matches_dash(true),
             CancelKind::Backdash => self.input.matches_dash(false),
             _ => false,
@@ -1708,7 +1714,7 @@ impl Fighter {
         let (a2a, _, _) = self.geometry();
         let off = wrap_pi(a2a - self.yaw) / ANGLE;
         // Tekken Tag: +0x3E is an s16, so half a turn is -0x8000 (back turned right, 0x29)
-        let off = if gd.tag_moves { off.round() as i32 as i16 as f32 } else { off };
+        let off = if self.tag_rules(gd) { off.round() as i32 as i16 as f32 } else { off };
         let back = off.abs() > 0x4000 as f32;
         let quadrant_of = |off: f32| ((off + 0x2000 as f32).rem_euclid(65536.0) / 0x4000 as f32) as u32;
         let quadrant = quadrant_of(off);
