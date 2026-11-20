@@ -1293,3 +1293,33 @@ fn tekken_bowl_from_the_pack() {
     assert!(cards[0].rolls[0] >= 5, "{cards:?}");
     assert_eq!(hashes, play().0);
 }
+
+/// The fingers (hands.rs): by the fight both stances have set kind 2 (op 0x11), their characters' own shapes (pose
+/// 17: Paul's fight fist, Xiaoyu's open palms), eased in from the model's open hands.
+#[test]
+fn fingers_take_the_poses() {
+    let Some(root) = std::env::var_os("OK_TTT_ASSETS") else {
+        eprintln!("skipped: OK_TTT_ASSETS (a Tekken Tag assets/ folder) is not set");
+        return;
+    };
+    let a = Assets::new(std::path::Path::new(&root)).unwrap();
+    let mut b = Bout::new(Game::load(&a, [PAUL, XIAOYU]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    for _ in 0..600 {
+        if b.phase == Phase::Fight {
+            break;
+        }
+        b.step([Pad::default(); 2]);
+    }
+    for _ in 0..60 {
+        b.step([Pad::default(); 2]);
+    }
+    let g = &b.game;
+    let off = |i: usize, pose: usize| {
+        let p = g.bodies[i].hands.as_ref().expect("the hands");
+        let t = g.hands[i].turns.expect("drawn");
+        (0..2).flat_map(|h| (0..15).map(move |k| (h, k))).map(|(h, k)| t[h][k].angle_between(p.poses[pose][h][k])).fold(0.0f32, f32::max)
+    };
+    for i in 0..2 {
+        assert!(off(i, 17) < 0.01 && off(i, 0) > 0.5, "fighter {i}: {} off its shape, {} off open", off(i, 17), off(i, 0));
+    }
+}

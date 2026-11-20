@@ -67,6 +67,9 @@ pub struct Dialect {
     pub fixed: Aliases,
 }
 
+/// Tekken Tag's timed hand op v (its 0x0F + v: v >> 5 the hands, 0 both; v & 31 the kind) is this + v (no Tekken 3 op).
+pub const HAND_OPS: u32 = 0x100;
+
 /// Tekken Tag Tournament (FIGHT_DATA.md sections 1, 2, 5, 7, 8).
 pub static TTT: Dialect = Dialect {
     // 0-0x24 kept; 0x25 not back turned; Tekken 3's 0x25-0x44 are 3 up; 0x5C off screen; reversals from 0x60 (Tekken
@@ -243,7 +246,8 @@ pub fn load(gamedata: &Path, rules: &serde_json::Value) -> Result<GameData> {
     }
     let mut moves: Vec<data::Move> = serde_json::from_value(moves["moves"].take()).context("moves.json")?;
     let map_bits = |raw: u32| d.flag_bits.iter().filter(|b| raw >> b.0 & 1 != 0).fold(0, |a, b| a | 1 << b.1);
-    let op = |o: u32| d.ops.iter().find(|p| p.0 == o).map(|p| p.1);
+    // (the hand ops, Tekken Tag's 0x0F + v with v & 31 below 10, as HAND_OPS + v: the game layer's)
+    let op = |o: u32| d.ops.iter().find(|p| p.0 == o).map(|p| p.1).or_else(|| o.checked_sub(0x0F).filter(|v| *v < 0x60 && v & 31 < 10).map(|v| HAND_OPS + v));
     for m in &mut moves {
         m.flags24.raw = map_bits(m.flags24.raw);
         if let Some(ps) = m.properties.as_mut() {

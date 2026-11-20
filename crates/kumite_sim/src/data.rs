@@ -426,4 +426,16 @@ pub struct ModelEntry {
     pub glb: String,
     pub moveset_file: String,
     pub moveset_id: i64,
+    /// Tekken Tag: its hands (the game layer's `hands`).
+    #[serde(default)]
+    pub hands: Option<HandsEntry>,
+}
+
+/// A Tekken Tag model's hands: `file` its poses (characters/), `default` the kind the load eases both hands to and
+/// op kind 9 means (0x416BA0), `ops` whether the hand ops move them (True Ogre's move his wings instead).
+#[derive(Clone, Debug, Deserialize)]
+pub struct HandsEntry {
+    pub file: String,
+    pub default: u32,
+    pub ops: bool,
 }
