@@ -56,6 +56,40 @@ impl FaceData {
     }
 }
 
+/// Tekken Tag's wings (0x3632E0, every frame for True Ogre and Devil): `state` (+0xB052: 0 folded, 1 open, 2 beating;
+/// in a fight 1 while airborne and not juggled, 0x370C94; ending op 28 sets it) runs the frames of their track: opening
+/// 0-16 (list 0x4161A0), a beat 18-46 (0x4161B8), back to 16 and down to 0 to fold.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WingState {
+    pub state: i32,
+    beating: bool,
+    step: i32,
+    /// The track's frame shown (+0xB058).
+    pub frame: usize,
+}
+
+/// The opening's last step and the beat's (lists 0x4161A0 = 0..=16, 0x4161B8 = 18..=46, each ended by 0xFF).
+const OPENING: i32 = 16;
+const BEAT: i32 = 28;
+
+impl WingState {
+    /// One frame.
+    pub fn step(&mut self) {
+        match (self.state, self.beating) {
+            (3, _) => {}
+            (0, false) => self.step = (self.step - 1).max(0),
+            (_, false) if self.step == OPENING => (self.beating, self.step) = (true, 0),
+            (_, false) => self.step += 1,
+            // (held open: a beat under way runs to its end, then stays on its first frame)
+            (1, true) if self.step != 0 => self.step = if self.step == BEAT { 0 } else { self.step + 1 },
+            (1, true) => {}
+            (_, true) if self.step == BEAT => (self.beating, self.step) = (false, OPENING),
+            (_, true) => self.step += 1,
+        }
+        self.frame = (if self.beating { 18 + self.step } else { self.step }) as usize;
+    }
+}
+
 /// A fighter's face state.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Face {
@@ -102,6 +136,27 @@ impl Face {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wings_open_beat_and_fold() {
+        let mut w = WingState::default();
+        let run = |w: &mut WingState, state: i32, n: usize| -> Vec<usize> {
+            w.state = state;
+            (0..n)
+                .map(|_| {
+                    w.step();
+                    w.frame
+                })
+                .collect()
+        };
+        // opening: 1..=16, then the beat's first frame, held
+        assert_eq!(run(&mut w, 1, 19), [(1..=16).collect::<Vec<_>>(), vec![18, 18, 18]].concat());
+        // beating: 19..=46, back to 16, then the beat again
+        assert_eq!(run(&mut w, 2, 31), [(19..=46).collect::<Vec<_>>(), vec![16, 18, 19]].concat());
+        // folding: the beat to its end, then 16 down to 0
+        let fold = run(&mut w, 0, 60);
+        assert_eq!((&fold[..2], fold[26], fold[27], *fold.last().unwrap()), (&[20, 21][..], 46, 16, 0));
+    }
 
     #[test]
     fn blinks_four_frames_shut() {

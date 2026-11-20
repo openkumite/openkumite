@@ -17,10 +17,10 @@
 //! set of the scene's own or none (0x3D85D8, [`EndingScene::people`]); the EMBU's screen films from farther
 //! ([`EndingScene::camera`]) and turns the arena half round.
 //!
-//! Op 25 puts an arena's object in a hand ([`EndingScene::props`]). Op 12 shows Jin's mark (his texture channel 0's frame 0, [`EndingScene::marks`]).
+//! Op 28 opens, beats and folds True Ogre's and Devil's wings. Op 25 puts an arena's object in a hand ([`EndingScene::props`]). Op 12 shows Jin's mark (his texture channel 0's frame 0, [`EndingScene::marks`]).
 //!
 //! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 15 (True
-//! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 28 (True Ogre's and Devil's wings, +0xB052), 30 (objects 0x3ACF50), 32 (gp-0x6E78); the EMBU's 7-11; ops 17 / 18 at nodes 0x4000-0x4002
+//! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 30 (objects 0x3ACF50), 32 (gp-0x6E78); the EMBU's 7-11; ops 17 / 18 at nodes 0x4000-0x4002
 //! (op 25's prop matrix 0x444CD0, 20 objects 0x3ACCD0); the face track (its joints are not mapped).
 
 use crate::UNITS;
@@ -173,6 +173,8 @@ pub struct EndingScene {
     ranges: [Option<(i32, i32, i32)>; 2],
     /// Per actor slot: its texture channel shows frame 0, Jin's mark (op 12; a cast member put in shows frame 1, 0x3A82C8).
     pub marks: [bool; 2],
+    /// Per actor slot: its wings (op 28), stepped every frame.
+    wings: [crate::face::WingState; 2],
     /// The music started (the EMBU's op 13: its BGM).
     pub music: Option<usize>,
     /// The bursts thrown this frame.
@@ -253,6 +255,7 @@ impl EndingScene {
             slots: [(None, 0); 2],
             ranges: [None; 2],
             marks: [false; 2],
+            wings: Default::default(),
             music: None,
             bursts: Vec::new(),
             objects: Vec::new(),
@@ -316,11 +319,16 @@ impl EndingScene {
                 }
                 // slot a & 1's texture channel 0 to frame 1 (b = 0) or 0 (0x3AB924)
                 12 => self.marks[(a & 1) as usize] = b != 0,
+                // slot a & 1's wings to state b (0x3AB8D0: True Ogre's and Devil's +0xB052)
+                28 => self.wings[(a & 1) as usize].state = b,
                 21..=24 => self.objects.push((c, op, a, b, last)),
                 25 => self.props.push((c, a, b, last)),
                 -1 => self.done = true,
                 _ => {}
             }
+        }
+        for w in &mut self.wings {
+            w.step();
         }
         let ending = self.ending.is_some() && self.camera_frame() >= self.frames().len();
         self.done |= ending || c >= MAX_FRAMES;
@@ -442,7 +450,9 @@ impl EndingScene {
                 (ch.clip(&format!("embu_{track}"))?, usize::try_from(f).ok().filter(|_| f <= to)?)
             }
         };
-        Some((m, ch.pose(clip, frame, false), self.turn()))
+        let mut pose = ch.pose(clip, frame, false);
+        ch.pose_wings(&mut pose, self.wings.get(s).map_or(0, |w| w.frame));
+        Some((m, pose, self.turn()))
     }
 
     /// The EMBU's screen (11) draws the arena turned half round (0x36712C: its matrix 0x8794A0 a turn of pi about y,

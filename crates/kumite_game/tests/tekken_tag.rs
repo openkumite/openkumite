@@ -1241,6 +1241,27 @@ fn jins_mark_in_ending_13() {
     assert!(w > 0 && h > 0 && (x + w).max(sx + w) <= jin.texture.width && (y + h).max(sy + h) <= jin.texture.height);
 }
 
+/// Op 28: Devil's wings (model 663: nodes 103-108, 47 frames) open in ending 32 from frame 819.
+#[test]
+fn devils_wings_open_in_ending_32() {
+    let Some(a) = assets() else { return };
+    let devil = a.character(663).unwrap();
+    let w = devil.wings.as_ref().expect("Devil's wings (convert the game again)");
+    assert_eq!((w.nodes, w.frames.len()), ([103, 105, 107, 104, 106, 108], 47));
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    let mut s = kumite_game::ending::EndingScene::new(&a, &d, 32, 0).unwrap();
+    let mut tip = vec![];
+    while s.frame() < 840 {
+        s.step();
+        if s.frame() >= 817 {
+            let pose = s.pose(0).unwrap().1;
+            tip.push((pose[2].inverse() * pose[107]).w_axis);
+        }
+    }
+    // (the tip in the chest's frame: folded to 818, opening from 819)
+    assert!((tip[0] - tip[1]).length() < 1e-5 && (tip[1] - tip[2]).length() > 1e-4, "{tip:?}");
+}
+
 /// Op 25: in ending 20 Bryan (slot 1) holds arena 5's object 0 at his hand (node 38) for 1080 frames.
 #[test]
 fn bryans_gun_in_ending_20() {
