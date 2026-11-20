@@ -97,6 +97,8 @@ fn throws() {
 
 /// Jin's first model: Paul's partner.
 const JIN: usize = 465;
+const LEI: usize = 372;
+const HWOARANG: usize = 420;
 
 /// A tag battle, `team` against Paul and Jin, the tag button on frame 1: each frame P1's alias, its team's active
 /// member, its model, the state hash; and how many frames a fighter had no motion on.
@@ -380,7 +382,8 @@ fn force_stage(a: &Assets, player: usize, boss: bool, frames: usize) -> ForceRun
 
 /// Tekken Force under Tekken Tag (the slice's force.json): Paul and Jin (the AI playing them) fight Crow's soldiers
 /// through stage 1's first area (the camera at its second arena, 11776): the soldiers are hit and react, they hit the
-/// player, every frame on a motion; then the stage's boss (a Tekken Tag fighter, by Tekken 3's route) comes in and is
+/// player, every frame on a motion (Lei's and Hwoarang's hits make them play moves their aliases take from the
+/// player's list, on the player's motions); then the stage's boss (a Tekken Tag fighter, by Tekken 3's route) comes in and is
 /// fought; the same twice.
 #[test]
 fn force_under_tekken_tag() {
@@ -396,7 +399,7 @@ fn force_under_tekken_tag() {
         assert!(s.system(code.as_u64().unwrap() as u16).is_some_and(|x| kumite_fs::exists(&x.file)), "Force sound {code}");
     }
     assert!(s.music(f["constants"]["final"]["bgm"].as_u64().unwrap() as usize).is_some_and(|m| kumite_fs::exists(&m.file)));
-    for player in [PAUL, JIN] {
+    for player in [PAUL, JIN, LEI, HWOARANG] {
         let r = force_stage(&a, player, false, 60 * 60 * 3);
         eprintln!(
             "model {player}: progress {}, kills {}, hits {} / {} reactions, hit {} times, {} frames without a motion",

@@ -395,14 +395,19 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     // Tekken Tag (rules.json's dialect): a moveset is aliases into the common set (a crossover fighter's: its own
     // moves too), the motions are files of their own
     let tag = rules["dialect"] == "ttt";
-    let moveset = if tag {
-        kumite_sim::dialect::moveset(common, &path)?
+    // the radii are per character id (0x8003F048: 0x80096FF0[+0x18]); the roster gives the model's character
+    let roster: serde_json::Value = kumite_sim::data::load(&gd.join("roster.json")).unwrap_or_default();
+    let id = roster["selections"]["entries"].as_array().into_iter().flatten().find(|e| e["model_record"].as_u64() == Some(record as u64)).and_then(|e| e["character"].as_u64()).unwrap_or(0);
+    // (Tekken Tag's copying character has no moves of its own: it never plays them)
+    let moveset = if tag && id == COPIER as u64 {
+        None
+    } else if tag {
+        Some(kumite_sim::dialect::moveset(common, &path)?)
     } else {
         let moveset = kumite_sim::data::load::<Moveset>(&path)?;
         moveset.check(common).with_context(|| format!("{}", path.display()))?;
-        moveset
+        Some(moveset)
     };
-    let moveset = Arc::new(moveset);
     let mut character = assets.character(record)?;
     if tag {
         let list: serde_json::Value = kumite_sim::data::load(&gd.join(format!("movesets/motions_{:02}.json", entry.moveset_id)))?;
@@ -417,9 +422,6 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     }
     let hands = entry.hands.as_ref().and_then(|h| hands::Poses::new(&character, h));
     let root = character.nodes.iter().position(|n| n.parent.is_none()).context("no root node")?;
-    // the radii are per character id (0x8003F048: 0x80096FF0[+0x18]); the roster gives the model's character
-    let roster: serde_json::Value = kumite_sim::data::load(&gd.join("roster.json")).unwrap_or_default();
-    let id = roster["selections"]["entries"].as_array().into_iter().flatten().find(|e| e["model_record"].as_u64() == Some(record as u64)).and_then(|e| e["character"].as_u64()).unwrap_or(0);
     let hurt = sphere_layout(&rules["hurt_spheres"], &character, id)?;
     let push = sphere_layout(&rules["push_spheres"], &character, id)?;
     let chest = character.nodes.iter().position(|n| n.name == "head").context("no head joint")?;
@@ -434,12 +436,16 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     // and Force's player draws without a seed of the match (the same fighters every run)
     if id == COPIER as u64 {
         if let Some(e) = index.models.iter().find(|m| m.moveset_id == COPY_DEFAULT) {
+            if tag {
+                let (donor, moves) = load_body(assets, e.model_record, rules, index, common)?;
+                return Ok((copy_body(&body, &donor.character, COPY_DEFAULT), moves));
+            }
             let donor = kumite_sim::data::load::<Moveset>(&gd.join("movesets").join(&e.moveset_file))?;
             donor.check(common).with_context(|| e.moveset_file.clone())?;
             return Ok((copy_body(&body, &assets.character(e.model_record)?, COPY_DEFAULT), Arc::new(donor)));
         }
     }
-    Ok((body, moveset))
+    Ok((body, Arc::new(moveset.context("the copying character has no fighter to copy")?)))
 }
 
 /// A body ready to be swapped into a fight (Force's soldiers and bosses).
@@ -483,6 +489,10 @@ pub struct Copier {
 // shortcut: the original takes only the fighters unlocked so far; here always all (two computers online, and a
 // replay played elsewhere, must draw from the same list), upgrade if the unlocks ever travel with the match
 const COPY_POOL: [i64; 15] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16];
+/// Tekken Tag's (0x35C850: Mokujin draws among the select's slots flagged in 0x51E8A0, the unlocked ones, and takes
+/// their moveset: not Ogre, True Ogre, Roger, Devil nor Unknown; slots 16, 18-19, 21-28, 30-32 have movesets 16-26,
+/// 28-30).
+const COPY_POOL_TTT: [i64; 28] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 28, 29, 30];
 /// The moveset the fight's setup gives it before the first round's draw (0x8002A40C: its descriptor's).
 const COPY_DEFAULT: i64 = 9;
 /// The copying character's id (actor +0x18).
@@ -491,10 +501,11 @@ pub const COPIER: i64 = 15;
 const SWORD_MOVESET: i64 = 4;
 
 impl Copier {
-    fn new(assets: &Assets, own: Arc<Body>, index: &MovesetIndex) -> Self {
+    fn new(assets: &Assets, own: Arc<Body>, index: &MovesetIndex, tag: bool) -> Self {
         let mut pool: Vec<(i64, usize)> = Vec::new();
+        let draws: &[i64] = if tag { &COPY_POOL_TTT } else { &COPY_POOL };
         for m in &index.models {
-            if COPY_POOL.contains(&m.moveset_id) && !pool.iter().any(|p| p.0 == m.moveset_id) {
+            if draws.contains(&m.moveset_id) && !pool.iter().any(|p| p.0 == m.moveset_id) {
                 pool.push((m.moveset_id, m.model_record));
             }
         }
@@ -656,7 +667,7 @@ impl Game {
         }
         for i in 0..2 {
             if characters[i] == Some(COPIER) {
-                game.copiers[i] = Some(Copier::new(assets, game.bodies[i].clone(), &index));
+                game.copiers[i] = Some(Copier::new(assets, game.bodies[i].clone(), &index, game.fight.data.tag_moves));
             }
         }
         game.step_camera();
@@ -1003,7 +1014,7 @@ impl Game {
     /// What fighter `i` shows now (for the replay record).
     pub fn snapshot(&self, i: usize) -> Snapshot {
         let f = &self.fight.fighters[i];
-        Snapshot { clip: self.clip(i), partner: f.current.bank == kumite_sim::data::Bank::Partner, root: f.root(), yaw: f.yaw }
+        Snapshot { clip: self.clip(i), partner: !std::ptr::eq(self.clip_owner(i), &*self.bodies[i]), root: f.root(), yaw: f.yaw }
     }
 
     /// The camera's frame, then each fighter's side for the next one: where its pelvis falls on the screen
@@ -1260,10 +1271,19 @@ impl Game {
 
     /// The character whose clips fighter `i` is playing: its own, or the opponent's for a borrowed move.
     fn clip_owner(&self, i: usize) -> &Body {
-        if self.fight.fighters[i].current.bank == kumite_sim::data::Bank::Partner {
-            self.body_of(self.fight.opponent_index(i)).unwrap_or(&self.bodies[1 - i])
+        let other = self.body_of(self.fight.opponent_index(i)).unwrap_or(&self.bodies[1 - i]);
+        let f = &self.fight.fighters[i];
+        if f.current.bank == kumite_sim::data::Bank::Partner {
+            return other;
+        }
+        // Tekken Tag: a victim move resolved through the opponent's aliases (a crossover fighter's, Force's soldiers':
+        // Tekken 3's merged table) has its motion in the opponent's list, not its own
+        let anim = f.animation(&self.fight.data).0;
+        let own = &self.bodies[i];
+        if self.fight.data.tag_moves && own.character.clip(anim).is_none() && other.character.clip(anim).is_some() {
+            other
         } else {
-            &self.bodies[i]
+            own
         }
     }
 
@@ -1284,9 +1304,12 @@ impl Game {
             return Some(self.pose(k));
         }
         let (f, body) = (self.fight.actor(k)?, self.body_of(k)?);
-        let partner = f.current.bank == kumite_sim::data::Bank::Partner;
-        let other = if partner { self.body_of(self.fight.opponent_index(k)).unwrap_or(body) } else { body };
         let (anim, frame) = f.animation(&self.fight.data);
+        let opponent = self.body_of(self.fight.opponent_index(k)).unwrap_or(body);
+        // (a victim move's motion may be the opponent's alone, as in [`Game::clip_owner`])
+        let borrowed = self.fight.data.tag_moves && body.character.clip(anim).is_none();
+        let partner = f.current.bank == kumite_sim::data::Bank::Partner || borrowed;
+        let other = if partner { opponent } else { body };
         let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw };
         Some(shown_pose(body, other, &shown))
     }

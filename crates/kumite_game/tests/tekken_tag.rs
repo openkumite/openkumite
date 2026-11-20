@@ -283,6 +283,22 @@ fn jack2s_grab_reaches_with_the_games_joints() {
     assert!(grab.is_some_and(|k| (60..=66).contains(&k)), "the grab on frame {grab:?}");
 }
 
+/// Mokujin (no moves of his own) fights as another fighter, drawn from Tekken Tag's pool (0x35C850): he jabs.
+#[test]
+fn mokujin_fights_with_a_copied_moveset() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [540, HWOARANG]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let stance = b.game.fight.fighters[0].alias;
+    let moved = parse_script("1*2,n*20").unwrap().into_iter().any(|pad| {
+        b.step([pad, Pad::default()]);
+        b.game.fight.fighters[0].alias != stance && b.game.clip(0).is_some()
+    });
+    assert!(moved, "Mokujin did not jab");
+}
+
 /// The drawn skeleton is the game's joint places too (0x3478F0): Jack-2's knee is 390 down his thigh.
 #[test]
 fn jack2_is_drawn_with_the_games_joints() {
