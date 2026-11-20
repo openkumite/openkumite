@@ -8107,6 +8107,8 @@ Graphics (also OPTION > GRAPHICS):
   --render-scale S             the 3D scene's resolution over the window's: 0.25..2 (or 150%)
   --vsync on|off
   --textures sharp|smooth      the original's nearest texels, or filtered
+  --look original|enhanced     the original's picture, or OpenKumite's improvements (the rows below)
+  --aa off|2x|4x               anti-aliasing
   --stages arcade|ps           the arcade game's stages (where the Game data has them), or the PlayStation game's
   --graphics recommended|default
                                start from the settings chosen for the screen and the GPU, or the defaults

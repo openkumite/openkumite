@@ -309,6 +309,8 @@ struct Pipes {
     particle_add: wgpu::RenderPipeline,
     soft_alpha: wgpu::RenderPipeline,
     soft_add: wgpu::RenderPipeline,
+    /// Anti-aliased: the resolved picture drawn back into the samples (after the HUD under the fighters).
+    reload: wgpu::RenderPipeline,
 }
 
 /// RGBA texture with its bind group.
@@ -338,21 +340,27 @@ pub struct RenderSettings {
     pub vsync: bool,
     /// Textures filtered (linear) instead of the original hardware's sharp texels.
     pub smooth_textures: bool,
+    /// Anti-aliasing: the 3D scene's samples a pixel (1: none; 2 or 4, as the GPU has them).
+    pub msaa: u32,
 }
 
 impl Default for RenderSettings {
     fn default() -> Self {
-        Self { scale: 1.0, vsync: true, smooth_textures: false }
+        Self { scale: 1.0, vsync: true, smooth_textures: false, msaa: 1 }
     }
 }
 
-/// The 3D scene's own target when the render scale is not 1: colour (with a non-sRGB view for the HUD drawn
-/// under the fighters), depth, and the bind group the final pass samples it through.
+/// The 3D scene's own target when the render scale is not 1 or it is anti-aliased: colour (with a non-sRGB view for
+/// the HUD drawn under the fighters), depth, and the bind group the final pass samples it through.
 struct SceneTarget {
     size: [u32; 2],
     colour: wgpu::Texture,
     depth: wgpu::TextureView,
     group: wgpu::BindGroup,
+    /// Anti-aliased: the samples' colour and depth (their count, the pass's format), resolved into `colour`; and
+    /// `colour` as the reload reads it, through either view.
+    msaa: Option<(u32, wgpu::TextureFormat, wgpu::TextureView, wgpu::TextureView)>,
+    reload: [wgpu::BindGroup; 2],
 }
 
 pub struct SkinnedModel {
@@ -454,6 +462,10 @@ pub struct Renderer {
     /// The 3D pass's pipelines: drawing in the frame's linear colour, and (Tekken Tag's) in its sRGB bytes, so that
     /// blending and modulation happen on them as on the PS2's GS ([`Camera::gamma`]).
     pipes: [Pipes; 2],
+    /// Makes [`Renderer::pipes`] for a format and a sample count.
+    make_pipes: Box<dyn Fn(wgpu::TextureFormat, u32) -> Pipes>,
+    /// The sample counts the scene can be drawn with (1, and 2 or 4 where the GPU has them).
+    msaa_ok: Vec<u32>,
     /// Tekken Tag's shadows (0x340E28): each fighter's silhouette along the light into a channel of a picture of the
     /// floor's plane around the camera's target, then the floor drawn again darkened where the picture covers it.
     shadow_map: wgpu::Texture,
@@ -514,7 +526,10 @@ impl Renderer {
         let adapter_name = format!("{} ({:?})", info.name, info.backend);
         // (in a browser, WebGL2's limits so it runs on either WebGPU or WebGL2)
         let base = if cfg!(target_arch = "wasm32") { wgpu::Limits::downlevel_webgl2_defaults() } else { wgpu::Limits::downlevel_defaults() };
-        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor { label: Some("openkumite"), required_limits: base.using_resolution(adapter.limits()), ..Default::default() }).await?;
+        // (2x anti-aliasing, where the adapter has it, needs its own formats' features)
+        let required_features = adapter.features() & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        let (device, queue) =
+            adapter.request_device(&wgpu::DeviceDescriptor { label: Some("openkumite"), required_features, required_limits: base.using_resolution(adapter.limits()), ..Default::default() }).await?;
         let max = device.limits().max_texture_dimension_2d;
         let (width, height) = (width.clamp(1, max), height.clamp(1, max));
         let config = match &surface {
@@ -660,9 +675,7 @@ impl Renderer {
         let static_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4];
         use wgpu::CompareFunction::{Always, Less, LessEqual};
         let skin_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<SkinVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &skin_attrs }];
-        let static_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<StaticVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &static_attrs }];
         let line_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
-        let line_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<LineVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &line_attrs }];
         let line_layout = layout(&[Some(&globals_layout)]);
         let tri = wgpu::PrimitiveTopology::TriangleList;
         // Tekken Tag's: a fighter a channel (its triangles cover it once, however they overlap), no depth
@@ -707,8 +720,13 @@ impl Renderer {
                 ],
             })
         };
-        // the 3D pass's pipelines for a colour target format
-        let pipes = |format: wgpu::TextureFormat| -> Pipes {
+        // the 3D pass's pipelines for a colour target format and a sample count (kept: anti-aliasing changes it)
+        let (dev, reload_layout) = (device.clone(), blit_layout.clone());
+        let make_pipes = move |format: wgpu::TextureFormat, samples: u32| -> Pipes {
+            let device = &dev;
+            let skin_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<SkinVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &skin_attrs }];
+            let static_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<StaticVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &static_attrs }];
+            let line_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<LineVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &line_attrs }];
             let make = |label: &str,
                         layout: &wgpu::PipelineLayout,
                         vs: &str,
@@ -718,6 +736,8 @@ impl Renderer {
                         depth_compare: wgpu::CompareFunction,
                         topology: wgpu::PrimitiveTopology,
                         blend: Option<wgpu::BlendState>| {
+                // anti-aliased, the cut-outs' edges as coverage (the alpha itself not written)
+                let coverage = samples > 1 && matches!(fs, "fs_lit" | "fs_static" | "fs_unlit");
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(label),
                     layout: Some(layout),
@@ -730,12 +750,12 @@ impl Renderer {
                         stencil: Default::default(),
                         bias: Default::default(),
                     }),
-                    multisample: Default::default(),
+                    multisample: wgpu::MultisampleState { count: samples, alpha_to_coverage_enabled: coverage, ..Default::default() },
                     fragment: Some(wgpu::FragmentState {
                         module: &shader,
                         entry_point: Some(fs),
-                        compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
+                        compilation_options: wgpu::PipelineCompilationOptions { constants: if coverage { &[("coverage", 1.0)] } else { &[] }, ..Default::default() },
+                        targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: if coverage { wgpu::ColorWrites::COLOR } else { wgpu::ColorWrites::ALL } })],
                     }),
                     multiview_mask: None,
                     cache: None,
@@ -780,6 +800,23 @@ impl Renderer {
             let floor_shadow_pipeline = make("floor shadow", &static_layout, "vs_floor_shadow", "fs_floor_shadow", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
             // blobs: the frame times the fragment's factor
             let blob_pipeline = make("blob shadows", &static_layout, "vs_world", "fs_blob", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
+            // anti-aliased: the picture so far (with the HUD drawn under the fighters) back into the samples
+            let reload = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("reload"),
+                layout: Some(&reload_layout),
+                vertex: wgpu::VertexState { module: &blit_shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                primitive: Default::default(),
+                depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH, depth_write_enabled: Some(false), depth_compare: Some(Always), stencil: Default::default(), bias: Default::default() }),
+                multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
+                fragment: Some(wgpu::FragmentState {
+                    module: &blit_shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
             Pipes {
                 skinned_pipeline,
                 skinned_blend_pipeline,
@@ -798,12 +835,22 @@ impl Renderer {
                 particle_add,
                 soft_alpha,
                 soft_add,
+                reload,
             }
         };
         // (the frame's linear colour; its sRGB bytes where it has a plain view, else the same)
         let plain = config.format.remove_srgb_suffix();
         let gamma = if plain == config.format || config.view_formats.contains(&plain) { plain } else { frame_format };
-        let pipes = [pipes(frame_format), pipes(gamma)];
+        let pipes = [make_pipes(frame_format, 1), make_pipes(gamma, 1)];
+        // the anti-aliasing the scene's formats can have (and resolve)
+        let samples_ok = |n: u32| {
+            let ok = |f: wgpu::TextureFormat, resolve: bool| {
+                let fl = adapter.get_texture_format_features(f).flags;
+                fl.sample_count_supported(n) && (!resolve || fl.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE))
+            };
+            (n == 4 || device.features().contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)) && ok(frame_format, true) && ok(gamma, true) && ok(DEPTH, false)
+        };
+        let msaa_ok = [1, 2, 4].into_iter().filter(|&n| n == 1 || samples_ok(n)).collect();
         Ok(Self {
             instance,
             surface,
@@ -827,6 +874,8 @@ impl Renderer {
             settings: RenderSettings::default(),
             scene: None,
             pipes,
+            make_pipes: Box::new(make_pipes),
+            msaa_ok,
             shadow_map,
             shadow_map_group,
             shadow_map_pipelines,
@@ -858,7 +907,11 @@ impl Renderer {
 
     /// Change how frames are drawn: the render scale, vsync (the surface reconfigured), the texture filter.
     pub fn set_settings(&mut self, s: RenderSettings) {
-        let s = RenderSettings { scale: s.scale.clamp(0.1, 4.0), ..s };
+        let msaa = self.msaa_ok.iter().copied().filter(|&n| n <= s.msaa).max().unwrap_or(1);
+        let s = RenderSettings { scale: s.scale.clamp(0.1, 4.0), msaa, ..s };
+        if s.msaa != self.settings.msaa {
+            self.pipes = [(self.make_pipes)(self.frame_format, msaa), (self.make_pipes)(self.overlay_format(), msaa)];
+        }
         if s.vsync != self.settings.vsync {
             self.config.present_mode = if s.vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
             if let Some(surface) = &self.surface {
@@ -868,10 +921,11 @@ impl Renderer {
         self.settings = s;
     }
 
-    /// The scene's target for the render scale (None at 1: the frame itself), made or remade for its size.
-    fn scene_target(&mut self) -> Option<&SceneTarget> {
-        let scale = self.settings.scale;
-        if (scale - 1.0).abs() < 1e-3 {
+    /// The scene's target for the render scale and the anti-aliasing drawn in `format` (None at 1 without: the frame
+    /// itself), made or remade for its size.
+    fn scene_target(&mut self, format: wgpu::TextureFormat) -> Option<&SceneTarget> {
+        let (scale, samples) = (self.settings.scale, self.settings.msaa);
+        if (scale - 1.0).abs() < 1e-3 && samples == 1 {
             self.scene = None;
             return None;
         }
@@ -904,9 +958,31 @@ impl Renderer {
                 })
                 .create_view(&Default::default());
             // a lower resolution shows its pixels (nearest); a higher one is averaged down (linear)
-            let sampler = if scale < 1.0 { &self.blit_nearest } else { &self.blit_linear };
+            let sampler = if scale <= 1.0 { &self.blit_nearest } else { &self.blit_linear };
             let group = self.bind(&colour.create_view(&Default::default()), sampler);
-            self.scene = Some(SceneTarget { size, colour, depth, group });
+            let reload = [colour.create_view(&Default::default()), colour.create_view(&wgpu::TextureViewDescriptor { format: Some(overlay[0]), ..Default::default() })]
+                .map(|v| self.bind(&v, &self.blit_nearest));
+            self.scene = Some(SceneTarget { size, colour, depth, group, msaa: None, reload });
+        }
+        let t = self.scene.as_mut()?;
+        if samples == 1 {
+            t.msaa = None;
+        } else if t.msaa.as_ref().is_none_or(|m| m.0 != samples || m.1 != format) {
+            let make = |label, format| {
+                self.device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some(label),
+                        size: wgpu::Extent3d { width: t.size[0], height: t.size[1], depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: samples,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            };
+            t.msaa = Some((samples, format, make("scene samples", format), make("scene samples depth", DEPTH)));
         }
         self.scene.as_ref()
     }
@@ -1304,10 +1380,12 @@ impl Renderer {
         // the 3D (and the HUD under the fighters) into the scene's target at the render scale, or the frame
         let overlay_format = self.overlay_format();
         let smooth = self.settings.smooth_textures;
-        let scene = self.scene_target().map(|t| {
+        let scene = self.scene_target(if gamma { overlay_format } else { self.frame_format }).map(|t| {
             let ov = wgpu::TextureViewDescriptor { format: Some(overlay_format), ..Default::default() };
             (t.colour.create_view(&Default::default()), t.colour.create_view(&ov), t.depth.clone(), t.size)
         });
+        // anti-aliased: the passes draw into the samples, resolved into the scene's target
+        let msaa = self.scene.as_ref().and_then(|t| t.msaa.as_ref().map(|m| (m.2.clone(), m.3.clone(), t.reload[usize::from(gamma)].clone())));
         let pipes = &self.pipes[usize::from(gamma)];
         let view_tex = match &scene {
             Some(s) if gamma => s.1.clone(),
@@ -1322,6 +1400,10 @@ impl Renderer {
             None => frame_view.clone(),
         };
         let depth_view = scene.as_ref().map_or_else(|| self.depth.clone(), |s| s.2.clone());
+        let (resolved, view_tex, depth_view) = match &msaa {
+            Some((c, d, _)) => (Some(view_tex), c.clone(), d.clone()),
+            None => (None, view_tex, depth_view),
+        };
         let line_buf = (!lines.is_empty()).then(|| self.buffer(bytemuck::cast_slice(lines), wgpu::BufferUsages::VERTEX));
         let blobs = std::mem::take(&mut self.blobs);
         let blob_buf = (!blobs.is_empty()).then(|| (self.buffer(bytemuck::cast_slice(&blobs), wgpu::BufferUsages::VERTEX), blobs.len() as u32));
@@ -1391,6 +1473,23 @@ impl Renderer {
                 multiview_mask: None,
             })
             .forget_lifetime()
+        };
+        // the samples resolved into the scene's target
+        let resolve = |enc: &mut wgpu::CommandEncoder| {
+            let Some(target) = &resolved else { return };
+            enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("resolve"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view_tex,
+                    depth_slice: None,
+                    resolve_target: Some(target),
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
         };
         // (a drum drawn first is no model over the floor: a wall, a drum around the camera)
         let sky_depth = cam.sky_depth && !cam.sky_first;
@@ -1463,9 +1562,16 @@ impl Renderer {
         }
         // the 2D drawn behind the fighters, then the fighters over it
         if let Some(o) = overlay.as_deref_mut() {
+            resolve(&mut enc);
             match &scene {
                 Some((_, ov, _, size)) => o.draw_under(&self.device, &self.queue, &mut enc, ov, *size, size[0] as f32 / self.config.width as f32),
                 None => o.draw_under(&self.device, &self.queue, &mut enc, &overlay_view()?, [self.config.width, self.config.height], 1.0),
+            }
+            if let Some((_, _, group)) = &msaa {
+                let mut pass = begin(&mut enc, ("reload", wgpu::LoadOp::Load, wgpu::LoadOp::Load));
+                pass.set_pipeline(&pipes.reload);
+                pass.set_bind_group(0, group, &[]);
+                pass.draw(0..3, 0..1);
             }
         }
         if map_shadow.is_some() {
@@ -1585,6 +1691,7 @@ impl Renderer {
                 stats.lines = lines.len() as u32 / 2;
             }
         }
+        resolve(&mut enc);
         // the scene to the window
         if let (Some(t), Some(_)) = (self.scene.as_ref(), &scene) {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {

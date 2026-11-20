@@ -7,6 +7,10 @@
 //! (0.25 .. 2: the 3D scene's resolution over the window's), `--vsync on|off`, `--textures sharp|smooth`,
 //! `--stats` (the video statistics: FPS, frame times, resolutions, the GPU; F10 in the game).
 //!
+//! The LOOK: ORIGINAL (the default: drawn as the original hardware does), ENHANCED (OpenKumite's improvements, all
+//! of them: [`Enhance::ENHANCED`]) or CUSTOM (some of them, chosen on its rows): `--look original|enhanced`,
+//! `--aa off|2x|4x` (anti-aliasing).
+//!
 //! Only what the display and the GPU can show is offered ([`Display`]): the monitor's video modes for full screen,
 //! window sizes that fit the screen, frames and 3D scenes within the GPU's largest texture. In a browser: a canvas
 //! in the page (sizes that fit the page) or the browser's full screen; vsync is the browser's.
@@ -310,11 +314,51 @@ pub struct Graphics {
     pub arcade_stages: bool,
     /// The video statistics in the corner (FPS, frame times, resolutions, the GPU).
     pub stats: bool,
+    /// What is drawn better than the original (none: the original's picture).
+    pub enhance: Enhance,
 }
 
 impl Default for Graphics {
     fn default() -> Self {
-        Self { display: DisplayMode::Window, resolution: [960, 720], scale: 1.0, vsync: true, smooth_textures: false, arcade_stages: true, stats: false }
+        Self { display: DisplayMode::Window, resolution: [960, 720], scale: 1.0, vsync: true, smooth_textures: false, arcade_stages: true, stats: false, enhance: Enhance::default() }
+    }
+}
+
+/// OpenKumite's improvements over the original's picture (the LOOK rows); render-only, the game the same.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Enhance {
+    /// Anti-aliasing: the 3D scene's samples a pixel (0 or 1: none; 2, 4).
+    pub msaa: u32,
+}
+
+/// The LOOK row's values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    Original,
+    Enhanced,
+    Custom,
+}
+
+impl Enhance {
+    pub const ENHANCED: Enhance = Enhance { msaa: 4 };
+
+    pub fn look(&self) -> Look {
+        match *self {
+            e if e == Enhance::default() => Look::Original,
+            e if e == Enhance::ENHANCED => Look::Enhanced,
+            _ => Look::Custom,
+        }
+    }
+}
+
+impl Look {
+    pub fn label(self) -> &'static str {
+        match self {
+            Look::Original => "ORIGINAL",
+            Look::Enhanced => "ENHANCED",
+            Look::Custom => "CUSTOM",
+        }
     }
 }
 
@@ -332,7 +376,7 @@ impl Graphics {
     }
 
     pub fn render(&self) -> kumite_render::RenderSettings {
-        kumite_render::RenderSettings { scale: self.scale, vsync: self.vsync, smooth_textures: self.smooth_textures }
+        kumite_render::RenderSettings { scale: self.scale, vsync: self.vsync, smooth_textures: self.smooth_textures, msaa: self.enhance.msaa.max(1) }
     }
 
     /// The command line's settings over these (`arg`: an option's value, `flag`: whether it is given).
@@ -368,6 +412,21 @@ impl Graphics {
         }
         if let Some(t) = arg("--textures") {
             self.smooth_textures = matches!(t.as_str(), "smooth" | "linear" | "filtered");
+        }
+        if let Some(l) = arg("--look") {
+            self.enhance = match l.as_str() {
+                "original" => Enhance::default(),
+                "enhanced" => Enhance::ENHANCED,
+                _ => anyhow::bail!("--look original|enhanced"),
+            };
+        }
+        if let Some(a) = arg("--aa") {
+            self.enhance.msaa = match a.to_lowercase().as_str() {
+                "off" | "1" | "0" => 0,
+                "2x" | "2" => 2,
+                "4x" | "4" => 4,
+                _ => anyhow::bail!("--aa off|2x|4x"),
+            };
         }
         Ok(self.sane())
     }
@@ -464,5 +523,20 @@ mod tests {
         // no such video mode: borderless
         assert_eq!(Display { modes: vec![[1280, 800]], ..hd.clone() }.recommended().display, DisplayMode::Borderless);
         assert_eq!(hd.defaults(), Graphics::default());
+    }
+
+    #[test]
+    fn the_look_follows_its_rows() {
+        let args = |list: &'static [&'static str]| {
+            let arg = move |k: &str| list.iter().position(|a| *a == k).and_then(|i| list.get(i + 1)).map(|v| v.to_string());
+            Graphics::default().with_args(arg, |_| false)
+        };
+        assert_eq!(Graphics::default().enhance.look(), Look::Original);
+        assert_eq!(args(&["--look", "enhanced"]).unwrap().enhance.look(), Look::Enhanced);
+        // a row changed: CUSTOM; anti-aliasing off is the original's
+        let g = args(&["--look", "enhanced", "--aa", "2x"]).unwrap();
+        assert_eq!((g.enhance.look(), g.render().msaa), (Look::Custom, 2));
+        assert_eq!(args(&["--aa", "off"]).unwrap().render().msaa, 1);
+        assert!(args(&["--aa", "3x"]).is_err());
     }
 }
