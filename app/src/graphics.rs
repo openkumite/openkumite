@@ -130,6 +130,16 @@ impl Gpu {
         }
     }
 
+    /// The ENHANCED look this kind of GPU draws comfortably: 4x anti-aliasing on a discrete one, 2x where fill rate
+    /// is short (integrated and mobile GPUs, a browser), none in software.
+    pub fn enhanced(self) -> Enhance {
+        match self {
+            Gpu::Discrete => Enhance::ENHANCED,
+            Gpu::Integrated | Gpu::Unknown => Enhance { msaa: 2, ..Enhance::ENHANCED },
+            Gpu::Software => Enhance { msaa: 0, ..Enhance::ENHANCED },
+        }
+    }
+
     /// The 3D scene's pixels this kind of GPU draws comfortably at 60 frames a second (the game's scenes are
     /// light: the budget is in fill rate).
     fn pixel_budget(self) -> u64 {
@@ -183,7 +193,8 @@ impl Display {
 
     /// The settings recommended for this screen and GPU: full screen at the screen's own resolution (its video
     /// mode, else borderless; in a browser the largest canvas the page holds), the largest 3D scale the GPU draws
-    /// comfortably (supersampling up to 2X), vsync on, the original's sharp textures.
+    /// comfortably (supersampling up to 2X), vsync on, the original's sharp textures, the ENHANCED look fitted to the
+    /// GPU ([`Gpu::enhanced`]).
     pub fn recommended(&self) -> Graphics {
         let mut g = Graphics::default();
         if cfg!(target_arch = "wasm32") {
@@ -204,7 +215,7 @@ impl Display {
         let pixels = f[0] as u64 * f[1] as u64;
         let budget = self.gpu.pixel_budget();
         let scale = SCALES.iter().rev().copied().find(|&s| (pixels as f64 * (s * s) as f64) <= budget as f64 && self.scale_fits(&g, s)).unwrap_or(SCALES[0]);
-        Graphics { scale, ..g }
+        Graphics { scale, enhance: self.gpu.enhanced(), ..g }
     }
 
     pub fn preset(&self, p: Preset) -> Graphics {
@@ -350,10 +361,11 @@ pub enum Look {
 impl Enhance {
     pub const ENHANCED: Enhance = Enhance { msaa: 4, mipmaps: true, wide_hud: true, soft_shadows: true };
 
-    pub fn look(&self) -> Look {
+    /// The LOOK row's value, `enhanced` the GPU's ENHANCED ([`Gpu::enhanced`]).
+    pub fn look(&self, enhanced: Enhance) -> Look {
         match *self {
             e if e == Enhance::default() => Look::Original,
-            e if e == Enhance::ENHANCED => Look::Enhanced,
+            e if e == Enhance::ENHANCED || e == enhanced => Look::Enhanced,
             _ => Look::Custom,
         }
     }
@@ -553,6 +565,9 @@ mod tests {
         // no such video mode: borderless
         assert_eq!(Display { modes: vec![[1280, 800]], ..hd.clone() }.recommended().display, DisplayMode::Borderless);
         assert_eq!(hd.defaults(), Graphics::default());
+        // the ENHANCED look fitted to the GPU
+        assert_eq!(hd.recommended().enhance.msaa, 2);
+        assert_eq!(Display { gpu: Gpu::Discrete, ..hd.clone() }.recommended().enhance, Enhance::ENHANCED);
     }
 
     #[test]
@@ -561,11 +576,13 @@ mod tests {
             let arg = move |k: &str| list.iter().position(|a| *a == k).and_then(|i| list.get(i + 1)).map(|v| v.to_string());
             Graphics::default().with_args(arg, |_| false)
         };
-        assert_eq!(Graphics::default().enhance.look(), Look::Original);
-        assert_eq!(args(&["--look", "enhanced"]).unwrap().enhance.look(), Look::Enhanced);
+        let enhanced = Gpu::Integrated.enhanced();
+        assert_eq!(Graphics::default().enhance.look(enhanced), Look::Original);
+        assert_eq!(args(&["--look", "enhanced"]).unwrap().enhance.look(enhanced), Look::Enhanced);
+        assert_eq!(enhanced.look(enhanced), Look::Enhanced);
         // a row changed: CUSTOM; anti-aliasing off is the original's
         let g = args(&["--look", "enhanced", "--aa", "2x"]).unwrap();
-        assert_eq!((g.enhance.look(), g.render().msaa), (Look::Custom, 2));
+        assert_eq!((g.enhance.look(Gpu::Discrete.enhanced()), g.render().msaa), (Look::Custom, 2));
         assert_eq!(args(&["--aa", "off"]).unwrap().render().msaa, 1);
         assert!(args(&["--aa", "3x"]).is_err());
         let g = args(&["--textures", "filtered"]).unwrap();
