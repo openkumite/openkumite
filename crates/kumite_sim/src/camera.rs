@@ -1554,7 +1554,21 @@ impl FightCamera {
     }
 
     fn sample(&mut self, p: [Sample; 2]) {
+        let last = self.samp;
         self.samp = p;
+        // Tekken Tag's (0x38EC08): x / z the position (+0x4 / +0xC), the root only in a throw or while the move's flags
+        // bits 20-21 are 1; at 2 the last frame's sample stays. shortcut: the ids 0x17-0x1A paths and the 1/4 easing
+        // they start are not ported
+        if self.data.director.is_some() {
+            for ((s, a), l) in self.samp.iter_mut().zip(&self.actors).zip(last) {
+                match a.follow {
+                    2 => (s.x, s.y, s.z) = (l.x, l.y, l.z),
+                    1 => {}
+                    _ if a.throw == 0 => (s.x, s.z) = (a.at[0], a.at[2]),
+                    _ => {}
+                }
+            }
+        }
         let [a, b] = &mut self.samp;
         if a.x == b.x && a.z == b.z {
             a.x -= 1;

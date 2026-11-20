@@ -53,6 +53,11 @@ pub struct Body {
     pub hidden: Vec<usize>,
     /// Tekken Tag: the nodes of the 18 bone slots its strikes run between ([`BONE_SLOTS`]); empty for Tekken 3.
     pub bones: Vec<usize>,
+    /// Tekken Tag: its strike slots past those ([`strike_slots`]).
+    pub extra: Vec<(usize, usize, Vec3)>,
+    /// Tekken Tag: each of those 18 slots' parent slot and its place in the parent's axes (metres), the game's
+    /// (rules.json `joints`); empty when the data has none.
+    pub joints: Vec<(usize, Vec3)>,
 }
 
 /// The joints of the bone slots, slot by slot (the arcade engine's matrix slots; Tekken Tag's converter names them so).
@@ -324,7 +329,9 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let torso = character.nodes.iter().position(|n| n.name == "chest").context("no chest joint")?;
     let pelvis = character.nodes.iter().position(|n| n.name == "pelvis").unwrap_or(root);
     let bones = if tag { BONE_SLOTS.iter().map(|&j| character.nodes.iter().position(|n| n.name == j).with_context(|| format!("no joint {j}"))).collect::<Result<_>>()? } else { Vec::new() };
-    let body = Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden: Vec::new(), bones };
+    let extra = if tag { strike_slots(id, entry.moveset_id) } else { Vec::new() };
+    let joints = if tag { joint_places(&rules["joints"], record, id) } else { Vec::new() };
+    let body = Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden: Vec::new(), bones, extra, joints };
     // the copying character: its own moveset is never played; outside a bout's rounds it stays the setup's fighter
     // shortcut: Force's bosses and the tag brawl's draw their fighter too (0x800B2770), here they keep this one,
     // and Force's player draws without a seed of the match (the same fighters every run)
@@ -432,7 +439,40 @@ fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
         pelvis: own.pelvis,
         hidden,
         bones: own.bones.clone(),
+        extra: if own.bones.is_empty() { Vec::new() } else { strike_slots(COPIER as u64, id) },
+        joints: own.joints.clone(),
     }
+}
+
+/// A body's joint places (rules.json `joints`: its model's own, else its body's): each slot's parent and place.
+fn joint_places(j: &serde_json::Value, record: usize, id: u64) -> Vec<(usize, Vec3)> {
+    let find = |key: &str, field: &str, v: u64| j[key].as_array().into_iter().flatten().find(|e| e[field].as_u64() == Some(v)).cloned();
+    let Some(set) = find("per_model", "model_record", record as u64).or_else(|| find("per_character", "character", id)) else { return Vec::new() };
+    let f = |p: &serde_json::Value, k: usize| p[k].as_f64().unwrap_or(0.0) as f32;
+    let parents = j["parents"].as_array().into_iter().flatten();
+    let places = set["places"].as_array().into_iter().flatten();
+    parents.zip(places).enumerate().map(|(s, (p, at))| (p.as_u64().map_or(s, |p| p as usize), Vec3::new(f(at, 0), f(at, 1), f(at, 2)) / UNITS)).collect()
+}
+
+/// Tekken Tag's strike slots past the 18 joints (player +0x630 + 0x50 a slot) a body has with a moveset: (slot, the
+/// joint slot it hangs on, its place in that joint's axes, metres).
+/// 0x34F3D8 puts them in before each frame's strikes (0x5F5E50): the sword fighter's (moveset 4) 22 and 23 on hand B,
+/// moveset 26's and 32's 22 on hand A, Ogre's moveset's 23 on the head of bodies 20 and 15; 0x3AFAA0 hangs body 20's
+/// 20 on its head (0x439A80).
+/// shortcut: body 20's 19 and body 17's 19 / 20 hang on joints its cloth sway turns (0x34C508) and are left out
+fn strike_slots(body: u64, moveset: i64) -> Vec<(usize, usize, Vec3)> {
+    let at = |slot, joint, [x, y, z]: [f32; 3]| (slot, joint, Vec3::new(x, y, z) / UNITS);
+    let mut out = Vec::new();
+    match moveset {
+        4 => out.extend([at(22, 10, [100.0, 0.0, 720.0]), at(23, 10, [100.0, 0.0, 360.0])]),
+        26 | 32 => out.push(at(22, 6, [100.0, 0.0, -400.0])),
+        14 if body == 20 || body == 15 => out.push(at(23, 2, [800.0, 0.0, 600.0])),
+        _ => {}
+    }
+    if body == 20 {
+        out.push(at(20, 2, [368.0, 510.0, 0.0]));
+    }
+    out
 }
 
 /// Ball's setup kept between rounds.
@@ -872,7 +912,7 @@ impl Game {
 
     /// The fighters' sides under view `v`: their pelvis's horizontal place on the screen (scaled to whole units).
     fn project_sides(&mut self, v: &View) {
-        let (eye, forward, fov) = view_camera(v);
+        let (eye, forward, _) = view_camera(v);
         let right = forward.cross(Vec3::Y).normalize_or_zero();
         let axis = right.x.datan2(right.z);
         for f in self.fight.fighters.iter_mut() {
@@ -885,10 +925,19 @@ impl Game {
             let depth = d.dot(forward);
             if depth > 1e-3 {
                 self.fight.fighters[i].side = (d.dot(right) / depth * 10000.0).round() as i32;
-                // off the screen (Tekken Tag's condition 0x5C: x >= 0x215 or < -0x14 on its 512 pixels, about 1.08 of the
-                // half width; the 4:3 view's). shortcut: the pelvis, not the three bones +0x628..+0x62C
-                let half = (fov / 2.0).tan() * 4.0 / 3.0;
-                self.fight.fighters[i].off_screen = (d.dot(right) / depth / half).abs() >= 1.08;
+            }
+            // off the screen (Tekken Tag's condition 0x5C, 0x369B98): the head's and both feet's x on its 512 pixels
+            // (0x34FD90: 256 + x * H / z, z at least 1000) all at 0x215 or more, or all below -0x14
+            let sx: Vec<f32> = [2, 14, 17]
+                .iter()
+                .filter_map(|&k| self.bodies[i].bones.get(k).and_then(|&n| pose.get(n)))
+                .map(|m| {
+                    let d = (place.transform_point3(m.w_axis.truncate()) - eye) * UNITS;
+                    256.0 + d.dot(right) * (v.h as f32 * 512.0 / 368.0) / d.dot(forward).max(1000.0)
+                })
+                .collect();
+            if sx.len() == 3 {
+                self.fight.fighters[i].off_screen = sx.iter().all(|&x| x >= 533.0) || sx.iter().all(|&x| x < -20.0);
             }
         }
     }
@@ -1381,10 +1430,36 @@ pub fn turn_head(b: &Body, pose: &mut [Mat4], local: Mat3) {
 
 /// A body's collision volumes for a pose (game units).
 pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
+    // Tekken Tag's slots (0x3AFAA0, 0x34EF20): each on its parent slot at the game's place for it, turned as the parent
+    // (the drawn skeleton's bones are other lengths for a few bodies); then the strike slots past them, those the body
+    // does not set at the origin (their matrices stay cleared)
+    let turn = |s: usize| body.bones.get(s).and_then(|&n| pose.get(n)).copied().unwrap_or(Mat4::IDENTITY);
+    let mut slots: Vec<Vec3> = Vec::with_capacity(18);
+    for s in 0..body.bones.len() {
+        let p = match body.joints.get(s) {
+            Some(&(parent, at)) if parent < s => slots.get(parent).map_or(Vec3::ZERO, |&q| q + turn(parent).transform_vector3(at)),
+            _ => turn(s).w_axis.truncate(),
+        };
+        slots.push(p);
+    }
+    let mut bones: Vec<Vec3> = slots.iter().map(|&p| place.transform_point3(p) * UNITS).collect();
+    if !bones.is_empty() {
+        bones.resize(24, Vec3::ZERO);
+    }
+    for &(slot, joint, at) in &body.extra {
+        if let (Some(&q), Some(b)) = (slots.get(joint), bones.get_mut(slot)) {
+            *b = place.transform_point3(q + turn(joint).transform_vector3(at)) * UNITS;
+        }
+    }
     let make = |layout: &[(usize, Vec3, f32, usize)]| -> Vec<Sphere> {
-        layout.iter().map(|&(node, offset, radius, zone)| Sphere { centre: (place.transform_point3(pose[node].w_axis.truncate()) + offset) * UNITS, radius, zone }).collect()
+        layout
+            .iter()
+            .map(|&(node, offset, radius, zone)| {
+                let at = body.bones.iter().position(|&n| n == node).and_then(|s| slots.get(s)).copied().unwrap_or_else(|| pose[node].w_axis.truncate());
+                Sphere { centre: (place.transform_point3(at) + offset) * UNITS, radius, zone }
+            })
+            .collect()
     };
-    let bones = body.bones.iter().map(|&n| place.transform_point3(pose[n].w_axis.truncate()) * UNITS).collect();
     BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones }
 }
 
