@@ -146,6 +146,25 @@ fn a_jump_goes_toward_the_opponent() {
     assert!((950.0..1100.0).contains(&went), "{went}");
 }
 
+/// A sidestep circles the opponent (0x370698): it leans out of the step and its origin follows the turning basis
+/// (+0x126), so Julia's u (alias 332, after her u/f and u/b) ends at (805, 722) against Hwoarang at (1007, -95) as in
+/// PCSX2, still facing him (her b then walks back, alias 65); the basis swung round the start took her past him.
+#[test]
+fn a_sidestep_circles_the_opponent() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [JULIA, HWOARANG]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut back = false;
+    for pad in parse_script("n*2,u/f*2,n*80,u/b*2,n*80,u*2,n*80,b*2,n*10").unwrap() {
+        b.step([pad, Pad::default()]);
+        back |= b.game.fight.fighters[0].alias == 65;
+    }
+    let p = b.game.fight.fighters[0].root();
+    assert!((p.x - 805.0).abs() < 80.0 && (-p.z - 722.0).abs() < 80.0 && back, "{p}, walked back {back}");
+}
+
 /// A ground roll's basis turns toward where the opponent was at its start (+0x110 from the other's root, 0x36A814):
 /// King rolls sideways off his d/f+1+4 (PCSX2: x +309, z +1105 over alias 219), not round in a circle.
 #[test]
@@ -359,6 +378,8 @@ const GUN_JACK: usize = 555;
 /// Hwoarang's first model.
 const HWOARANG: usize = 420;
 
+/// Julia's first model.
+const JULIA: usize = 480;
 /// King's first model.
 const KING: usize = 390;
 
