@@ -3062,6 +3062,8 @@ pub struct Practice {
     values: Vec<Vec<usize>>,
     /// COMMAND LIST, open over the fight in the menu's place (0x379A98).
     pub commands: Option<CommandList>,
+    /// CHAIN TRAINING's run (0x8B8010).
+    chain: Chain,
     /// The damage each side took, and the last hit's on the dummy (damage, base damage).
     total: [i32; 2],
     last: (i32, i32),
@@ -3137,6 +3139,8 @@ impl Practice {
             Key::Left | Key::Right if kind == "mode" => {
                 sfx::play(sound(d, "cursor"));
                 self.mode = (self.mode + if key == Key::Left { modes - 1 } else { 1 }) % modes;
+                // (0x379A58: a new mode starts CHAIN TRAINING again, 0x37EA08)
+                self.chain = Chain::default();
             }
             Key::Left | Key::Right => {
                 let len = row["values"].as_array().map_or(0, Vec::len);
@@ -3147,6 +3151,11 @@ impl Practice {
             }
             Key::Back => {
                 self.open = false;
+                return PracticeAction::Close;
+            }
+            Key::Start | Key::Button(_) if kind == "retry" => {
+                sfx::play(sound(d, "decide"));
+                (self.chain, self.open) = (Chain::default(), false);
                 return PracticeAction::Close;
             }
             Key::Start | Key::Button(_) if kind == "commands" => {
@@ -3166,6 +3175,134 @@ impl Practice {
             }
         }
         PracticeAction::None
+    }
+}
+
+/// CHAIN TRAINING's run (0x37EB04, `practice.chain`): its state (0 the start, 1 READY!, 2 the moves, 3 the end),
+/// the move, the time (frames) and the state's frames left.
+#[derive(Clone, Debug, Default)]
+struct Chain {
+    state: u8,
+    at: usize,
+    time: u32,
+    timer: u32,
+}
+
+/// CHAIN TRAINING: the moves of `body`'s command list whose training entry has +6 set (0x37D0F8: at most 128).
+fn chain_moves(d: &Data, body: usize) -> Vec<usize> {
+    let entries = d.raw["command_list"]["lists"][body]["training"]["entries"].as_array().map_or(&[][..], Vec::as_slice);
+    entries.iter().enumerate().filter(|(_, e)| int(&e[3]) != 0).map(|(k, _)| k).take(128).collect()
+}
+
+impl Practice {
+    /// CHAIN TRAINING (mode 2) each frame (0x37EB04, 0x37EA94): READY! for its frames (its voices at the start and the
+    /// end), then the moves in turn, each done when the player's move was entered by one of its aliases (sound
+    /// 0x103D), the time counting; after the last the end's frames (its voice at `result`).
+    pub fn chain_step(&mut self, d: &Data, body: usize, alias: usize) {
+        if self.mode != 2 || self.open || self.commands.is_some() {
+            return;
+        }
+        let c = &d.raw["practice"]["chain"];
+        let ch = &mut self.chain;
+        match ch.state {
+            0 => *ch = Chain { state: 1, timer: int(&c["ready"]["frames"]) as u32, ..Chain::default() },
+            1 => {
+                if ch.timer == int(&c["ready"]["frames"]) as u32 {
+                    sfx::play(int(&c["ready"]["voices"][0]) as u16);
+                }
+                ch.timer = ch.timer.saturating_sub(1);
+                if ch.timer == 0 {
+                    ch.state = 2;
+                    sfx::play(int(&c["ready"]["voices"][1]) as u16);
+                }
+            }
+            2 => {
+                let moves = chain_moves(d, body);
+                let Some(&m) = moves.get(ch.at) else { return };
+                ch.time = (ch.time + 1).min(int(&c["time"]["max"]) as u32);
+                let aliases = &d.raw["command_list"]["lists"][body]["training"]["entries"][m];
+                if (17..33).map(|k| int(&aliases[k])).any(|a| a != 0 && a == alias) {
+                    sfx::play(int(&c["done_sound"]) as u16);
+                    ch.at += 1;
+                    if ch.at >= moves.len() {
+                        (ch.state, ch.timer) = (3, int(&c["end"]["frames"]) as u32);
+                    }
+                }
+            }
+            _ => {
+                if ch.timer == int(&c["end"]["result"]) as u32 {
+                    sfx::play(int(&c["end"]["voice"]) as u16);
+                }
+                ch.timer = ch.timer.saturating_sub(1);
+            }
+        }
+    }
+
+    /// A key in CHAIN TRAINING's end: START, or a face button once its frames are out, starts it again. True: taken.
+    pub fn chain_key(&mut self, key: Key) -> bool {
+        let again = self.mode == 2 && self.chain.state == 3 && (key == Key::Start || (matches!(key, Key::Button(_)) && self.chain.timer == 0));
+        if again {
+            self.chain = Chain::default();
+        }
+        again
+    }
+}
+
+/// CHAIN TRAINING over the fight (`practice.chain`): READY!; the move's line under those its entry names before it
+/// (0x37B8D8, 0x3DD188), the time with TIME DISPLAY on and "COMBO n:m"; in the end, under `result` frames, the result
+/// (0x3DD5B8). `name`: the player's character.
+/// shortcut: the result is drawn over the fight, without 0x3BF180's backdrop (not followed).
+pub fn draw_chain(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Practice, body: usize, name: &str) {
+    let c = &d.raw["practice"]["chain"];
+    let ch = &p.chain;
+    let time = |t: u32| [t / 3600, t / 60 % 60, t % 60 * 100 / 60];
+    match ch.state {
+        1 => banner_at(painter, v, art, d, &c["ready"], 0),
+        2 => {
+            let moves = chain_moves(d, body);
+            let l = &c["lines"];
+            let cl = &d.raw["command_list"];
+            let list = &cl["lists"][body];
+            if let Some(&m) = moves.get(ch.at) {
+                let entry = &list["training"]["entries"][m];
+                let before = (9..17).map(|k| int(&entry[k])).take_while(|&b| b != 0).map(|b| b - 1);
+                let (x, y0) = (num(&l["xy"][0]), num(&l["xy"][1]));
+                for (k, mv) in before.take(8).chain([m]).enumerate() {
+                    let y = y0 + num(&l["dy"]) * k as f32;
+                    let row = &list["moves"][mv];
+                    let colours = &cl["colours"][int(&row[0])];
+                    let (b0, b1, w) = (num(&l["bands"][0]), num(&l["bands"][1]), num(&l["w"]));
+                    Art::shade(painter, v, sv([x, y, w, b0]), [rgba(&colours[0]); 4]);
+                    Art::shade(painter, v, sv([x, y + b0, w, b1]), [rgba(&colours[1]); 4]);
+                    let (width, level) = (num(&l["width"]), num(&l["level"]));
+                    command_text(painter, v, art, d, row[1].as_str().unwrap_or_default(), x + num(&l["name_xy"][0]), y + num(&l["name_xy"][1]), width, level);
+                    command_text(painter, v, art, d, row[2].as_str().unwrap_or_default(), x + num(&l["keys_xy"][0]), y + num(&l["keys_xy"][1]), width, level);
+                }
+            }
+            if p.value(d, "TIME DISPLAY") == Some(1) {
+                let t = &c["time"];
+                let text = crate::art::printf(t["text"].as_str().unwrap_or_default(), &time(ch.time));
+                chrome(painter, v, art, d, &text, num(&t["x"]), num(&t["y"]), Some(int(&t["colour"])), num(&t["size"]));
+            }
+            let n = &c["count"];
+            let text =
+                if moves.is_empty() { n["none"].as_str().unwrap_or_default().to_string() } else { crate::art::printf(n["text"].as_str().unwrap_or_default(), &[ch.at as u32 + 1, moves.len() as u32]) };
+            chrome(painter, v, art, d, &text, num(&n["x"]), num(&n["y"]), Some(int(&n["colour"])), num(&n["size"]));
+        }
+        3 if ch.timer < int(&c["end"]["result"]) as u32 => {
+            let r = &c["result"];
+            chrome(painter, v, art, d, r["text"].as_str().unwrap_or_default(), num(&r["xy"][0]), num(&r["xy"][1]), Some(int(&r["colour"])), num(&r["size"]));
+            let fs = num(&d.raw["select"]["face_size"]);
+            image(painter, v, art, &d.picture(&["select", "faces", &body.to_string()]), [num(&r["face_xy"][0]), num(&r["face_xy"][1]), fs, fs], Color32::WHITE);
+            // (%T: the name measured, then centred)
+            let name = name.to_uppercase();
+            let size = num(&r["name_size"]);
+            let w = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, &name, 0.0, 0.0, None, size);
+            chrome(painter, v, art, d, &name, (W - w) / 2.0, num(&r["name_y"]), Some(int(&r["name_colour"])), size);
+            let text = crate::art::printf(c["time"]["text"].as_str().unwrap_or_default(), &time(ch.time));
+            chrome(painter, v, art, d, &text, num(&r["time_xy"][0]), num(&r["time_xy"][1]), Some(int(&r["time_colour"])), num(&r["time_size"]));
+        }
+        _ => {}
     }
 }
 
@@ -3365,9 +3502,9 @@ impl CommandList {
 
 /// A command list text (0x3DFA00) in the help font from (x, y): 0xFC 0xFF aligns each line right in `width`, 0xFF 'n'
 /// starts a line 20 lower, 0xDB-0xEB arrows and 0xEC-0xFB buttons (`command_list.arrows` / `buttons`), each glyph its
-/// help font width on, a space 4.
+/// help font width on, a space 4; at PS2 colour `level`.
 #[allow(clippy::too_many_arguments)]
-fn command_text(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, width: f32) {
+fn command_text(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, width: f32, level: f32) {
     let (f, c) = (&d.raw["help"]["font"], &d.raw["command_list"]);
     let (ar, bt) = (&c["arrows"], &c["buttons"]);
     let advance = |ch: u32| match ch {
@@ -3382,7 +3519,7 @@ fn command_text(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &s
     let mut lines = codes.split(|&ch| ch == 0xfc || ch == 0xff).collect::<Vec<_>>();
     // (the codes' second bytes: 0xFF after 0xFC, 'n' after 0xFF)
     lines.retain(|l| !l.is_empty() && *l != [0xff]);
-    let tint = ps2(num(&c["level"])).0;
+    let tint = ps2(level).0;
     let Some((font, [tw, th])) = art.pic(f["picture"].as_str().unwrap_or_default()) else { return };
     let (gw, gh, cols) = (num(&f["glyph"][0]), num(&f["glyph"][1]), int(&f["columns"]).max(1));
     let dy = num(&c["dy"]);
@@ -3445,11 +3582,11 @@ pub fn draw_command_list(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
     Art::shade(painter, v, sv([x0 + num(&r[0]), y0 + num(&r[1]), num(&r[2]), num(&r[3])]), [rgba(&c["head"]["colour"]); 4]);
     let fs = num(&d.raw["select"]["face_size"]);
     image(painter, v, art, &d.picture(&["select", "faces", &body.to_string()]), [x0 + num(&c["face_xy"][0]), y0 + num(&c["face_xy"][1]), fs, fs], Color32::WHITE);
-    let width = num(&c["width"]);
+    let (width, level) = (num(&c["width"]), num(&c["level"]));
     let name = c["lists"][body]["name"].as_str().unwrap_or_default();
-    command_text(painter, v, art, d, name, x0 + num(&c["name_xy"][0]), y0 + num(&c["name_xy"][1]), width);
+    command_text(painter, v, art, d, name, x0 + num(&c["name_xy"][0]), y0 + num(&c["name_xy"][1]), width, level);
     let facing = format!("\u{fc}\u{ff}{}", c["facing"]["text"].as_str().unwrap_or_default());
-    command_text(painter, v, art, d, &facing, x0, y0 + num(&c["facing"]["y"]), width);
+    command_text(painter, v, art, d, &facing, x0, y0 + num(&c["facing"]["y"]), width, level);
     // (the ease: what is left less a third, rounded up, 0x3DCC5C)
     let left = list.offset.get();
     let eased = (left.abs() - (left.abs() + 3) / 3).max(0) * left.signum();
@@ -3472,8 +3609,8 @@ pub fn draw_command_list(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
             Art::shade(&clip, v, sv([bx, y, bw, bands[0]]), [rgba(&colours[0]); 4]);
             Art::shade(&clip, v, sv([bx, y + bands[0], bw, bands[1]]), [rgba(&colours[1]); 4]);
         }
-        command_text(&clip, v, art, d, label, x0, y, width);
-        command_text(&clip, v, art, d, m[2].as_str().unwrap_or_default(), x0 + num(&c["keys_xy"][0]), y + num(&c["keys_xy"][1]), width);
+        command_text(&clip, v, art, d, label, x0, y, width, level);
+        command_text(&clip, v, art, d, m[2].as_str().unwrap_or_default(), x0 + num(&c["keys_xy"][0]), y + num(&c["keys_xy"][1]), width, level);
         y += row_h;
     }
     let span = row_h * rows as f32;
@@ -4471,7 +4608,8 @@ mod tests {
             "unlocks": {"schedule": [{"stage": 0, "kind": 0, "character": 2}, {"stage": 1, "kind": 1, "character": 2}, {"stage": 1, "kind": 0, "character": 3}], "points_per_stage": 50},
             "arcade": {"fights": 8, "rivals": [[2, 3, null], [0, null, null]], "fallback": [3], "pairs": [[1, 2]], "rival_arena": 6, "boss": 3, "boss_arena": 14, "early_fights": 3, "early_excluded": []},
             "team_battle": {"refill_percent": 15},
-            "command_list": {"step": 4, "row_h": 72, "sound": 0, "lists": [{"moves": [[0, "A", ""], [0, "B", ""], [0, "C", ""], [0, "D", ""], [0, "E", ""], [0, "F", ""]]}, {"moves": [[0, "A", ""]]}]},
+            "command_list": {"step": 4, "row_h": 72, "sound": 0, "lists": [{"moves": [[0, "A", ""], [0, "B", ""], [0, "C", ""], [0, "D", ""], [0, "E", ""], [0, "F", ""]],
+                "training": {"entries": [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]}}, {"moves": [[0, "A", ""]]}]},
             "records": {"defaults": {"survivors": [{"members": [0, 1], "score": 5, "name": "PAU"}, {"members": [2, 3], "score": 1, "name": "KIN"}]},
                 "letters": "ABC<=", "name_len": 3},
             "ranking": {"frames": 10, "rows": [{}, {}, {"dy": 75, "first": 135, "shown": 5, "hold": 130}], "pace": {"fade": 8, "scroll": 12, "after": 60}},
@@ -4479,7 +4617,8 @@ mod tests {
                 {"rows": [{"label": "MODE SELECT", "kind": "mode"}, {"label": "CANCEL", "kind": "close"},
                     {"label": "TRAINING DUMMY", "kind": "list", "values": ["STAND", "STAND GUARD"], "default": 0}]},
                 {"rows": [{"label": "MODE SELECT", "kind": "mode"}, {"label": "CPU LEVEL", "kind": "list", "values": ["EASY", "NORMAL"], "default": 1},
-                    {"label": "RESET", "kind": "reset"}]}]},
+                    {"label": "RESET", "kind": "reset"}]}],
+                "chain": {"ready": {"frames": 2, "voices": [0, 0]}, "time": {"max": 100}, "done_sound": 0, "end": {"frames": 3, "voice": 0, "result": 2}}},
             "volumes": {"bgm": [0, 32, 40, 48, 56, 64, 72, 80, 96, 112, 128], "se": 10},
             "options": [{"default": 1, "values": ["EASY", "NORMAL"]}, {"default": 1, "values": ["1", "2", "3"]}, {"default": 2, "values": ["30", "40", "60"]}],
         }});
@@ -4953,6 +5092,23 @@ mod tests {
             }
             assert!(up.is_some_and(|k| k <= 2) && !lying(&g), "dummy {dummy}: up at {up:?}");
         }
+    }
+
+    /// CHAIN TRAINING: READY! for its frames, then the move done by one of its aliases, the time counting; after the
+    /// last the end; START starts it again.
+    #[test]
+    fn chain_training_takes_a_move_by_its_alias() {
+        let d = data();
+        let mut p = Practice { mode: 2, ..Practice::new(&d) };
+        for _ in 0..3 {
+            p.chain_step(&d, 0, 1);
+        }
+        assert_eq!(p.chain.state, 2);
+        p.chain_step(&d, 0, 6);
+        assert!(p.chain.at == 0 && p.chain.time == 1 && !p.chain_key(Key::Start));
+        p.chain_step(&d, 0, 7);
+        assert_eq!((p.chain.state, p.chain.at, p.chain.timer), (3, 1, 3));
+        assert!(!p.chain_key(Key::Button(0)) && p.chain_key(Key::Start) && p.chain.state == 0);
     }
 
     /// Practice's menu: MODE SELECT's left / right turn the modes, a row's left / right its values (round), CANCEL and

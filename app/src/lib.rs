@@ -2240,8 +2240,9 @@ impl App {
             self.debug.history_len = self.history.len();
         }
         self.hud.step(&fight.bout);
-        if let Some(p) = fight.ttt_practice.as_mut() {
+        if let (Some(p), Some(d)) = (fight.ttt_practice.as_mut(), self.roster.ttt.as_deref()) {
             p.hits(&fight.bout.game.fight.hits);
+            p.chain_step(d, ttt::command_body(&fight.bout, 0), fight.bout.game.fight.fighters[0].alias);
         }
         if let Some(p) = fight.practice.as_mut() {
             // a side acts on its own again (its own moves, not a reaction) once its combo is over
@@ -5168,6 +5169,9 @@ impl App {
                 return true;
             }
             if !p.open {
+                if p.chain_key(key) {
+                    return true;
+                }
                 if matches!(key, Key::Start | Key::Back) {
                     p.open(&d);
                 }
@@ -5980,6 +5984,7 @@ impl App {
                             } else if !matches!(f.bout.phase, Phase::TeamIntro { .. }) {
                                 // (none over the team intro, as PCSX2 shows it)
                                 ttt::draw_practice_hud(&painter, &view, art, d, p);
+                                ttt::draw_chain(&painter, &view, art, d, p, ttt::command_body(&f.bout, 0), name);
                             }
                         }
                         if let (Some(_), true) = (f.pause, f.rules) {
