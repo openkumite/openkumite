@@ -1713,8 +1713,8 @@ impl Screen {
     pub fn draw(&self, ctx: &egui::Context, art: &Art, roster: &Roster) {
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("menu")));
         let window = ctx.content_rect();
-        // CONTINUE? and GAME OVER draw over the fight's loser shot
-        if !matches!(self, Screen::Continue { .. } | Screen::GameOver { .. } | Screen::Records(_)) && !self.ttt_over_fight() {
+        // CONTINUE? and GAME OVER draw over the fight's loser shot, Tekken Tag's ranking over the arena
+        if !matches!(self, Screen::Continue { .. } | Screen::GameOver { .. } | Screen::Records(_)) && !self.ttt_over_fight() && !self.ttt_over_arena() {
             painter.rect_filled(window, 0.0, Color32::BLACK);
         }
         let v = View::fit(window);
