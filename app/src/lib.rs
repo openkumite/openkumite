@@ -4050,7 +4050,7 @@ impl App {
             let tex: Vec<_> = st.textures.iter().map(|t| r.texture(t.width, t.height, &t.rgba)).collect();
             let meshes = st.sky.iter().filter_map(|m| {
                 let v: Vec<StaticVertex> = m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color, cell: v.cell, normal: v.normal }).collect();
-                stage.sky.push(r.sorted_mesh(&v, &m.indices, tex.get(m.texture)?.clone()));
+                stage.sky.push(r.sorted_mesh(&v, &m.indices, tex.get(m.texture)?.clone()).blended(m.blend));
                 Some((stage.sky.len() - 1, v))
             });
             out.push((k, meshes.collect()));
@@ -4151,7 +4151,7 @@ impl App {
                 let tex: Vec<_> = st.textures.iter().map(|t| r.texture(t.width, t.height, &t.rgba)).collect();
                 let meshes = st.sky.iter().filter_map(|m| {
                     let v: Vec<StaticVertex> = m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color, cell: [0.0, 0.0, 0.0, -1.0], normal: v.normal }).collect();
-                    stage.sky.push(r.sorted_mesh(&v, &m.indices, tex.get(m.texture)?.clone()).late());
+                    stage.sky.push(r.sorted_mesh(&v, &m.indices, tex.get(m.texture)?.clone()).blended(m.blend).late());
                     Some((stage.sky.len() - 1, v))
                 });
                 Ok(meshes.collect())
