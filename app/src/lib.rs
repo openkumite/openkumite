@@ -5767,6 +5767,11 @@ impl App {
                 let row = (l.window[0].max(1.0) as u32).min(16) + 1;
                 kumite_render::Grass { first, cell: l.cell, row, rows: corners.len() as u32 / row, size, moves }
             });
+            // the grass's cells take no fighter's shadow: 0x3415D4 lays them without 0x341218's shadow flags (+0x148,
+            // read by 0x340E28's shadow pass)
+            if cam.grass.is_some() {
+                cam.shadow = None;
+            }
         }
         // effect sprites, as quads facing the camera
         let (mut p_alpha, mut p_add, mut soft_alpha, mut soft_add) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
