@@ -20,7 +20,9 @@
 //!
 //! Op 28 opens, beats and folds True Ogre's and Devil's wings. Op 25 puts an arena's object in a hand ([`EndingScene::props`]). Op 12 shows Jin's mark (his texture channel 0's frame 0, [`EndingScene::marks`]).
 //!
-//! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 15 (True
+//! Op 10 plays the actor's own effect (0x3A2BC0, [`Burst`]).
+//!
+//! Not played: ops 15 (True
 //! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 30 (objects 0x3ACF50); the EMBU's 9-11; ops 17 / 18 at nodes 0x4000-0x4002
 //! (op 25's prop matrix 0x444CD0, 20 objects 0x3ACCD0); the face track (its joints are not mapped).
 
@@ -122,12 +124,13 @@ impl Fade {
     }
 }
 
-/// A burst ops 17 / 18 threw this frame (0x3A2758): its kind (0 the hit spark, 1 set 3's, 2 the guard's, 3 the dust),
-/// where (metres), the way it turns to, whether it is dust more than 500 mm up (3 particles, not the arena's), its spin
-/// (radians a frame).
+/// A burst ops 17 / 18 threw this frame (0x3A2758): its kind (0 the hit spark, 1 set 3's, 2 the guard's, 3 the dust;
+/// 4 op 10's, the character effect of model record `model`, 0x3A2BC0), where (metres), the way it turns to, whether
+/// it is dust more than 500 mm up (3 particles, not the arena's), its spin (radians a frame).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Burst {
     pub kind: usize,
+    pub model: usize,
     pub pos: Vec3,
     pub dir: Option<Vec3>,
     pub high: bool,
@@ -313,7 +316,7 @@ impl EndingScene {
                 17 => {
                     let s = (a & 1) as usize;
                     if let (Some(p), Some(q)) = (self.node_at(s, b), self.node_at(1 - s, last)) {
-                        self.bursts.push(Burst { kind: (a as usize >> 1) & 3, pos: p, dir: Some(p - q), high: false, spin: 0.0 });
+                        self.bursts.push(Burst { kind: (a as usize >> 1) & 3, model: 0, pos: p, dir: Some(p - q), high: false, spin: 0.0 });
                     }
                 }
                 // the dust at slot a & 1's node b (0x62: its place on the floor), spinning c x 2 pi / 4096 a frame
@@ -322,7 +325,16 @@ impl EndingScene {
                     let s = (a & 1) as usize;
                     let at = if b == 0x62 { self.node_at(s, 0).map(|p| (p * Vec3::new(1.0, 0.0, 1.0), false)) } else { self.node_at(s, b).map(|p| (p, p.y * UNITS > 500.0)) };
                     if let Some((pos, high)) = at {
-                        self.bursts.push(Burst { kind: 3, pos, dir: None, high, spin: last as f32 * std::f32::consts::TAU / 4096.0 });
+                        self.bursts.push(Burst { kind: 3, model: 0, pos, dir: None, high, spin: last as f32 * std::f32::consts::TAU / 4096.0 });
+                    }
+                }
+                // slot c & 1's own effect at its node b (0x3A2BC0)
+                // shortcut: b = 0x4003 (the point 0x5F6280 through the actor's +0x974 matrix) is not played
+                10 => {
+                    let s = (last & 1) as usize;
+                    let model = self.slots[s].0.and_then(|k| self.records.get(k)).copied();
+                    if let (Some(model), Some(pos)) = (model, self.node_at(s, b)) {
+                        self.bursts.push(Burst { kind: 4, model, pos, dir: None, high: false, spin: 0.0 });
                     }
                 }
                 // slot a & 1's texture channel 0 to frame 1 (b = 0) or 0 (0x3AB924)

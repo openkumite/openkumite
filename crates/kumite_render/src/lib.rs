@@ -60,6 +60,8 @@ pub struct Particles<'a> {
     /// times the colour's / adding the texture times the colour, nothing cut away (drawn last).
     pub soft_alpha: &'a [StaticVertex],
     pub soft_add: &'a [StaticVertex],
+    /// More pictures' soft quads (Tekken Tag's characters' sheets): each texture's blended and added ones.
+    pub sheets: &'a [(Arc<Texture>, Vec<StaticVertex>, Vec<StaticVertex>)],
 }
 
 /// A captured frame: tightly packed RGBA8.
@@ -1621,7 +1623,7 @@ impl Renderer {
         // anti-aliased: the passes draw into the samples, resolved into the scene's target
         let msaa = self.scene.as_ref().and_then(|t| t.msaa.as_ref().map(|m| (m.2.clone(), m.3.clone(), t.reload[usize::from(gamma)].clone())));
         // the glow's pipelines and targets, wanted with something added to glow
-        let glows = self.settings.glow && (particles.is_some_and(|p| !p.additive.is_empty() || !p.soft_add.is_empty() || !p.flat_add.is_empty()) || statics.iter().chain(sky).any(|m| m.blend == 1));
+        let glows = self.settings.glow && (particles.is_some_and(|p| !p.additive.is_empty() || !p.soft_add.is_empty() || !p.flat_add.is_empty() || p.sheets.iter().any(|s| !s.2.is_empty())) || statics.iter().chain(sky).any(|m| m.blend == 1));
         if glows {
             let size = scene.as_ref().map_or([self.config.width, self.config.height], |s| s.3).map(|d| (d / 2).max(1));
             self.glow_target(size);
@@ -1656,13 +1658,21 @@ impl Renderer {
                     .collect()
             })
             .unwrap_or_default();
-        let particle_bufs: Vec<(&wgpu::RenderPipeline, wgpu::Buffer, u32)> = particles
+        let bufs = |list: Vec<(&'static str, &[StaticVertex])>| -> Vec<(&wgpu::RenderPipeline, wgpu::Buffer, u32)> {
+            let pipe = |k: &str| match k {
+                "alpha" => &pipes.particle_alpha,
+                "add" => &pipes.particle_add,
+                "soft_alpha" => &pipes.soft_alpha,
+                _ => &pipes.soft_add,
+            };
+            list.into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (pipe(k), self.buffer(bytemuck::cast_slice(v), wgpu::BufferUsages::VERTEX), v.len() as u32)).collect()
+        };
+        // the atlas's, then each sheet's
+        let particle_bufs: Vec<(&Texture, Vec<(&wgpu::RenderPipeline, wgpu::Buffer, u32)>)> = particles
             .map(|p| {
-                [(&pipes.particle_alpha, p.alpha), (&pipes.particle_add, p.additive), (&pipes.soft_alpha, p.soft_alpha), (&pipes.soft_add, p.soft_add)]
-                    .into_iter()
-                    .filter(|(_, v)| !v.is_empty())
-                    .map(|(pipe, v)| (pipe, self.buffer(bytemuck::cast_slice(v), wgpu::BufferUsages::VERTEX), v.len() as u32))
-                    .collect()
+                let mut out = vec![(p.texture, bufs(vec![("alpha", p.alpha), ("add", p.additive), ("soft_alpha", p.soft_alpha), ("soft_add", p.soft_add)]))];
+                out.extend(p.sheets.iter().map(|(t, a, b)| (&**t, bufs(vec![("soft_alpha", a), ("soft_add", b)]))));
+                out
             })
             .unwrap_or_default();
         let overlay_view = || -> Result<wgpu::TextureView> {
@@ -1910,9 +1920,9 @@ impl Renderer {
                     stats.triangles += n / 3;
                 }
             }
-            if let Some(p) = particles {
-                pass.set_bind_group(1, &p.texture.bind_group, &[]);
-                for (pipe, buf, n) in &particle_bufs {
+            for (texture, bufs) in &particle_bufs {
+                pass.set_bind_group(1, &texture.bind_group, &[]);
+                for (pipe, buf, n) in bufs {
                     pass.set_pipeline(pipe);
                     pass.set_vertex_buffer(0, buf.slice(..));
                     pass.draw(0..*n, 0..1);
@@ -1998,9 +2008,9 @@ impl Renderer {
                         pass.draw(0..*n, 0..1);
                     }
                 }
-                if let Some(p) = particles {
-                    pass.set_bind_group(1, &p.texture.bind_group, &[]);
-                    for (pipe, buf, n) in &particle_bufs {
+                for (texture, bufs) in &particle_bufs {
+                    pass.set_bind_group(1, &texture.bind_group, &[]);
+                    for (pipe, buf, n) in bufs {
                         let Some(g) = added(pipe) else { continue };
                         pass.set_pipeline(g);
                         pass.set_vertex_buffer(0, buf.slice(..));
