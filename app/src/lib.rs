@@ -283,6 +283,8 @@ struct EndingRun {
     /// START was pressed.
     skip: bool,
     back: ttt::Page,
+    /// Per cast member: its texture shows the mark (Jin's, [`kumite_assets::Character::mark`]).
+    marks: Vec<bool>,
 }
 
 /// Tekken Bowl running: its scene, the bowlers' GPU models, the ball's and each pin's meshes (indices into the stage's
@@ -391,21 +393,7 @@ fn skinned_character(r: &Renderer, c: &kumite_assets::Character, record: usize) 
 /// Copy the face animation's rectangles into a fighter's texture where `face` differs from what it shows (`shown`): the
 /// blink's closed or original eyes, the moving pupils' eye strips shifted by their offsets (from the texels as loaded).
 fn apply_face(r: &Renderer, model: &SkinnedModel, atlas: &kumite_assets::Image, data: &kumite_game::face::FaceData, id: usize, face: &kumite_game::face::Face, shown: &mut kumite_game::face::Face) {
-    let copy = |src: [u32; 2], dest: [u32; 4]| {
-        // (u64: sizes from the conversion cannot wrap; a rectangle outside the texels is skipped)
-        let ([x, y, w, h], [sx, sy], aw, ah) = (dest.map(u64::from), src.map(u64::from), u64::from(atlas.width), u64::from(atlas.height));
-        if sx + w > aw || sy + h > ah || x + w > aw || y + h > ah {
-            return;
-        }
-        let mut px = Vec::new();
-        let byte = |texel: u64| usize::try_from(texel.checked_mul(4)?).ok();
-        for row in sy..sy + h {
-            let at = row * aw + sx;
-            let Some(line) = byte(at).zip(byte(at + w)).and_then(|(a, b)| atlas.rgba.get(a..b)) else { return };
-            px.extend_from_slice(line);
-        }
-        r.update_texture(model.texture(), dest, &px);
-    };
+    let copy = |src: [u32; 2], dest: [u32; 4]| copy_texels(r, model, atlas, src, dest);
     if let Some(b) = data.blink.get(&id) {
         if face.closed != shown.closed {
             copy(if face.closed { b.closed } else { [b.dest[0], b.dest[1]] }, b.dest);
@@ -422,6 +410,23 @@ fn apply_face(r: &Renderer, model: &SkinnedModel, atlas: &kumite_assets::Image, 
             }
         }
     }
+}
+
+/// Copy the texels of `atlas` at `src` (as loaded) into `model`'s texture at rectangle `dest` (x, y, w, h).
+fn copy_texels(r: &Renderer, model: &SkinnedModel, atlas: &kumite_assets::Image, src: [u32; 2], dest: [u32; 4]) {
+    // (u64: sizes from the conversion cannot wrap; a rectangle outside the texels is skipped)
+    let ([x, y, w, h], [sx, sy], aw, ah) = (dest.map(u64::from), src.map(u64::from), u64::from(atlas.width), u64::from(atlas.height));
+    if sx + w > aw || sy + h > ah || x + w > aw || y + h > ah {
+        return;
+    }
+    let mut px = Vec::new();
+    let byte = |texel: u64| usize::try_from(texel.checked_mul(4)?).ok();
+    for row in sy..sy + h {
+        let at = row * aw + sx;
+        let Some(line) = byte(at).zip(byte(at + w)).and_then(|(a, b)| atlas.rgba.get(a..b)) else { return };
+        px.extend_from_slice(line);
+    }
+    r.update_texture(model.texture(), dest, &px);
 }
 
 /// What made a match being recorded as a replay (`replay.rs`).
@@ -3898,7 +3903,7 @@ impl App {
             audio.music(sound.music(data.raw["staff_roll"]["bgm"].as_u64().unwrap_or(6) as usize));
         }
         (self.screen, self.fight) = (None, None);
-        self.ttt_ending = Some(EndingRun { scene: None, models: Vec::new(), roll: Some(0), skip: false, back });
+        self.ttt_ending = Some(EndingRun { scene: None, models: Vec::new(), roll: Some(0), skip: false, back, marks: Vec::new() });
     }
 
     /// Tekken Tag's ending `e`, the player's costume `costume` (0x3AA8A8): its arena and cast on its camera path; an
@@ -3929,7 +3934,7 @@ impl App {
         }
         let (scene, models) = shown.map_or((None, Vec::new()), |(s, m)| (Some(s), m));
         (self.screen, self.fight) = (None, None);
-        self.ttt_ending = Some(EndingRun { scene, models, roll: roll.then_some(0), skip: false, back });
+        self.ttt_ending = Some(EndingRun { scene, models, roll: roll.then_some(0), skip: false, back, marks: Vec::new() });
     }
 
     /// A Tekken Tag scene (an ending, the EMBU) on its arena, with its cast's GPU models; None (and a log line) where it
@@ -3957,7 +3962,7 @@ impl App {
                 a.music(None);
             }
             (self.screen, self.fight) = (None, None);
-            self.ttt_ending = Some(EndingRun { scene: Some(s), models, roll: None, skip: false, back });
+            self.ttt_ending = Some(EndingRun { scene: Some(s), models, roll: None, skip: false, back, marks: Vec::new() });
         }
     }
 
@@ -5479,11 +5484,20 @@ impl App {
             }
             // Tekken Tag's ending: its two slots on its camera path
             (None, Some(scene)) if self.ttt_ending.as_ref().is_some_and(|e| e.scene.is_some()) => {
-                let Some((run, s)) = self.ttt_ending.as_ref().and_then(|e| Some((e, e.scene.as_ref()?))) else { return };
+                let Some(run) = self.ttt_ending.as_mut() else { return };
+                let Some(s) = run.scene.as_ref() else { return };
+                run.marks.resize(s.characters.len(), false);
                 for k in 0..2 {
                     if let Some((m, pose, place)) = s.pose(k) {
                         if let (Some(model), Some(ch)) = (run.models.get(m), s.characters.get(m)) {
                             r.update_bones(model, &ch.skin_matrices(&pose, place));
+                            // (op 12: the slot's texture channel frame, Jin's mark)
+                            if let (Some([x, y, w, h, sx, sy]), Some(shown)) = (ch.mark, run.marks.get_mut(m)) {
+                                if *shown != s.marks[k] {
+                                    copy_texels(r, model, &ch.texture, if s.marks[k] { [sx, sy] } else { [x, y] }, [x, y, w, h]);
+                                    *shown = s.marks[k];
+                                }
+                            }
                         }
                     }
                 }

@@ -8,7 +8,7 @@
 //! The EMBU (scene 1, 0x3A97B0: Theater's EMBU and EMBU2) is the same scene in a dialect of its own (0x3A9E48,
 //! table 0x519B50): a cast of six, ops 0 / 1 / 14 put a member in a slot, 2 / 3 play track a from its frame b to c
 //! (the slot is not drawn before or after), 4 takes camera path a of 22 from frame b, 5 / 6 fade from / to white,
-//! 13 starts its music; it ends at op -1 alone.
+//! 12 Jin's mark, 13 starts its music; it ends at op -1 alone.
 //!
 //! The hand tracks come in the body clips (the converter's format 26: the finger nodes' turns).
 //!
@@ -17,9 +17,11 @@
 //! set of the scene's own or none (0x3D85D8, [`EndingScene::people`]); the EMBU's screen films from farther
 //! ([`EndingScene::camera`]).
 //!
-//! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 12 (Jin's mark, texture channel 0's frame 0), 15 (True
+//! Op 12 shows Jin's mark (his texture channel 0's frame 0, [`EndingScene::marks`]).
+//!
+//! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 15 (True
 //! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 25 (arena props on an actor's node, 0x3D10D0), 28 (Kuma's
-//! and Panda's +0xB052), 30 (objects 0x3ACF50), 32 (gp-0x6E78); the EMBU's 7-12; ops 17 / 18 at nodes 0x4000-0x4002
+//! and Panda's +0xB052), 30 (objects 0x3ACF50), 32 (gp-0x6E78); the EMBU's 7-11; ops 17 / 18 at nodes 0x4000-0x4002
 //! (op 25's prop matrix 0x444CD0, 20 objects 0x3ACCD0); the face track (its joints are not mapped).
 
 use crate::UNITS;
@@ -170,6 +172,8 @@ pub struct EndingScene {
     /// Per actor slot: the cast member in it and the track it plays; the EMBU's: from scene frame s, frames b..=c.
     slots: [(Option<usize>, usize); 2],
     ranges: [Option<(i32, i32, i32)>; 2],
+    /// Per actor slot: its texture channel shows frame 0, Jin's mark (op 12; a cast member put in shows frame 1, 0x3A82C8).
+    pub marks: [bool; 2],
     /// The music started (the EMBU's op 13: its BGM).
     pub music: Option<usize>,
     /// The bursts thrown this frame.
@@ -247,6 +251,7 @@ impl EndingScene {
             c: -1,
             slots: [(None, 0); 2],
             ranges: [None; 2],
+            marks: [false; 2],
             music: None,
             bursts: Vec::new(),
             objects: Vec::new(),
@@ -284,7 +289,7 @@ impl EndingScene {
                 continue;
             }
             match op {
-                0 | 1 => self.slots[op as usize].0 = usize::try_from(a).ok().filter(|&m| m < self.characters.len()),
+                0 | 1 => (self.slots[op as usize].0, self.marks[op as usize]) = (usize::try_from(a).ok().filter(|&m| m < self.characters.len()), false),
                 2 | 3 => self.slots[op as usize - 2].1 = a.max(0) as usize,
                 4 => self.camera_at = (c, b),
                 5 => self.white = Fade { from: (b * 2).min(255), to: 0, at: c, len: a },
@@ -307,6 +312,8 @@ impl EndingScene {
                         self.bursts.push(Burst { kind: 3, pos, dir: None, high, spin: last as f32 * std::f32::consts::TAU / 4096.0 });
                     }
                 }
+                // slot a & 1's texture channel 0 to frame 1 (b = 0) or 0 (0x3AB924)
+                12 => self.marks[(a & 1) as usize] = b != 0,
                 21..=24 => self.objects.push((c, op, a, b, last)),
                 -1 => self.done = true,
                 _ => {}
@@ -323,7 +330,7 @@ impl EndingScene {
         // (0x3A9E94: a member past the six is the first)
         let member = usize::try_from(a).ok().filter(|&m| m < self.characters.len()).or(Some(0));
         match op {
-            0 | 1 => (self.slots[op as usize].0, self.ranges[op as usize]) = (member, None),
+            0 | 1 => (self.slots[op as usize].0, self.ranges[op as usize], self.marks[op as usize]) = (member, None, false),
             14 => self.slots[0].0 = member,
             2 | 3 => {
                 let s = op as usize - 2;
@@ -333,6 +340,8 @@ impl EndingScene {
             4 => (self.path, self.camera_at) = (usize::try_from(a).unwrap_or(0).min(self.cameras.len() - 1), (c, b)),
             5 => self.white = Fade { from: 255, to: 0, at: c, len: a },
             6 => self.white = Fade { from: self.white.level(c) as i32, to: 255, at: c, len: a },
+            // slot a & 1's Jin: the mark off (b = 0, 0x3A88A0) or on (0x3A8890)
+            12 => self.marks[(a & 1) as usize] = b != 0,
             13 => self.music = Some(1),
             -1 => self.done = true,
             _ => {}

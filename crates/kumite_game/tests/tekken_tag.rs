@@ -1163,6 +1163,23 @@ fn an_endings_overlays() {
     assert_eq!(at(22, &[119, 120, 255, 256]), vec![vec![], vec![Overlay::Oval], vec![Overlay::Oval], vec![]]);
 }
 
+/// Op 12: in ending 13 Jin (slot 1) shows his mark until Jun's touch at frame 510; his texture has the marked texels.
+#[test]
+fn jins_mark_in_ending_13() {
+    let Some(a) = assets() else { return };
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    let mut s = kumite_game::ending::EndingScene::new(&a, &d, 13, 0).unwrap();
+    let mut marks = vec![];
+    while s.frame() < 511 {
+        s.step();
+        marks.push(s.marks[1]);
+    }
+    assert!(marks[..510].iter().all(|&m| m) && !marks[510]);
+    let jin = &s.characters[0];
+    let [x, y, w, h, sx, sy] = jin.mark.expect("Jin's texture has his mark (convert the game again)");
+    assert!(w > 0 && h > 0 && (x + w).max(sx + w) <= jin.texture.width && (y + h).max(sy + h) <= jin.texture.height);
+}
+
 /// Tekken Bowl from the pack: Paul's throw (its hand's release point from his motion, ahead of him, above the lane,
 /// on his right), the ball rolled down the middle and counted, Paul and Lei taking turns; two runs give the same
 /// states.
