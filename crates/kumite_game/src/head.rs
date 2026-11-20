@@ -6,7 +6,7 @@
 //! near the line ahead the aim is renewed only every 60 frames. Taking over from the animation, the angles start
 //! from the animated head. Everything here is in game space (y down, game units, 65536 per turn).
 
-use glam::{Mat3, Vec3};
+use glam::{Mat3, Mat4, Vec3};
 use kumite_sim::detmath::DetMath;
 
 /// The head's base rotation (angles 0x8001A0F4: x 90°, z 90°).
@@ -122,6 +122,124 @@ impl HeadLook {
             self.cur = [self.target[0], approach(self.cur[1], self.target[1]) as i16 as i32, approach(self.cur[2], self.target[2]) as i16 as i32];
         }
         self.local = Some(rot_zyx(BASE) * rot_zyx(self.cur));
+    }
+}
+
+/// Tekken Tag's look (0x351E98, called by the drawing 0x3478F0 once the world matrices are made: it changes only
+/// what is drawn, never the bone slots the strikes and spheres use). The neck (node 5) and the head (node 6) each
+/// turn towards the opponent's neck (0x351E78: its node 5), seen from eye height (the neck's origin raised by the
+/// first eye's height in the neck's frame): yaw within ±40°, pitch within −32.5°..15°, an eighth of the way a frame;
+/// the pitch only moves while the yaw is within 5° of where it was and the aim is 5° or more off. Past ±160° (behind)
+/// the yaw stays on the side it went round. The eyes (nodes 21, 22) then look straight at it, sideways within ±35°,
+/// up and down within −7°..9°. On (fp) while the round is on or the K.O. time runs (gp-0x7268 1 or 2) and the move
+/// allows it (record +0x24 bit 22; an attack only from frame max(+0x2D, +0x18 − 17)); off, the angles follow a point
+/// 1 m ahead of the face at once and the motion's head is drawn. State per side (gp-0x6100..0x60D8, radians), reset
+/// with the fighter (0x351E10). Node indices are the PS2 model's (every fighter's first 98 nodes are the same).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TagLook {
+    /// Neck's and head's last (yaw, pitch) and the side the aim went behind on (0, 3 = past +160°, 4 = past −160°).
+    saved: [[f32; 2]; 2],
+    behind: [u8; 2],
+    /// The local rotations of nodes 5, 6, 21 and 22 this frame, or None: the motion's.
+    pub locals: Option<[Mat3; 4]>,
+}
+
+/// The nodes the look turns, and the neck's parent.
+pub const TAG_LOOK_NODES: [usize; 4] = [5, 6, 21, 22];
+const TAG_NECK_PARENT: usize = 2;
+
+impl TagLook {
+    /// Whether `parent` (node → its parent) is the PS2 fighter skeleton the look's node numbers are for.
+    pub fn fits(parent: impl Fn(usize) -> Option<usize>) -> bool {
+        let [neck, head, a, b] = TAG_LOOK_NODES;
+        parent(neck) == Some(TAG_NECK_PARENT) && parent(head) == Some(neck) && parent(a) == Some(head) && parent(b) == Some(head)
+    }
+
+    /// One frame: `w` the animated world matrices (a skeleton that [`TagLook::fits`]), `target` the opponent's neck.
+    pub fn step(&mut self, on: bool, w: &[Mat4], target: Vec3) {
+        let [neck, head, eye_a, eye_b] = TAG_LOOK_NODES;
+        let k = if on { 0.125 } else { 1.0 };
+        let p = w[TAG_NECK_PARENT];
+        let (l5, l6) = (p.inverse() * w[neck], w[neck].inverse() * w[head]);
+        let rise = w[neck].inverse().transform_point3(w[eye_a].w_axis.truncate()).z;
+        let target = if on { target } else { w[head].transform_point3(Vec3::new(1.0, 0.0, 0.08)) };
+        // the neck: Rx(yaw) · Rz(pitch) · its base (0x349EE0 of 90°, 90°, 0), the motion's offset kept
+        let eye_level = |mut l: Mat4| {
+            l.w_axis.x += rise;
+            p * l
+        };
+        // (aimed from the base, not the motion's neck: a stance's turned neck measures 40° on the PS2, as from the base)
+        let base = Mat3::from_cols(Vec3::Y, Vec3::Z, Vec3::X);
+        let (yaw, pitch) = self.aim(0, on, k, eye_level(Mat4::from_mat3_translation(base, l5.w_axis.truncate())), target);
+        let r5 = Mat3::from_rotation_x(yaw) * Mat3::from_rotation_z(pitch) * base;
+        let l5 = Mat4::from_mat3_translation(r5, l5.w_axis.truncate());
+        // the head, from the turned neck: Rz(yaw) · Ry(pitch) (0x349D70 of 0, pitch, yaw)
+        let (yaw, pitch) = self.aim(1, on, k, eye_level(l5), target);
+        let r6 = Mat3::from_rotation_z(yaw) * Mat3::from_rotation_y(pitch);
+        if !on {
+            self.locals = None;
+            return;
+        }
+        let w6 = p * l5 * Mat4::from_mat3_translation(r6, l6.w_axis.truncate());
+        // each eye: Rz(sideways) · Ry(up) · Rx(90°), aimed from where the turned head puts it
+        let eye = |n: usize| {
+            let e = w6 * (w[head].inverse() * w[n]);
+            let d = Mat3::from_mat4(e).transpose() * (target - e.w_axis.truncate());
+            let up = (-d.y.datan2(d.x)).clamp(-7f32.to_radians(), 9f32.to_radians());
+            let side = (-d.z).datan2((d.x * d.x + d.y * d.y).sqrt()).clamp(-35f32.to_radians(), 35f32.to_radians());
+            Mat3::from_rotation_z(side) * Mat3::from_rotation_y(up) * Mat3::from_rotation_x(std::f32::consts::FRAC_PI_2)
+        };
+        self.locals = Some([r5, r6, eye(eye_a), eye(eye_b)]);
+    }
+
+    /// The neck's (`s` 0) or the head's (1) yaw and pitch towards `target` seen from `from`, eased by `k`.
+    fn aim(&mut self, s: usize, on: bool, k: f32, from: Mat4, target: Vec3) -> (f32, f32) {
+        let (deg, [was_yaw, was_pitch], was) = (f32::to_radians, self.saved[s], self.behind[s]);
+        let d = Mat3::from_mat4(from).transpose() * (target - from.w_axis.truncate());
+        let a = d.y.datan2(d.x);
+        let behind = if a < -deg(160.0) {
+            4
+        } else if a > deg(160.0) {
+            3
+        } else {
+            0
+        };
+        let (mut yaw, mut pitch) = if (behind, was) == (3, 4) || (behind, was) == (4, 3) { (was_yaw, was_pitch) } else { (a, (-d.z).datan2((d.x * d.x + d.y * d.y).sqrt())) };
+        if behind != 0 {
+            pitch = 0.0;
+            if behind == was {
+                yaw = if behind == 3 { deg(40.0) } else { -deg(40.0) };
+            }
+        }
+        yaw = was_yaw + (yaw.clamp(-deg(40.0), deg(40.0)) - was_yaw) * k;
+        if !on || ((yaw - was_yaw).abs() <= deg(5.0) && (pitch - was_pitch).abs() >= deg(5.0)) {
+            pitch = was_pitch + (pitch.clamp(-deg(32.5), deg(15.0)) - was_pitch) * k;
+        } else {
+            pitch = was_pitch;
+        }
+        self.saved[s] = [yaw, pitch];
+        if behind == 0 || was == 0 {
+            self.behind[s] = behind;
+        }
+        (yaw, pitch)
+    }
+}
+
+/// Set node `n`'s local rotation to `rot` (its offset kept), carrying everything hanging from it along.
+pub fn set_local(nodes: &[kumite_assets::Node], pose: &mut [Mat4], n: usize, rot: Mat3) {
+    let Some(parent) = nodes.get(n).and_then(|x| x.parent).filter(|&p| p < pose.len()) else { return };
+    let old = pose[n];
+    let new = pose[parent] * Mat4::from_mat3_translation(rot, (pose[parent].inverse() * old).w_axis.truncate());
+    let delta = new * old.inverse();
+    for (i, m) in pose.iter_mut().enumerate() {
+        let mut at = Some(i);
+        while let Some(a) = at {
+            if a == n {
+                *m = if i == n { new } else { delta * *m };
+                break;
+            }
+            at = nodes.get(a).and_then(|x| x.parent);
+        }
     }
 }
 

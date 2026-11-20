@@ -253,6 +253,8 @@ pub struct Game {
     pub heads: [head::HeadLook; 2],
     pub head_live: bool,
     pub head_off: [bool; 2],
+    /// Tekken Tag's look instead (bodies with bone slots; 0x351E98, drawn only): per side.
+    pub looks: [head::TagLook; 2],
     /// Blinks and the moving pupils (faces.json), and the rand() stream the blinks draw from.
     pub faces: [face::Face; 2],
     /// Tekken Tag's fingers, and whether the round is in round states 1-2 (the fight, the K.O.: gp-0x7268).
@@ -548,6 +550,7 @@ impl Game {
             display_ball: None,
             characters,
             heads: Default::default(),
+            looks: Default::default(),
             head_live: false,
             head_off: [false; 2],
             faces: Default::default(),
@@ -835,6 +838,7 @@ impl Game {
         for h in &mut self.heads {
             h.local = None;
         }
+        self.looks = Default::default();
         self.step_camera();
     }
 
@@ -1377,12 +1381,22 @@ impl Game {
             let gd = &self.fight.data;
             let f = &self.fight.fighters[i];
             let m = f.current_move(gd);
-            // shortcut: Tekken Tag's heads (bodies with bone slots) do not turn: its head joint's rest frame is not
-            // Tekken 3's, which the turn assumes; upgrade by turning from the joint's own rest frame
-            let mut on = self.head_live && !self.head_off[i] && self.bodies[i].bones.is_empty() && m.flags24.raw & 0x4000_0000 != 0;
+            // (Tekken Tag's record bit 22 is this bit once loaded, kumite_sim::dialect)
+            let mut on = self.head_live && !self.head_off[i] && m.flags24.raw & 0x4000_0000 != 0;
             if on && m.active[0] != 0 {
                 let from = (m.active[1] as i32).max(m.bytes_18.frame_count_ram as i32 - 0x11);
                 on = f.frame as i32 >= from;
+            }
+            if !self.bodies[i].bones.is_empty() {
+                let nodes = &self.bodies[i].character.nodes;
+                if head::TagLook::fits(|n| nodes.get(n)?.parent) {
+                    let (pose, place) = self.pose_animated(i);
+                    let w: Vec<Mat4> = pose.iter().map(|m| place * *m).collect();
+                    let (o, o_place) = self.pose_animated(1 - i);
+                    let target = o_place.transform_point3(o[self.bodies[1 - i].chest].w_axis.truncate());
+                    self.looks[i].step(on, &w, target);
+                }
+                continue;
             }
             let no_yaw = self.characters[i].is_some_and(|c| gd.characters.head_without_yaw.contains(&c));
             let frame = || {
@@ -1410,6 +1424,11 @@ impl Game {
             self.hands[i].apply(p, &self.bodies[i].character, &mut pose);
         }
         self.bodies[i].character.pose_wings(&mut pose, self.wings[i].frame);
+        if let (None, Some(locals)) = (self.display, self.looks[i].locals) {
+            for (n, rot) in head::TAG_LOOK_NODES.into_iter().zip(locals) {
+                head::set_local(&self.bodies[i].character.nodes, &mut pose, n, rot);
+            }
+        }
         (pose, place)
     }
 
@@ -1435,7 +1454,8 @@ impl Game {
     /// Collision volumes of both fighters for the pose currently shown (game units).
     pub fn spheres(&self) -> [BodyVolumes; 2] {
         std::array::from_fn(|i| {
-            let (pose, place) = self.pose(i);
+            // (Tekken Tag's look only changes what is drawn)
+            let (pose, place) = if self.bodies[i].bones.is_empty() { self.pose(i) } else { self.pose_animated(i) };
             volumes(&self.bodies[i], &pose, place)
         })
     }

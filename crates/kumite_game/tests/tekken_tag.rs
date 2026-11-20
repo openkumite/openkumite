@@ -1344,3 +1344,43 @@ fn fingers_take_the_poses() {
         assert!(off(i, 17) < 0.01 && off(i, 0) > 0.5, "fighter {i}: {} off its shape, {} off open", off(i, 17), off(i, 0));
     }
 }
+
+/// Tekken Tag's look (0x351E98): in the stance the drawn head (node 6) and eyes face the opponent's neck; with Lei
+/// moved 15° round Paul the head turns after her as far as it goes; the spheres keep the motion's head (drawn only).
+#[test]
+fn heads_and_eyes_follow_the_opponent() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [PAUL, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    // degrees between node `n`'s x axis (drawn or animated) and the line to the opponent's neck (node 5)
+    let off = |g: &Game, i: usize, n: usize, drawn: bool| {
+        let (pose, place) = if drawn { g.pose(i) } else { g.pose_animated_for_tests(i) };
+        let (o, o_place) = g.pose_animated_for_tests(1 - i);
+        let m = place * pose[n];
+        let to = o_place.transform_point3(o[5].w_axis.truncate()) - m.w_axis.truncate();
+        m.x_axis.truncate().normalize().dot(to.normalize()).clamp(-1.0, 1.0).acos().to_degrees()
+    };
+    for _ in 0..60 {
+        b.step([Pad::default(); 2]);
+    }
+    for i in 0..2 {
+        let (anim, drawn, eye) = (off(&b.game, i, 6, false), off(&b.game, i, 6, true), off(&b.game, i, 21, true));
+        eprintln!("P{}: head off the opponent {anim:.1} deg animated, {drawn:.1} drawn; eye {eye:.1}", i + 1);
+        assert!(drawn < 3.0 && eye < 3.0, "P{} looks at the opponent", i + 1);
+    }
+    let f = &mut b.game.fight.fighters;
+    let along = f[1].position - f[0].position;
+    f[1].position = f[0].position + glam::Quat::from_rotation_y(15f32.to_radians()) * along;
+    for _ in 0..60 {
+        b.step([Pad::default(); 2]);
+    }
+    let (anim, drawn) = (off(&b.game, 0, 6, false), off(&b.game, 0, 6, true));
+    eprintln!("Lei 15 deg round: Paul's head {anim:.1} deg off animated, {drawn:.1} drawn");
+    // (Paul stands side-on: the neck and the head both reach their 40° and stop short)
+    assert!(drawn < anim - 20.0, "the head follows");
+    let (pose, place) = b.game.pose_animated_for_tests(0);
+    let centres = |v: &kumite_sim::BodyVolumes| v.hurt.iter().map(|s| s.centre).collect::<Vec<_>>();
+    assert_eq!(centres(&b.game.spheres()[0]), centres(&kumite_game::volumes(&b.game.bodies[0], &pose, place)), "the spheres keep the motion's head");
+}

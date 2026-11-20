@@ -528,9 +528,9 @@ impl Bout {
         self.phase_frame += 1;
         self.frames += 1;
         self.last_pads = pads;
-        // the heads follow the opponent only while the round is on (round state 2), and not Force's
-        // CPU soldiers
-        self.game.head_live = self.phase == Phase::Fight;
+        // the heads follow the opponent only while the round is on (round state 2; Tekken Tag's also in the K.O.
+        // time, gp-0x7268 1 or 2), and not Force's CPU soldiers
+        self.game.head_live = self.phase == Phase::Fight || (self.game.rounds.is_some() && matches!(self.phase, Phase::RoundOver { .. }));
         self.game.hand_live = matches!(self.phase, Phase::Fight | Phase::RoundOver { .. });
         self.game.head_off = std::array::from_fn(|i| self.force && i == 1 && self.cpu[i].is_some());
         self.game.partner_pad = if self.phase == Phase::Fight { self.partner_pad } else { Pad::default() };
