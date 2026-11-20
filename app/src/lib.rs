@@ -5357,6 +5357,9 @@ impl App {
         self.debug.frame_tick();
         let page_full = self.page_full_screen();
         let Some(r) = self.renderer.as_mut() else { return };
+        // (paused: the step itself)
+        let k = if self.debug.paused { 1.0 } else { self.lag.as_secs_f32() / STEP.as_secs_f32() };
+        r.set_motion(self.logic_steps, k);
         // a tag battle's swap: the side shows its other member's GPU model; the win pose: the loser's place the winner's
         // partner's (put back first)
         if let (Some(fight), Some(scene)) = (self.fight.as_ref(), self.scene.as_mut()) {
@@ -8225,6 +8228,7 @@ Graphics (also OPTION > GRAPHICS):
   --hud 4:3|wide               the fight's HUD in the original's 4:3 picture, or out to a wider window's edges
   --shadows original|soft      Tekken Tag's shadows as the PS2's, or finer with soft edges
   --glow on|off                the added lights (sparks, flames, lamps) glow
+  --motion original|smooth     the fighters and the camera drawn between the 60 Hz steps (a faster display)
   --stages arcade|ps           the arcade game's stages (where the Game data has them), or the PlayStation game's
   --graphics recommended|default
                                start from the settings chosen for the screen and the GPU, or the defaults
