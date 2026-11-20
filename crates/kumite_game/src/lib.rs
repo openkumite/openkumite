@@ -845,6 +845,21 @@ impl Game {
         self.restart(self.intro);
     }
 
+    /// Tekken Tag's COMBO TRAINING (0x37D8C8): fighter `k` put `d / 2` left of the middle facing right, the other as
+    /// far right facing left, both in their stance; the fight camera afresh (0x38C0F0, 0x390E08).
+    pub fn put_apart(&mut self, k: usize, d: f32) {
+        for (i, x) in [(k, -d / 2.0), (1 - k, d / 2.0)] {
+            let Some(f) = self.fight.fighters.get_mut(i) else { continue };
+            f.position = Vec3::new(x, 0.0, 0.0);
+            f.yaw = if x < 0.0 { std::f32::consts::FRAC_PI_2 } else { -std::f32::consts::FRAC_PI_2 };
+            f.root_yaw = f.yaw;
+            f.play_alias(f.moveset.fixed.neutral);
+        }
+        let (rng, lcg) = (self.camera.rng.clone(), self.camera.lcg);
+        self.camera = FightCamera::new(self.camera.data().clone(), false, 0, true);
+        (self.camera.rng, self.camera.lcg) = (rng, lcg);
+    }
+
     /// Put each fighter into its round-start move (alias; 0x8002D31C): from frame 1, or with exactly 150
     /// frames left for longer clips. An empty alias leaves the fighter in its stance.
     pub fn set_start_moves(&mut self, aliases: [usize; 2]) {
