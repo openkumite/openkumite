@@ -176,6 +176,9 @@ pub struct Character {
     /// with their texture's alpha; `indices.len()` when there are none.
     pub blend_from: usize,
     pub texture: Image,
+    /// Tekken Tag's Jin: the texels of his texture channel's other frame, the mark (the texture's extras `mark`: the
+    /// rectangle x, y, w, h and where in the texture its marked texels are).
+    pub mark: Option<[u32; 6]>,
     pub clips: Vec<Clip>,
     clip_index: HashMap<String, usize>,
 }
@@ -294,7 +297,9 @@ impl Character {
             }
         }
         let name = doc.scenes().next().and_then(|s| s.name().map(str::to_string)).unwrap_or_default();
-        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, texture, clips, clip_index })
+        let extras = doc.textures().next().and_then(|t| serde_json::from_str::<serde_json::Value>(t.extras().as_ref()?.get()).ok());
+        let mark = extras.and_then(|e| serde_json::from_value(e["mark"].clone()).ok());
+        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, texture, mark, clips, clip_index })
     }
 
     /// A shadow mesh skinned to this skeleton: each vertex in the bind pose, wholly on its joint; the quads split
@@ -385,6 +390,7 @@ impl Character {
             indices: self.indices.clone(),
             blend_from: self.blend_from,
             texture: self.texture.clone(),
+            mark: self.mark,
             clips: self.clips_of(donor),
             clip_index: donor.clip_index.clone(),
         }

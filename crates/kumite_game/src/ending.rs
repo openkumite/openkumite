@@ -8,18 +8,19 @@
 //! The EMBU (scene 1, 0x3A97B0: Theater's EMBU and EMBU2) is the same scene in a dialect of its own (0x3A9E48,
 //! table 0x519B50): a cast of six, ops 0 / 1 / 14 put a member in a slot, 2 / 3 play track a from its frame b to c
 //! (the slot is not drawn before or after), 4 takes camera path a of 22 from frame b, 5 / 6 fade from / to white,
-//! 13 starts its music; it ends at op -1 alone.
+//! 12 Jin's mark, 13 starts its music; it ends at op -1 alone.
 //!
 //! The hand tracks come in the body clips (the converter's format 26: the finger nodes' turns).
 //!
 //! Ops 17 / 18 throw 0x3A2758's bursts from an actor's node (see [`Burst`]); ops 21-24 lay 2D objects over the picture
 //! (see [`Overlay`]); 4's and 27's 0x3465E0, 26 and 31 change nothing drawn. The arena's background characters are a
 //! set of the scene's own or none (0x3D85D8, [`EndingScene::people`]); the EMBU's screen films from farther
-//! ([`EndingScene::camera`]).
+//! ([`EndingScene::camera`]) and turns the arena half round.
 //!
-//! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 12 (Jin's mark, texture channel 0's frame 0), 15 (True
-//! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 25 (arena props on an actor's node, 0x3D10D0), 28 (Kuma's
-//! and Panda's +0xB052), 30 (objects 0x3ACF50), 32 (gp-0x6E78); the EMBU's 7-12; ops 17 / 18 at nodes 0x4000-0x4002
+//! Op 25 puts an arena's object in a hand ([`EndingScene::props`]). Op 12 shows Jin's mark (his texture channel 0's frame 0, [`EndingScene::marks`]).
+//!
+//! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 15 (True
+//! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 28 (True Ogre's and Devil's wings, +0xB052), 30 (objects 0x3ACF50), 32 (gp-0x6E78); the EMBU's 7-11; ops 17 / 18 at nodes 0x4000-0x4002
 //! (op 25's prop matrix 0x444CD0, 20 objects 0x3ACCD0); the face track (its joints are not mapped).
 
 use crate::UNITS;
@@ -170,12 +171,16 @@ pub struct EndingScene {
     /// Per actor slot: the cast member in it and the track it plays; the EMBU's: from scene frame s, frames b..=c.
     slots: [(Option<usize>, usize); 2],
     ranges: [Option<(i32, i32, i32)>; 2],
+    /// Per actor slot: its texture channel shows frame 0, Jin's mark (op 12; a cast member put in shows frame 1, 0x3A82C8).
+    pub marks: [bool; 2],
     /// The music started (the EMBU's op 13: its BGM).
     pub music: Option<usize>,
     /// The bursts thrown this frame.
     pub bursts: Vec<Burst>,
     /// Ops 21-24's objects: (scene frame started, op, a, b, c).
     objects: Vec<(i32, i32, i32, i32, i32)>,
+    /// Op 25's props: (scene frame started, actor a, object b, frames c).
+    props: Vec<(i32, i32, i32, i32)>,
     black: Fade,
     white: Fade,
     pub done: bool,
@@ -247,9 +252,11 @@ impl EndingScene {
             c: -1,
             slots: [(None, 0); 2],
             ranges: [None; 2],
+            marks: [false; 2],
             music: None,
             bursts: Vec::new(),
             objects: Vec::new(),
+            props: Vec::new(),
             black: Fade { from: 255, to: 255, at: 0, len: 1 },
             white: Fade::default(),
             done: false,
@@ -284,7 +291,7 @@ impl EndingScene {
                 continue;
             }
             match op {
-                0 | 1 => self.slots[op as usize].0 = usize::try_from(a).ok().filter(|&m| m < self.characters.len()),
+                0 | 1 => (self.slots[op as usize].0, self.marks[op as usize]) = (usize::try_from(a).ok().filter(|&m| m < self.characters.len()), false),
                 2 | 3 => self.slots[op as usize - 2].1 = a.max(0) as usize,
                 4 => self.camera_at = (c, b),
                 5 => self.white = Fade { from: (b * 2).min(255), to: 0, at: c, len: a },
@@ -307,7 +314,10 @@ impl EndingScene {
                         self.bursts.push(Burst { kind: 3, pos, dir: None, high, spin: last as f32 * std::f32::consts::TAU / 4096.0 });
                     }
                 }
+                // slot a & 1's texture channel 0 to frame 1 (b = 0) or 0 (0x3AB924)
+                12 => self.marks[(a & 1) as usize] = b != 0,
                 21..=24 => self.objects.push((c, op, a, b, last)),
+                25 => self.props.push((c, a, b, last)),
                 -1 => self.done = true,
                 _ => {}
             }
@@ -323,7 +333,7 @@ impl EndingScene {
         // (0x3A9E94: a member past the six is the first)
         let member = usize::try_from(a).ok().filter(|&m| m < self.characters.len()).or(Some(0));
         match op {
-            0 | 1 => (self.slots[op as usize].0, self.ranges[op as usize]) = (member, None),
+            0 | 1 => (self.slots[op as usize].0, self.ranges[op as usize], self.marks[op as usize]) = (member, None, false),
             14 => self.slots[0].0 = member,
             2 | 3 => {
                 let s = op as usize - 2;
@@ -333,6 +343,8 @@ impl EndingScene {
             4 => (self.path, self.camera_at) = (usize::try_from(a).unwrap_or(0).min(self.cameras.len() - 1), (c, b)),
             5 => self.white = Fade { from: 255, to: 0, at: c, len: a },
             6 => self.white = Fade { from: self.white.level(c) as i32, to: 255, at: c, len: a },
+            // slot a & 1's Jin: the mark off (b = 0, 0x3A88A0) or on (0x3A8890)
+            12 => self.marks[(a & 1) as usize] = b != 0,
             13 => self.music = Some(1),
             -1 => self.done = true,
             _ => {}
@@ -372,6 +384,45 @@ impl EndingScene {
         out
     }
 
+    /// The objects ending op 25 holds this frame (0x3ACB08 -> 0x3D10D0): the arena's object (its file
+    /// `stages/stage_NN_prop_K.glb`, [`EndingScene::prop_files`]) and where it is drawn (metres): for c frames at
+    /// actor a's (0 or not) node 38 or 63 by arena and object, or with b's 0x4000 where arena 3 lays it (its matrix
+    /// 0x8D7E00: turned -0.349 about x and 0.785 about y, at z 1500). On other arenas, or other objects, none.
+    pub fn props(&self) -> Vec<(usize, Mat4)> {
+        let mut out = vec![];
+        for &(at, a, b, frames) in &self.props {
+            let (k, laid) = (b & 0x3FFF, b & 0x4000 != 0);
+            if self.c - at >= frames.max(1) {
+                continue;
+            }
+            let node = match (self.arena, k) {
+                (3, 19) if laid => {
+                    let m = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.5)) * Mat4::from_rotation_y(-std::f32::consts::FRAC_PI_4) * Mat4::from_rotation_x(-0.349_065_84);
+                    out.push((19, m));
+                    continue;
+                }
+                (7, 0) => 63,
+                (3, 19) | (5, 0) | (7, 1 | 2) => 38,
+                _ => continue,
+            };
+            if let Some((_, pose, place)) = self.pose(usize::from(a != 0)) {
+                if let Some(m) = pose.get(node) {
+                    out.push((k as usize, place * *m));
+                }
+            }
+        }
+        out
+    }
+
+    /// The files of the props the script holds (op 25: [`EndingScene::props`]), each with its object.
+    pub fn prop_files(&self) -> Vec<(usize, String)> {
+        let mut out: Vec<(usize, String)> =
+            (self.script.iter()).filter(|r| r[1] == 25 && self.ending.is_some()).map(|r| (r[3] & 0x3FFF) as usize).map(|k| (k, format!("stages/stage_{:02}_prop_{k}.glb", self.arena))).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Black over the picture (fades in and out), then white (flashes), 0..=255.
     pub fn fades(&self) -> (u8, u8) {
         (self.black.level(self.c), self.white.level(self.c))
@@ -391,7 +442,17 @@ impl EndingScene {
                 (ch.clip(&format!("embu_{track}"))?, usize::try_from(f).ok().filter(|_| f <= to)?)
             }
         };
-        Some((m, ch.pose(clip, frame, false), Mat4::IDENTITY))
+        Some((m, ch.pose(clip, frame, false), self.turn()))
+    }
+
+    /// The EMBU's screen (11) draws the arena turned half round (0x36712C: its matrix 0x8794A0 a turn of pi about y,
+    /// identity in the endings): the actors and the camera turned so about it instead.
+    fn turn(&self) -> Mat4 {
+        if self.ending.is_none() {
+            Mat4::from_rotation_y(std::f32::consts::PI)
+        } else {
+            Mat4::IDENTITY
+        }
     }
 
     /// Slot `s`'s node `n` (the game's numbering, the model's nodes') in metres; none for an empty slot or 0x4000 up.
@@ -413,6 +474,7 @@ impl EndingScene {
         let to_m = |x: f32, y: f32, z: f32| Vec3::new(x, -y, -z) / UNITS;
         // H on Tekken Tag's 512-pixel-wide screen, as its fight camera's (crate::view_camera takes Tekken 3's 368)
         let h = (f[6] * 368.0 / 512.0) as i64;
-        (to_m(f[0], f[1], f[2]), to_m(f[3], f[4], f[5]), crate::view_camera(&crate::View { h: h.max(1), ..Default::default() }).2)
+        let turn = self.turn();
+        (turn.transform_point3(to_m(f[0], f[1], f[2])), turn.transform_point3(to_m(f[3], f[4], f[5])), crate::view_camera(&crate::View { h: h.max(1), ..Default::default() }).2)
     }
 }

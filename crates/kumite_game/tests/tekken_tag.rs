@@ -1105,7 +1105,9 @@ fn play_ending(a: &Assets, d: &kumite_game::ending::EndingData, e: usize) -> Vec
 }
 
 /// The EMBU's camera as PCSX2 showed it at its counter 1100, one ahead of the view (our frame 1099): the view 0x415808's eye (-339, -2152,
-/// -2338) game units; and its people: none in the first cast, set 30 in the second.
+/// -2338) game units, here turned half round about the arena (screen 11 turns the arena so: PCSX2 shows the pagoda
+/// and the gate's steps on path 0 at counter 420, where the arena as it stands has the lion); and its people: none in
+/// the first cast, set 30 in the second.
 #[test]
 fn the_embus_camera_is_the_ps2s() {
     let Some(a) = assets() else { return };
@@ -1115,9 +1117,9 @@ fn the_embus_camera_is_the_ps2s() {
         s.step();
     }
     let (eye, _, _) = s.camera();
-    assert!((eye - glam::Vec3::new(-0.339, 2.152, 2.338)).abs().max_element() < 0.002, "{eye}");
+    assert!((eye - glam::Vec3::new(0.339, 2.152, -2.338)).abs().max_element() < 0.002, "{eye}");
     assert!(s.people.is_none());
-    assert_eq!(kumite_game::ending::EndingScene::embu(&a, &d, 1).unwrap().people.unwrap()["set"], 30);
+    assert_eq!(kumite_game::ending::EndingScene::embu(&a, &d, 1).unwrap().people.expect("the EMBU's people: a pack before converter format 40, convert the game again")["set"], 30);
 }
 
 #[test]
@@ -1161,6 +1163,38 @@ fn an_endings_overlays() {
     let iris = |r: f32| Overlay::Iris { x: 320.0, y: 224.0, r };
     assert_eq!(at(2, &[752, 753, 850, 851, 899, 959, 989]), vec![vec![], vec![negative], vec![negative], vec![], vec![iris(640.0)], vec![iris(320.0)], vec![iris(160.0)]]);
     assert_eq!(at(22, &[119, 120, 255, 256]), vec![vec![], vec![Overlay::Oval], vec![Overlay::Oval], vec![]]);
+}
+
+/// Op 12: in ending 13 Jin (slot 1) shows his mark until Jun's touch at frame 510; his texture has the marked texels.
+#[test]
+fn jins_mark_in_ending_13() {
+    let Some(a) = assets() else { return };
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    let mut s = kumite_game::ending::EndingScene::new(&a, &d, 13, 0).unwrap();
+    let mut marks = vec![];
+    while s.frame() < 511 {
+        s.step();
+        marks.push(s.marks[1]);
+    }
+    assert!(marks[..510].iter().all(|&m| m) && !marks[510]);
+    let jin = &s.characters[0];
+    let [x, y, w, h, sx, sy] = jin.mark.expect("Jin's texture has his mark (convert the game again)");
+    assert!(w > 0 && h > 0 && (x + w).max(sx + w) <= jin.texture.width && (y + h).max(sy + h) <= jin.texture.height);
+}
+
+/// Op 25: in ending 20 Bryan (slot 1) holds arena 5's object 0 at his hand (node 38) for 1080 frames.
+#[test]
+fn bryans_gun_in_ending_20() {
+    let Some(a) = assets() else { return };
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    let mut s = kumite_game::ending::EndingScene::new(&a, &d, 20, 0).unwrap();
+    assert_eq!(s.prop_files(), vec![(0, "stages/stage_05_prop_0.glb".to_string())]);
+    assert!(a.root.join("stages/stage_05_prop_0.glb").exists(), "convert the game again");
+    while s.frame() < 300 {
+        s.step();
+    }
+    let (_, pose, place) = s.pose(1).unwrap();
+    assert_eq!(s.props(), vec![(0, place * pose[38])]);
 }
 
 /// Tekken Bowl from the pack: Paul's throw (its hand's release point from his motion, ahead of him, above the lane,
