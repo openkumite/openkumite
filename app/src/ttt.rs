@@ -221,7 +221,7 @@ impl Data {
 }
 
 /// The sound id the front end plays for `role` (roster.json `front_end.sounds`: FRONTEND.md 9).
-fn sound(d: &Data, role: &str) -> u16 {
+pub fn sound(d: &Data, role: &str) -> u16 {
     int(&d.raw["sounds"][role]) as u16
 }
 
@@ -3057,6 +3057,8 @@ pub struct Practice {
     pub mode: usize,
     pub cursor: usize,
     values: Vec<Vec<usize>>,
+    /// COMMAND LIST, open over the fight in the menu's place (0x379A98).
+    pub commands: Option<CommandList>,
     /// The damage each side took, and the last hit's on the dummy (damage, base damage).
     total: [i32; 2],
     last: (i32, i32),
@@ -3143,6 +3145,10 @@ impl Practice {
             Key::Back => {
                 self.open = false;
                 return PracticeAction::Close;
+            }
+            Key::Start | Key::Button(_) if kind == "commands" => {
+                sfx::play(sound(d, "decide"));
+                self.commands = Some(CommandList::default());
             }
             Key::Start | Key::Button(_) => {
                 let action = match kind {
@@ -3324,6 +3330,167 @@ fn rgba(c: &Value) -> Color32 {
     Color32::from_rgba_unmultiplied(k(0), k(1), k(2), (int(&c[3]) * 255 / 128).min(255) as u8)
 }
 
+/// COMMAND LIST (0x3DC9C8, `command_list`): a side's move under the list's top and how far the list has still to ease
+/// there (0x48 a move; a third of it goes a frame).
+#[derive(Clone, Debug, Default)]
+pub struct CommandList {
+    index: usize,
+    offset: std::cell::Cell<i32>,
+}
+
+impl CommandList {
+    /// Down / up one move, right / left `step` (round), with five moves or more (sound 0x103F).
+    pub fn key(&mut self, d: &Data, body: usize, key: Key) {
+        let c = &d.raw["command_list"];
+        let n = c["lists"][body]["moves"].as_array().map_or(0, Vec::len);
+        let step = int(&c["step"]) as i64;
+        let by = match key {
+            Key::Down => 1,
+            Key::Up => -1,
+            Key::Right => step,
+            Key::Left => -step,
+            _ => return,
+        };
+        if n < 5 {
+            return;
+        }
+        sfx::play(int(&c["sound"]) as u16);
+        self.offset.set(self.offset.get() + by as i32 * int(&c["row_h"]) as i32);
+        self.index = (self.index as i64 + by).rem_euclid(n as i64) as usize;
+    }
+}
+
+/// A command list text (0x3DFA00) in the help font from (x, y): 0xFC 0xFF aligns each line right in `width`, 0xFF 'n'
+/// starts a line 20 lower, 0xDB-0xEB arrows and 0xEC-0xFB buttons (`command_list.arrows` / `buttons`), each glyph its
+/// help font width on, a space 4.
+#[allow(clippy::too_many_arguments)]
+fn command_text(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x: f32, y: f32, width: f32) {
+    let (f, c) = (&d.raw["help"]["font"], &d.raw["command_list"]);
+    let (ar, bt) = (&c["arrows"], &c["buttons"]);
+    let advance = |ch: u32| match ch {
+        0xdb => num(&ar["star_advance"]),
+        0xdc..=0xeb => num(&ar["advance"]),
+        0xec..=0xfb => num(&bt["advance"]),
+        0x20 => num(&f["space"]),
+        _ => num(&f["widths"][(ch as usize).saturating_sub(32)]),
+    };
+    let codes: Vec<u32> = text.chars().map(u32::from).collect();
+    let right = codes.starts_with(&[0xfc, 0xff]);
+    let mut lines = codes.split(|&ch| ch == 0xfc || ch == 0xff).collect::<Vec<_>>();
+    // (the codes' second bytes: 0xFF after 0xFC, 'n' after 0xFF)
+    lines.retain(|l| !l.is_empty() && *l != [0xff]);
+    let tint = ps2(num(&c["level"])).0;
+    let Some((font, [tw, th])) = art.pic(f["picture"].as_str().unwrap_or_default()) else { return };
+    let (gw, gh, cols) = (num(&f["glyph"][0]), num(&f["glyph"][1]), int(&f["columns"]).max(1));
+    let dy = num(&c["dy"]);
+    for (k, line) in lines.iter().enumerate() {
+        let line = line.strip_prefix(&[u32::from('n')]).filter(|_| k > 0).unwrap_or(line);
+        let w: f32 = line.iter().map(|&ch| advance(ch)).sum();
+        let (mut at, y) = (if right { x + width - w } else { x }, y + num(&f["line_h"]) * k as f32);
+        for &ch in line {
+            let icon = |pic: &Value, [cw, ch_]: [f32; 2], cell: f32, row: f32, flags: i64, at: f32| {
+                if let Some((t, [iw, ih])) = art.pic(pic.as_str().unwrap_or_default()) {
+                    let (u0, v0) = (cell * cw / iw as f32, row * ch_ / ih as f32);
+                    let (u1, v1) = (u0 + cw / iw as f32, v0 + ch_ / ih as f32);
+                    let (u0, u1) = if flags & 1 != 0 { (u1, u0) } else { (u0, u1) };
+                    let (v0, v1) = if flags & 2 != 0 { (v1, v0) } else { (v0, v1) };
+                    let [rx, ry, rw, rh] = sv([at, y + dy, cw, ch_]);
+                    painter.image(t.id(), v.rect(rx, ry, rw, rh), Rect::from_min_max(Pos2::new(u0, v0), Pos2::new(u1, v1)), Color32::WHITE);
+                }
+            };
+            let size = |s: &Value| [num(&s[0]), num(&s[1])];
+            match ch {
+                // (0x3DF500: the arrow's cell and mirrors by its direction, the star the ninth; palette row 1 tapped,
+                // 0 held)
+                0xdb..=0xeb => {
+                    let (k, row) = if ch == 0xdb { (8, 1.0) } else { (((ch - 0xdc) & 7) as usize, if ch >= 0xe4 { 0.0 } else { 1.0 }) };
+                    let cell = &ar["cells"][k];
+                    icon(&ar["picture"], size(&ar["cell"]), num(&cell[0]), row, int(&cell[1]) as i64, at);
+                }
+                // (0x3DF150: the palette row is the buttons pressed)
+                0xec..=0xfb => icon(&bt["picture"], size(&bt["size"]), 0.0, (ch - 0xec) as f32, 0, at),
+                0x20 => {}
+                _ => {
+                    let g = ch.saturating_sub(32) as usize;
+                    let (u, w0) = ((g % cols) as f32 * gw / tw as f32, (g / cols) as f32 * gh / th as f32);
+                    let uv = Rect::from_min_max(Pos2::new(u, w0), Pos2::new(u + gw / tw as f32, w0 + gh / th as f32));
+                    let [rx, ry, rw, rh] = sv([at, y, gw, gh]);
+                    painter.image(font.id(), v.rect(rx, ry, rw, rh), uv, tint);
+                }
+            }
+            at += advance(ch);
+        }
+    }
+}
+
+/// The character whose COMMAND LIST side `k` shows: its fighter's (0x3DD098: fighter +0x22).
+pub fn command_body(bout: &Bout, k: usize) -> usize {
+    bout.game.fight.fighters.get(k).and_then(|f| f.character).unwrap_or(0).max(0) as usize
+}
+
+/// COMMAND LIST of side `side` (0x3DC9C8; `body` its character, `practice`: practice's place, higher): the head
+/// with the face, the name and "When Facing Right", four moves on their groups' bands under it clipped to the list,
+/// each name over its keys (right-aligned), the bar with five moves or more (else the rest below in the first group's
+/// colour), the window's frame; the list eases a third of the way to its move each frame.
+/// shortcut: the bar's track (drawn in GS mode 0xFFFD) is left out; it does not show on the PS2.
+pub fn draw_command_list(painter: &egui::Painter, v: &View, art: &Art, d: &Data, list: &CommandList, side: usize, body: usize, practice: bool) {
+    let c = &d.raw["command_list"];
+    let Some(moves) = c["lists"][body]["moves"].as_array() else { return };
+    let n = moves.len();
+    let (x0, y0) = (num(&c["x"][side]), num(&c[if practice { "practice_y" } else { "y" }]));
+    let r = &c["head"]["rect"];
+    Art::shade(painter, v, sv([x0 + num(&r[0]), y0 + num(&r[1]), num(&r[2]), num(&r[3])]), [rgba(&c["head"]["colour"]); 4]);
+    let fs = num(&d.raw["select"]["face_size"]);
+    image(painter, v, art, &d.picture(&["select", "faces", &body.to_string()]), [x0 + num(&c["face_xy"][0]), y0 + num(&c["face_xy"][1]), fs, fs], Color32::WHITE);
+    let width = num(&c["width"]);
+    let name = c["lists"][body]["name"].as_str().unwrap_or_default();
+    command_text(painter, v, art, d, name, x0 + num(&c["name_xy"][0]), y0 + num(&c["name_xy"][1]), width);
+    let facing = format!("\u{fc}\u{ff}{}", c["facing"]["text"].as_str().unwrap_or_default());
+    command_text(painter, v, art, d, &facing, x0, y0 + num(&c["facing"]["y"]), width);
+    // (the ease: what is left less a third, rounded up, 0x3DCC5C)
+    let left = list.offset.get();
+    let eased = (left.abs() - (left.abs() + 3) / 3).max(0) * left.signum();
+    list.offset.set(eased);
+    let (row_h, rows, top) = (num(&c["row_h"]), int(&c["rows"]), y0 + num(&c["top"]));
+    let back = eased / row_h as i32 + i32::from(eased > 0);
+    let first = (list.index as i64 - back as i64).rem_euclid(n.max(1) as i64) as usize;
+    let mut y = top + (eased - back * row_h as i32) as f32;
+    let [cx, cy, cw, ch] = sv([0.0, top, W, row_h * rows as f32]);
+    let clip = painter.with_clip_rect(v.rect(cx, cy, cw, ch).intersect(painter.clip_rect()));
+    let (bx, bw, bands) = (x0 + num(&c["band_x"]), num(&c["band_w"]), [num(&c["bands"][0]), num(&c["bands"][1])]);
+    let shown = if n >= 5 { rows + 1 } else { n };
+    for k in 0..shown {
+        let m = &moves[(first + k) % n];
+        let colours = &c["colours"][int(&m[0])];
+        let label = m[1].as_str().unwrap_or_default();
+        if label.is_empty() {
+            Art::shade(&clip, v, sv([bx, y, bw, row_h]), [rgba(&colours[1]); 4]);
+        } else {
+            Art::shade(&clip, v, sv([bx, y, bw, bands[0]]), [rgba(&colours[0]); 4]);
+            Art::shade(&clip, v, sv([bx, y + bands[0], bw, bands[1]]), [rgba(&colours[1]); 4]);
+        }
+        command_text(&clip, v, art, d, label, x0, y, width);
+        command_text(&clip, v, art, d, m[2].as_str().unwrap_or_default(), x0 + num(&c["keys_xy"][0]), y + num(&c["keys_xy"][1]), width);
+        y += row_h;
+    }
+    let span = row_h * rows as f32;
+    if n >= 5 {
+        let b = &c["bar"];
+        let (h, at) = (span * rows as f32 / n as f32, ((list.index as i32 * row_h as i32 - eased) * rows as i32) as f32 / n as f32);
+        for dy in [at, at - span] {
+            Art::shade(&clip, v, sv([x0 + num(&b["x"]), top + dy, num(&b["w"]), h]), [rgba(&b["thumb"]); 4]);
+        }
+    } else {
+        Art::shade(&clip, v, sv([bx, top + n as f32 * row_h, bw, span - n as f32 * row_h]), [rgba(&c["below"]); 4]);
+    }
+    let f = &c["frame"];
+    let [x, y, w, h] = [x0 + num(&f[0]), y0 + num(&f[1]), num(&f[2]), num(&f[3])];
+    // (the frame 4 wide, 10 out, as the pause window's)
+    for r in [[x - 10.0, y - 10.0, w + 20.0, 4.0], [x - 10.0, y + h + 6.0, w + 20.0, 4.0], [x - 10.0, y - 6.0, 4.0, h + 12.0], [x + w + 6.0, y - 6.0, 4.0, h + 12.0]] {
+        Art::shade(painter, v, sv(r), [Color32::from_gray(195); 4]);
+    }
+}
+
 /// The pause menu's entries (0x3B7B98: `front_end.pause.items` by number): CANCEL, RESET, COMMAND LIST, ADJUST
 /// DISPLAY, CONTROLLER SETUP. SCREEN CAPTURE (3) shows once the Gallery is open (no Gallery here); Tekken Bowl's
 /// (mode 8) has TOP BOWLERS and BOWLING OPTIONS (4, 5) instead of COMMAND LIST and SCREEN CAPTURE.
@@ -3331,10 +3498,10 @@ pub const PAUSE_ITEMS: [usize; 5] = [0, 1, 2, 6, 7];
 pub const BOWL_PAUSE_ITEMS: [usize; 6] = [0, 1, 4, 5, 6, 7];
 
 /// The pause entries OpenKumite does not have, drawn in the game's colour for one unavailable (`colours.off`).
-/// shortcut: COMMAND LIST (no move list), ADJUST DISPLAY and CONTROLLER SETUP (OpenKumite's GRAPHICS and KEY
+/// shortcut: ADJUST DISPLAY and CONTROLLER SETUP (OpenKumite's GRAPHICS and KEY
 /// CONFIGURATION are in OPTIONS) do nothing in a fight.
 fn pause_off(item: usize) -> bool {
-    matches!(item, 2 | 6 | 7)
+    matches!(item, 6 | 7)
 }
 
 /// What a key does to the pause menu (0x3B7B98): up / down move the cursor round the entries (sound 3); a button takes
@@ -4293,6 +4460,7 @@ mod tests {
             "unlocks": {"schedule": [{"stage": 0, "kind": 0, "character": 2}, {"stage": 1, "kind": 1, "character": 2}, {"stage": 1, "kind": 0, "character": 3}], "points_per_stage": 50},
             "arcade": {"fights": 8, "rivals": [[2, 3, null], [0, null, null]], "fallback": [3], "pairs": [[1, 2]], "rival_arena": 6, "boss": 3, "boss_arena": 14, "early_fights": 3, "early_excluded": []},
             "team_battle": {"refill_percent": 15},
+            "command_list": {"step": 4, "row_h": 72, "sound": 0, "lists": [{"moves": [[0, "A", ""], [0, "B", ""], [0, "C", ""], [0, "D", ""], [0, "E", ""], [0, "F", ""]]}, {"moves": [[0, "A", ""]]}]},
             "records": {"defaults": {"survivors": [{"members": [0, 1], "score": 5, "name": "PAU"}, {"members": [2, 3], "score": 1, "name": "KIN"}]},
                 "letters": "ABC<=", "name_len": 3},
             "ranking": {"frames": 10, "rows": [{}, {}, {"dy": 75, "first": 135, "shown": 5, "hold": 130}], "pace": {"fade": 8, "scroll": 12, "after": 60}},
@@ -4728,6 +4896,21 @@ mod tests {
             f.tick(&r, &mut seed);
         }
         assert!(matches!(f.page, Page::Title) && progress().survivors.first().is_some_and(|s| s.name == "B" && s.score == 900));
+    }
+
+    /// COMMAND LIST: up / down one move, left / right four, round the list, each easing a row away; under five moves
+    /// it stays.
+    #[test]
+    fn command_list_moves_round() {
+        let d = data();
+        let mut l = CommandList::default();
+        l.key(&d, 0, Key::Up);
+        assert_eq!((l.index, l.offset.get()), (5, -72));
+        l.key(&d, 0, Key::Right);
+        assert_eq!((l.index, l.offset.get()), (3, 216));
+        let mut one = CommandList::default();
+        one.key(&d, 1, Key::Down);
+        assert_eq!((one.index, one.offset.get()), (0, 0));
     }
 
     /// Practice's menu: MODE SELECT's left / right turn the modes, a row's left / right its values (round), CANCEL and

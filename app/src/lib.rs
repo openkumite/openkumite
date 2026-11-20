@@ -445,6 +445,8 @@ struct Fight {
     rules: bool,
     /// Tekken Tag's RESET? window is open: YES chosen.
     reset: Option<bool>,
+    /// Tekken Tag's COMMAND LIST is open (the pause's): each side's.
+    commands: Option<[ttt::CommandList; 2]>,
     /// Practice mode: its menu, dummy and attack data.
     practice: Option<practice::Practice>,
     /// Tekken Tag's practice: its menu and dummy.
@@ -1133,6 +1135,7 @@ impl App {
             pause: None,
             rules: false,
             reset: None,
+            commands: None,
             practice,
             ttt_practice: (mode == Some(Mode::Practice)).then(|| self.roster.ttt.as_deref().map(ttt::Practice::new)).flatten(),
             heard: Heard { last_moves, ..Default::default() },
@@ -4358,6 +4361,7 @@ impl App {
             pause: None,
             rules: false,
             reset: None,
+            commands: None,
             practice: None,
             ttt_practice: None,
             heard: Heard::default(),
@@ -5129,6 +5133,14 @@ impl App {
         }
         // Tekken Tag's practice: START (or Esc) opens its menu, which takes the keys while open
         if let (Some(p), Some(d)) = (fight.ttt_practice.as_mut(), self.roster.ttt.clone()) {
+            // its COMMAND LIST: START or a face button back to the menu (0x379AA8)
+            if let Some(list) = p.commands.as_mut() {
+                match key {
+                    Key::Start | Key::Button(_) | Key::Back => p.commands = None,
+                    _ => list.key(&d, ttt::command_body(&fight.bout, 0), key),
+                }
+                return true;
+            }
             if !p.open {
                 if matches!(key, Key::Start | Key::Back) {
                     p.open(&d);
@@ -5223,6 +5235,19 @@ impl App {
         }
         // Tekken Tag's pause menu (0x3B7B98): its entries and RESET?
         if let Some(d) = self.roster.ttt.as_deref().filter(|_| fight.pause.is_some() && !ball) {
+            // COMMAND LIST (0x3B7F74): each side's list its keys; START or a button closes them, back to the entries
+            if let Some(lists) = fight.commands.as_mut() {
+                match key {
+                    Key::Start | Key::Button(_) | Key::Back => fight.commands = None,
+                    _ => lists[player.min(1)].key(d, ttt::command_body(&fight.bout, player.min(1)), key),
+                }
+                return true;
+            }
+            if matches!(key, Key::Button(_)) && fight.pause.is_some_and(|(c, _)| ttt::PAUSE_ITEMS.get(c) == Some(&2)) {
+                menu::sfx::play(ttt::sound(d, "decide"));
+                fight.commands = Some(Default::default());
+                return true;
+            }
             if ttt::pause_key(d, &ttt::PAUSE_ITEMS, &mut fight.pause, &mut fight.reset, key) {
                 if let Some(a) = self.audio.as_mut() {
                     a.duck(false);
@@ -5876,7 +5901,9 @@ impl App {
                             let view = art::Screen::fit(ctx.content_rect());
                             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("practice"))).with_clip_rect(view.rect);
                             let name = f.setup.as_ref().and_then(|s| roster.characters.get(s.players[0].0)).map_or("", |c| c.name.as_str());
-                            if p.open {
+                            if let Some(list) = p.commands.as_ref() {
+                                ttt::draw_command_list(&painter, &view, art, d, list, 0, ttt::command_body(&f.bout, 0), true);
+                            } else if p.open {
                                 ttt::draw_practice(&painter, &view, art, d, p, name);
                             } else if !matches!(f.bout.phase, Phase::TeamIntro { .. }) {
                                 // (none over the team intro, as PCSX2 shows it)
@@ -5888,7 +5915,14 @@ impl App {
                         } else if let (Some((c, player)), Some(d), None) = (f.pause, roster.ttt.as_deref(), f.bout.game.ball.as_ref()) {
                             let view = art::Screen::fit(ctx.content_rect());
                             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("pause"))).with_clip_rect(view.rect);
-                            ttt::draw_pause(&painter, &view, art, d, &ttt::PAUSE_ITEMS, c, player, f.reset, frames as u32);
+                            if let Some(lists) = f.commands.as_ref() {
+                                // (each side a player plays: 0x3DD098)
+                                for k in (0..2).filter(|&k| k == 0 || f.bout.cpu[1].is_none()) {
+                                    ttt::draw_command_list(&painter, &view, art, d, &lists[k], k, ttt::command_body(&f.bout, k), false);
+                                }
+                            } else {
+                                ttt::draw_pause(&painter, &view, art, d, &ttt::PAUSE_ITEMS, c, player, f.reset, frames as u32);
+                            }
                         } else if let Some((c, player)) = f.pause {
                             let ball = f.bout.game.ball.is_some();
                             // (no ball_items: the usual items)
