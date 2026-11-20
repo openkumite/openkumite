@@ -1301,7 +1301,8 @@ fn tekken_bowl_from_the_pack() {
         assert!(hand.y < -150.0 && hand.z > 3000.0 && hand.x > 0.0, "Paul's release point {hand}");
         assert_eq!(s.bowl.players[0].charge.len(), 175);
         let mut hashes = vec![];
-        for f in 0..2000u32 {
+        // (Paul's two balls and Lei's first: each waits for its pins to settle, a few hundred frames)
+        for f in 0..3000u32 {
             let b = &s.bowl;
             let press = |go: bool| if go && f % 2 == 0 { CROSS } else { 0 };
             // the ball down the middle: the bowler steps left until the hand is over the centre
