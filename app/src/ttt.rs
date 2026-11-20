@@ -64,6 +64,7 @@ const GUARD_ROW: usize = 4;
 /// GAME OPTIONS' CHARACTER SELECT CURSOR (1 HOLD), QUICK SELECT, CHICKEN MARKING rows.
 const CURSOR_ROW: usize = 5;
 const QUICK_ROW: usize = 6;
+const CHICKEN_ROW: usize = 7;
 const HELP_ROW: usize = 8;
 const SPEAKER_ROW: usize = 9;
 const BGM_ROW: usize = 10;
@@ -2969,6 +2970,106 @@ impl TagHud {
     }
 }
 
+/// CHICKEN MARKING (FRONTEND.md 8, `hud.chicken`): per side and member the moves started with a counted flag (+0x5C:
+/// 1 or 2 by the flag) and the attacks repeated (+0x60), each member's last attacks' aliases, the move each side was
+/// in (to see a new one start), the marks (gp-0x7428), and the round judged. Kept for the match.
+#[derive(Clone, Debug, Default)]
+pub struct Chicken {
+    on: bool,
+    counts: [[[u32; 2]; 2]; 2],
+    history: [[std::collections::VecDeque<usize>; 2]; 2],
+    last: [Option<(kumite_sim::Current, u32)>; 2],
+    pub marked: [bool; 2],
+    judged: bool,
+}
+
+impl Chicken {
+    /// For a match where two players play (the PS2's settings +0x1A = 2) and CHICKEN MARKING is on.
+    pub fn new(d: &Data, humans: [bool; 2]) -> Self {
+        Self { on: humans == [true, true] && progress().setting(d, CHICKEN_ROW) == 1 && d.raw["hud"]["chicken"].is_object(), ..Self::default() }
+    }
+
+    /// Each frame: the counters at each move a side starts (0x3D2A38), and at the round's end the side ahead marked
+    /// or not (0x3D2B88: its counters against the thresholds by ROUND TIME, scaled by the rounds won; a mark stays while
+    /// they are over 6/10 of that by the round's time gone), its voice.
+    pub fn step(&mut self, d: &Data, bout: &Bout) {
+        if !self.on {
+            return;
+        }
+        let c = &d.raw["hud"]["chicken"];
+        let f = &bout.game.fight;
+        for k in 0..2 {
+            let x = &f.fighters[k];
+            let now = (x.current, x.frame);
+            let started = self.last[k].is_none_or(|(m, frame)| m != now.0 || now.1 < frame);
+            self.last[k] = Some(now);
+            if !started || bout.phase != Phase::Fight {
+                continue;
+            }
+            let member = f.teams.as_deref().and_then(|t| t.get(k)).map_or(0, |t| t.active).min(1);
+            let mv = x.current_move(&f.data);
+            let flags = mv.flags24.raw;
+            if flags & int(&c["flags"][0]) as u32 != 0 {
+                self.counts[k][member][0] += 1;
+            } else if flags & int(&c["flags"][1]) as u32 != 0 {
+                self.counts[k][member][0] += 2;
+            }
+            if mv.active[0] != 0 {
+                let h = &mut self.history[k][member];
+                if h.iter().filter(|&&a| a == x.alias).count() >= 2 {
+                    self.counts[k][member][1] += 1;
+                }
+                h.push_front(x.alias);
+                h.truncate(int(&c["history"]).saturating_sub(1));
+            }
+        }
+        match bout.phase {
+            Phase::RoundOver { .. } if !self.judged => {
+                self.judged = true;
+                let [a, b] = bout.wins;
+                if a == b {
+                    return;
+                }
+                let side = usize::from(b > a);
+                let rounds = (a + b).min(9) as usize;
+                let col = d.round_frames.iter().position(|&t| t == bout.game.round_frames).unwrap_or(2).min(4);
+                let (round, left) = (bout.game.round_frames.max(1) as i64, f.clock as i64);
+                let over = chicken_over(c, &self.counts[side], self.marked[side], rounds, col, round, left);
+                self.marked[side] = over;
+                if over {
+                    sfx::play(int(&c["voice"]) as u16);
+                }
+            }
+            Phase::Call | Phase::Fight => self.judged = false,
+            _ => {}
+        }
+    }
+}
+
+/// 0x3D2B88's judgement of a side's counters (`counts` by member: flagged, repeats) with `rounds` won by both, the
+/// ROUND TIME column `col`, the round's frames and those left: a mark is made when a counter reaches its threshold
+/// (`hud.chicken` x rounds x the scale / 4096) and kept while one is over `keep` of that x the time gone.
+fn chicken_over(c: &Value, counts: &[[u32; 2]; 2], marked: bool, rounds: usize, col: usize, round: i64, left: i64) -> bool {
+    let limit = |table: &str| {
+        let t = int(&c[table][col]) as i64 * rounds as i64;
+        if marked {
+            t * int(&c["keep"][0]) as i64 / int(&c["keep"][1]).max(1) as i64 * (round - left) / round.max(1)
+        } else {
+            t * int(&c["scale"][rounds]) as i64 / 4096
+        }
+    };
+    let (flagged, repeats) = (limit("flagged"), limit("repeats"));
+    counts.iter().flat_map(|m| [(m[0], flagged), (m[1], repeats)]).any(|(n, l)| if marked { n as i64 > l } else { n as i64 >= l })
+}
+
+/// The chicken marks (0x3C21DC): sprite 0x47 by each side marked.
+pub fn chicken_marks(painter: &egui::Painter, v: &View, art: &Art, d: &Data, c: &Chicken) {
+    let h = &d.raw["hud"]["chicken"];
+    for side in (0..2).filter(|&k| c.marked[k]) {
+        sprite(painter, v, art, h["picture"].as_str().unwrap_or_default(), num(&h["x"][side]), num(&h["y"]), Color32::WHITE);
+    }
+}
+
 /// A text in the chrome font as the printf draws it (0x3C6C60, 0x3C69D8): from the left `x`, its foot at `y`, at
 /// printf size `size` (10 the glyphs' own), each glyph `fonts.big.advance` on (an A `kern_a` further left), in text
 /// colour `colour`.
@@ -5257,6 +5358,19 @@ mod tests {
             p.capture_step(&d, false, Pad { buttons: 1 << (k % 2), ..Pad::default() }, true, true);
         }
         assert_eq!((p.capture.state, p.capture.runs.len()), (4, 3));
+    }
+
+    /// CHICKEN MARKING's judgement: a counter reaching its threshold x rounds x the scale marks; a mark stays while a
+    /// counter is over 6 / 10 of the threshold x the round's time gone.
+    #[test]
+    fn chicken_marks_by_the_thresholds() {
+        let c = serde_json::json!({"flagged": [25, 33, 50], "repeats": [17, 22, 33], "scale": [4096, 4096, 3686], "keep": [6, 10]});
+        assert!(!chicken_over(&c, &[[49, 0], [0, 32]], false, 1, 2, 4260, 0));
+        assert!(chicken_over(&c, &[[0, 0], [50, 0]], false, 1, 2, 4260, 0));
+        // (two rounds: 100 x 3686 / 4096 = 89)
+        assert!(chicken_over(&c, &[[90, 0], [0, 0]], false, 2, 2, 4260, 0) && !chicken_over(&c, &[[88, 0], [0, 0]], false, 2, 2, 4260, 0));
+        // (kept: 50 x 6 / 10 x half the round gone = 15)
+        assert!(chicken_over(&c, &[[16, 0], [0, 0]], true, 1, 2, 4260, 2130) && !chicken_over(&c, &[[15, 0], [0, 0]], true, 1, 2, 4260, 2130));
     }
 
     /// CHAIN TRAINING: READY! for its frames, then the move done by one of its aliases, the time counting; after the

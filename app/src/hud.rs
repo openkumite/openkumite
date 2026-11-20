@@ -358,6 +358,9 @@ pub struct HudState {
     ball: BallHud,
     /// Tekken Tag's bars.
     tag: crate::ttt::TagHud,
+    /// Tekken Tag's CHICKEN MARKING (for the match) and the data it goes by.
+    chicken: crate::ttt::Chicken,
+    ttt: Option<std::sync::Arc<crate::ttt::Data>>,
 }
 
 /// Ball's HUD state (record 8 0x800B49A8 gauges, 0x800B3F98 floating texts).
@@ -391,6 +394,8 @@ impl Hud {
         self.state.shown = [0; 2];
         self.state.trail = [0; 2];
         self.state.tag = Default::default();
+        self.state.ttt = info.ttt.clone();
+        self.state.chicken = info.ttt.as_deref().map(|d| crate::ttt::Chicken::new(d, info.humans)).unwrap_or_default();
         self.state.ko = None;
         self.state.round = 0;
         self.state.ball = BallHud::default();
@@ -510,6 +515,9 @@ impl Hud {
         // Tekken Tag (no Tekken 3 bar tables)
         if self.data.bar_w == 0 {
             self.state.tag.step(bout);
+            if let Some(d) = self.state.ttt.as_deref() {
+                self.state.chicken.step(d, bout);
+            }
             return;
         }
         for i in 0..2 {
@@ -540,6 +548,7 @@ impl Hud {
                 // (Force's pickups behind the HUD)
                 under(&painter, &scene);
                 crate::ttt::hud(&painter, &v, art, t, bout, info, &self.state.tag, self.state.ko, self.state.frame, self.state.run_frames);
+                crate::ttt::chicken_marks(&painter, &v, art, t, &self.state.chicken);
                 crate::ttt::ball_partner_bars(&painter, &v, art, t, bout);
                 // (Tekken 3's gauges from the extras, else in Tekken Tag's bar strips)
                 if bout.game.fight.ball.is_some() && !matches!(bout.phase, Phase::Replay { .. }) {
