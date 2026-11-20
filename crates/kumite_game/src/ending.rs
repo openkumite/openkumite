@@ -8,7 +8,8 @@
 //! The EMBU (scene 1, 0x3A97B0: Theater's EMBU and EMBU2) is the same scene in a dialect of its own (0x3A9E48,
 //! table 0x519B50): a cast of six, ops 0 / 1 / 14 put a member in a slot, 2 / 3 play track a from its frame b to c
 //! (the slot is not drawn before or after), 4 takes camera path a of 22 from frame b, 5 / 6 fade from / to white,
-//! 12 Jin's mark, 13 starts its music; it ends at op -1 alone.
+//! 12 Jin's mark, 13 starts its music, 7 flashes arena 4's lightning ([`EndingScene::flashes`]); it ends at op -1
+//! alone.
 //!
 //! The hand tracks come in the body clips (the converter's format 26: the finger nodes' turns).
 //!
@@ -20,7 +21,7 @@
 //! Op 28 opens, beats and folds True Ogre's and Devil's wings. Op 25 puts an arena's object in a hand ([`EndingScene::props`]). Op 12 shows Jin's mark (his texture channel 0's frame 0, [`EndingScene::marks`]).
 //!
 //! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 15 (True
-//! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 30 (objects 0x3ACF50), 32 (gp-0x6E78); the EMBU's 7-11; ops 17 / 18 at nodes 0x4000-0x4002
+//! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 30 (objects 0x3ACF50); the EMBU's 9-11; ops 17 / 18 at nodes 0x4000-0x4002
 //! (op 25's prop matrix 0x444CD0, 20 objects 0x3ACCD0); the face track (its joints are not mapped).
 
 use crate::UNITS;
@@ -179,10 +180,14 @@ pub struct EndingScene {
     pub music: Option<usize>,
     /// The bursts thrown this frame.
     pub bursts: Vec<Burst>,
+    /// The EMBU's op 7 this frame (0x3A7FA8, arena 4 only): (channel, list) for the arena's lightning.
+    pub flashes: Vec<(i32, i32)>,
     /// Ops 21-24's objects: (scene frame started, op, a, b, c).
     objects: Vec<(i32, i32, i32, i32, i32)>,
     /// Op 25's props: (scene frame started, actor a, object b, frames c).
     props: Vec<(i32, i32, i32, i32)>,
+    /// Op 32 (0x3AA410: gp-0x6E78 set for a frames) holds to this scene frame.
+    cut_until: i32,
     black: Fade,
     white: Fade,
     pub done: bool,
@@ -258,8 +263,10 @@ impl EndingScene {
             wings: Default::default(),
             music: None,
             bursts: Vec::new(),
+            flashes: Vec::new(),
             objects: Vec::new(),
             props: Vec::new(),
+            cut_until: 0,
             black: Fade { from: 255, to: 255, at: 0, len: 1 },
             white: Fade::default(),
             done: false,
@@ -283,6 +290,7 @@ impl EndingScene {
         }
         self.c += 1;
         self.bursts.clear();
+        self.flashes.clear();
         let c = self.c;
         while let Some(&[frame, op, a, b, last]) = self.script.get(self.next) {
             if frame > c {
@@ -322,6 +330,7 @@ impl EndingScene {
                 // slot a & 1's wings to state b (0x3AB8D0: True Ogre's and Devil's +0xB052)
                 28 => self.wings[(a & 1) as usize].state = b,
                 21..=24 => self.objects.push((c, op, a, b, last)),
+                32 => self.cut_until = c.saturating_add(a),
                 25 => self.props.push((c, a, b, last)),
                 -1 => self.done = true,
                 _ => {}
@@ -354,6 +363,7 @@ impl EndingScene {
             // slot a & 1's Jin: the mark off (b = 0, 0x3A88A0) or on (0x3A8890)
             12 => self.marks[(a & 1) as usize] = b != 0,
             13 => self.music = Some(1),
+            7 if self.arena == 4 => self.flashes.push((a, b)),
             -1 => self.done = true,
             _ => {}
         }
@@ -437,6 +447,18 @@ impl EndingScene {
     }
 
     /// Actor slot `s` this frame: its cast member, node matrices and placement (its track holds where it stands).
+    /// The arena's particles nearer the eye than the farther actor are left out (0x3ABD08: in an ending, only while
+    /// op 32 holds; a fight's always, 0x345A00).
+    pub fn particles_cut(&self) -> bool {
+        self.c < self.cut_until
+    }
+
+    /// Actor slot `s`'s root (metres), where it is drawn.
+    pub fn root(&self, s: usize) -> Option<Vec3> {
+        let (_, pose, place) = self.pose(s)?;
+        Some(place.transform_point3(pose.first()?.w_axis.truncate()))
+    }
+
     pub fn pose(&self, s: usize) -> Option<(usize, Vec<Mat4>, Mat4)> {
         let (m, track) = self.slots.get(s).copied()?;
         let m = m?;

@@ -522,7 +522,8 @@ pub enum Motion {
 
 /// A Tekken Tag texture channel over one of a stage's textures: the rectangle (x, y, w, h) its frames change in
 /// texture `image`, the textures holding each frame's texels there (`first`, `frames` of them), its speed (256ths of
-/// a frame a frame) and first frame ([`channel_frame`]).
+/// a frame a frame) and first frame ([`channel_frame`]); a still one an arena's task plays (speed 0, resting on
+/// `start`) names its `channel`.
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct TextureChannel {
     pub image: usize,
@@ -531,6 +532,8 @@ pub struct TextureChannel {
     pub frames: usize,
     pub speed: u32,
     pub start: u32,
+    #[serde(default)]
+    pub channel: Option<usize>,
 }
 
 /// The picture a Tekken Tag texture channel of `frames` shows on frame `t` (0x3A6C80, state 4): it starts on `start`

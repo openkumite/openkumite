@@ -797,7 +797,11 @@ impl Scene {
         let shears: HashMap<String, glam::Vec3> = self.objects.as_ref().map(|m| m.shears().into_iter().collect()).unwrap_or_default();
         // (Tekken Tag's texture channels: the frame's texels into their texture's rectangle when it changes)
         for (c, texture, frames, shown) in &mut self.channels {
-            let k = kumite_assets::channel_frame(c.frames as u32, c.speed, c.start, frame);
+            let k = match c.channel {
+                // (a still one: as the arena's task (the weather) sets it)
+                Some(n) => self.weather.as_ref().and_then(|w| w.channel_frame(n)).unwrap_or(c.start as usize),
+                None => kumite_assets::channel_frame(c.frames as u32, c.speed, c.start, frame),
+            };
             if let (false, Some(f)) = (*shown == Some(k), frames.get(k)) {
                 r.update_texture(texture, c.rect, &f.rgba);
                 *shown = Some(k);
@@ -1503,6 +1507,11 @@ impl App {
                 };
                 scene.moving = st.sky.iter().enumerate().filter_map(moving).collect();
                 scene.channels = (st.channels.iter()).filter_map(|c| Some((c.clone(), tex.get(c.image)?.clone(), st.textures.get(c.first..c.first + c.frames)?.to_vec(), None))).collect();
+                if let Some(w) = scene.weather.as_mut() {
+                    for c in &st.channels {
+                        w.sign_frames(c.channel.unwrap_or(usize::MAX), c.frames);
+                    }
+                }
                 // (the moved objects' places in their parents as the stage stands)
                 let rest = |name: &str| {
                     let mut chains = scene.moving.iter().filter_map(|m| if let MovingKind::Track { chain, .. } = &m.kind { Some(chain) } else { None });
@@ -1741,21 +1750,25 @@ impl App {
         };
         let landings = self.vfx.as_ref().map(|v| v.landings.clone()).unwrap_or_default();
         // (and the fight camera, what the arena's objects see by when nothing is drawn between steps)
-        let view = match (self.fight.as_ref(), self.tag.as_ref()) {
-            (Some(fight), _) => Some(kumite_game::view_camera(&fight.bout.game.camera.view)),
-            (None, Some(t)) => Some(kumite_game::view_camera(&t.game.camera.view)),
+        let view = match (self.fight.as_ref(), self.tag.as_ref(), self.ttt_ending.as_ref().and_then(|e| e.scene.as_ref())) {
+            (Some(fight), _, _) => Some(kumite_game::view_camera(&fight.bout.game.camera.view)),
+            (None, Some(t), _) => Some(kumite_game::view_camera(&t.game.camera.view)),
+            (None, None, Some(e)) => Some(e.camera()).map(|(eye, target, fov)| (eye, (target - eye).normalize_or_zero(), fov)),
             _ => None,
         };
+        let mut thunder = vec![];
         if let Some(s) = self.scene.as_mut() {
             s.frame += 1;
+            if let Some((eye, forward, fov)) = view {
+                let look = glam::camera::rh::view::look_at_mat4(eye, eye + forward, glam::Vec3::Y);
+                (s.eye, s.view_proj) = (eye, glam::camera::rh::proj::directx::perspective(fov, 640.0 / 448.0, 0.05, 400.0) * look);
+            }
             if let Some(w) = s.weather.as_mut() {
                 w.step();
+                w.flash(s.view_proj);
+                thunder = std::mem::take(&mut w.sounds);
             }
             if let Some(m) = s.objects.as_mut() {
-                if let Some((eye, forward, fov)) = view {
-                    let look = glam::camera::rh::view::look_at_mat4(eye, eye + forward, glam::Vec3::Y);
-                    (s.eye, s.view_proj) = (eye, glam::camera::rh::proj::directx::perspective(fov, 640.0 / 448.0, 0.05, 400.0) * look);
-                }
                 m.step(s.eye, s.view_proj, &fighters, &landings);
             }
             for p in &mut s.people {
@@ -1763,6 +1776,12 @@ impl App {
                 let Some((_, ch, _, clips)) = p.bodies.iter().find(|b| b.0 == shown) else { continue };
                 let len = |m: usize| clips.get(&m).and_then(|&c| ch.clips.get(c)).map_or(1, |c| c.frames.max(1) as i32);
                 p.walker.step(len);
+            }
+        }
+        // (arena 4's thunder, 0x374D30)
+        if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
+            for s in thunder.into_iter().filter_map(|code| sound.tag_entry(code, 0, 4)) {
+                audio.sfx(&s.file, s.volume, s.speed);
             }
         }
         // a save that failed (a full disk, the browser's storage full): the player is told, once each time
@@ -4000,6 +4019,9 @@ impl App {
         let r = self.renderer.take()?;
         let mut stage = self.stage_scene(&r, s.arena);
         stage.models.clear();
+        if let (None, Some(w)) = (s.ending, stage.weather.as_mut()) {
+            w.without_lightning();
+        }
         // (the people the scene shows instead of the arena's, 0x3D85D8)
         stage.people = s.people.as_ref().map_or_else(Vec::new, |p| self.people(&r, s.arena, Some(p)));
         let models = s.characters.iter().zip(&s.records).map(|(c, &record)| skinned_character(&r, c, record)).collect();
@@ -4062,6 +4084,11 @@ impl App {
             }
             (_, Some(s)) if !s.done && !skip => {
                 s.step();
+                if let Some(w) = self.scene.as_mut().and_then(|st| st.weather.as_mut()) {
+                    for &(c, l) in &s.flashes {
+                        w.flash_op(c, l);
+                    }
+                }
                 if let Some(v) = self.vfx.as_mut() {
                     v.tick();
                     for b in &s.bursts {
@@ -5809,9 +5836,11 @@ impl App {
             // (0x346830 / 0x345A00: none nearer the eye than the farther fighter, player +0x620)
             if let Some(w) = self.scene.as_ref().filter(|_| !statics.is_empty()).and_then(|s| s.weather.as_ref()) {
                 let forward = (cam.target - cam.eye).normalize_or_zero();
-                let roots: Vec<glam::Vec3> = match (self.fight.as_ref(), self.tag.as_ref()) {
-                    (Some(fight), _) => fight.bout.game.fight.fighters.iter().map(|a| a.root()).collect(),
-                    (None, Some(t)) => t.game.melee.actors.iter().map(|a| a.root()).collect(),
+                let ending = self.ttt_ending.as_ref().and_then(|e| e.scene.as_ref()).filter(|s| s.particles_cut());
+                let roots: Vec<glam::Vec3> = match (self.fight.as_ref(), self.tag.as_ref(), ending) {
+                    (Some(fight), _, _) => fight.bout.game.fight.fighters.iter().map(|a| a.root()).collect(),
+                    (None, Some(t), _) => t.game.melee.actors.iter().map(|a| a.root()).collect(),
+                    (None, None, Some(s)) => (0..2).filter_map(|k| s.root(k)).map(|p| p * kumite_game::UNITS).collect(),
                     _ => vec![],
                 };
                 let far = roots.iter().map(|p| (*p / kumite_game::UNITS - cam.eye).dot(forward)).fold(f32::MIN, f32::max);
@@ -6663,6 +6692,14 @@ fn ttt_message(lines: Vec<String>) -> Screen {
 /// The stage's light and the fighters' shadows on a camera.
 fn scene_lighting(cam: &mut Camera, scene: &Scene) {
     cam.light = scene.light;
+    // (a bolt of arena 4's lightning near the screen's centre: lights 0 and 1 with x and z negated, 0x353758)
+    if let (Some(l), true) = (cam.light.as_mut(), scene.weather.as_ref().is_some_and(|w| w.lit())) {
+        let flip = |v: glam::Vec3| glam::Vec3::new(-v.x, v.y, -v.z);
+        l.toward = flip(l.toward);
+        if let Some(m) = l.more.as_mut() {
+            m[0].1 = flip(m[0].1);
+        }
+    }
     // (Tekken Tag's arenas, one z-buffer with the floor: their fog, and drawn on the frame's sRGB bytes as the GS does)
     cam.fog = scene.fog;
     cam.gamma = scene.sky_floor_depth;
