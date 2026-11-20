@@ -393,11 +393,13 @@ pub struct RenderSettings {
     pub soft_shadows: bool,
     /// The added lights (sparks, flames, the stages' lamps) glow: blurred and added again.
     pub glow: bool,
+    /// The fighters and the camera drawn between the game's 60 Hz steps ([`Renderer::set_motion`]).
+    pub smooth_motion: bool,
 }
 
 impl Default for RenderSettings {
     fn default() -> Self {
-        Self { scale: 1.0, vsync: true, smooth_textures: false, msaa: 1, mipmaps: false, soft_shadows: false, glow: false }
+        Self { scale: 1.0, vsync: true, smooth_textures: false, msaa: 1, mipmaps: false, soft_shadows: false, glow: false, smooth_motion: false }
     }
 }
 
@@ -433,6 +435,8 @@ pub struct SkinnedModel {
     texture: Arc<Texture>,
     /// The shadow mesh (vertices, indices, count), on the same bones.
     shadow: Option<(wgpu::Buffer, wgpu::Buffer, u32)>,
+    /// Smooth motion: the step of its last skinning matrices, the step's before and its own.
+    motion: std::sync::Mutex<(u64, Vec<Mat4>, Vec<Mat4>)>,
 }
 
 impl SkinnedModel {
@@ -561,6 +565,10 @@ pub struct Renderer {
     make_pipes: Box<dyn Fn(wgpu::TextureFormat, u32) -> Pipes>,
     /// The sample counts the scene can be drawn with (1, and 2 or 4 where the GPU has them).
     msaa_ok: Vec<u32>,
+    /// Smooth motion ([`Renderer::set_motion`]): the game's step and the share of the next gone; the camera's step,
+    /// the step before's camera and its own.
+    motion: (u64, f32),
+    motion_camera: Option<(u64, Camera, Camera)>,
     /// Tekken Tag's shadows (0x340E28): each fighter's silhouette along the light into a channel of a picture of the
     /// floor's plane around the camera's target, then the floor drawn again darkened where the picture covers it.
     shadow_map: wgpu::Texture,
@@ -992,6 +1000,8 @@ impl Renderer {
             pipes,
             make_pipes: Box::new(make_pipes),
             msaa_ok,
+            motion: (0, 1.0),
+            motion_camera: None,
             shadow_map,
             shadow_map_group,
             shadow_map_pipelines,
@@ -1359,7 +1369,7 @@ impl Renderer {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: bones.as_entire_binding() }],
         });
         let count = indices.len() as u32;
-        SkinnedModel { vbuf, ibuf, count, blend_from: (blend_from as u32).min(count), bones, bones_group, texture, shadow: None }
+        SkinnedModel { vbuf, ibuf, count, blend_from: (blend_from as u32).min(count), bones, bones_group, texture, shadow: None, motion: Default::default() }
     }
 
     /// Give a model its shadow mesh (skinned to the model's joints).
@@ -1378,7 +1388,41 @@ impl Renderer {
     /// Skinning matrices (joint world × inverse bind, including the fighter's placement), index = joint.
     pub fn update_bones(&self, model: &SkinnedModel, bones: &[Mat4]) {
         let n = bones.len().min(MAX_BONES);
+        let (step, k) = self.motion;
+        if let (true, Ok(mut m)) = (self.settings.smooth_motion, model.motion.lock()) {
+            // smooth motion: between the last step's matrices and these, by the time since this step
+            if m.0 != step || m.2.len() != n {
+                let first = m.2.len() != n;
+                m.0 = step;
+                m.1 = if first { bones[..n].to_vec() } else { std::mem::take(&mut m.2) };
+            }
+            m.2 = bones[..n].to_vec();
+            let blended: Vec<Mat4> = m.1.iter().zip(&m.2).map(|(a, b)| *a + (*b - *a) * k).collect();
+            self.queue.write_buffer(&model.bones, 0, bytemuck::cast_slice(&blended));
+            return;
+        }
         self.queue.write_buffer(&model.bones, 0, bytemuck::cast_slice(&bones[..n]));
+    }
+
+    /// Smooth motion: the game's step now and the share of the next one gone (0..1); the fighters and the camera
+    /// are drawn that far from the step before to this one.
+    pub fn set_motion(&mut self, step: u64, k: f32) {
+        self.motion = (step, k.clamp(0.0, 1.0));
+    }
+
+    /// The camera between the step before's and `cam` (smooth motion), else `cam`.
+    fn smooth_camera(&mut self, cam: &Camera) -> Camera {
+        let (step, k) = self.motion;
+        if !self.settings.smooth_motion {
+            return *cam;
+        }
+        let (at, before, now) = self.motion_camera.get_or_insert((step, *cam, *cam));
+        if *at != step {
+            (*at, *before) = (step, *now);
+        }
+        *now = *cam;
+        let b = *before;
+        Camera { eye: b.eye.lerp(cam.eye, k), target: b.target.lerp(cam.target, k), fov_y: b.fov_y + (cam.fov_y - b.fov_y) * k, roll: b.roll + (cam.roll - b.roll) * k, ..*cam }
     }
 
     pub fn static_mesh(&self, vertices: &[StaticVertex], indices: &[u32], texture: Arc<Texture>) -> StaticMesh {
@@ -1456,6 +1500,7 @@ impl Renderer {
         mut overlay: Option<&mut dyn Overlay>,
     ) -> Result<RenderStats> {
         let mut stats = RenderStats::default();
+        let cam = &self.smooth_camera(cam);
         let proj = cam.projection(self.aspect());
         let view = cam.view();
         let sky_view_proj = proj * Mat4::from_scale(Vec3::new(1.0, cam.sky_y_scale, 1.0)) * view * cam.sky;

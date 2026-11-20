@@ -10,7 +10,7 @@
 //! The LOOK: ORIGINAL (the default: drawn as the original hardware does), ENHANCED (OpenKumite's improvements, all
 //! of them: [`Enhance::ENHANCED`]) or CUSTOM (some of them, chosen on its rows): `--look original|enhanced`,
 //! `--aa off|2x|4x` (anti-aliasing), `--textures filtered` (mipmaps, trilinear and anisotropic), `--hud 4:3|wide`,
-//! `--shadows original|soft`, `--glow on|off`.
+//! `--shadows original|soft`, `--glow on|off`, `--motion original|smooth`.
 //!
 //! Only what the display and the GPU can show is offered ([`Display`]): the monitor's video modes for full screen,
 //! window sizes that fit the screen, frames and 3D scenes within the GPU's largest texture. In a browser: a canvas
@@ -350,6 +350,9 @@ pub struct Enhance {
     pub soft_shadows: bool,
     /// GLOW ON: the added lights (sparks, flames, lamps) glow.
     pub glow: bool,
+    /// MOTION SMOOTH: the fighters and the camera drawn between the game's 60 Hz steps (on a faster display;
+    /// not in ENHANCED: the picture shows the step before's way to this one, a step late).
+    pub smooth_motion: bool,
 }
 
 /// The LOOK row's values.
@@ -361,7 +364,7 @@ pub enum Look {
 }
 
 impl Enhance {
-    pub const ENHANCED: Enhance = Enhance { msaa: 4, mipmaps: true, wide_hud: true, soft_shadows: true, glow: true };
+    pub const ENHANCED: Enhance = Enhance { msaa: 4, mipmaps: true, wide_hud: true, soft_shadows: true, glow: true, smooth_motion: false };
 
     /// The LOOK row's value, `enhanced` the GPU's ENHANCED ([`Gpu::enhanced`]).
     pub fn look(&self, enhanced: Enhance) -> Look {
@@ -405,6 +408,7 @@ impl Graphics {
             mipmaps: self.enhance.mipmaps,
             soft_shadows: self.enhance.soft_shadows,
             glow: self.enhance.glow,
+            smooth_motion: self.enhance.smooth_motion,
         }
     }
 
@@ -456,6 +460,13 @@ impl Graphics {
                 "original" => false,
                 "soft" => true,
                 _ => anyhow::bail!("--shadows original|soft"),
+            };
+        }
+        if let Some(m) = arg("--motion") {
+            self.enhance.smooth_motion = match m.as_str() {
+                "original" => false,
+                "smooth" => true,
+                _ => anyhow::bail!("--motion original|smooth"),
             };
         }
         if let Some(v) = arg("--glow") {
@@ -591,6 +602,7 @@ mod tests {
         assert_eq!((g.enhance.look(Gpu::Discrete.enhanced()), g.render().msaa), (Look::Custom, 2));
         assert_eq!(args(&["--aa", "off"]).unwrap().render().msaa, 1);
         assert!(args(&["--aa", "3x"]).is_err());
+        assert!(args(&["--motion", "smooth"]).unwrap().render().smooth_motion && !Enhance::ENHANCED.smooth_motion);
         let g = args(&["--textures", "filtered"]).unwrap();
         assert!(g.render().mipmaps && !g.render().smooth_textures);
         // (a row's option over the LOOK, whatever their order)
