@@ -1228,7 +1228,7 @@ impl App {
         }
         let f = self.fight.as_ref()?;
         let force = self.force.as_ref().filter(|_| self.force_fight()).map(|run| Box::new(run.clone()));
-        Some(S::Fight { bout: Box::new(f.bout.clone()), force, hud: self.hud.state.clone(), heard: Box::new(f.heard.clone()) })
+        Some(S::Fight { bout: Box::new(f.bout.clone()), force, hud: Box::new(self.hud.state.clone()), heard: Box::new(f.heard.clone()) })
     }
 
     fn replay_restore(&mut self, snap: replay_view::Snapshot) {
@@ -1246,7 +1246,7 @@ impl App {
                 if let Some(run) = force {
                     self.force = Some(*run);
                 }
-                self.hud.state = hud;
+                self.hud.state = *hud;
             }
         }
         // (the joins still to come: from this step on)

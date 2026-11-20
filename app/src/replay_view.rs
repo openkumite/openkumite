@@ -38,7 +38,7 @@ pub enum Snapshot {
     Fight {
         bout: Box<Bout>,
         force: Option<Box<crate::forcerun::ForceRun>>,
-        hud: HudState,
+        hud: Box<HudState>,
         heard: Box<crate::Heard>,
     },
     Tag(Box<kumite_game::tag::TagGame>, Box<TagHud>),

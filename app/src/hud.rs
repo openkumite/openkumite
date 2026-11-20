@@ -394,8 +394,8 @@ impl Hud {
         self.state.shown = [0; 2];
         self.state.trail = [0; 2];
         self.state.tag = Default::default();
-        self.state.ttt = info.ttt.clone();
         self.state.chicken = info.ttt.as_deref().map(|d| crate::ttt::Chicken::new(d, info.humans)).unwrap_or_default();
+        self.state.ttt = info.ttt.clone();
         self.state.ko = None;
         self.state.round = 0;
         self.state.ball = BallHud::default();
