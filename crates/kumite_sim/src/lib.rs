@@ -139,7 +139,7 @@ pub struct GameData {
     /// Tekken Tag's body push (0x377338), not Tekken 3's.
     pub tag_push: bool,
     /// Tekken Tag's move rules, not Tekken 3's: the END look-ahead without a new press inside the window (0x368F78),
-    /// the dash's window (0x36CAF8), jumps toward the opponent (0x36FC04).
+    /// the dash's window (0x36CAF8), motion inputs (0x36CDD8), jumps toward the opponent (0x36FC04).
     pub tag_moves: bool,
 }
 
@@ -1558,7 +1558,9 @@ impl Fighter {
         }
         let ok = match c.kind {
             CancelKind::Command => self.input.matches_command(c.cmd),
-            CancelKind::Sequence => gd.shared.sequences.entries.iter().find(|s| s.cmd == c.cmd).is_some_and(|s| self.input.matches_sequence(s)),
+            CancelKind::Sequence => {
+                gd.shared.sequences.entries.iter().find(|s| s.cmd == c.cmd).is_some_and(|s| if gd.tag_moves { self.input.matches_tag_sequence(s) } else { self.input.matches_sequence(s) })
+            }
             CancelKind::Dash | CancelKind::Backdash if gd.tag_moves => self.input.matches_tag_dash(c.kind == CancelKind::Dash),
             CancelKind::Dash => self.input.matches_dash(true),
             CancelKind::Backdash => self.input.matches_dash(false),

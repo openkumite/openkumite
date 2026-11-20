@@ -132,6 +132,34 @@ impl InputState {
         true
     }
 
+    /// Tekken Tag's motion input (0x36CDD8): a last step with buttons is pressed now, a last step of a direction alone
+    /// is looked for in the window too; scanning back over at most `window` frames, each step on its own frame with
+    /// exactly its new presses (0x36CD78), and a frame with other new presses ends the search.
+    pub fn matches_tag_sequence(&self, seq: &Sequence) -> bool {
+        let Some((last, rest)) = seq.steps.split_last() else { return false };
+        let (steps, mut ago) = if last.raw & !0xF == 0 {
+            (&seq.steps[..], 0)
+        } else if self.step_now(last, 0) {
+            (rest, 1)
+        } else {
+            return false;
+        };
+        let mut left = steps.len();
+        for _ in 0..seq.window.min(HISTORY as u32 - 1) {
+            let Some(step) = left.checked_sub(1).and_then(|k| steps.get(k)) else { return true };
+            let (new, dir) = self.past(ago);
+            let want: u32 = step.buttons.iter().filter(|b| (1..=4).contains(*b)).map(|b| 1 << (b - 1)).sum();
+            let pressed = if step.any_of { want == 0 || new & want != 0 } else { new & 15 == want };
+            if dir == step.dir && pressed {
+                left -= 1;
+            } else if new != 0 {
+                return false;
+            }
+            ago += 1;
+        }
+        left == 0
+    }
+
     fn step_now(&self, step: &Step, ago: usize) -> bool {
         let (new, dir) = self.past(ago);
         if step.dir != 0 && step.dir != dir {

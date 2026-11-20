@@ -191,6 +191,26 @@ fn back_turned_commands_as_on_the_ps2() {
     assert!(run(HWOARANG, "n*2,n+1+2*2,n*80,n+3+4*2,n*80,f+1*2,n*10").contains(&374));
 }
 
+/// A motion input whose last step is a direction alone is looked for back over its window (0x36CDD8): Gun Jack's
+/// n, b, d/b, d, d/f (alias 2906) comes out once he is back in his stance, as in PCSX2.
+#[test]
+fn a_motion_input_ending_in_a_direction_waits_for_the_stance() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [GUN_JACK, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut seen = Vec::new();
+    for pad in parse_script("n*2,b*2,d/b*2,d*2,d/f*2,n*20").unwrap() {
+        b.step([pad, Pad::default()]);
+        seen.push(b.game.fight.fighters[0].alias);
+    }
+    assert!(seen.contains(&2906), "{seen:?}");
+}
+
+/// Gun Jack's first model.
+const GUN_JACK: usize = 555;
+
 /// Hwoarang's first model.
 const HWOARANG: usize = 420;
 
