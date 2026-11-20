@@ -29,23 +29,48 @@ pub fn pair(v: &serde_json::Value) -> [u32; 2] {
 #[derive(Clone, Copy)]
 pub struct Screen {
     pub rect: Rect,
+    /// The wide HUD (OpenKumite's): the window's room beside the 4:3 area, each side (window pixels; 0: none).
+    pub wide: f32,
 }
+
+/// The wide HUD keeps what is drawn within this of the screen's middle (the timer) where it is.
+const MIDDLE: f32 = 16.0;
 
 impl Screen {
     /// The largest 4:3 area of the window, centred.
     pub fn fit(window: Rect) -> Self {
         let (w, h) = (window.width(), window.height());
         let (fw, fh) = if w / h > 4.0 / 3.0 { (h * 4.0 / 3.0, h) } else { (w, w * 3.0 / 4.0) };
-        Self { rect: Rect::from_center_size(window.center(), Vec2::new(fw, fh)) }
+        Self { rect: Rect::from_center_size(window.center(), Vec2::new(fw, fh)), wide: 0.0 }
+    }
+
+    /// The wide HUD: as [`Screen::fit`], what is drawn left or right of the middle moved out by the room beside it,
+    /// to the window's edges.
+    pub fn fit_wide(window: Rect) -> Self {
+        let s = Self::fit(window);
+        Self { wide: (window.width() - s.rect.width()) / 2.0, ..s }
+    }
+
+    /// The screen something centred at screen x is drawn on (wide: moved to its side, the middle kept).
+    pub fn side(&self, x: f32) -> Self {
+        let d = if (x - CENTRE).abs() <= MIDDLE { 0.0 } else { self.wide.copysign(x - CENTRE) };
+        Self { rect: self.rect.translate(Vec2::new(d, 0.0)), wide: 0.0 }
+    }
+
+    /// The window's area the screen draws in (wide: as wide as the window).
+    pub fn clip(&self) -> Rect {
+        self.rect.expand2(Vec2::new(self.wide, 0.0))
     }
 
     pub fn pos(&self, x: f32, y: f32) -> Pos2 {
-        Pos2::new(self.rect.left() + x / SCREEN_W * self.rect.width(), self.rect.top() + y / SCREEN_H * self.rect.height())
+        let r = if self.wide > 0.0 { self.side(x).rect } else { self.rect };
+        Pos2::new(r.left() + x / SCREEN_W * r.width(), r.top() + y / SCREEN_H * r.height())
     }
 
     /// A rectangle given in screen pixels.
     pub fn rect(&self, x: f32, y: f32, w: f32, h: f32) -> Rect {
-        Rect::from_min_max(self.pos(x, y), self.pos(x + w, y + h))
+        let s = self.side(x + w / 2.0);
+        Rect::from_min_max(s.pos(x, y), s.pos(x + w, y + h))
     }
 }
 
@@ -396,6 +421,7 @@ impl Art {
         let (u1, v1) = ((off[0] + w) as f32 / sw, (off[1] + h) as f32 / sh);
         let [x, y, dw, dh] = dst;
         let (xa, xb) = if dw < 0.0 { (x - dw, x) } else { (x, x + dw) };
+        let screen = &screen.side((xa + xb) / 2.0);
         let mut mesh = egui::Mesh::with_texture(id);
         let corners = [(xa, y, u0, v0), (xb, y, u1, v0), (xa, y + dh, u0, v1), (xb, y + dh, u1, v1)];
         for (k, (cx, cy, cu, cv)) in corners.into_iter().enumerate() {
@@ -416,6 +442,7 @@ impl Art {
     pub fn text_scaled(&self, painter: &egui::Painter, screen: &Screen, font: usize, colour: u32, x: f32, y: f32, scale: f32, text: &str, tint: Color32) {
         let Some(f) = self.fonts.get(font) else { return };
         let clut = f.clut(colour);
+        let screen = &screen.side(x + self.text_w(font, text) * scale / 2.0);
         let mut cx = x;
         for ch in text.chars() {
             if let Some(&[u, v]) = f.glyphs.get(&ch) {
@@ -431,6 +458,8 @@ impl Art {
     pub fn text(&self, painter: &egui::Painter, screen: &Screen, font: usize, colour: u32, x: f32, y: f32, text: &str, tint: Color32) {
         let Some(f) = self.fonts.get(font) else { return };
         let clut = f.clut(colour);
+        // (a line moves as one)
+        let screen = &screen.side(x + self.text_w(font, text) / 2.0);
         let mut cx = x;
         for ch in text.chars() {
             if let Some(&[u, v]) = f.glyphs.get(&ch) {
@@ -454,6 +483,7 @@ impl Art {
     /// A flat quad with per-corner colours (top-left, top-right, bottom-left, bottom-right).
     pub fn shade(painter: &egui::Painter, screen: &Screen, dst: [f32; 4], colours: [Color32; 4]) {
         let [x, y, w, h] = dst;
+        let screen = &screen.side(x + w / 2.0);
         let mut mesh = egui::Mesh::default();
         for (k, (cx, cy)) in [(x, y), (x + w, y), (x, y + h), (x + w, y + h)].into_iter().enumerate() {
             mesh.colored_vertex(screen.pos(cx, cy), colours[k]);
@@ -514,5 +544,20 @@ mod tests {
         assert_eq!(super::printf("%02d'%02d\"%02d", &[1, 2, 34]), "01'02\"34");
         assert_eq!(super::printf("%1x %s", &[10]), "a %s");
         assert_eq!(super::printf("100%", &[]), "100%");
+    }
+
+    /// The wide HUD: a 16:9 window's sides move out by its room beside the 4:3 area; the middle stays.
+    #[test]
+    fn wide_hud_moves_the_sides_out() {
+        use super::{Screen, CENTRE, SCREEN_W};
+        let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0));
+        let (v, w) = (Screen::fit(window), Screen::fit_wide(window));
+        assert_eq!(w.wide, 240.0);
+        assert_eq!(w.pos(0.0, 0.0).x, 0.0);
+        assert_eq!(w.pos(SCREEN_W, 0.0).x, 1920.0);
+        assert_eq!(w.pos(CENTRE, 0.0), v.pos(CENTRE, 0.0));
+        // (a rectangle moves as one, by its middle)
+        assert_eq!(w.rect(CENTRE - 30.0, 0.0, 40.0, 10.0).width(), v.rect(CENTRE - 30.0, 0.0, 40.0, 10.0).width());
+        assert_eq!(w.clip(), window);
     }
 }

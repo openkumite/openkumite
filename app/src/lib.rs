@@ -5860,6 +5860,7 @@ impl App {
                         max_texture: r.max_texture(),
                     }
                 });
+                let wide_hud = self.graphics.enhance.wide_hud;
                 let mut frame = egui.run(self.window.as_deref(), size, |ctx| {
                     if !flare.is_empty() {
                         // the lens flare's discs, added over the picture under everything 2D
@@ -5890,7 +5891,7 @@ impl App {
                             // (the player's side asks for START)
                             let mut info = f.info.clone();
                             info.under = std::array::from_fn(|i| if info.humans[i] { hud::Under::Push } else { hud::Under::None });
-                            hud.draw_with(ctx, art, &f.bout, &info, &|_, _| {});
+                            hud.draw_with(ctx, art, &f.bout, &info, wide_hud, &|_, _| {});
                         }
                         screen.draw(ctx, art, roster);
                     } else if let Some(cs) = fight.and_then(|f| f.cutscene.as_ref()) {
@@ -5928,7 +5929,7 @@ impl App {
                         }
                     } else if let Some(t) = tag {
                         if replay_view.as_ref().is_none_or(|v| v.hud) {
-                            t.hud.draw(ctx, art, &hud.data, &t.game, &t.info);
+                            t.hud.draw(ctx, art, &hud.data, &t.game, &t.info, wide_hud);
                         }
                         if let Some((c, player)) = t.pause {
                             draw_pause(ctx, art, &hud.data.pause_items, c, player, frames, false);
@@ -5958,7 +5959,7 @@ impl App {
                             }
                         };
                         if replay_view.as_ref().is_none_or(|v| v.hud) {
-                            hud.draw_with(ctx, art, &f.bout, &f.info, &pickups);
+                            hud.draw_with(ctx, art, &f.bout, &f.info, wide_hud, &pickups);
                         }
                         if let Some(run) = force {
                             let view = art::Screen::fit(ctx.content_rect());
@@ -5975,7 +5976,8 @@ impl App {
                         }
                         if let (Some(p), Some(d)) = (f.ttt_practice.as_ref(), roster.ttt.as_deref()) {
                             let view = art::Screen::fit(ctx.content_rect());
-                            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("practice"))).with_clip_rect(view.rect);
+                            let hud_view = if wide_hud { art::Screen::fit_wide(ctx.content_rect()) } else { view };
+                            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("practice"))).with_clip_rect(hud_view.clip());
                             let name = f.setup.as_ref().and_then(|s| roster.characters.get(s.players[0].0)).map_or("", |c| c.name.as_str());
                             if let Some(list) = p.commands.as_ref() {
                                 ttt::draw_command_list(&painter, &view, art, d, list, 0, ttt::command_body(&f.bout, 0), true);
@@ -5983,7 +5985,7 @@ impl App {
                                 ttt::draw_practice(&painter, &view, art, d, p, name);
                             } else if !matches!(f.bout.phase, Phase::TeamIntro { .. }) {
                                 // (none over the team intro, as PCSX2 shows it)
-                                ttt::draw_practice_hud(&painter, &view, art, d, p);
+                                ttt::draw_practice_hud(&painter, &hud_view, art, d, p);
                                 ttt::draw_chain(&painter, &view, art, d, p, ttt::command_body(&f.bout, 0), name);
                             }
                         }
@@ -8187,6 +8189,7 @@ Graphics (also OPTION > GRAPHICS):
                                the original's nearest texels, linear, or mipmapped (trilinear, anisotropic)
   --look original|enhanced     the original's picture, or OpenKumite's improvements (the rows below)
   --aa off|2x|4x               anti-aliasing
+  --hud 4:3|wide               the fight's HUD in the original's 4:3 picture, or out to a wider window's edges
   --stages arcade|ps           the arcade game's stages (where the Game data has them), or the PlayStation game's
   --graphics recommended|default
                                start from the settings chosen for the screen and the GPU, or the defaults

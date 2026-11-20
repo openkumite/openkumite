@@ -523,11 +523,13 @@ impl Hud {
         }
     }
 
-    /// The HUD; `under` paints more 2D behind the fighters (Force's pickups).
-    pub fn draw_with(&self, ctx: &egui::Context, art: &Art, bout: &Bout, info: &HudInfo, under: &dyn Fn(&egui::Painter, &View)) {
+    /// The HUD (`wide`: out to the window's edges); `under` paints more 2D behind the fighters (Force's pickups).
+    pub fn draw_with(&self, ctx: &egui::Context, art: &Art, bout: &Bout, info: &HudInfo, wide: bool, under: &dyn Fn(&egui::Painter, &View)) {
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("hud")));
-        let v = View::fit(ctx.content_rect());
-        let painter = painter.with_clip_rect(v.rect);
+        let v = if wide { View::fit_wide(ctx.content_rect()) } else { View::fit(ctx.content_rect()) };
+        let painter = painter.with_clip_rect(v.clip());
+        // (what is placed in the 3D scene: its 4:3 screen)
+        let scene = View::fit(ctx.content_rect());
         let d = &self.data;
         if d.bar_w == 0 {
             if let Some(t) = &info.ttt {
@@ -536,7 +538,7 @@ impl Hud {
                     return;
                 }
                 // (Force's pickups behind the HUD)
-                under(&painter, &v);
+                under(&painter, &scene);
                 crate::ttt::hud(&painter, &v, art, t, bout, info, &self.state.tag, self.state.ko, self.state.frame, self.state.run_frames);
                 crate::ttt::ball_partner_bars(&painter, &v, art, t, bout);
                 // (Tekken 3's gauges from the extras, else in Tekken Tag's bar strips)
@@ -664,7 +666,7 @@ impl Hud {
         if bout.game.fight.ball.is_some() && !replay {
             self.draw_ball(&painter, &v, art, &self.data.ball);
         }
-        under(&painter, &v);
+        under(&painter, &scene);
         // everything above is drawn behind the fighters (the game's 2D list B); the round texts are in front
         crate::debug::mark_under(&painter);
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("hud_front"))).with_clip_rect(v.rect);
