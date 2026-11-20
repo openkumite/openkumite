@@ -3121,9 +3121,10 @@ impl Practice {
         }
     }
 
+    /// The menu opens on CANCEL (row 1), as PCSX2 shows it.
     pub fn open(&mut self, d: &Data) {
         sfx::play(sound(d, "decide"));
-        (self.open, self.cursor) = (true, 0);
+        (self.open, self.cursor) = (true, 1);
     }
 
     /// A key while the menu is open: up / down the rows, left / right MODE SELECT's modes or a row's values (round),
@@ -5281,7 +5282,7 @@ mod tests {
         let d = data();
         let mut p = Practice::new(&d);
         p.open(&d);
-        for k in [Key::Down, Key::Down, Key::Right] {
+        for k in [Key::Down, Key::Right] {
             assert_eq!(p.key(&d, k), PracticeAction::None);
         }
         assert_eq!(p.dummy(&d), 1);
