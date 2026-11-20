@@ -166,7 +166,8 @@ fn a_ground_roll_goes_sideways() {
         }
     }
     let d = b.game.fight.fighters[0].root() - start.expect("the roll");
-    assert!(d.z.abs() > 800.0 && back > -100.0, "{d}, back {back}");
+    // (the basis turning rebases the origin, 0x37068C: PCSX2's x +311 against z +1105)
+    assert!(d.z.abs() > 800.0 && back > -100.0 && d.x.abs() < 500.0, "{d}, back {back}");
 }
 
 /// The back-turned commands as in PCSX2: Xiaoyu's f+3+4 ends turned away (its +0x12 turn, 30°, added the game's way
@@ -207,6 +208,47 @@ fn a_motion_input_ending_in_a_direction_waits_for_the_stance() {
     }
     assert!(seen.contains(&2906), "{seen:?}");
 }
+
+/// A jump's drift is +0x16 / 256 a frame (0x36FDE0, the sine 0x7FFF to one): True Ogre's u/f+1 (+0x16 -9848)
+/// travels about 38 a frame from its jump window, as in PCSX2 (461 by frame 22).
+#[test]
+fn a_jumps_drift_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [TRUE_OGRE, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let x0 = b.game.fight.fighters[0].root().x;
+    for pad in parse_script("u/f+1*2,n*18").unwrap() {
+        b.step([pad, Pad::default()]);
+    }
+    let went = b.game.fight.fighters[0].root().x - x0;
+    assert!((380.0..540.0).contains(&went), "{went}");
+}
+
+/// Ogre's strike slot 0x13 is his slot 6 (0x34F2C0, body 14 only): his b+2 (alias 359, bones 0x13) reaches Lei from
+/// 1000 as in PCSX2.
+#[test]
+fn ogres_slot_0x13_strikes() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [OGRE_FIRST, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let f = &mut b.game.fight.fighters;
+    let along = (f[1].position - f[0].position).normalize();
+    f[1].position = f[0].position + along * 1000.0;
+    f[1].guard_input = false;
+    let before = b.game.fight.fighters[1].health;
+    for pad in parse_script("b+2*2,n*50").unwrap() {
+        b.step([pad, Pad::default()]);
+    }
+    assert!(b.game.fight.fighters[1].health < before, "Lei is hit");
+}
+
+/// Ogre's and True Ogre's first models.
+const OGRE_FIRST: usize = 528;
+const TRUE_OGRE: usize = 591;
 
 /// Gun Jack's first model.
 const GUN_JACK: usize = 555;
