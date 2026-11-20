@@ -8207,6 +8207,7 @@ Graphics (also OPTION > GRAPHICS):
   --aa off|2x|4x               anti-aliasing
   --hud 4:3|wide               the fight's HUD in the original's 4:3 picture, or out to a wider window's edges
   --shadows original|soft      Tekken Tag's shadows as the PS2's, or finer with soft edges
+  --glow on|off                the added lights (sparks, flames, lamps) glow
   --stages arcade|ps           the arcade game's stages (where the Game data has them), or the PlayStation game's
   --graphics recommended|default
                                start from the settings chosen for the screen and the GPU, or the defaults

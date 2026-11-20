@@ -10,7 +10,7 @@
 //! The LOOK: ORIGINAL (the default: drawn as the original hardware does), ENHANCED (OpenKumite's improvements, all
 //! of them: [`Enhance::ENHANCED`]) or CUSTOM (some of them, chosen on its rows): `--look original|enhanced`,
 //! `--aa off|2x|4x` (anti-aliasing), `--textures filtered` (mipmaps, trilinear and anisotropic), `--hud 4:3|wide`,
-//! `--shadows original|soft`.
+//! `--shadows original|soft`, `--glow on|off`.
 //!
 //! Only what the display and the GPU can show is offered ([`Display`]): the monitor's video modes for full screen,
 //! window sizes that fit the screen, frames and 3D scenes within the GPU's largest texture. In a browser: a canvas
@@ -130,13 +130,13 @@ impl Gpu {
         }
     }
 
-    /// The ENHANCED look this kind of GPU draws comfortably: 4x anti-aliasing on a discrete one, 2x where fill rate
-    /// is short (integrated and mobile GPUs, a browser), none in software.
+    /// The ENHANCED look this kind of GPU draws comfortably: 4x anti-aliasing and the glow on a discrete one; 2x and
+    /// no glow where fill rate is short (integrated and mobile GPUs, a browser); in software neither.
     pub fn enhanced(self) -> Enhance {
         match self {
             Gpu::Discrete => Enhance::ENHANCED,
-            Gpu::Integrated | Gpu::Unknown => Enhance { msaa: 2, ..Enhance::ENHANCED },
-            Gpu::Software => Enhance { msaa: 0, ..Enhance::ENHANCED },
+            Gpu::Integrated | Gpu::Unknown => Enhance { msaa: 2, glow: false, ..Enhance::ENHANCED },
+            Gpu::Software => Enhance { msaa: 0, glow: false, ..Enhance::ENHANCED },
         }
     }
 
@@ -348,6 +348,8 @@ pub struct Enhance {
     pub wide_hud: bool,
     /// SHADOWS SOFT: Tekken Tag's shadows finer, their edges soft.
     pub soft_shadows: bool,
+    /// GLOW ON: the added lights (sparks, flames, lamps) glow.
+    pub glow: bool,
 }
 
 /// The LOOK row's values.
@@ -359,7 +361,7 @@ pub enum Look {
 }
 
 impl Enhance {
-    pub const ENHANCED: Enhance = Enhance { msaa: 4, mipmaps: true, wide_hud: true, soft_shadows: true };
+    pub const ENHANCED: Enhance = Enhance { msaa: 4, mipmaps: true, wide_hud: true, soft_shadows: true, glow: true };
 
     /// The LOOK row's value, `enhanced` the GPU's ENHANCED ([`Gpu::enhanced`]).
     pub fn look(&self, enhanced: Enhance) -> Look {
@@ -402,6 +404,7 @@ impl Graphics {
             msaa: self.enhance.msaa.max(1),
             mipmaps: self.enhance.mipmaps,
             soft_shadows: self.enhance.soft_shadows,
+            glow: self.enhance.glow,
         }
     }
 
@@ -454,6 +457,9 @@ impl Graphics {
                 "soft" => true,
                 _ => anyhow::bail!("--shadows original|soft"),
             };
+        }
+        if let Some(v) = arg("--glow") {
+            self.enhance.glow = matches!(v.as_str(), "on" | "1" | "true" | "yes");
         }
         if let Some(h) = arg("--hud") {
             self.enhance.wide_hud = match h.as_str() {
