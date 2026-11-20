@@ -1987,7 +1987,7 @@ impl GraphicsMenu {
             // (the arcade game's stages, where the Game data has them)
             ("STAGES", Some(if g.arcade_stages { "ARCADE" } else { "PLAYSTATION" }.to_string())),
             ("STATS", Some(if g.stats { "ON" } else { "OFF" }.to_string())),
-            ("LOOK", Some(g.enhance.look().label().to_string())),
+            ("LOOK", Some(g.enhance.look(self.display.gpu.enhanced()).label().to_string())),
             ("ANTI-ALIASING", Some(if g.enhance.msaa > 1 { format!("{}X", g.enhance.msaa) } else { "OFF".to_string() })),
             ("TEXTURES", Some(TEXTURES[texture_filter(g)].to_string())),
             ("SHADOWS", Some(if g.enhance.soft_shadows { "SOFT" } else { "ORIGINAL" }.to_string())),
@@ -2027,7 +2027,7 @@ impl GraphicsMenu {
                 return Some(Outcome::Graphics(self.settings.clone()));
             }
             Key::Left | Key::Right | Key::Start | Key::Button(_) => {
-                use crate::graphics::{Enhance, Look};
+                use crate::graphics::Enhance;
                 let right = key != Key::Left;
                 let g = &mut self.settings;
                 match self.cursor {
@@ -2060,7 +2060,7 @@ impl GraphicsMenu {
                     4 => g.arcade_stages = !g.arcade_stages,
                     5 => g.stats = !g.stats,
                     // (CUSTOM: from its rows)
-                    6 => g.enhance = if g.enhance.look() == Look::Original { Enhance::ENHANCED } else { Enhance::default() },
+                    6 => g.enhance = if g.enhance == Enhance::default() { self.display.gpu.enhanced() } else { Enhance::default() },
                     7 => {
                         let counts = [0, 2, 4];
                         let i = counts.iter().position(|&n| n == g.enhance.msaa).unwrap_or(0);
