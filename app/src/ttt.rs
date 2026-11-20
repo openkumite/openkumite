@@ -367,6 +367,23 @@ impl Progress {
         (at < RECORDS && (r.score > 0 || !survival)).then_some(at)
     }
 
+    /// SURVIVAL RESULTS' place of `r` (0x3CD1E8): 1 + the first of the survivors' records with fewer wins; 0 when
+    /// none has, or when a record above it is the same pair (either way round).
+    pub fn survival_place(&self, d: &Data, r: &Record) -> usize {
+        let list = self.list(d, true);
+        let Some(at) = list.iter().take(RECORDS).position(|o| o.score < r.score) else { return 0 };
+        let pair = |m: &[usize]| [m.first().copied(), m.get(1).copied()];
+        let same = |o: &Record| {
+            let ([a, b], new) = (pair(&o.members), pair(&r.members));
+            new == [a, b] || new == [b, a]
+        };
+        if list[..at].iter().any(same) {
+            0
+        } else {
+            at + 1
+        }
+    }
+
     /// Keep `r` among the records.
     pub fn record(&mut self, d: &Data, survival: bool, r: Record) {
         if let Some(at) = self.rank(d, survival, &r) {
@@ -649,12 +666,14 @@ impl Run {
             }
             SURVIVAL => {
                 progress.played(d, None);
-                let page = Page::Message { lines: vec!["SURVIVAL".into(), format!("WINS {}", self.wins[0])], frame: 0, title: false };
+                let menu = Page::Menu { cursor: 0, scroll: 0, idle: 0 };
                 let record = Record { score: self.wins[0], members: self.members(roster), name: String::new() };
-                if progress.rank(d, true, &record).is_some() {
-                    return Next::Screen(Page::NameEntry { survival: true, record, letter: 0, then: Box::new(page) });
-                }
-                Next::Screen(page)
+                let place = progress.survival_place(d, &record);
+                let then = match progress.rank(d, true, &record) {
+                    Some(_) => Page::NameEntry { survival: true, record: record.clone(), letter: 0, then: Box::new(menu) },
+                    None => menu,
+                };
+                Next::Screen(Page::SurvivalResults { record, place, out: None, then: Box::new(then) })
             }
             TEAM => {
                 // the loser's next member comes in; the winner stays, 15 % of its full health back (0x3C1620)
@@ -877,6 +896,14 @@ pub enum Page {
         survival: bool,
         record: Record,
         letter: usize,
+        then: Box<Page>,
+    },
+    /// SURVIVAL RESULTS (0x3C5388) after the lost run, over the arena: its record, its place among the survivors
+    /// (1-based, 0 none: 0x3CD1E8), the frame its fade out started, then the name entry or the menu.
+    SurvivalResults {
+        record: Record,
+        place: usize,
+        out: Option<u32>,
         then: Box<Page>,
     },
     /// THEATER (screen 0xC): its rows and cells, the cursor's [row, cell].
@@ -1423,6 +1450,12 @@ impl Front {
                 _ => None,
             },
             Page::GameOver { .. } => None,
+            Page::SurvivalResults { out, .. } => {
+                if out.is_none() && matches!(key, Key::Start | Key::Button(_)) {
+                    *out = Some(self.frame);
+                }
+                None
+            }
             // (left / right the page, up / down the rows; back to OPTIONS, or after GAME OVER to the title)
             Page::Records { page, scroll, attract } => match key {
                 _ if *attract => matches!(key, Key::Start | Key::Button(_)).then_some(Page::Title),
@@ -1610,6 +1643,24 @@ impl Front {
                     self.page = Page::GameOver { frame: 0 };
                 }
             }
+            Page::SurvivalResults { record, out, then, .. } => {
+                let r = &d.raw["survival_results"];
+                let f = self.frame - 1;
+                let ((shown, done), before) = (survival_count(&d, record.score, f), f.checked_sub(1).map(|b| survival_count(&d, record.score, b).0));
+                if before.is_some_and(|b| b != shown) {
+                    sfx::play(int(&r["sounds"][0]) as u16);
+                }
+                if f == done {
+                    sfx::play(int(&r["sounds"][1]) as u16);
+                }
+                if out.is_none() && f >= done + int(&r["hold"]) as u32 {
+                    *out = Some(f);
+                }
+                if out.is_some_and(|o| f >= o + int(&r["fade"]) as u32) {
+                    self.page = std::mem::replace(then.as_mut(), Page::Title);
+                    self.frame = 0;
+                }
+            }
             Page::GameOver { frame } => {
                 *frame += 1;
                 // then the CHARACTER USAGE ranking, as the PS2 shows it
@@ -1731,6 +1782,14 @@ impl Front {
                 chrome(painter, v, art, d, &text, num(&c["x"]), num(&c["y"]), None, 10.0);
             }
             Page::GameOver { .. } => banner_at(painter, v, art, d, &d.raw["arcade"]["continue"]["game_over"], 0),
+            Page::SurvivalResults { record, place, out, .. } => {
+                draw_survival_results(painter, v, art, d, record.score, *place, self.frame);
+                // (out to black, 0x3C4AF8)
+                if let Some(from) = *out {
+                    let k = (self.frame.saturating_sub(from) * 255 / int(&d.raw["survival_results"]["fade"]).max(1) as u32).min(255);
+                    painter.rect_filled(v.rect, 0.0, Color32::from_black_alpha(k as u8));
+                }
+            }
             Page::Records { page, scroll, attract } => {
                 if *attract && d.raw["ranking"]["usage"].is_object() {
                     // (after GAME OVER the ranking, screen 7: CHARACTER USAGE from its last page to its first, at the
@@ -3503,7 +3562,7 @@ impl Practice {
 /// COMBO TRAINING's demo (practice's states 0xB-0xE, `practice.combo`): its state (0 none, 1 waiting for the side to
 /// stand free, 2 the entry's steps playing, 3 waiting for it to stand free again), the side, the training entry,
 /// RANDOM's (no line shown), the wait's frames left, the step, its frames left, the key icons lit, SELECT the frame
-/// before.
+/// before, both sides to be put apart (the wait out).
 #[derive(Clone, Debug, Default)]
 struct Demo {
     state: u8,
@@ -3515,6 +3574,7 @@ struct Demo {
     left: u32,
     lit: usize,
     select: bool,
+    put_back: bool,
 }
 
 /// COMBO TRAINING: the training entries of `body` with +8 set (0x37D0F8: at most 16).
@@ -3573,9 +3633,8 @@ impl Practice {
     /// COMBO TRAINING (mode 3) each frame: SELECT (`select` held) starts the demo of COMBO DISPLAY's side's combo of
     /// its TYPE when it has one; the side waits to stand free at most `wait` frames (0x37DEE0), then its pad plays the
     /// entry's steps (frames, pad as facing right, icons lit: 0x37D558, 0x37C990); after the last, free again, the
-    /// demo ends. The side and its pad.
-    /// shortcut: after the wait the PS2 puts both sides back `distance` apart (0x37D8C8); here the demo starts where
-    /// they stand.
+    /// demo ends. Not free after the wait, both are put back `distance` apart first (0x37D8C8: [`Self::put_back`]),
+    /// unless one is in the air (0x37C168: the wait goes on). The side and its pad.
     pub fn combo_step(&mut self, d: &Data, select: bool, f: &kumite_sim::Fight) -> Option<(usize, kumite_sim::input::Pad)> {
         self.bodies = [0, 1].map(|k| f.fighters.get(k).and_then(|x| x.character).unwrap_or(0).max(0) as usize);
         let select_new = select && !self.demo.select;
@@ -3604,7 +3663,10 @@ impl Practice {
                 self.demo.timer -= 1;
                 None
             }
+            // (0x37C168: a move with flags +0x24 bits 20-21 = 2)
+            1 if !free(side) && f.fighters.iter().any(|x| (x.current_move(gd).flags24.raw >> 20) & 3 == 2) => None,
             1 => {
+                let put_back = !free(side);
                 // (0x379EAC: TYPE's entry; RANDOM's (the CPU's last value) any of them)
                 let list = combos(d, self.bodies[side]);
                 let v = self.combo_type(d);
@@ -3616,7 +3678,7 @@ impl Practice {
                 };
                 let t = &d.raw["command_list"]["lists"][self.bodies[side]]["training"];
                 let first = &t["steps"][int(&t["entries"][entry][1])];
-                self.demo = Demo { state: 2, side, entry, random, left: int(&first[0]) as u32, lit: int(&first[2]), select, ..Demo::default() };
+                self.demo = Demo { state: 2, side, entry, random, left: int(&first[0]) as u32, lit: int(&first[2]), select, put_back, ..Demo::default() };
                 self.combo_pad(d, f.facing_right(side))
             }
             2 => self.combo_pad(d, f.facing_right(side)),
@@ -3627,6 +3689,11 @@ impl Practice {
                 None
             }
         }
+    }
+
+    /// COMBO TRAINING's put-back this frame, once: the demo's side and `practice.combo.distance` (0x37D8C8).
+    pub fn put_back(&mut self, d: &Data) -> Option<(usize, f32)> {
+        std::mem::take(&mut self.demo.put_back).then(|| (self.demo.side, num(&d.raw["practice"]["combo"]["distance"])))
     }
 
     /// The demo's step this frame (0x37C990): its pad while its frames last, then the next step's (its icons lit).
@@ -3722,6 +3789,62 @@ impl Practice {
     }
 }
 
+/// 0x3BF180's backdrop `frames` into a result screen (`backdrop`): black at the top and the foot, its colour at
+/// `middle`, its alpha up `fade` a frame to the colour's.
+fn result_backdrop(painter: &egui::Painter, v: &View, b: &Value, frames: usize) {
+    if !b.is_object() {
+        return;
+    }
+    let a = (int(&b["fade"]) * frames).min(int(&b["colour"][3]));
+    let (k, alpha) = (|i: usize| int(&b["colour"][i]).min(255) as u8, (a * 255 / 128).min(255) as u8);
+    let colour = Color32::from_rgba_unmultiplied(k(0), k(1), k(2), alpha);
+    let (black, m) = (Color32::from_rgba_unmultiplied(0, 0, 0, alpha), num(&b["middle"]));
+    Art::shade(painter, v, sv([0.0, 0.0, W, m]), [black, black, colour, colour]);
+    Art::shade(painter, v, sv([0.0, m, W, H - m]), [colour, colour, black, black]);
+}
+
+/// SURVIVAL RESULTS' wins shown `frame` into it (`survival_results`, 0x3C5388: from frame 1, f x wins / 600 above
+/// `fast` wins, else f / 15; at most the wins) and the frame they stand from.
+fn survival_count(d: &Data, wins: u32, frame: u32) -> (u32, u32) {
+    let r = &d.raw["survival_results"];
+    let wins = wins.min(int(&r["max"]) as u32);
+    let (fast, long, slow) = (int(&r["fast"][0]) as u32, int(&r["fast"][1]).max(1) as u32, int(&r["slow"]).max(1) as u32);
+    let shown = |f: u32| if wins > fast { f * wins / long } else { f / slow }.min(wins);
+    let done = if wins > fast { long } else { slow * wins };
+    (shown(frame + 1), done.max(1) - 1)
+}
+
+/// SURVIVAL RESULTS (0x3C5388) `frame` into it over the backdrop: the title, the wins counting up, then the lines by
+/// the record's `place` (1-based; 0 none), each centred.
+fn draw_survival_results(painter: &egui::Painter, v: &View, art: &Art, d: &Data, wins: u32, place: usize, frame: u32) {
+    let r = &d.raw["survival_results"];
+    result_backdrop(painter, v, &r["backdrop"], frame as usize);
+    let centred = |text: &str, y: f32, colour: Option<usize>, size: f32| {
+        let w = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, text, 0.0, 0.0, colour, size);
+        chrome(painter, v, art, d, text, (W - w) / 2.0, y, colour, size);
+    };
+    let t = &r["title"];
+    centred(t[0].as_str().unwrap_or_default(), num(&t[1]), Some(int(&t[3])), num(&t[2]));
+    let (shown, done) = survival_count(d, wins, frame);
+    let size = num(&r["size"]);
+    centred(&crate::art::printf(r["wins"][0].as_str().unwrap_or_default(), &[shown]), num(&r["wins"][1]), None, size);
+    if frame < done {
+        return;
+    }
+    // (placed: colour 2 for the first three, the font's own below, the place blinking with ""; else colour 1)
+    let blink = int(&r["blink"]).max(1) as u32;
+    let off = (frame - done) / blink % 2 == 1;
+    let (lines, y, colour) = match place {
+        0 => (&r["unplaced"][0], num(&r["unplaced"][1]), Some(int(&r["unplaced"][2]))),
+        p if p <= int(&r["podium"][0]) => (&r["placed"][0], num(&r["placed"][1]), Some(int(&r["podium"][1]))),
+        _ => (&r["placed"][0], num(&r["placed"][1]), None),
+    };
+    let text = r["places"][if off { 0 } else { place }].as_str().unwrap_or_default();
+    for (k, l) in lines.as_array().into_iter().flatten().enumerate() {
+        centred(&l.as_str().unwrap_or_default().replace("%s", text), y + num(&r["dy"]) * k as f32, colour, size);
+    }
+}
+
 /// A training entry's line (0x37B8D8, 0x3DD188) under those it names before it (`practice.chain.lines`), the first
 /// `lit` key icons lit (COMBO TRAINING's demo).
 #[allow(clippy::too_many_arguments)]
@@ -3779,16 +3902,7 @@ pub fn draw_chain(painter: &egui::Painter, v: &View, art: &Art, d: &Data, p: &Pr
         }
         3 if ch.timer < int(&c["end"]["result"]) as u32 => {
             let r = &c["result"];
-            // 0x3BF180's backdrop: black at the top and the foot, its colour at `middle`, fading in from the result's start
-            let b = &r["backdrop"];
-            if b.is_object() {
-                let a = (int(&b["fade"]) * (int(&c["end"]["result"]) - ch.timer as usize)).min(int(&b["colour"][3]));
-                let (k, alpha) = (|i: usize| int(&b["colour"][i]).min(255) as u8, (a * 255 / 128).min(255) as u8);
-                let colour = Color32::from_rgba_unmultiplied(k(0), k(1), k(2), alpha);
-                let (black, m) = (Color32::from_rgba_unmultiplied(0, 0, 0, alpha), num(&b["middle"]));
-                Art::shade(painter, v, sv([0.0, 0.0, W, m]), [black, black, colour, colour]);
-                Art::shade(painter, v, sv([0.0, m, W, H - m]), [colour, colour, black, black]);
-            }
+            result_backdrop(painter, v, &r["backdrop"], int(&c["end"]["result"]) - ch.timer as usize);
             chrome(painter, v, art, d, r["text"].as_str().unwrap_or_default(), num(&r["xy"][0]), num(&r["xy"][1]), Some(int(&r["colour"])), num(&r["size"]));
             let fs = num(&d.raw["select"]["face_size"]);
             image(painter, v, art, &d.picture(&["select", "faces", &body.to_string()]), [num(&r["face_xy"][0]), num(&r["face_xy"][1]), fs, fs], Color32::WHITE);
@@ -5460,6 +5574,19 @@ mod tests {
         assert!(d.selectable(p.stage, 2));
     }
 
+    /// SURVIVAL RESULTS (0x3C5388, 0x3CD1E8): the place among the survivors (none with a record of the same pair above
+    /// it, either way round), the wins counted up a 15th of a frame (in 600 frames above 40 wins).
+    #[test]
+    fn survival_results_place_and_count() {
+        let mut d = data();
+        Arc::get_mut(&mut d).unwrap().raw["survival_results"] = serde_json::json!({"max": 9999, "fast": [40, 600], "slow": 15});
+        let p = Progress::default();
+        let place = |score: u32, members: Vec<usize>| p.survival_place(&d, &Record { score, members, name: String::new() });
+        assert_eq!((place(3, vec![4, 5]), place(3, vec![1, 0]), place(1, vec![4, 5]), place(6, vec![0, 1])), (2, 0, 0, 1));
+        assert_eq!((survival_count(&d, 4, 0), survival_count(&d, 4, 59)), ((0, 59), (4, 59)));
+        assert_eq!((survival_count(&d, 100, 299).0, survival_count(&d, 100, 599)), (50, (100, 599)));
+    }
+
     /// The ranking's arena camera (0x3B7888), as PCSX2's camera block read: frame 0 at (0, -1400, -5000), yaw 0;
     /// 341 frames in at (-5000, -1400, 0) give or take the rounding, yaw -1023.
     #[test]
@@ -5750,6 +5877,9 @@ mod tests {
         assert_eq!(p.last_type(&d), 1, "the player's: TYPE 1, TYPE 2");
         p.values[3][0] = 1;
         assert_eq!(p.last_type(&d), 2, "the CPU's: and RANDOM");
+        // the wait out: the put-back once (0x37D8C8)
+        p.demo = Demo { side: 1, put_back: true, ..Demo::default() };
+        assert_eq!((p.put_back(&d), p.put_back(&d)), (Some((1, 0.0)), None));
     }
 
     /// Practice's menu: MODE SELECT's left / right turn the modes, a row's left / right its values (round), CANCEL and

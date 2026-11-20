@@ -1302,9 +1302,9 @@ impl Screen {
         matches!(self, Screen::Ttt(f) if matches!(f.page, crate::ttt::Page::Continue { .. } | crate::ttt::Page::GameOver { .. }))
     }
 
-    /// A Tekken Tag screen over the last fight's arena, its HUD not drawn: the rankings (screen 7).
+    /// A Tekken Tag screen over the last fight's arena, its HUD not drawn: SURVIVAL RESULTS, the rankings (screen 7).
     pub fn ttt_over_arena(&self) -> bool {
-        matches!(self, Screen::Ttt(f) if matches!(f.page, crate::ttt::Page::NameEntry { .. } | crate::ttt::Page::Records { attract: true, .. }))
+        matches!(self, Screen::Ttt(f) if matches!(f.page, crate::ttt::Page::NameEntry { .. } | crate::ttt::Page::Records { attract: true, .. } | crate::ttt::Page::SurvivalResults { .. }))
     }
 
     /// the extra levels' list with the cursor on a stage.

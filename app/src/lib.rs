@@ -2109,6 +2109,9 @@ impl App {
             if let Some((k, pad)) = play {
                 pads[k] = pad;
             }
+            if let Some((k, distance)) = p.put_back(d) {
+                fight.bout.game.put_apart(k, distance);
+            }
         }
         // the practice dummy: its TRAINING DUMMY action, the second pad (CONTROLLER) or the CPU (VS CPU)
         if let (Some(p), None) = (fight.practice.as_ref(), p2_script) {
@@ -3167,7 +3170,7 @@ impl App {
             self.records.ttt = progress;
             self.records.save();
             // (CONTINUE? over the fight's scene and HUD, which keep running)
-            let over_fight = matches!(next, ttt::Next::Screen(ttt::Page::Continue { .. } | ttt::Page::NameEntry { .. }));
+            let over_fight = matches!(next, ttt::Next::Screen(ttt::Page::Continue { .. } | ttt::Page::NameEntry { .. } | ttt::Page::SurvivalResults { .. }));
             if over_fight {
                 self.fight = Some(fight);
             } else {
@@ -5540,7 +5543,7 @@ impl App {
                 };
                 // Tekken Tag's ranking (screen 7) over the arena: the fighters gone, its own orbit
                 let ranking = match (self.roster.ttt.as_deref(), self.screen.as_ref()) {
-                    (Some(d), Some(s @ Screen::Ttt(f))) if s.ttt_over_arena() => ttt::ranking_view(d, f.frame),
+                    (Some(d), Some(Screen::Ttt(f))) if matches!(f.page, ttt::Page::NameEntry { .. } | ttt::Page::Records { attract: true, .. }) => ttt::ranking_view(d, f.frame),
                     _ => None,
                 };
                 for (i, model) in gpu_models.iter().enumerate() {
@@ -6098,9 +6101,10 @@ impl App {
                             } else if p.open {
                                 ttt::draw_practice(&painter, &view, art, d, p);
                             } else if !matches!(f.bout.phase, Phase::TeamIntro { .. }) {
-                                // (none over the team intro, as PCSX2 shows it)
-                                ttt::draw_practice_hud(&painter, &hud_view, art, d, p);
+                                // (none over the team intro, as PCSX2 shows it; CHAIN TRAINING's result backdrop
+                                // under the HUD, as PCSX2 shows it)
                                 ttt::draw_chain(&painter, &view, art, d, p, ttt::command_body(&f.bout, 0), name);
+                                ttt::draw_practice_hud(&painter, &hud_view, art, d, p);
                             }
                         }
                         if let (Some(_), true) = (f.pause, f.rules) {
@@ -8000,17 +8004,29 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             return Ok(());
         }
         // Tekken Tag's ranking naming a new record (--variant 1: SURVIVAL's, 4 wins; 2: GAME OVER's CHARACTER USAGE,
-        // Xiaoyu 3 picks and Eddy 1; else TIME ATTACK's, 6'00"00), over the fight's arena (--stage)
+        // Xiaoyu 3 picks and Eddy 1; 3: SURVIVAL RESULTS of 4 wins; 4: of none; else TIME ATTACK's, 6'00"00), over the
+        // fight's arena (--stage)
         Some("ttt-name") => {
             app.load(&r, None, Vec::new())?;
             let variant = std::env::args().skip_while(|a| a != "--variant").nth(1);
-            let survival = variant.as_deref() == Some("1");
-            let record = ttt::Record { score: if survival { 4 } else { 21600 }, members: vec![7, 4], name: String::new() };
-            let page = if variant.as_deref() == Some("2") {
-                ttt::set_progress(ttt::Progress { usage: vec![0, 0, 0, 0, 0, 0, 0, 3, 1], ..ttt::progress() });
-                ttt::Page::Records { page: 0, scroll: 0, attract: true }
-            } else {
-                ttt::Page::NameEntry { survival, record, letter: 0, then: Box::new(ttt::Page::Title) }
+            let survival = matches!(variant.as_deref(), Some("1" | "3"));
+            let score = match variant.as_deref() {
+                Some("4") => 0,
+                _ if survival => 4,
+                _ => 21600,
+            };
+            let record = ttt::Record { score, members: vec![7, 4], name: String::new() };
+            let page = match variant.as_deref() {
+                Some("2") => {
+                    ttt::set_progress(ttt::Progress { usage: vec![0, 0, 0, 0, 0, 0, 0, 3, 1], ..ttt::progress() });
+                    ttt::Page::Records { page: 0, scroll: 0, attract: true }
+                }
+                Some("3" | "4") => {
+                    let d = app.roster.ttt.clone().context("no Tekken Tag data")?;
+                    let place = ttt::progress().survival_place(&d, &record);
+                    ttt::Page::SurvivalResults { record, place, out: None, then: Box::new(ttt::Page::Title) }
+                }
+                _ => ttt::Page::NameEntry { survival, record, letter: 0, then: Box::new(ttt::Page::Title) },
             };
             app.screen = Some(Screen::Ttt(Box::new(ttt::Front { page, frame: 0 })));
         }
