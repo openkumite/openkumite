@@ -1190,8 +1190,18 @@ impl Fighter {
                     if wrap_pi(a - self.root_yaw).abs() > FRAC_PI_2 {
                         a += PI;
                     }
-                    self.root_yaw += clamp(wrap_pi(a - self.root_yaw) * frame as f32 / len as f32, deg(8.0));
+                    let step = clamp(wrap_pi(a - self.root_yaw) * frame as f32 / len as f32, deg(8.0));
+                    self.root_yaw += step;
                     self.yaw = self.root_yaw;
+                    // Tekken Tag rebases the origin as the basis turns (+0x126, 0x37068C): the root stays and the
+                    // roll goes on from there, so its path curves instead of swinging round the start
+                    if self.tag_rules(gd) {
+                        let (s, c) = step.dsin_cos();
+                        let o = self.offset;
+                        let turned = Vec3::new(o.x * c + o.z * s, 0.0, -o.x * s + o.z * c);
+                        self.position += o - turned;
+                        self.offset = turned;
+                    }
                 }
             }
             // sidesteps (and get-ups): face the opponent's live direction every frame, leaning up to 25° into
@@ -1258,8 +1268,8 @@ impl Fighter {
     }
 
     /// Jumps and hops drift (0x8003F3A8): from the frame before the jump window to its end, the move's +0x16
-    /// moves the fighter along its facing by drift · (sin, cos) / 2048 a frame (negative: forward), the fractions
-    /// carried over in 1/256 units.
+    /// moves the fighter along its facing by drift · (sin, cos) / 2048 a frame (Tekken Tag's / 256, 0x36FDE0;
+    /// negative: forward), the fractions carried over in 1/256 units.
     fn drift(&mut self, gd: &GameData) {
         let mv = self.current_move(gd);
         let (j0, j1, v) = (mv.bytes_18.jump_start, mv.bytes_18.jump_end, mv.air_drift);
@@ -1267,10 +1277,12 @@ impl Fighter {
             return;
         }
         let (s, c) = self.yaw.dsin_cos();
-        let table = |x: f32| (x * 4096.0).round() as i64;
+        // Tekken Tag's sine is 0x7FFF to one (0x36FE00: v * sin / 0x7FFF), Tekken 3's 4096 (v * sin / 32768)
+        let (one, div) = if self.tag_rules(gd) { (32767.0, 32767) } else { (4096.0, 32768) };
+        let table = |x: f32| (x * one).round() as i64;
         for (k, t) in [table(s), table(c)].into_iter().enumerate() {
-            // (v * t) / 32768 truncated, then the whole units out and the fraction kept
-            self.air_frac[k] += (v as i64 * t / 32768) as i32;
+            // (v * t) / div truncated, then the whole units out and the fraction kept
+            self.air_frac[k] += (v as i64 * t / div) as i32;
             let whole = self.air_frac[k] >> 8;
             self.air_frac[k] -= whole << 8;
             if k == 0 {
@@ -2075,15 +2087,16 @@ impl Fighter {
 
     /// Tekken Tag's strike this frame (0x34F288): each pair's segment from bone `start` to bone `end` of the pose, or
     /// from the end bone's place a frame before when `start` is 0.
-    /// shortcut: slots past the pose's (Ogre's 0x13, projectiles' 0x18 / 0x19) give no segment; map them when the
-    /// app poses them.
+    /// Ogre's (body 14) slot 0x13 is slot 6. shortcut: slots 18-23 (Yoshimitsu's sword, the others' extras) and the
+    /// projectiles' 0x18 / 0x19 give no segment; map them when the app poses them.
     fn pair_segments(&self, gd: &GameData, bones: &[Vec3]) -> Vec<(Vec3, Vec3)> {
         let mv = self.current_move(gd);
         let Some(a) = mv.attack.as_ref().filter(|a| !a.pairs.is_empty()) else { return vec![] };
         if self.connected || self.frame < mv.active[0] || self.frame > mv.active[1] {
             return vec![];
         }
-        let at = |b: &[Vec3], k: u32| b.get(k as usize).copied();
+        let ogre = self.tag_rules(gd) && self.character == Some(14);
+        let at = |b: &[Vec3], k: u32| b.get(if ogre && k == 0x13 { 6 } else { k as usize }).copied();
         a.pairs.iter().filter_map(|&[s, e]| Some((if s == 0 { at(&self.last_bones, e)? } else { at(bones, s)? }, at(bones, e)?))).collect()
     }
 }

@@ -166,7 +166,8 @@ fn a_ground_roll_goes_sideways() {
         }
     }
     let d = b.game.fight.fighters[0].root() - start.expect("the roll");
-    assert!(d.z.abs() > 800.0 && back > -100.0, "{d}, back {back}");
+    // (the basis turning rebases the origin, 0x37068C: PCSX2's x +311 against z +1105)
+    assert!(d.z.abs() > 800.0 && back > -100.0 && d.x.abs() < 500.0, "{d}, back {back}");
 }
 
 /// The back-turned commands as in PCSX2: Xiaoyu's f+3+4 ends turned away (its +0x12 turn, 30°, added the game's way
@@ -207,6 +208,47 @@ fn a_motion_input_ending_in_a_direction_waits_for_the_stance() {
     }
     assert!(seen.contains(&2906), "{seen:?}");
 }
+
+/// A jump's drift is +0x16 / 256 a frame (0x36FDE0, the sine 0x7FFF to one): True Ogre's u/f+1 (+0x16 -9848)
+/// travels about 38 a frame from its jump window, as in PCSX2 (461 by frame 22).
+#[test]
+fn a_jumps_drift_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [TRUE_OGRE, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let x0 = b.game.fight.fighters[0].root().x;
+    for pad in parse_script("u/f+1*2,n*18").unwrap() {
+        b.step([pad, Pad::default()]);
+    }
+    let went = b.game.fight.fighters[0].root().x - x0;
+    assert!((380.0..540.0).contains(&went), "{went}");
+}
+
+/// Ogre's strike slot 0x13 is his slot 6 (0x34F2C0, body 14 only): his b+2 (alias 359, bones 0x13) reaches Lei from
+/// 1000 as in PCSX2.
+#[test]
+fn ogres_slot_0x13_strikes() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [OGRE_FIRST, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let f = &mut b.game.fight.fighters;
+    let along = (f[1].position - f[0].position).normalize();
+    f[1].position = f[0].position + along * 1000.0;
+    f[1].guard_input = false;
+    let before = b.game.fight.fighters[1].health;
+    for pad in parse_script("b+2*2,n*50").unwrap() {
+        b.step([pad, Pad::default()]);
+    }
+    assert!(b.game.fight.fighters[1].health < before, "Lei is hit");
+}
+
+/// Ogre's and True Ogre's first models.
+const OGRE_FIRST: usize = 528;
+const TRUE_OGRE: usize = 591;
 
 /// Gun Jack's first model.
 const GUN_JACK: usize = 555;
@@ -1026,11 +1068,11 @@ fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: imp
 }
 
 /// The arcade's CPU against a fighter who stands still or holds back, damage a fight minute as measured on the PS2
-/// (PCSX2, the default NORMAL, single matches against Xiaoyu: stage 1 level 0 about 190 still, 30-50 holding back;
-/// stage 4 level 3 200-240 / 140-160; stage 8 level 7 (Unknown) 240 / 140), here a cell's eight matches each; a seed
-/// replays the same. (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands. Stage 4 still
-/// is above it too, 334: the END window without a new press (0x368F78, checked in PCSX2) shortens the CPU's
-/// recoveries; what the PS2's CPU presses in them is not decoded.)
+/// (PCSX2, the default NORMAL, matches against Xiaoyu: stage 1 level 0 about 190 still, 30-50 holding back; stage 4
+/// level 3 (Michelle, King) still 240, 337, 270, 246 and 377 a minute, holding back 140-160; stage 8 level 7 (Unknown
+/// alone) still 240, 237, 201 and 312, holding back 140), here a cell's eight matches each; a seed replays the same.
+/// (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands. Neither CPU holds a direction
+/// in its own recoveries' END windows: 0 of 72 frames on the PS2, 0 of 70 here.)
 #[test]
 fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     let Some(a) = assets() else { return };
@@ -1041,7 +1083,7 @@ fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     });
     let dmg: Vec<(u32, u32)> = cells.iter().map(|c| (c.0, c.1)).collect();
     eprintln!("damage a minute, still / holding back: {dmg:?}");
-    for (k, (still, back)) in [((120, 240), (40, 130)), ((200, 340), (110, 190)), ((200, 290), (110, 180))].into_iter().enumerate() {
+    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 380), (110, 190)), ((200, 315), (110, 180))].into_iter().enumerate() {
         assert!((still.0..=still.1).contains(&dmg[k].0) && (back.0..=back.1).contains(&dmg[k].1), "cell {k}: {:?}", dmg[k]);
         assert!(dmg[k].1 < dmg[k].0, "holding back takes less");
     }

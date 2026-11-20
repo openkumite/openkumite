@@ -23,12 +23,13 @@ Tekken 3's data never goes through it. The whole move and cancel tables are the 
   tap within 20 frames (0x36CAF8), a motion input whose last step is a direction alone is looked for back over its
   window and wants each step's presses exactly (0x36CDD8), jumps (transitions 0x10 / 0x12 / 0x13) travel toward the
   opponent by the pair distance (at most 0xC00) less 500 over the jump window (0x36FC04), a ground roll's basis
-  turns toward where the opponent was at its start (0x36A814), a move's commit turn (+0x12) adds the game's way
+  turns toward where the opponent was at its start (0x36A814), the origin rebased as it turns (0x37068C), a move's commit turn (+0x12) adds the game's way
   round (0x36AA48), and half a turn off the opponent reads as back turned right (+0x3E is an s16). Checked against
   PCSX2 move by move (the stance's commands, throws and tag throws of every fighter, same pads frame by frame).
 - Flag bits (unthrowable, not reversible, guard by input, ki charge, root commit and the others with a Tekken 3
   pair).
 - Timed property ops 1-10, damage to the opponent (0x0C) and to self (0x0D).
+- A jump's drift: +0x16 / 256 a frame along the facing (0x36FDE0; the sine is 0x7FFF to one, Tekken 3's / 2048).
 - The aliases the code names (`Moveset.fixed`): stance 58, crouch 80, K.O. collapse 4769.
 - Hits: the chain's unconditional record (damage, type, reaction); the close reaction and distance on the engine's
   close-range table (1.5x damage, as Tekken Tag's code); "none" (0x592).
@@ -82,7 +83,8 @@ Tekken 3's data never goes through it. The whole move and cancel tables are the 
 - The counter hit caused by victim +0x12E.
 - Other property ops (hand poses, sounds' numbers, camera scripts); air recovery and the missing-move fallback
   alias are unknown.
-- Ogre's bone 0x13 and projectile bones 0x18 / 0x19 give no strike segment.
+- Strike slots 18-23 (Yoshimitsu's sword, Roger's and Devil's extras) and the projectile slots 0x18 / 0x19 give no
+  strike segment (Ogre's 0x13 is his slot 6, as 0x34F2C0).
 - The AI (no ai.json: a CPU does little; SURVIVAL without ai.json `survival` plays the DIFFICULTY option's level 0), the losers' end motions, the team-lose shot (arcade).
 
 ## The game
