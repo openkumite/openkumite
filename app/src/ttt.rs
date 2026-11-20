@@ -4935,6 +4935,26 @@ mod tests {
         assert_eq!((one.index, one.offset.get()), (0, 0));
     }
 
+    /// Knocked down (lying, alias 213), the practice dummy gets up in every TRAINING DUMMY action but CONTROLLER: it
+    /// holds up from the first lying frame (0x37DDE0), so its get-up starts as soon as the lying move takes up, and
+    /// it is on its feet when the get-up ends. Needs a Tekken Tag `assets/` folder in `OK_TTT_ASSETS`.
+    #[test]
+    fn a_knocked_down_dummy_gets_up() {
+        let Some(a) = std::env::var_os("OK_TTT_ASSETS").and_then(|r| kumite_assets::Assets::new(r).ok()) else { return };
+        for dummy in 0..=10 {
+            let mut g = kumite_game::Game::load(&a, [345, 345]).unwrap();
+            assert!(g.fight.fighters[1].play_alias(213));
+            let lying = |g: &kumite_game::Game| g.fight.fighters[1].current_move(&g.fight.data).posture.raw & 0x204 != 0;
+            let mut up = None;
+            for k in 0..60 {
+                let pad = practice_pad(dummy, &g.fight, 1);
+                g.step([kumite_sim::input::Pad::default(), pad]);
+                up = up.or((!lying(&g)).then_some(k));
+            }
+            assert!(up.is_some_and(|k| k <= 2) && !lying(&g), "dummy {dummy}: up at {up:?}");
+        }
+    }
+
     /// Practice's menu: MODE SELECT's left / right turn the modes, a row's left / right its values (round), CANCEL and
     /// RESET take; the dummy and VS CPU's CPU as set.
     #[test]

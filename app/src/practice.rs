@@ -225,8 +225,7 @@ const STAND_GUARD: usize = 2;
 const CROUCH_GUARD: usize = 3;
 const GUARD_ALL: usize = 4;
 const AUTO_GUARD: usize = 5;
-const QUICK_ROLL_DOWN: usize = 6;
-const QUICK_ROLL_UP: usize = 7;
+// (6, 7: QUICK ROLL DOWN / UP)
 const CONTROLLER: usize = 8;
 
 pub struct Practice {
@@ -369,10 +368,12 @@ impl Practice {
 
     /// The dummy's pad (freestyle actions, 0x800B81A8); `facing_right`: the dummy faces +x; `low`: the attacker's
     /// current move hits low; `down`: the dummy's next move is a lying one, so it holds up to get up instead of
-    /// its action (0x800B82E4; not with the quick rolls, nor for `inactive_moveset`).
+    /// its action (0x800B82E4, every action; not for `inactive_moveset`): the quick rolls too, which take it unless
+    /// juggled (+0x8A), when 0x800B84CC presses their roll.
+    /// shortcut: the quick rolls' roll (0x800B84CC) is not done, they only get up; do it once +0x8A is tracked.
     pub fn dummy_pad(&self, facing_right: bool, low: bool, down: bool) -> Pad {
         let back = |p: Pad| if facing_right { Pad { left: true, ..p } } else { Pad { right: true, ..p } };
-        if down && !matches!(self.dummy(), QUICK_ROLL_DOWN | QUICK_ROLL_UP) {
+        if down {
             return Pad { up: true, ..Pad::default() };
         }
         match self.dummy() {
@@ -619,17 +620,40 @@ mod tests {
         }
     }
 
-    /// A downed dummy holds up to get up (0x800B82E4), whatever its action, except with the quick rolls.
+    /// A downed dummy holds up to get up (0x800B82E4), whatever its action, the quick rolls too.
     #[test]
     fn a_downed_dummy_gets_up() {
         let Some(d) = data() else { return };
         let mut p = Practice::new(d);
-        for (value, up) in [(STAND, true), (CROUCH_GUARD, true), (QUICK_ROLL_DOWN, false)] {
+        for value in STAND..CONTROLLER {
             p.values[0][2] = value;
-            assert_eq!(p.dummy_pad(true, false, true).up, up, "dummy {value}");
+            assert!(p.dummy_pad(true, false, true).up, "dummy {value}");
         }
         p.values[0][2] = CROUCH;
         assert!(p.dummy_pad(true, false, false).down && !p.dummy_pad(true, false, false).up);
+    }
+
+    /// Knocked down (lying face up, common alias 153), the dummy gets up in every TRAINING DUMMY action: it holds up
+    /// from the first lying frame (0x800B82E4), so its get-up starts as soon as the lying move takes up, and it is
+    /// on its feet when the get-up ends.
+    #[test]
+    fn a_knocked_down_dummy_gets_up() {
+        let (Some(d), Ok(a)) = (data(), kumite_assets::Assets::new(crate::test_assets())) else { return };
+        let mut p = Practice::new(d);
+        for value in STAND..CONTROLLER {
+            p.values[0][2] = value;
+            let mut g = kumite_game::Game::load(&a, [71, 71]).expect("Paul");
+            assert!(g.fight.fighters[1].play_alias(153));
+            let lying = |g: &kumite_game::Game| g.fight.fighters[1].current_move(&g.fight.data).posture.raw & 0x204 != 0;
+            let mut up = None;
+            for k in 0..60 {
+                let f = &g.fight;
+                let pad = p.dummy_pad(f.facing_right(1), false, f.fighters[1].next_is_lying(&f.data));
+                g.step([Pad::default(), pad]);
+                up = up.or((!lying(&g)).then_some(k));
+            }
+            assert!(up.is_some_and(|k| k <= 2) && !lying(&g), "dummy {value}: up at {up:?}");
+        }
     }
 
     #[test]
