@@ -1068,11 +1068,11 @@ fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: imp
 }
 
 /// The arcade's CPU against a fighter who stands still or holds back, damage a fight minute as measured on the PS2
-/// (PCSX2, the default NORMAL, single matches against Xiaoyu: stage 1 level 0 about 190 still, 30-50 holding back;
-/// stage 4 level 3 200-240 / 140-160; stage 8 level 7 (Unknown) 240 / 140), here a cell's eight matches each; a seed
-/// replays the same. (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands. Stage 4 still
-/// is above it too, 334: the END window without a new press (0x368F78, checked in PCSX2) shortens the CPU's
-/// recoveries; what the PS2's CPU presses in them is not decoded.)
+/// (PCSX2, the default NORMAL, matches against Xiaoyu: stage 1 level 0 about 190 still, 30-50 holding back; stage 4
+/// level 3 (Michelle, King) still 240, 337, 270, 246 and 377 a minute, holding back 140-160; stage 8 level 7 (Unknown
+/// alone) still 240, 237, 201 and 312, holding back 140), here a cell's eight matches each; a seed replays the same.
+/// (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands. Neither CPU holds a direction
+/// in its own recoveries' END windows: 0 of 72 frames on the PS2, 0 of 70 here.)
 #[test]
 fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     let Some(a) = assets() else { return };
@@ -1083,7 +1083,7 @@ fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     });
     let dmg: Vec<(u32, u32)> = cells.iter().map(|c| (c.0, c.1)).collect();
     eprintln!("damage a minute, still / holding back: {dmg:?}");
-    for (k, (still, back)) in [((120, 240), (40, 130)), ((200, 340), (110, 190)), ((200, 290), (110, 180))].into_iter().enumerate() {
+    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 380), (110, 190)), ((200, 315), (110, 180))].into_iter().enumerate() {
         assert!((still.0..=still.1).contains(&dmg[k].0) && (back.0..=back.1).contains(&dmg[k].1), "cell {k}: {:?}", dmg[k]);
         assert!(dmg[k].1 < dmg[k].0, "holding back takes less");
     }
