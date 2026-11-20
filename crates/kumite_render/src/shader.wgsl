@@ -56,7 +56,8 @@ struct Globals {
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
-    @location(0) uv: vec2<f32>,
+    // (anti-aliased: at a covered sample, so an edge's pixels do not read past its texture's part of the atlas)
+    @location(0) @interpolate(perspective, centroid) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) world: vec3<f32>,
     @location(3) normal: vec3<f32>,
@@ -168,6 +169,19 @@ fn texel(uv: vec2<f32>) -> vec4<f32> {
     if (g.gamma.x < 0.5) { return t; }
     let c = t.rgb;
     return vec4(select(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3(0.0031308)), t.a);
+}
+
+// Anti-aliased (alpha to coverage): a cut-out's edge as the coverage, sharpened to a pixel's width; else (the
+// original's) cut at half
+override coverage: bool = false;
+fn cut(a: f32) -> f32 {
+    if (coverage) {
+        let k = clamp((a - 0.5) / max(fwidth(a), 0.0001) + 0.5, 0.0, 1.0);
+        if (k <= 0.0) { discard; }
+        return k;
+    }
+    if (a < 0.5) { discard; }
+    return 1.0;
 }
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
@@ -305,8 +319,8 @@ fn vs_sky(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) 
 @fragment
 fn fs_unlit(i: VsOut) -> @location(0) vec4<f32> {
     let t = texel(i.uv);
-    if (t.a < 0.5) { discard; }
-    return vec4(mix(t.rgb * i.color.rgb, g.fog_colour.rgb, i.fog), 1.0);
+    let a = cut(t.a);
+    return vec4(mix(t.rgb * i.color.rgb, g.fog_colour.rgb, i.fog), a);
 }
 
 // Stage meshes: unlit, cut to the floor patch when one is set.
@@ -326,8 +340,8 @@ fn fs_static(i: VsOut) -> @location(0) vec4<f32> {
     }
     if (g.near_cut.y > 0.5 && i.world.y > 0.05 && i.world.z > g.near_cut.x) { discard; }
     let t = texel(i.uv);
-    if (t.a < 0.5) { discard; }
-    return vec4(mix(t.rgb * i.color.rgb * floor_light(i.world), g.fog_colour.rgb, i.fog), 1.0);
+    let a = cut(t.a);
+    return vec4(mix(t.rgb * i.color.rgb * floor_light(i.world), g.fog_colour.rgb, i.fog), a);
 }
 
 fn in_tube(p: vec3<f32>, fighter: vec3<f32>, margin: f32) -> bool {
@@ -368,8 +382,8 @@ fn floor_light(p: vec3<f32>) -> f32 {
 @fragment
 fn fs_lit(i: VsOut) -> @location(0) vec4<f32> {
     let t = texel(i.uv);
-    if (t.a < 0.5) { discard; }
-    return vec4(lit(i, t.rgb), 1.0);
+    let a = cut(t.a);
+    return vec4(lit(i, t.rgb), a);
 }
 
 // A character's blended primitive (Tekken Tag's): lit the same, over the picture by the texture's alpha.

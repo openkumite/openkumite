@@ -1931,8 +1931,8 @@ fn draw_list(painter: &egui::Painter, v: &View, art: &Art, head: &str, entries: 
     }
 }
 
-/// OPTION > GRAPHICS: display mode, resolution, render scale, vsync, textures; Left / Right change the row's
-/// value (applied at once), EXIT or BACK go back to OPTION.
+/// OPTION > GRAPHICS: display mode, resolution, render scale, vsync, the LOOK and its rows; Left / Right change the
+/// row's value (applied at once; a LOOK row's makes it CUSTOM), EXIT or BACK go back to OPTION. The rows scroll.
 pub struct GraphicsMenu {
     pub frame: u32,
     pub cursor: usize,
@@ -1943,7 +1943,9 @@ pub struct GraphicsMenu {
     done: bool,
 }
 
-const GRAPHICS_ROWS: usize = 10;
+const GRAPHICS_ROWS: usize = 12;
+/// The rows shown at once.
+const GRAPHICS_SHOWN: usize = 10;
 
 impl GraphicsMenu {
     pub fn new(settings: crate::graphics::Graphics, display: crate::graphics::Display, difficulty: usize) -> Self {
@@ -1971,10 +1973,12 @@ impl GraphicsMenu {
             ("RESOLUTION", Some(res)),
             ("3D SCALE", Some(format!("{}X", g.scale))),
             ("VSYNC", Some(vsync.to_string())),
-            ("TEXTURES", Some(if g.smooth_textures { "SMOOTH" } else { "SHARP" }.to_string())),
             // (the arcade game's stages, where the Game data has them)
             ("STAGES", Some(if g.arcade_stages { "ARCADE" } else { "PLAYSTATION" }.to_string())),
             ("STATS", Some(if g.stats { "ON" } else { "OFF" }.to_string())),
+            ("LOOK", Some(g.enhance.look().label().to_string())),
+            ("ANTI-ALIASING", Some(if g.enhance.msaa > 1 { format!("{}X", g.enhance.msaa) } else { "OFF".to_string() })),
+            ("TEXTURES", Some(if g.smooth_textures { "SMOOTH" } else { "SHARP" }.to_string())),
             ("RECOMMENDED", None),
             ("DEFAULT", None),
             ("EXIT", None),
@@ -2003,13 +2007,14 @@ impl GraphicsMenu {
                 self.done = true;
             }
             // RECOMMENDED / DEFAULT: the settings chosen for the screen and the GPU, or the defaults
-            Key::Start | Key::Button(_) if matches!(self.cursor, 7 | 8) => {
-                let p = if self.cursor == 7 { crate::graphics::Preset::Recommended } else { crate::graphics::Preset::Default };
+            Key::Start | Key::Button(_) if matches!(self.cursor, 9 | 10) => {
+                let p = if self.cursor == 9 { crate::graphics::Preset::Recommended } else { crate::graphics::Preset::Default };
                 self.settings = self.display.preset_over(p, &self.settings);
                 sfx::play(sfx::confirm());
                 return Some(Outcome::Graphics(self.settings.clone()));
             }
             Key::Left | Key::Right | Key::Start | Key::Button(_) => {
+                use crate::graphics::{Enhance, Look};
                 let right = key != Key::Left;
                 let g = &mut self.settings;
                 match self.cursor {
@@ -2039,9 +2044,16 @@ impl GraphicsMenu {
                     }
                     3 if cfg!(target_arch = "wasm32") => return None,
                     3 => g.vsync = !g.vsync,
-                    4 => g.smooth_textures = !g.smooth_textures,
-                    5 => g.arcade_stages = !g.arcade_stages,
-                    6 => g.stats = !g.stats,
+                    4 => g.arcade_stages = !g.arcade_stages,
+                    5 => g.stats = !g.stats,
+                    // (CUSTOM: from its rows)
+                    6 => g.enhance = if g.enhance.look() == Look::Original { Enhance::ENHANCED } else { Enhance::default() },
+                    7 => {
+                        let counts = [0, 2, 4];
+                        let i = counts.iter().position(|&n| n == g.enhance.msaa).unwrap_or(0);
+                        g.enhance.msaa = counts[step(i, counts.len(), right)];
+                    }
+                    8 => g.smooth_textures = !g.smooth_textures,
                     _ => return None,
                 }
                 sfx::play(sfx::cursor());
@@ -2054,9 +2066,10 @@ impl GraphicsMenu {
     pub fn draw(&self, painter: &egui::Painter, v: &View, art: &Art) {
         title_picture(painter, v, art, true);
         art.text(painter, v, 1, 6, crate::art::CENTRE - art.text_w(1, "GRAPHICS") / 2.0, 84.0, "GRAPHICS", Color32::WHITE);
-        for (k, (label, value)) in self.rows().iter().enumerate() {
+        let first = self.cursor.saturating_sub(GRAPHICS_SHOWN / 2).min(GRAPHICS_ROWS - GRAPHICS_SHOWN);
+        for (k, (label, value)) in self.rows().iter().enumerate().skip(first).take(GRAPHICS_SHOWN) {
             // (the actions a little apart from the settings)
-            let y = 136.0 + 32.0 * k as f32 + if k >= 7 { 10.0 } else { 0.0 };
+            let y = 136.0 + 32.0 * (k - first) as f32 + if k >= GRAPHICS_ROWS - 3 { 10.0 } else { 0.0 };
             let colour = if k == self.cursor { 5 } else { 6 };
             match value {
                 Some(val) => {
