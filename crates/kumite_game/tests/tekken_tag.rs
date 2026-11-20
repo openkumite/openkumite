@@ -829,6 +829,9 @@ fn the_round_call_starts_the_fight_on_frame_151_then_91() {
         assert_eq!(said, calls.map(|(k, f)| (k, f.to_string())), "round {round}'s call");
         b.resume_match(1, [0, 0]);
     }
+    // (the calls' level measured in PCSX2: 0.77 of their volume byte 29's)
+    let call = s.announce(kumite_game::bout::Announcement::Round(1), [true; 2]).unwrap();
+    assert!((call.volume - 29.0 / 51.0 * 0.77).abs() < 1e-6, "{}", call.volume);
     let music = s.arena_music(0).unwrap();
     assert!(music.file.ends_with("audio/music/22.flac") && music.looped, "{}", music.file.display());
     // (arena 0's BGM 9: its loop point and volume 9830, the PS2's level)
