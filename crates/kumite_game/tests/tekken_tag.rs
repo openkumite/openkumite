@@ -294,6 +294,29 @@ fn yoshimitsus_sword_strikes() {
     assert!(hit.is_some_and(|k| (48..=53).contains(&k)), "Hwoarang reels on frame {hit:?}");
 }
 
+/// Devil's laser (0x378150: slot 0x18, from his head, 200 longer each active frame): his n+1+2 (move 4175) from
+/// -554 reaches Hwoarang at 944 and he falls (alias 3626) on frame 36 of it, as in PCSX2 (its 37th: audit
+/// 29_cmd00); the strike to slot 0x18 had no segment.
+#[test]
+fn devils_laser_strikes() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [DEVIL, HWOARANG]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut at = None;
+    for pad in parse_script("n*4,1+2+3+4*2,n*80,n+1+2*2,n*60").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        if at.is_none() && f[1].alias == 3626 {
+            at = Some((f[0].current.index, f[0].frame));
+        }
+    }
+    assert!(at.is_some_and(|(m, k)| m == 4175 && (35..=38).contains(&k)), "Hwoarang falls at {at:?}");
+}
+
 /// The strikes take the game's joint places (0x439A80), not the drawn skeleton's: Jack-2's knee is 390 down his
 /// thigh, not 440, so his 1+3 (alias 3811, foot A) grabs Hwoarang 780 away (alias 3924) as in PCSX2 (frame 64).
 #[test]
@@ -326,6 +349,18 @@ fn mokujin_fights_with_a_copied_moveset() {
         b.game.fight.fighters[0].alias != stance && b.game.clip(0).is_some()
     });
     assert!(moved, "Mokujin did not jab");
+    // as Anna (moveset 17, the PS2's draw in the audit): her stance and her n+1+2 (move 808) on his body, then her
+    // n+3+4 (887), as in PCSX2 (audit m15_cmd05)
+    b.game.copy_as(0, 15);
+    b.game.fight.fighters[0].play_alias(58);
+    let mut seen = Vec::new();
+    for pad in parse_script("n*40,n+1+2*2,n*80,n+3+4*2,n*20").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        assert!(b.game.clip(0).is_some(), "no motion for move {}", f.current.index);
+        seen.push(f.current.index);
+    }
+    assert!(seen.contains(&25) && seen.contains(&808) && seen.contains(&887), "{seen:?}");
 }
 
 /// The drawn skeleton is the game's joint places too (0x3478F0): Jack-2's knee is 390 down his thigh.
@@ -392,6 +427,8 @@ const HWOARANG: usize = 420;
 const JULIA: usize = 480;
 /// King's first model.
 const KING: usize = 390;
+/// Devil's first model.
+const DEVIL: usize = 663;
 
 /// The arcade cells' models (the 1P's partner, the CPU teams).
 const YOSHIMITSU: usize = 396;

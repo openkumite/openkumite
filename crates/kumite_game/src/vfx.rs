@@ -239,6 +239,8 @@ pub struct Vfx {
     /// Each arena's dust (stages.json `dust`), and the fight's arena's.
     dusts: HashMap<usize, Dust>,
     pub dust: Option<Dust>,
+    /// Devil's lasers this frame: from, to (metres), width (game units) and brightness (0x378600).
+    pub beams: Vec<(Vec3, Vec3, f32, f32)>,
 }
 
 impl Vfx {
@@ -278,6 +280,7 @@ impl Vfx {
             slots_joints,
             dusts,
             dust: None,
+            beams: Vec::new(),
         }
     }
 
@@ -473,6 +476,16 @@ impl Vfx {
             },
             &|i, name| game.body_of(i)?.character.nodes.iter().position(|n| n.name == name),
         );
+        // Devil's laser (0x378600 -> 0x3A8D08): yellow, its width 150 to 50 and its brightness 1 to 0 over the active
+        // window and 30 frames more
+        self.beams.clear();
+        for (i, f) in fight.fighters.iter().enumerate() {
+            let (pose, place) = game.pose(i);
+            let Some((p, q)) = f.laser(&fight.data, &crate::volumes(&game.bodies[i], &pose, place).bones) else { continue };
+            let [a0, a1] = f.current_move(&fight.data).active.map(|v| v as i32);
+            let t = 1.0 - (f.frame as i32 - a0) as f32 / (a1 - a0 + 30).max(1) as f32;
+            self.beams.push((p / UNITS, q / UNITS, 100.0 * t + 50.0, t));
+        }
     }
 
     /// The same for any number of actors: `models[k]` actor k's model record; `actors` (fighter, own index,
@@ -636,6 +649,15 @@ impl Vfx {
             }
         }
         if let Some(d) = &self.data {
+            // a laser: the violet sparkle (file 5) every half width along it, and a ball of it at the eyes
+            // shortcut: the PS2's lightning strip (0x3A8D08) and its glow (0x3A8C50) are not read; these sprites stand in
+            let cell = d.zero.cells.first().copied().unwrap_or(1);
+            for &(p, q, w, t) in &self.beams {
+                let n = ((q - p).length() * UNITS / (w * 0.5)).ceil().max(1.0) as usize;
+                let at = |pos: Vec3, size: f32| Sprite { pos, size, cell, color: [2.0 * t, 2.0 * t, 2.0 * t, 1.0], blend: Blend::Add, mirror: false, nearer: 0.0 };
+                out.extend((0..=n).map(|k| at(p.lerp(q, k as f32 / n as f32), 2.0 * w / UNITS)));
+                out.push(at(p, 0.6));
+            }
             for p in &self.particles {
                 let ramp = &d.heavy[p.ramp];
                 let i = (p.age as usize * 16 / p.life.max(1) as usize).min(ramp.len().saturating_sub(1));
@@ -673,6 +695,7 @@ mod tests {
             slots_joints: vec![],
             dusts: HashMap::new(),
             dust: None,
+            beams: vec![],
         };
         v.effect("block", &data.block, Vec3::new(1.0, 1.0, 0.0), None, Blend::Add, Vec3::ZERO);
         assert!(v.sprites().is_empty() && v.slots.iter().all(Option::is_none));

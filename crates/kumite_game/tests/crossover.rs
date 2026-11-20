@@ -441,7 +441,8 @@ fn every_reaction_has_a_motion_on_a_soldier() {
             g.step([Pad::default(); 2]);
             let gd = g.fight.data.clone();
             let r = &gd.reactions;
-            let mut todo: Vec<usize> = r.entries.iter().flat_map(|e| e.victims.iter().copied()).chain(r.air_reactions.entries.iter().map(|e| e.alias)).chain(r.throw_victims.entries.iter().copied()).collect();
+            let mut todo: Vec<usize> =
+                r.entries.iter().flat_map(|e| e.victims.iter().copied()).chain(r.air_reactions.entries.iter().map(|e| e.alias)).chain(r.throw_victims.entries.iter().copied()).collect();
             let mut seen = std::collections::BTreeSet::new();
             while let Some(alias) = todo.pop() {
                 if alias == 0 || !seen.insert(alias) || !g.fight.fighters[1].play_alias(alias) {

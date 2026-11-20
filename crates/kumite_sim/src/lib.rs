@@ -2112,9 +2112,43 @@ impl Fighter {
         if self.connected || self.frame < mv.active[0] || self.frame > mv.active[1] {
             return vec![];
         }
+        if let Some(l) = self.laser(gd, bones) {
+            return vec![l];
+        }
         let ogre = self.tag_rules(gd) && self.character == Some(14);
         let at = |b: &[Vec3], k: u32| b.get(if ogre && k == 0x13 { 6 } else { k as usize }).copied();
         a.pairs.iter().filter_map(|&[s, e]| Some((if s == 0 { at(&self.last_bones, e)? } else { at(bones, s)? }, at(bones, e)?))).collect()
+    }
+}
+
+impl Fighter {
+    /// Devil's laser (0x378150, body 29, a strike to slot 0x18): from the head (slot 2) at the move's place (table
+    /// 0x506248: along the facing, up), growing each frame of the active window by its step (0x378810, move 4175: 200
+    /// along the facing; 0x378A28, moves 4177 / 4179: 102 along it and 110 down; 0x378E70, move 4180: 300 at 15° up),
+    /// its end kept on the floor (0x378500); on the first active frame it is a point (0x3780C8).
+    /// shortcut: move 6728's sweep (0x378C48, drawn by the game's own random numbers) is left out
+    pub fn laser(&self, gd: &GameData, bones: &[Vec3]) -> Option<(Vec3, Vec3)> {
+        let mv = self.current_move(gd);
+        let a = mv.attack.as_ref()?;
+        if !self.tag_rules(gd) || self.character != Some(29) || a.pairs.first().map(|p| p[1]) != Some(0x18) {
+            return None;
+        }
+        let head = *bones.get(2)?;
+        let cut = |v: i32, t: i32| v * t / 0x8000;
+        let [up15, out15] = tag_sin_cos(-0xAAA as f32 * ANGLE);
+        // (step along the facing and up; the place back along the facing and up)
+        let (along, up, back, high) = match self.current.index {
+            4175 => (200, 0, 50, 170),
+            4177 | 4179 => (102, -110, -100, 160),
+            4180 => (cut(300, out15), -cut(300, up15), -40, 170),
+            _ => return None,
+        };
+        let k = (self.frame as i32 - mv.active[0] as i32).max(0);
+        let [s, c] = tag_sin_cos(self.yaw);
+        let start = head + Vec3::new(-cut(back, s) as f32, high as f32, -cut(back, c) as f32);
+        let mut end = start + Vec3::new(cut(along, s) as f32, up as f32, cut(along, c) as f32) * k as f32;
+        end.y = end.y.max(0.0);
+        Some((start, end))
     }
 }
 
