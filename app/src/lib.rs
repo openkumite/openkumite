@@ -285,6 +285,8 @@ struct EndingRun {
     back: ttt::Page,
     /// Per cast member: its texture shows the mark (Jin's, [`kumite_assets::Character::mark`]).
     marks: Vec<bool>,
+    /// Op 25's props: the object, its meshes in the stage's `sky` with their vertices as made.
+    props: Vec<(usize, Vec<(usize, Vec<StaticVertex>)>)>,
 }
 
 /// Tekken Bowl running: its scene, the bowlers' GPU models, the ball's and each pin's meshes (indices into the stage's
@@ -3903,7 +3905,7 @@ impl App {
             audio.music(sound.music(data.raw["staff_roll"]["bgm"].as_u64().unwrap_or(6) as usize));
         }
         (self.screen, self.fight) = (None, None);
-        self.ttt_ending = Some(EndingRun { scene: None, models: Vec::new(), roll: Some(0), skip: false, back, marks: Vec::new() });
+        self.ttt_ending = Some(EndingRun { scene: None, models: Vec::new(), roll: Some(0), skip: false, back, marks: Vec::new(), props: Vec::new() });
     }
 
     /// Tekken Tag's ending `e`, the player's costume `costume` (0x3AA8A8): its arena and cast on its camera path; an
@@ -3923,6 +3925,7 @@ impl App {
             }
         }
         let shown = if movie { None } else { self.ttt_scene(kumite_game::ending::EndingScene::new(&self.assets, &data, e, costume)) };
+        let props = shown.as_ref().map(|(s, _)| self.scene_props(s)).unwrap_or_default();
         // (Unknown's movie not there: the staff roll alone)
         if shown.is_none() && !roll {
             self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: back, frame: 0 })));
@@ -3934,7 +3937,7 @@ impl App {
         }
         let (scene, models) = shown.map_or((None, Vec::new()), |(s, m)| (Some(s), m));
         (self.screen, self.fight) = (None, None);
-        self.ttt_ending = Some(EndingRun { scene, models, roll: roll.then_some(0), skip: false, back, marks: Vec::new() });
+        self.ttt_ending = Some(EndingRun { scene, models, roll: roll.then_some(0), skip: false, back, marks: Vec::new(), props });
     }
 
     /// A Tekken Tag scene (an ending, the EMBU) on its arena, with its cast's GPU models; None (and a log line) where it
@@ -3954,6 +3957,24 @@ impl App {
         Some((s, models))
     }
 
+    /// The props a scene holds (op 25), their meshes joined to the stage's (each its texture); a missing one (an older
+    /// pack) is left out.
+    fn scene_props(&mut self, s: &kumite_game::ending::EndingScene) -> Vec<(usize, Vec<(usize, Vec<StaticVertex>)>)> {
+        let (Some(r), Some(stage)) = (self.renderer.as_ref(), self.scene.as_mut()) else { return Vec::new() };
+        let mut out = Vec::new();
+        for (k, file) in s.prop_files() {
+            let Ok(st) = kumite_assets::Stage::load(&self.assets.root.join(&file)).map_err(|e| log::warn!("{file}: {e:#}")) else { continue };
+            let tex: Vec<_> = st.textures.iter().map(|t| r.texture(t.width, t.height, &t.rgba)).collect();
+            let meshes = st.sky.iter().filter_map(|m| {
+                let v: Vec<StaticVertex> = m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color, cell: v.cell, normal: v.normal }).collect();
+                stage.sky.push(r.sorted_mesh(&v, &m.indices, tex.get(m.texture)?.clone()));
+                Some((stage.sky.len() - 1, v))
+            });
+            out.push((k, meshes.collect()));
+        }
+        out
+    }
+
     /// Tekken Tag's EMBU with cast `cast` (Theater's EMBU, 0x3A97B0), then the page `back`.
     fn start_ttt_embu(&mut self, cast: usize, back: ttt::Page) {
         let Some(data) = self.roster.ttt.as_ref().and_then(|d| d.endings.clone()) else { return };
@@ -3962,7 +3983,7 @@ impl App {
                 a.music(None);
             }
             (self.screen, self.fight) = (None, None);
-            self.ttt_ending = Some(EndingRun { scene: Some(s), models, roll: None, skip: false, back, marks: Vec::new() });
+            self.ttt_ending = Some(EndingRun { scene: Some(s), models, roll: None, skip: false, back, marks: Vec::new(), props: Vec::new() });
         }
     }
 
@@ -5358,6 +5379,20 @@ impl App {
                 }
             }
         }
+        // Tekken Tag's ending: op 25's props where the actors hold them (gone: folded away under the floor), in the
+        // sky's place
+        if let (Some((run, held)), Some(s)) = (self.ttt_ending.as_ref().and_then(|e| Some((e, e.scene.as_ref()?.props()))), self.scene.as_mut()) {
+            for (k, meshes) in &run.props {
+                let gone = glam::Mat4::from_cols(glam::Vec4::ZERO, glam::Vec4::ZERO, glam::Vec4::ZERO, glam::Vec4::new(0.0, -10.0, 0.0, 1.0));
+                let m = glam::Mat4::from_translation(glam::Vec3::new(0.0, s.sky_base_y, 0.0)) * held.iter().find(|h| h.0 == *k).map_or(gone, |h| h.1);
+                for (i, v) in meshes {
+                    let moved: Vec<StaticVertex> = v.iter().map(|v| StaticVertex { pos: m.transform_point3(glam::Vec3::from(v.pos)).to_array(), ..*v }).collect();
+                    if let Some(mesh) = s.sky.get_mut(*i) {
+                        r.move_mesh(mesh, &moved);
+                    }
+                }
+            }
+        }
         // Tekken Tag's select: a GPU model for each 3D character, made when it comes
         for p in &self.posers.shown {
             self.poser_models.entry(p.record).or_insert_with(|| skinned_character(r, &p.character, p.record));
@@ -5491,7 +5526,7 @@ impl App {
                     if let Some((m, pose, place)) = s.pose(k) {
                         if let (Some(model), Some(ch)) = (run.models.get(m), s.characters.get(m)) {
                             r.update_bones(model, &ch.skin_matrices(&pose, place));
-                            // (op 12: the slot's texture channel frame, Jin's mark)
+                            // (op 12: the slot's texture channel frame, Jin's mark: below)
                             if let (Some([x, y, w, h, sx, sy]), Some(shown)) = (ch.mark, run.marks.get_mut(m)) {
                                 if *shown != s.marks[k] {
                                     copy_texels(r, model, &ch.texture, if s.marks[k] { [sx, sy] } else { [x, y] }, [x, y, w, h]);

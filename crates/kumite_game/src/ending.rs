@@ -17,11 +17,10 @@
 //! set of the scene's own or none (0x3D85D8, [`EndingScene::people`]); the EMBU's screen films from farther
 //! ([`EndingScene::camera`]) and turns the arena half round.
 //!
-//! Op 12 shows Jin's mark (his texture channel 0's frame 0, [`EndingScene::marks`]).
+//! Op 25 puts an arena's object in a hand ([`EndingScene::props`]). Op 12 shows Jin's mark (his texture channel 0's frame 0, [`EndingScene::marks`]).
 //!
 //! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 15 (True
-//! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 25 (arena props on an actor's node, 0x3D10D0), 28 (Kuma's
-//! and Panda's +0xB052), 30 (objects 0x3ACF50), 32 (gp-0x6E78); the EMBU's 7-11; ops 17 / 18 at nodes 0x4000-0x4002
+//! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 28 (True Ogre's and Devil's wings, +0xB052), 30 (objects 0x3ACF50), 32 (gp-0x6E78); the EMBU's 7-11; ops 17 / 18 at nodes 0x4000-0x4002
 //! (op 25's prop matrix 0x444CD0, 20 objects 0x3ACCD0); the face track (its joints are not mapped).
 
 use crate::UNITS;
@@ -180,6 +179,8 @@ pub struct EndingScene {
     pub bursts: Vec<Burst>,
     /// Ops 21-24's objects: (scene frame started, op, a, b, c).
     objects: Vec<(i32, i32, i32, i32, i32)>,
+    /// Op 25's props: (scene frame started, actor a, object b, frames c).
+    props: Vec<(i32, i32, i32, i32)>,
     black: Fade,
     white: Fade,
     pub done: bool,
@@ -255,6 +256,7 @@ impl EndingScene {
             music: None,
             bursts: Vec::new(),
             objects: Vec::new(),
+            props: Vec::new(),
             black: Fade { from: 255, to: 255, at: 0, len: 1 },
             white: Fade::default(),
             done: false,
@@ -315,6 +317,7 @@ impl EndingScene {
                 // slot a & 1's texture channel 0 to frame 1 (b = 0) or 0 (0x3AB924)
                 12 => self.marks[(a & 1) as usize] = b != 0,
                 21..=24 => self.objects.push((c, op, a, b, last)),
+                25 => self.props.push((c, a, b, last)),
                 -1 => self.done = true,
                 _ => {}
             }
@@ -378,6 +381,45 @@ impl EndingScene {
                 _ => {}
             }
         }
+        out
+    }
+
+    /// The objects ending op 25 holds this frame (0x3ACB08 -> 0x3D10D0): the arena's object (its file
+    /// `stages/stage_NN_prop_K.glb`, [`EndingScene::prop_files`]) and where it is drawn (metres): for c frames at
+    /// actor a's (0 or not) node 38 or 63 by arena and object, or with b's 0x4000 where arena 3 lays it (its matrix
+    /// 0x8D7E00: turned -0.349 about x and 0.785 about y, at z 1500). On other arenas, or other objects, none.
+    pub fn props(&self) -> Vec<(usize, Mat4)> {
+        let mut out = vec![];
+        for &(at, a, b, frames) in &self.props {
+            let (k, laid) = (b & 0x3FFF, b & 0x4000 != 0);
+            if self.c - at >= frames.max(1) {
+                continue;
+            }
+            let node = match (self.arena, k) {
+                (3, 19) if laid => {
+                    let m = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.5)) * Mat4::from_rotation_y(-std::f32::consts::FRAC_PI_4) * Mat4::from_rotation_x(-0.349_065_84);
+                    out.push((19, m));
+                    continue;
+                }
+                (7, 0) => 63,
+                (3, 19) | (5, 0) | (7, 1 | 2) => 38,
+                _ => continue,
+            };
+            if let Some((_, pose, place)) = self.pose(usize::from(a != 0)) {
+                if let Some(m) = pose.get(node) {
+                    out.push((k as usize, place * *m));
+                }
+            }
+        }
+        out
+    }
+
+    /// The files of the props the script holds (op 25: [`EndingScene::props`]), each with its object.
+    pub fn prop_files(&self) -> Vec<(usize, String)> {
+        let mut out: Vec<(usize, String)> =
+            (self.script.iter()).filter(|r| r[1] == 25 && self.ending.is_some()).map(|r| (r[3] & 0x3FFF) as usize).map(|k| (k, format!("stages/stage_{:02}_prop_{k}.glb", self.arena))).collect();
+        out.sort();
+        out.dedup();
         out
     }
 

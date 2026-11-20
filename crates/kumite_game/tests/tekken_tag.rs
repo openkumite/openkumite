@@ -1182,6 +1182,21 @@ fn jins_mark_in_ending_13() {
     assert!(w > 0 && h > 0 && (x + w).max(sx + w) <= jin.texture.width && (y + h).max(sy + h) <= jin.texture.height);
 }
 
+/// Op 25: in ending 20 Bryan (slot 1) holds arena 5's object 0 at his hand (node 38) for 1080 frames.
+#[test]
+fn bryans_gun_in_ending_20() {
+    let Some(a) = assets() else { return };
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    let mut s = kumite_game::ending::EndingScene::new(&a, &d, 20, 0).unwrap();
+    assert_eq!(s.prop_files(), vec![(0, "stages/stage_05_prop_0.glb".to_string())]);
+    assert!(a.root.join("stages/stage_05_prop_0.glb").exists(), "convert the game again");
+    while s.frame() < 300 {
+        s.step();
+    }
+    let (_, pose, place) = s.pose(1).unwrap();
+    assert_eq!(s.props(), vec![(0, place * pose[38])]);
+}
+
 /// Tekken Bowl from the pack: Paul's throw (its hand's release point from his motion, ahead of him, above the lane,
 /// on his right), the ball rolled down the middle and counted, Paul and Lei taking turns; two runs give the same
 /// states.
