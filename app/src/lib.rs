@@ -5717,6 +5717,17 @@ impl App {
             .and_then(|s| s.overlays().into_iter().find_map(|o| if let kumite_game::ending::Overlay::Negative(c) = o { Some(c.map(|v| v as f32 / 255.0)) } else { None }));
         // an arcade stage's sky, behind everything
         r.backdrop = self.scene.as_ref().filter(|_| !sky.is_empty()).map_or_else(Vec::new, |s| sky_backdrop(&cam, s));
+        // Eddy's grass: its lattice over the floor's window
+        if let (Some(l), Some(m)) = (cam.floor_levels, self.scene.as_ref().and_then(|s| s.objects.as_ref())) {
+            cam.grass = m.grass(l.centre, l.cell, l.window).filter(|g| !g.2.is_empty()).map(|(first, size, corners)| {
+                let mut moves = [[0.0; 4]; kumite_render::GRASS];
+                for (m, c) in moves.iter_mut().zip(&corners) {
+                    *m = *c;
+                }
+                let row = (l.window[0].max(1.0) as u32).min(16) + 1;
+                kumite_render::Grass { first, cell: l.cell, row, rows: corners.len() as u32 / row, size, moves }
+            });
+        }
         // effect sprites, as quads facing the camera
         let (mut p_alpha, mut p_add, mut soft_alpha, mut soft_add) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         if let (Some(v), true) =

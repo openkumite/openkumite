@@ -75,6 +75,8 @@ pub struct ArenaMotion {
     /// Law-A's lanterns (name, lattice size mm, heading), their wind; the leaves, their table and the light the
     /// shadows fall along (towards it).
     lanterns: Vec<(String, f32, f32, Vec3)>,
+    /// Eddy's grass lattice: its size, gain and drop (mm).
+    grass: Option<[f32; 3]>,
     wind: Option<crate::weather::Wind>,
     gain: f32,
     leaves: Vec<Leaf>,
@@ -99,6 +101,7 @@ impl ArenaMotion {
             clouds: vec![],
             c: v["clouds"].clone(),
             lanterns: vec![],
+            grass: None,
             wind: None,
             gain: f(&v["lanterns"]["gain"]),
             leaves: vec![],
@@ -117,6 +120,11 @@ impl ArenaMotion {
         }
         if !me.lanterns.is_empty() {
             me.wind = Some(crate::weather::Wind::new(&la["wind"]));
+        }
+        let gr = &v["grass"];
+        if gr.is_object() {
+            me.grass = Some([f(&gr["size"]).max(1.0), f(&gr["gain"]), f(&gr["drop"])]);
+            me.wind = Some(crate::weather::Wind::new(&gr["wind"]));
         }
         // the leaves (0x3D6BC0): within reach of the centre at random, a random heading
         let lv = me.lv.clone();
@@ -214,7 +222,7 @@ impl ArenaMotion {
             }
             me.clouds.push(Cloud { route, at, speed, members });
         }
-        (me.heli.is_some() || !me.cars.is_empty() || !me.clouds.is_empty() || !me.lanterns.is_empty() || !me.leaves.is_empty()).then_some(me)
+        (me.heli.is_some() || !me.cars.is_empty() || !me.clouds.is_empty() || !me.lanterns.is_empty() || !me.leaves.is_empty() || me.grass.is_some()).then_some(me)
     }
 
     fn rand(&mut self) -> u32 {
@@ -353,6 +361,24 @@ impl ArenaMotion {
             }
             self.leaves[k] = l;
         }
+    }
+
+    /// Eddy's grass lattice (0x3D43A8): a top corner at each corner of the floor's window of `window` cells of `cell`
+    /// around `centre` (m), moved by the wind there (sampled at x, y, -z as the lanterns') x the gain and lowered by
+    /// that move's length and the drop: the first corner (x, z), the lattice's height and the corners' moves (m), row
+    /// by row of `window[0] + 1` (17 x 17 at most).
+    /// shortcut: the corners are centred on the window (the PS2's start half a cell further from the first), and the
+    /// wind's four impulses (the fighters' landings) are left out; upgrade when a capture shows the difference
+    pub fn grass(&self, centre: [f32; 2], cell: [f32; 2], window: [f32; 2]) -> Option<([f32; 2], f32, Vec<[f32; 4]>)> {
+        let ([size, gain, drop], w) = (self.grass?, self.wind.as_ref()?);
+        let [nx, nz] = window.map(|n| (n.max(1.0) as usize).min(16));
+        let first = [centre[0] - cell[0] * nx as f32 / 2.0, centre[1] - cell[1] * nz as f32 / 2.0];
+        let corners = (0..=nz).flat_map(|i| (0..=nx).map(move |j| (i, j))).map(|(i, j)| {
+            let (x, z) = (first[0] + j as f32 * cell[0], first[1] + i as f32 * cell[1]);
+            let p = w.at(Vec3::new(x, 0.0, -z)) * gain;
+            [p.x, -(p.x.hypot(p.z) + drop), p.z, 0.0].map(|v| v / 1000.0)
+        });
+        Some((first, size / 1000.0, corners.collect()))
     }
 
     /// Law-A's lanterns' shear (0x3D7AB0): each one's lattice (x, z +-s, y 0..s) has its top moved by the wind at it
