@@ -102,7 +102,7 @@ pub struct Vertex {
     /// levels (0: not a floor cell)
     pub cell: [f32; 4],
     /// Tekken Tag's arena: the normal and (w) how its texture coordinates are made from it (material extras `env`:
-    /// 1, 2 or 8; 0 as stored)
+    /// 1, 2, 4 or 8; 0 as stored)
     pub normal: [f32; 4],
 }
 
@@ -550,6 +550,9 @@ pub struct Stage {
     pub floor_light: Option<(u32, f32, [f32; 32])>,
     /// Tekken Tag's floor cells (scene extras `floor_levels`): their levels of detail and the window they are laid in.
     pub floor_levels: Option<FloorLevels>,
+    /// Tekken Tag's arena fog (scene extras `fog`): FOGCOL (0..1) and the coefficient `line[0] + line[1] x depth` (mm,
+    /// 255 none); the fogged strips' vertices have 16 added to their normal's w.
+    pub fog: Option<([f32; 3], [f32; 2])>,
     pub placements: Vec<Placement>,
     /// Per texture (image): the glb asks for linear filtering (with mipmaps) and tiling both ways, as the
     /// extra levels do; the game's own stages ask for nearest and clamp.
@@ -626,10 +629,13 @@ impl Stage {
                     bail!("a primitive's attributes disagree");
                 }
                 // Tekken Tag's arena: the normals of a material whose texture coordinates are made from them (extras `env`)
-                let env = prim.material().extras().as_ref().and_then(|x| serde_json::from_str::<serde_json::Value>(x.get()).ok()).and_then(|x| x["env"].as_f64()).unwrap_or(0.0) as f32;
+                let extras = prim.material().extras().as_ref().and_then(|x| serde_json::from_str::<serde_json::Value>(x.get()).ok()).unwrap_or_default();
+                let env = extras["env"].as_f64().unwrap_or(0.0) as f32;
+                // (and its fogged strips: 16 more)
+                let w = env + if extras["fog"].as_f64().is_some_and(|f| f > 0.0) { 16.0 } else { 0.0 };
                 let normals: Vec<[f32; 4]> = match r.read_normals().filter(|_| env > 0.0) {
-                    Some(n) => n.map(|n| [n[0], n[1], n[2], env]).collect(),
-                    None => vec![[0.0; 4]; pos.len()],
+                    Some(n) => n.map(|n| [n[0], n[1], n[2], w]).collect(),
+                    None => vec![[0.0, 0.0, 0.0, w]; pos.len()],
                 };
                 if normals.len() < pos.len() {
                     bail!("a primitive's attributes disagree");
@@ -691,6 +697,7 @@ impl Stage {
             floor_patch: None,
             floor_light: None,
             floor_levels: None,
+            fog: None,
             placements: vec![],
             filtered: vec![false; images.len()],
             tiled: vec![false; images.len()],
@@ -757,6 +764,8 @@ impl Stage {
                 Some(FloorLevels { limits, half: cell.map(|c| c * corner / 2.0), cell, window, reach: num(&fl["reach"]).unwrap_or(f32::MAX) })
             })()
             .filter(|l| l.cell.iter().all(|c| *c > 0.0));
+            let fog = &v["fog"];
+            st.fog = (|| Some(([0, 1, 2].map(|k| fog["colour"][k].as_f64().unwrap_or(0.0) as f32 / 255.0), [fog["line"][0].as_f64()? as f32, fog["line"][1].as_f64()? as f32])))();
             st.floor_patch = v["floor_patch"].as_array().and_then(|a| Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32]));
             st.extra_level = v["level"].as_str().map(str::to_string);
             let grid = |w: &serde_json::Value| {

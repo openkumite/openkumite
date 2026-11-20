@@ -155,6 +155,11 @@ pub struct Camera {
     pub hit_light: Option<([f32; 3], Vec3)>,
     /// Tekken Tag's floor cells: their levels of detail and their window.
     pub floor_levels: Option<FloorLevels>,
+    /// Tekken Tag's arena fog: FOGCOL (sRGB 0..1) and the coefficient's line (255 + slope x depth in mm).
+    pub fog: Option<([f32; 3], [f32; 2])>,
+    /// Tekken Tag's: the 3D pass drawn on the frame's sRGB bytes (textures, colours, blending and fog as the PS2's GS
+    /// has them), where the frame has a plain view; else in its linear colour.
+    pub gamma: bool,
     /// The stage meshes cut to x0..x1, z0..z1 (metres): the original's finite floor patch, where it shows.
     pub floor_clip: Option<[f32; 4]>,
     /// The extra stages' floor lighting (export_stages / 0x80082E60, 0x8008364C), when the stage has it.
@@ -220,6 +225,8 @@ impl Camera {
             hit_light: None,
             floor_clip: None,
             floor_levels: None,
+            fog: None,
+            gamma: false,
             floor_light: None,
             cutaway: None,
             cutaway_all: false,
@@ -272,6 +279,36 @@ struct Globals {
     sky_eye: [f32; 4],
     view_x: [f32; 4],
     view_y: [f32; 4],
+    // Tekken Tag's arena fog: its colour (linear), the coefficient's line (w = 1 when on)
+    fog_colour: [f32; 4],
+    fog_line: [f32; 4],
+    // x 1: the 3D pass on the frame's sRGB bytes (Camera::gamma)
+    gamma: [f32; 4],
+}
+
+/// The 3D pass's pipelines for one colour target format.
+struct Pipes {
+    skinned_pipeline: wgpu::RenderPipeline,
+    skinned_blend_pipeline: wgpu::RenderPipeline,
+    /// The fighters' shadows.
+    shadow_pipeline: wgpu::RenderPipeline,
+    floor_shadow_pipeline: wgpu::RenderPipeline,
+    /// Force's blob shadows: the floor darkened (the original hardware's subtraction).
+    blob_pipeline: wgpu::RenderPipeline,
+    static_pipeline: wgpu::RenderPipeline,
+    sky_pipeline: wgpu::RenderPipeline,
+    /// The drum with depth (`Camera::sky_depth`), and the stage meshes' depth alone (no colour written).
+    sky_depth_pipeline: wgpu::RenderPipeline,
+    static_depth_pipeline: wgpu::RenderPipeline,
+    /// The stage's added and multiplying strips: on the floor (vs_static) and on the model (vs_sky), each kind.
+    stage_blends: Vec<wgpu::RenderPipeline>,
+    backdrop_pipeline: wgpu::RenderPipeline,
+    negative_pipeline: wgpu::RenderPipeline,
+    line_pipeline: wgpu::RenderPipeline,
+    particle_alpha: wgpu::RenderPipeline,
+    particle_add: wgpu::RenderPipeline,
+    soft_alpha: wgpu::RenderPipeline,
+    soft_add: wgpu::RenderPipeline,
 }
 
 /// RGBA texture with its bind group.
@@ -414,40 +451,22 @@ pub struct Renderer {
     blit_pipeline: wgpu::RenderPipeline,
     settings: RenderSettings,
     scene: Option<SceneTarget>,
-    skinned_pipeline: wgpu::RenderPipeline,
-    skinned_blend_pipeline: wgpu::RenderPipeline,
-    /// The fighters' shadows.
-    shadow_pipeline: wgpu::RenderPipeline,
+    /// The 3D pass's pipelines: drawing in the frame's linear colour, and (Tekken Tag's) in its sRGB bytes, so that
+    /// blending and modulation happen on them as on the PS2's GS ([`Camera::gamma`]).
+    pipes: [Pipes; 2],
     /// Tekken Tag's shadows (0x340E28): each fighter's silhouette along the light into a channel of a picture of the
     /// floor's plane around the camera's target, then the floor drawn again darkened where the picture covers it.
     shadow_map: wgpu::Texture,
     shadow_map_group: wgpu::BindGroup,
     shadow_map_pipelines: Vec<wgpu::RenderPipeline>,
-    floor_shadow_pipeline: wgpu::RenderPipeline,
-    /// Force's blob shadows: the floor darkened (the original hardware's subtraction).
-    blob_pipeline: wgpu::RenderPipeline,
     /// This frame's blob shadows ([`Renderer::set_blob_shadows`]).
     blobs: Vec<StaticVertex>,
-    static_pipeline: wgpu::RenderPipeline,
-    sky_pipeline: wgpu::RenderPipeline,
-    /// The drum with depth (`Camera::sky_depth`), and the stage meshes' depth alone (no colour written).
-    sky_depth_pipeline: wgpu::RenderPipeline,
-    static_depth_pipeline: wgpu::RenderPipeline,
-    /// The stage's added and multiplying strips: on the floor (vs_static) and on the model (vs_sky), each kind.
-    stage_blends: Vec<wgpu::RenderPipeline>,
-    backdrop_pipeline: wgpu::RenderPipeline,
     /// 2D pictures behind everything in the next frames, drawn first in this order (an arcade stage's sky): triangles
     /// in the original's 4:3 picture's own space (x and y -1..1 across it, y up; a wider window shows more of x),
     /// each with its texture.
     pub backdrop: Vec<(Arc<Texture>, Vec<StaticVertex>)>,
     /// A colour the picture is taken from, over the scene (Tekken Tag's ending op 24: ALPHA (Cs - Cd) x Ad).
     pub negative: Option<[f32; 3]>,
-    negative_pipeline: wgpu::RenderPipeline,
-    line_pipeline: wgpu::RenderPipeline,
-    particle_alpha: wgpu::RenderPipeline,
-    particle_add: wgpu::RenderPipeline,
-    soft_alpha: wgpu::RenderPipeline,
-    soft_add: wgpu::RenderPipeline,
     /// A white texel for the untextured particles.
     white: Option<Arc<Texture>>,
     adapter_name: String,
@@ -640,77 +659,12 @@ impl Renderer {
         let skin_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Uint16x4, 3 => Float32x4, 4 => Float32x3];
         let static_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4];
         use wgpu::CompareFunction::{Always, Less, LessEqual};
-        let make = |label: &str,
-                    layout: &wgpu::PipelineLayout,
-                    vs: &str,
-                    fs: &str,
-                    buffers: &[wgpu::VertexBufferLayout],
-                    depth_write: bool,
-                    depth_compare: wgpu::CompareFunction,
-                    topology: wgpu::PrimitiveTopology,
-                    blend: Option<wgpu::BlendState>| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), compilation_options: Default::default(), buffers: &buffers.iter().cloned().map(Some).collect::<Vec<_>>() },
-                primitive: wgpu::PrimitiveState { topology, cull_mode: None, ..Default::default() },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH,
-                    depth_write_enabled: Some(depth_write),
-                    depth_compare: Some(depth_compare),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(fs),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: frame_format, blend, write_mask: wgpu::ColorWrites::ALL })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
         let skin_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<SkinVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &skin_attrs }];
         let static_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<StaticVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &static_attrs }];
         let line_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
         let line_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<LineVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &line_attrs }];
         let line_layout = layout(&[Some(&globals_layout)]);
         let tri = wgpu::PrimitiveTopology::TriangleList;
-        let skinned_pipeline = make("skinned", &skinned_layout, "vs_skinned", "fs_lit", &skin_vb, true, Less, tri, None);
-        // a character's blended primitive (Tekken Tag's): over what is drawn by its texture's alpha, depth not written; its
-        // overlays lie on the opaque layer, which the GS's ZTST GEQUAL lets them cover
-        let skinned_blend_pipeline = make("skinned blend", &skinned_layout, "vs_skinned", "fs_lit_blend", &skin_vb, false, LessEqual, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
-        let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, None);
-        let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, Always, tri, None);
-        let sky_depth_pipeline = make("sky depth", &static_layout, "vs_sky", "fs_unlit", &static_vb, true, Less, tri, None);
-        // (the colour kept as it is: only the depth is written)
-        let keep = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-        let static_depth_pipeline = make("static depth", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, Some(wgpu::BlendState { color: keep, alpha: keep }));
-        let backdrop_pipeline = make("backdrop", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, Always, tri, None);
-        let sub = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Subtract };
-        let negative_pipeline = make("negative", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, Always, tri, Some(wgpu::BlendState { color: sub, alpha: keep }));
-        let line_pipeline = make("lines", &line_layout, "vs_line", "fs_line", &line_vb, false, Always, wgpu::PrimitiveTopology::LineList, None);
-        // particles: depth-tested against the scene, never written
-        let particle_alpha = make("particles alpha", &static_layout, "vs_static", "fs_particle_alpha", &static_vb, false, Less, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
-        let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-        let particle_add = make("particles add", &static_layout, "vs_static", "fs_particle_add", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
-        let soft_alpha = make("particles soft alpha", &static_layout, "vs_static", "fs_particle_soft_alpha", &static_vb, false, Less, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
-        let soft_add = make("particles soft add", &static_layout, "vs_static", "fs_particle_soft_add", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
-        // shadows: opaque, depth-tested against the stage (the original sorts them behind what stands nearer), never
-        // written
-        let shade = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::SrcAlpha, operation: wgpu::BlendOperation::Add };
-        // the strips lie on the faces they light or shade (Hwoarang's floor: its stone added over the same quads), so
-        // they pass where the depth is equal
-        let stage_blends = ["vs_static", "vs_sky"]
-            .into_iter()
-            .flat_map(|vs| {
-                [("fs_stage_add", add), ("fs_stage_shade", shade)]
-                    .map(|(fs, c)| make("stage strips", &static_layout, vs, fs, &static_vb, false, LessEqual, tri, Some(wgpu::BlendState { color: c, alpha: keep })))
-            })
-            .collect();
-        let shadow_pipeline = make("shadows", &skinned_layout, "vs_shadow", "fs_shadow", &skin_vb, false, Less, tri, None);
         // Tekken Tag's: a fighter a channel (its triangles cover it once, however they overlap), no depth
         let shadow_map = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shadow picture"),
@@ -753,13 +707,103 @@ impl Renderer {
                 ],
             })
         };
-        // the frame times a fragment's factor (the floor's shadow, the blobs)
-        let times = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::Src, operation: wgpu::BlendOperation::Add };
-        // the floor again over itself (a hair nearer)
-        let floor_shadow_pipeline = make("floor shadow", &static_layout, "vs_floor_shadow", "fs_floor_shadow", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
-        // blobs: the frame times the fragment's factor
-        let blob_pipeline = make("blob shadows", &static_layout, "vs_world", "fs_blob", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
-
+        // the 3D pass's pipelines for a colour target format
+        let pipes = |format: wgpu::TextureFormat| -> Pipes {
+            let make = |label: &str,
+                        layout: &wgpu::PipelineLayout,
+                        vs: &str,
+                        fs: &str,
+                        buffers: &[wgpu::VertexBufferLayout],
+                        depth_write: bool,
+                        depth_compare: wgpu::CompareFunction,
+                        topology: wgpu::PrimitiveTopology,
+                        blend: Option<wgpu::BlendState>| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), compilation_options: Default::default(), buffers: &buffers.iter().cloned().map(Some).collect::<Vec<_>>() },
+                    primitive: wgpu::PrimitiveState { topology, cull_mode: None, ..Default::default() },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: DEPTH,
+                        depth_write_enabled: Some(depth_write),
+                        depth_compare: Some(depth_compare),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(fs),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+            let skinned_pipeline = make("skinned", &skinned_layout, "vs_skinned", "fs_lit", &skin_vb, true, Less, tri, None);
+            // a character's blended primitive (Tekken Tag's): over what is drawn by its texture's alpha, depth not written; its
+            // overlays lie on the opaque layer, which the GS's ZTST GEQUAL lets them cover
+            let skinned_blend_pipeline = make("skinned blend", &skinned_layout, "vs_skinned", "fs_lit_blend", &skin_vb, false, LessEqual, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
+            let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, None);
+            let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, Always, tri, None);
+            let sky_depth_pipeline = make("sky depth", &static_layout, "vs_sky", "fs_unlit", &static_vb, true, Less, tri, None);
+            // (the colour kept as it is: only the depth is written)
+            let keep = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+            let static_depth_pipeline = make("static depth", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, Some(wgpu::BlendState { color: keep, alpha: keep }));
+            let backdrop_pipeline = make("backdrop", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, Always, tri, None);
+            let sub = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Subtract };
+            let negative_pipeline = make("negative", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, Always, tri, Some(wgpu::BlendState { color: sub, alpha: keep }));
+            let line_pipeline = make("lines", &line_layout, "vs_line", "fs_line", &line_vb, false, Always, wgpu::PrimitiveTopology::LineList, None);
+            // particles: depth-tested against the scene, never written
+            let particle_alpha = make("particles alpha", &static_layout, "vs_static", "fs_particle_alpha", &static_vb, false, Less, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
+            let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+            let particle_add = make("particles add", &static_layout, "vs_static", "fs_particle_add", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
+            let soft_alpha = make("particles soft alpha", &static_layout, "vs_static", "fs_particle_soft_alpha", &static_vb, false, Less, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
+            let soft_add = make("particles soft add", &static_layout, "vs_static", "fs_particle_soft_add", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
+            // shadows: opaque, depth-tested against the stage (the original sorts them behind what stands nearer), never
+            // written
+            let shade = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::SrcAlpha, operation: wgpu::BlendOperation::Add };
+            // the strips lie on the faces they light or shade (Hwoarang's floor: its stone added over the same quads), so
+            // they pass where the depth is equal
+            let stage_blends = ["vs_static", "vs_sky"]
+                .into_iter()
+                .flat_map(|vs| {
+                    [("fs_stage_add", add), ("fs_stage_shade", shade)]
+                        .map(|(fs, c)| make("stage strips", &static_layout, vs, fs, &static_vb, false, LessEqual, tri, Some(wgpu::BlendState { color: c, alpha: keep })))
+                })
+                .collect();
+            let shadow_pipeline = make("shadows", &skinned_layout, "vs_shadow", "fs_shadow", &skin_vb, false, Less, tri, None);
+            // the frame times a fragment's factor (the floor's shadow, the blobs)
+            let times = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::Src, operation: wgpu::BlendOperation::Add };
+            // the floor again over itself (a hair nearer)
+            let floor_shadow_pipeline = make("floor shadow", &static_layout, "vs_floor_shadow", "fs_floor_shadow", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
+            // blobs: the frame times the fragment's factor
+            let blob_pipeline = make("blob shadows", &static_layout, "vs_world", "fs_blob", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
+            Pipes {
+                skinned_pipeline,
+                skinned_blend_pipeline,
+                shadow_pipeline,
+                floor_shadow_pipeline,
+                blob_pipeline,
+                static_pipeline,
+                sky_pipeline,
+                sky_depth_pipeline,
+                static_depth_pipeline,
+                stage_blends,
+                backdrop_pipeline,
+                negative_pipeline,
+                line_pipeline,
+                particle_alpha,
+                particle_add,
+                soft_alpha,
+                soft_add,
+            }
+        };
+        // (the frame's linear colour; its sRGB bytes where it has a plain view, else the same)
+        let plain = config.format.remove_srgb_suffix();
+        let gamma = if plain == config.format || config.view_formats.contains(&plain) { plain } else { frame_format };
+        let pipes = [pipes(frame_format), pipes(gamma)];
         Ok(Self {
             instance,
             surface,
@@ -782,29 +826,13 @@ impl Renderer {
             blit_pipeline,
             settings: RenderSettings::default(),
             scene: None,
-            skinned_pipeline,
-            skinned_blend_pipeline,
-            shadow_pipeline,
+            pipes,
             shadow_map,
             shadow_map_group,
             shadow_map_pipelines,
-            floor_shadow_pipeline,
-            blob_pipeline,
             blobs: Vec::new(),
-            static_pipeline,
-            sky_pipeline,
-            sky_depth_pipeline,
-            static_depth_pipeline,
-            stage_blends,
-            backdrop_pipeline,
             backdrop: Vec::new(),
             negative: None,
-            negative_pipeline,
-            line_pipeline,
-            particle_alpha,
-            particle_add,
-            soft_alpha,
-            soft_add,
             white: None,
             adapter_name,
             device_type: info.device_type,
@@ -1177,6 +1205,8 @@ impl Renderer {
         }
         // Tekken Tag's shadows: their darkening, when there are some to draw
         let map_shadow = cam.shadow.filter(|s| s.toward.y > 0.05).and_then(|s| s.alpha);
+        // (Tekken Tag's: in the frame's sRGB bytes, where it has a plain view)
+        let gamma = cam.gamma && !self.overlay_format().is_srgb();
         let g = Globals {
             view_proj: (proj * view).to_cols_array_2d(),
             sky_view_proj: sky_view_proj.to_cols_array_2d(),
@@ -1218,8 +1248,16 @@ impl Renderer {
             floor_window: cam.floor_levels.map_or([0.0; 4], |l| [l.window[0], l.window[1], l.cell[0], l.cell[1]]),
             floor_centre: cam.floor_levels.map_or([0.0; 4], |l| [l.centre[0], l.centre[1], proj.y_axis.y / proj.x_axis.x, 0.0]),
             shadow_colour: cam.shadow.map_or([0.0; 4], |s| {
-                // sRGB to the frame's linear colour
-                let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+                // sRGB to the frame's linear colour (as it is on its sRGB bytes)
+                let lin = |v: f32| {
+                    if gamma {
+                        v
+                    } else if v <= 0.04045 {
+                        v / 12.92
+                    } else {
+                        ((v + 0.055) / 1.055).powf(2.4)
+                    }
+                };
                 [lin(s.colour.x), lin(s.colour.y), lin(s.colour.z), 1.0]
             }),
             lights: cam.light.and_then(|l| l.more).map_or([[0.0; 4]; 4], |[(c1, l1), (c2, l2)]| {
@@ -1228,6 +1266,22 @@ impl Renderer {
             sky_eye: cam.sky.inverse().transform_point3(cam.eye).extend(1.0).to_array(),
             view_x: view.row(0).to_array(),
             view_y: view.row(1).to_array(),
+            fog_colour: cam.fog.map_or([0.0; 4], |(c, _)| {
+                let lin = |v: f32| {
+                    if gamma || v <= 0.04045 {
+                        if gamma {
+                            v
+                        } else {
+                            v / 12.92
+                        }
+                    } else {
+                        ((v + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                [lin(c[0]), lin(c[1]), lin(c[2]), 1.0]
+            }),
+            gamma: [f32::from(u8::from(gamma)), 0.0, 0.0, 0.0],
+            fog_line: cam.fog.map_or([0.0; 4], |(_, l)| [l[0], l[1], 0.0, 1.0]),
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
 
@@ -1254,14 +1308,26 @@ impl Renderer {
             let ov = wgpu::TextureViewDescriptor { format: Some(overlay_format), ..Default::default() };
             (t.colour.create_view(&Default::default()), t.colour.create_view(&ov), t.depth.clone(), t.size)
         });
-        let view_tex = scene.as_ref().map_or_else(|| frame_view.clone(), |s| s.0.clone());
+        let pipes = &self.pipes[usize::from(gamma)];
+        let view_tex = match &scene {
+            Some(s) if gamma => s.1.clone(),
+            Some(s) => s.0.clone(),
+            None if gamma => {
+                let desc = wgpu::TextureViewDescriptor { format: Some(overlay_format), ..Default::default() };
+                match &frame {
+                    Some(f) => f.texture.create_view(&desc),
+                    None => self.offscreen.as_ref().context("no render target")?.create_view(&desc),
+                }
+            }
+            None => frame_view.clone(),
+        };
         let depth_view = scene.as_ref().map_or_else(|| self.depth.clone(), |s| s.2.clone());
         let line_buf = (!lines.is_empty()).then(|| self.buffer(bytemuck::cast_slice(lines), wgpu::BufferUsages::VERTEX));
         let blobs = std::mem::take(&mut self.blobs);
         let blob_buf = (!blobs.is_empty()).then(|| (self.buffer(bytemuck::cast_slice(&blobs), wgpu::BufferUsages::VERTEX), blobs.len() as u32));
         let flat_bufs: Vec<(&wgpu::RenderPipeline, wgpu::Buffer, u32)> = particles
             .map(|p| {
-                [(&self.particle_alpha, p.flat_alpha), (&self.particle_add, p.flat_add)]
+                [(&pipes.particle_alpha, p.flat_alpha), (&pipes.particle_add, p.flat_add)]
                     .into_iter()
                     .filter(|(_, v)| !v.is_empty())
                     .map(|(pipe, v)| (pipe, self.buffer(bytemuck::cast_slice(v), wgpu::BufferUsages::VERTEX), v.len() as u32))
@@ -1270,7 +1336,7 @@ impl Renderer {
             .unwrap_or_default();
         let particle_bufs: Vec<(&wgpu::RenderPipeline, wgpu::Buffer, u32)> = particles
             .map(|p| {
-                [(&self.particle_alpha, p.alpha), (&self.particle_add, p.additive), (&self.soft_alpha, p.soft_alpha), (&self.soft_add, p.soft_add)]
+                [(&pipes.particle_alpha, p.alpha), (&pipes.particle_add, p.additive), (&pipes.soft_alpha, p.soft_alpha), (&pipes.soft_add, p.soft_add)]
                     .into_iter()
                     .filter(|(_, v)| !v.is_empty())
                     .map(|(pipe, v)| (pipe, self.buffer(bytemuck::cast_slice(v), wgpu::BufferUsages::VERTEX), v.len() as u32))
@@ -1295,6 +1361,10 @@ impl Renderer {
                     ((v + 0.055) / 1.055).powf(2.4)
                 }
             };
+            let byte = |v: u8| v as f64 / 255.0;
+            if gamma {
+                return wgpu::Color { r: byte(c[0]), g: byte(c[1]), b: byte(c[2]), a: 1.0 };
+            }
             wgpu::Color { r: lin(c[0]), g: lin(c[1]), b: lin(c[2]), a: 1.0 }
         });
         let pass_desc = |label, clear: bool| {
@@ -1332,7 +1402,7 @@ impl Renderer {
             for (texture, vertices) in &self.backdrop {
                 let vertices: Vec<StaticVertex> = vertices.iter().map(|v| StaticVertex { pos: [v.pos[0] * squeeze, v.pos[1], 0.0], ..*v }).collect();
                 let vbuf = self.buffer(bytemuck::cast_slice(&vertices), wgpu::BufferUsages::VERTEX);
-                pass.set_pipeline(&self.backdrop_pipeline);
+                pass.set_pipeline(&pipes.backdrop_pipeline);
                 pass.set_bind_group(1, texture.group(smooth), &[]);
                 pass.set_vertex_buffer(0, vbuf.slice(..));
                 pass.draw(0..vertices.len() as u32, 0..1);
@@ -1340,8 +1410,8 @@ impl Renderer {
             }
             // the drum goes after the floor without depth (the game's OT 1010 vs 1021), or first on the stage
             // stages.json names
-            let order = if cam.sky_first { [(&self.sky_pipeline, sky), (&self.static_pipeline, statics)] } else { [(&self.static_pipeline, statics), (&self.sky_pipeline, sky)] };
-            for (pipeline, meshes) in order.into_iter().filter(|o| !(sky_depth && std::ptr::eq(o.0, &self.sky_pipeline))) {
+            let order = if cam.sky_first { [(&pipes.sky_pipeline, sky), (&pipes.static_pipeline, statics)] } else { [(&pipes.static_pipeline, statics), (&pipes.sky_pipeline, sky)] };
+            for (pipeline, meshes) in order.into_iter().filter(|o| !(sky_depth && std::ptr::eq(o.0, &pipes.sky_pipeline))) {
                 pass.set_pipeline(pipeline);
                 for m in meshes.iter().filter(|m| m.blend == 0) {
                     pass.set_bind_group(1, m.texture.group(smooth), &[]);
@@ -1356,7 +1426,7 @@ impl Renderer {
         // a model with depth: over the floor with a depth buffer of its own; then the floor's depth again, for the
         // fighters and their shadows
         if sky_depth {
-            let passes = [("stage model", &self.sky_depth_pipeline, sky), ("floor depth", &self.static_depth_pipeline, statics)];
+            let passes = [("stage model", &pipes.sky_depth_pipeline, sky), ("floor depth", &pipes.static_depth_pipeline, statics)];
             for (label, pipeline, meshes) in passes.into_iter().take(if cam.sky_floor_depth { 1 } else { 2 }) {
                 let depth = if cam.sky_floor_depth { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(1.0) };
                 let mut pass = begin(&mut enc, (label, wgpu::LoadOp::Load, depth));
@@ -1369,7 +1439,7 @@ impl Renderer {
                     pass.draw_indexed(0..m.count, 0, 0..1);
                     stats.draw_calls += 1;
                     // (the floor's triangles are counted where its colour is drawn)
-                    if std::ptr::eq(pipeline, &self.sky_depth_pipeline) {
+                    if std::ptr::eq(pipeline, &pipes.sky_depth_pipeline) {
                         stats.triangles += m.count / 3;
                     }
                 }
@@ -1381,7 +1451,7 @@ impl Renderer {
             let mut pass = begin(&mut enc, ("stage strips", wgpu::LoadOp::Load, wgpu::LoadOp::Load));
             pass.set_bind_group(0, &self.globals_group, &[]);
             for (base, m) in strips {
-                let Some(pipeline) = self.stage_blends.get(base + usize::from(m.blend) - 1) else { continue };
+                let Some(pipeline) = pipes.stage_blends.get(base + usize::from(m.blend) - 1) else { continue };
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, m.texture.group(smooth), &[]);
                 pass.set_vertex_buffer(0, m.vbuf.slice(..));
@@ -1432,7 +1502,7 @@ impl Renderer {
             // the shadows first, on the floor under the fighters
             if map_shadow.is_some() {
                 // Tekken Tag's: the floor darkened under the shadow picture
-                pass.set_pipeline(&self.floor_shadow_pipeline);
+                pass.set_pipeline(&pipes.floor_shadow_pipeline);
                 pass.set_bind_group(1, &self.shadow_map_group, &[]);
                 for m in statics {
                     pass.set_vertex_buffer(0, m.vbuf.slice(..));
@@ -1441,7 +1511,7 @@ impl Renderer {
                     stats.draw_calls += 1;
                 }
             } else if cam.shadow.is_some_and(|s| s.toward.y > 0.05) {
-                pass.set_pipeline(&self.shadow_pipeline);
+                pass.set_pipeline(&pipes.shadow_pipeline);
                 for m in models {
                     let Some((vbuf, ibuf, count)) = &m.shadow else { continue };
                     pass.set_bind_group(1, m.texture.group(smooth), &[]);
@@ -1453,13 +1523,13 @@ impl Renderer {
                 }
             }
             if let (Some((buf, n)), Some(white)) = (&blob_buf, self.white.as_ref()) {
-                pass.set_pipeline(&self.blob_pipeline);
+                pass.set_pipeline(&pipes.blob_pipeline);
                 pass.set_bind_group(1, &white.bind_group, &[]);
                 pass.set_vertex_buffer(0, buf.slice(..));
                 pass.draw(0..*n, 0..1);
                 stats.draw_calls += 1;
             }
-            pass.set_pipeline(&self.skinned_pipeline);
+            pass.set_pipeline(&pipes.skinned_pipeline);
             for m in models {
                 pass.set_bind_group(1, m.texture.group(smooth), &[]);
                 pass.set_bind_group(2, &m.bones_group, &[]);
@@ -1469,7 +1539,7 @@ impl Renderer {
                 stats.draw_calls += 1;
                 stats.triangles += m.count / 3;
             }
-            pass.set_pipeline(&self.skinned_blend_pipeline);
+            pass.set_pipeline(&pipes.skinned_blend_pipeline);
             for m in models.iter().filter(|m| m.blend_from < m.count) {
                 pass.set_bind_group(1, m.texture.group(smooth), &[]);
                 pass.set_bind_group(2, &m.bones_group, &[]);
@@ -1501,14 +1571,14 @@ impl Renderer {
             if let (Some(c), Some(white)) = (self.negative, self.white.as_ref()) {
                 let v = |x: f32, y: f32| StaticVertex { pos: [x, y, 0.0], uv: [0.0; 2], color: [c[0], c[1], c[2], 1.0], cell: [0.0; 4], normal: [0.0; 4] };
                 let vbuf = self.buffer(bytemuck::cast_slice(&[v(-1.0, -1.0), v(3.0, -1.0), v(-1.0, 3.0)]), wgpu::BufferUsages::VERTEX);
-                pass.set_pipeline(&self.negative_pipeline);
+                pass.set_pipeline(&pipes.negative_pipeline);
                 pass.set_bind_group(1, &white.bind_group, &[]);
                 pass.set_vertex_buffer(0, vbuf.slice(..));
                 pass.draw(0..3, 0..1);
                 stats.draw_calls += 1;
             }
             if let Some(buf) = &line_buf {
-                pass.set_pipeline(&self.line_pipeline);
+                pass.set_pipeline(&pipes.line_pipeline);
                 pass.set_vertex_buffer(0, buf.slice(..));
                 pass.draw(0..lines.len() as u32, 0..1);
                 stats.draw_calls += 1;

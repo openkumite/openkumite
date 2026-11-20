@@ -163,6 +163,7 @@ struct Scene {
     floor_patch: Option<[f32; 2]>,
     floor_light: Option<(u32, f32, [f32; 32])>,
     floor_levels: Option<kumite_assets::FloorLevels>,
+    fog: Option<([f32; 3], [f32; 2])>,
     statics: Vec<StaticMesh>,
     models: Vec<SkinnedModel>,
     /// Force: the actors' GPU models by (actor, model record), made as bodies come in.
@@ -1384,6 +1385,7 @@ impl App {
             floor_patch: None,
             floor_light: None,
             floor_levels: None,
+            fog: None,
             floor_period: None,
             statics: vec![],
             models: vec![],
@@ -1480,7 +1482,7 @@ impl App {
                     .filter(|p| st.textures.get(p.image).is_some_and(|t| t.width.max(t.height) <= r.max_texture()))
                     .and_then(|p| Some((p, tex.get(p.image)?.clone(), st.textures.get(p.image).map(|t| [t.width as f32, t.height as f32])?, r.texture(1, 1, &[255; 4]))));
                 scene.background = st.background;
-                (scene.camera_drum, scene.floor_patch, scene.floor_light, scene.floor_levels) = (st.camera_drum, st.floor_patch, st.floor_light, st.floor_levels);
+                (scene.camera_drum, scene.floor_patch, scene.floor_light, scene.floor_levels, scene.fog) = (st.camera_drum, st.floor_patch, st.floor_light, st.floor_levels, st.fog);
                 if let Some((m, at)) = st.strip.as_ref().filter(|(m, _)| !m.indices.is_empty()) {
                     scene.sky = vec![r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone())];
                     scene.moving.clear();
@@ -6482,6 +6484,9 @@ fn ttt_message(lines: Vec<String>) -> Screen {
 /// The stage's light and the fighters' shadows on a camera.
 fn scene_lighting(cam: &mut Camera, scene: &Scene) {
     cam.light = scene.light;
+    // (Tekken Tag's arenas, one z-buffer with the floor: their fog, and drawn on the frame's sRGB bytes as the GS does)
+    cam.fog = scene.fog;
+    cam.gamma = scene.sky_floor_depth;
     cam.shadow = scene.shadow.filter(|_| shadows_shown(cam));
 }
 
