@@ -77,6 +77,10 @@ pub struct ArenaMotion {
     lanterns: Vec<(String, f32, f32, Vec3)>,
     /// Eddy's grass lattice: its size, gain and drop (mm).
     grass: Option<[f32; 3]>,
+    /// The wind's four impulses (0x44B100, 0x30 bytes each: the fighters' landings, picture x, z m), their
+    /// strength and frames; a slot free since the last was taken (gp-0x6960).
+    impulses: [Option<(Vec3, f32, u32)>; 4],
+    impulse_free: bool,
     wind: Option<crate::weather::Wind>,
     gain: f32,
     leaves: Vec<Leaf>,
@@ -102,6 +106,8 @@ impl ArenaMotion {
             c: v["clouds"].clone(),
             lanterns: vec![],
             grass: None,
+            impulses: [None; 4],
+            impulse_free: true,
             wind: None,
             gain: f(&v["lanterns"]["gain"]),
             leaves: vec![],
@@ -240,6 +246,26 @@ impl ArenaMotion {
         if let Some(w) = self.wind.as_mut() {
             w.step();
         }
+        // the impulses a frame older, gone after 300 (0x3D42A8); with the grass, a landing takes a free one
+        // (0x3D3C68 -> 0x3D3B80; the arenas of 0x447EC0's third word: Law-A's take their own below)
+        for i in &mut self.impulses {
+            if let Some((_, _, f)) = i.as_mut() {
+                *f += 1;
+                if *f > 300 {
+                    (*i, self.impulse_free) = (None, true);
+                }
+            }
+        }
+        for p in landings.iter().filter(|_| self.grass.is_some()) {
+            if !self.impulse_free {
+                break;
+            }
+            // shortcut: every landing at full strength (30 x (speed / 300)^2: player +0x122 not read), as the leaves'
+            match self.impulses.iter_mut().find(|i| i.is_none()) {
+                Some(i) => *i = Some((*p, 30.0, 0)),
+                None => self.impulse_free = false,
+            }
+        }
         self.leaves_step(fighters, landings);
         let r = [self.rand01(), self.rand01(), self.rand01(), self.rand01()];
         let coin = self.rand() & 1 == 1;
@@ -366,16 +392,26 @@ impl ArenaMotion {
     /// Eddy's grass lattice (0x3D43A8): a top corner at each corner of the floor's window of `window` cells of `cell`
     /// around `centre` (m), moved by the wind there (sampled at x, y, -z as the lanterns') x the gain and lowered by
     /// that move's length and the drop: the first corner (x, z), the lattice's height and the corners' moves (m), row
-    /// by row of `window[0] + 1` (17 x 17 at most).
-    /// shortcut: the corners are centred on the window (the PS2's start half a cell further from the first), and the
-    /// wind's four impulses (the fighters' landings) are left out; upgrade when a capture shows the difference
+    /// by row of `window[0] + 1` (17 x 17 at most). The PS2 starts its corners -(n + 1) / 2 cells from the window's
+    /// centre (0x3D43A8), half a cell before the cells' own: each corner takes the wind half a cell back from it.
+    /// The wind there (0x3D3E00) is the waves' and the impulses': within 1.5 m, away from the landing, its strength x
+    /// 2^(-frames / 10) x (1 - the distance / 1500) (0x3D3FF8).
     pub fn grass(&self, centre: [f32; 2], cell: [f32; 2], window: [f32; 2]) -> Option<([f32; 2], f32, Vec<[f32; 4]>)> {
         let ([size, gain, drop], w) = (self.grass?, self.wind.as_ref()?);
         let [nx, nz] = window.map(|n| (n.max(1.0) as usize).min(16));
         let first = [centre[0] - cell[0] * nx as f32 / 2.0, centre[1] - cell[1] * nz as f32 / 2.0];
         let corners = (0..=nz).flat_map(|i| (0..=nx).map(move |j| (i, j))).map(|(i, j)| {
-            let (x, z) = (first[0] + j as f32 * cell[0], first[1] + i as f32 * cell[1]);
-            let p = w.at(Vec3::new(x, 0.0, -z)) * gain;
+            let (x, z) = (first[0] + (j as f32 - 0.5) * cell[0], first[1] + (i as f32 + 0.5) * cell[1]);
+            let mut p = w.at(Vec3::new(x, 0.0, -z));
+            for &(at, strength, frames) in self.impulses.iter().flatten() {
+                let d = Vec3::new(x - at.x, 0.0, at.z - z);
+                let len = d.length() * 1000.0;
+                if len < 1500.0 {
+                    let d = if len == 0.0 { Vec3::new(0.1, 0.0, 0.1) } else { d };
+                    p += d.normalize() * strength * (-0.1 * frames as f32).exp2() * (1.0 - len / 1500.0);
+                }
+            }
+            let p = p * gain;
             [p.x, -(p.x.hypot(p.z) + drop), p.z, 0.0].map(|v| v / 1000.0)
         });
         Some((first, size / 1000.0, corners.collect()))
@@ -536,6 +572,25 @@ impl Helicopter {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_landing_pushes_the_grass_away_for_300_frames() {
+        let stage = json!({"objects": {"grass": {"size": 1000.0, "gain": 120.0, "drop": 200.0, "wind": {"waves": []}}}});
+        let mut m = ArenaMotion::new(&stage, |_| None).unwrap();
+        let moves = |m: &ArenaMotion| m.grass([0.0, 0.0], [1.0, 1.0], [2.0, 2.0]).unwrap().2;
+        assert!(moves(&m).iter().all(|c| c[0] == 0.0 && c[2] == 0.0));
+        // a landing at the centre; the middle corner takes the wind half a cell back, at (-0.5, 0.5) m: pushed -x
+        // and (the wind's z the picture's -z) -z
+        m.step(Vec3::ZERO, Mat4::IDENTITY, &[], &[Vec3::ZERO]);
+        let c = moves(&m)[4];
+        assert!(c[0] < 0.0 && c[2] < 0.0, "{c:?}");
+        for _ in 0..300 {
+            m.step(Vec3::ZERO, Mat4::IDENTITY, &[], &[]);
+        }
+        assert!(moves(&m)[4][0] < 0.0);
+        m.step(Vec3::ZERO, Mat4::IDENTITY, &[], &[]);
+        assert!(moves(&m).iter().all(|c| c[0] == 0.0 && c[2] == 0.0));
+    }
 
     #[test]
     fn the_helicopter_waits_out_of_sight_then_flies_off_and_lands_again() {
