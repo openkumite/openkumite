@@ -838,11 +838,15 @@ impl Scene {
                 }
             }
         }
-        // the background characters where their scripts have them
+    }
+
+    /// The background characters where their scripts have them, moved with the arena by `arena` (m, its drawn
+    /// place: the arena follows the fighters, and its people with it, as PCSX2 shows them far out).
+    fn place_people(&self, r: &Renderer, arena: glam::Vec3) {
         for p in &self.people {
             let (Some((motion, f, at, heading)), Some((_, ch, model, clips))) = (p.walker.now(), p.body()) else { continue };
             let Some(&clip) = clips.get(&motion) else { continue };
-            let place = glam::Mat4::from_rotation_translation(glam::Quat::from_rotation_y(heading.to_radians()), at);
+            let place = glam::Mat4::from_rotation_translation(glam::Quat::from_rotation_y(heading.to_radians()), at + arena);
             // (0x3D9AA8: the root's motion times the model's scale)
             let mut pose = ch.pose(clip, f, false);
             let root = ch.nodes.iter().position(|n| n.parent.is_none()).and_then(|k| pose.get(k)).map_or(glam::Vec3::ZERO, |m| m.w_axis.truncate());
@@ -5756,6 +5760,7 @@ impl App {
         if let Some(s) = self.scene.as_mut() {
             s.eye = cam.eye;
             s.view_proj = cam.projection(r.aspect()) * cam.view();
+            s.place_people(r, glam::Vec3::new(cam.sky.w_axis.x, 0.0, cam.sky.w_axis.z));
         }
         let (sky, statics, models): (Vec<_>, Vec<_>, Vec<_>) = match (&self.scene, &self.fight) {
             (None, None) => (vec![], vec![], self.posers.shown.iter().filter_map(|p| self.poser_models.get(&p.record)).collect()),
@@ -5815,7 +5820,10 @@ impl App {
                 _ => vec![],
             };
             let proj = cam.projection(r.aspect());
-            f.quads(proj * cam.view(), r.aspect(), cam.eye, &blockers)
+            // (the sun in the arena's axes, the arena where it follows the fighters)
+            let arena = glam::Vec3::new(cam.sky.w_axis.x, 0.0, cam.sky.w_axis.z);
+            let blockers: Vec<glam::Vec3> = blockers.iter().map(|b| *b - arena).collect();
+            f.quads(proj * cam.view() * glam::Mat4::from_translation(arena), r.aspect(), cam.eye - arena, &blockers)
         });
         // Tekken Tag's ending: op 24's negative over the scene
         r.negative = self
@@ -5861,7 +5869,10 @@ impl App {
                     _ => vec![],
                 };
                 let far = roots.iter().map(|p| (*p / kumite_game::UNITS - cam.eye).dot(forward)).fold(f32::MIN, f32::max);
-                let mut behind: Vec<_> = w.sprites().into_iter().filter(|s| (s.pos - cam.eye).dot(forward) >= far).collect();
+                // (drawn with the arena where it follows the fighters: 0x346A24's arena view)
+                let arena = glam::Vec3::new(cam.sky.w_axis.x, 0.0, cam.sky.w_axis.z);
+                let moved = w.sprites().into_iter().map(|s| kumite_game::vfx::Sprite { pos: s.pos + arena, ..s });
+                let mut behind: Vec<_> = moved.filter(|s| (s.pos - cam.eye).dot(forward) >= far).collect();
                 // (the snow: its own VU1 program, in front of the fighters too)
                 behind.extend(w.snow(cam.eye, forward));
                 effect_quads(&behind, v.atlas(), &cam, &mut soft_alpha, &mut soft_add, &mut Vec::new());
