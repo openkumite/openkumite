@@ -438,6 +438,66 @@ fn the_push_after_a_guard_parts_them_as_on_the_ps2() {
     assert!((apart - 1004.0).abs() < 30.0, "{apart}");
 }
 
+/// As PCSX2 has them (Paul and Law against Hwoarang and Paul, picked on the select; the pad read 2 frames late): the
+/// sidestep faces the angle to the opponent of the roots before the frame's motion (0x371330) plus its lean
+/// (0x370698); f,f+2's pushback starts on the reaction's first frame, in integers; the dash pushing Hwoarang goes on
+/// (condition 0x36) instead of breaking into the run.
+#[test]
+fn sidestep_pushback_and_dash_as_the_ps2() {
+    let Some(a) = assets() else { return };
+    let run = |script: &str, mut each: Box<dyn FnMut(&kumite_sim::Fighter, &kumite_sim::Fighter) + '_>| {
+        let mut g = Game::load(&a, [PAUL, HWOARANG]).unwrap();
+        g.start_tag([kumite_game::Actor::load(&a, LAW).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+        let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+        while b.phase != Phase::Fight {
+            b.step([Pad::default(); 2]);
+        }
+        for pad in parse_script(script).unwrap() {
+            b.step([pad, Pad::default()]);
+            each(&b.game.fight.fighters[0], &b.game.fight.fighters[1]);
+        }
+    };
+    // the sidestep (move 531): its facing (+0x1A, within the angle table's step) frame by frame, and where it ends
+    let ps2 = [16990, 17469, 18060, 18732, 19451, 20218, 21002, 21769, 0, 23192, 23847, 24519, 25174, 25734];
+    let mut end = None;
+    run(
+        "n*2,u*2,n*40",
+        Box::new(|p, _| {
+            let (k, facing) = (p.frame as usize, ((std::f32::consts::PI - p.yaw) * 32768.0 / std::f32::consts::PI).round() as i32 & 0xFFFF);
+            if p.current.index == 531 && (2..=15).contains(&k) && ps2[k - 2] != 0 {
+                assert!((facing - ps2[k - 2]).abs() <= 16, "frame {k}: {facing}");
+            }
+            if p.current.index == 531 && k == 15 {
+                end = Some(p.root());
+            }
+        }),
+    );
+    let end = end.unwrap();
+    assert!((end.x + 605.0).abs() <= 2.0 && (-end.z - 809.0).abs() <= 2.0, "{end}");
+    // f,f+2's reaction (alias 3677): Hwoarang's root on its frames 2-5
+    let mut back = Vec::new();
+    run(
+        "n*4,f*2,n*2,f+2*2,n*30",
+        Box::new(|_, h| {
+            if h.alias == 3677 && (2..=5).contains(&h.frame) && back.last().is_none_or(|&(f, _, _)| f != h.frame) {
+                back.push((h.frame, h.root().x as i32, -h.root().z as i32));
+            }
+        }),
+    );
+    assert_eq!(back, [(2, 1346, 10), (3, 1445, 12), (4, 1474, 12), (5, 1493, 12)]);
+    // the dash (move 129) into Hwoarang is still on at its frame 24
+    let mut dash = 0;
+    run(
+        "n*2,f*2,n*2,f*30",
+        Box::new(|p, _| {
+            if p.current.index == 129 {
+                dash = dash.max(p.frame);
+            }
+        }),
+    );
+    assert!(dash >= 24, "the dash broke off at frame {dash}");
+}
+
 /// Ogre's and True Ogre's first models.
 const OGRE_FIRST: usize = 528;
 const TRUE_OGRE: usize = 591;
@@ -1276,7 +1336,8 @@ fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: imp
 /// level 3 (Michelle, King) still 240, 337, 270, 246 and 377 a minute, holding back 140-160; stage 8 level 7 (Unknown
 /// alone) still 240, 237, 201 and 312, holding back 140), here a cell's eight matches each; a seed replays the same.
 /// (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands. Neither CPU holds a direction
-/// in its own recoveries' END windows: 0 of 72 frames on the PS2, 0 of 70 here.)
+/// in its own recoveries' END windows: 0 of 72 frames on the PS2, 0 of 70 here.) Stage 4's eight matches swing by
+/// about 50 a minute with any change of the fights (352 to 412 with the pushback a frame earlier, as on the PS2).
 #[test]
 fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     let Some(a) = assets() else { return };
@@ -1287,7 +1348,7 @@ fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     });
     let dmg: Vec<(u32, u32)> = cells.iter().map(|c| (c.0, c.1)).collect();
     eprintln!("damage a minute, still / holding back: {dmg:?}");
-    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 380), (110, 190)), ((200, 315), (110, 180))].into_iter().enumerate() {
+    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 420), (110, 190)), ((200, 315), (110, 180))].into_iter().enumerate() {
         assert!((still.0..=still.1).contains(&dmg[k].0) && (back.0..=back.1).contains(&dmg[k].1), "cell {k}: {:?}", dmg[k]);
         assert!(dmg[k].1 < dmg[k].0, "holding back takes less");
     }

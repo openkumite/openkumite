@@ -730,7 +730,7 @@ impl Fight {
         let away = -glam::Vec2::new(to_ball.x, to_ball.z).normalize_or_zero();
         let turn = angle as f32 * std::f32::consts::TAU / 65536.0;
         let direction = glam::Vec2::from_angle(turn).rotate(away);
-        fv.pushback = gd.reactions.pushback_curves.entries.iter().find(|c| c.index as i32 == curve).map(|c| crate::Pushback { curve: c.clone(), frame: 0, direction });
+        fv.pushback = gd.reactions.pushback_curves.entries.iter().find(|c| c.index as i32 == curve).map(|c| crate::Pushback { curve: c.clone(), frame: 0, direction, tag: None });
         fv.struck = true;
         fv.struck_in_move = true;
         log::info!("P{} {} the ball ({damage}, reaction of {}) -> health {}", v + 1, if blocked { "blocks" } else { "is hit by" }, mv.anim, fv.health / ONE);

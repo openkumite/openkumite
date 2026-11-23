@@ -432,6 +432,9 @@ pub struct Pushback {
     pub curve: PushbackCurve,
     pub frame: i32,
     pub direction: glam::Vec2,
+    /// Tekken Tag: the direction's sine and cosine on its table (x, OpenKumite's z; 0x7FF8 = 1), each step cut toward
+    /// zero (0x36FF60).
+    pub tag: Option<[i32; 2]>,
 }
 
 /// What a fighter knows about the opponent when its command list is checked (updated every frame).
@@ -516,6 +519,8 @@ pub struct Fighter {
     rebase_root: bool,
     /// The root as drawn before this frame's update.
     shown_root: Vec3,
+    /// Tekken Tag: the angle to the opponent of the last facing pass (+0x3A), which the next frame's moves take.
+    seen: Option<f32>,
     pub health: i32,
     /// Full health in whole points (the VS handicap scales it: 70..140 %).
     pub max_health: i32,
@@ -679,6 +684,7 @@ impl Fighter {
             lateral: 0.0,
             rebase_root: false,
             shown_root: Vec3::ZERO,
+            seen: None,
             health: max_health * ONE,
             max_health,
             character: None,
@@ -870,7 +876,11 @@ impl Fighter {
     /// the target facing (+0x34): the opponent's direction, or its opposite while more than 90° off (a
     /// back-turned fighter stays back-turned).
     fn geometry(&self) -> (f32, f32, f32) {
-        let a = self.toward().unwrap_or(self.yaw);
+        self.geometry_from(self.toward())
+    }
+
+    fn geometry_from(&self, toward: Option<f32>) -> (f32, f32, f32) {
+        let a = toward.unwrap_or(self.yaw);
         let off = wrap_pi(self.yaw - a).abs();
         (a, off, if off < FRAC_PI_2 { a } else { a + PI })
     }
@@ -981,7 +991,8 @@ impl Fighter {
         }
         let (a2a, off, target) = {
             let d = self.opponent.root - root;
-            let a = if d.x * d.x + d.z * d.z > 1.0 { d.x.datan2(d.z) } else { self.yaw };
+            let live = (d.x * d.x + d.z * d.z > 1.0).then(|| d.x.datan2(d.z));
+            let a = self.seen.filter(|_| self.tag_rules(gd)).or(live).unwrap_or(self.yaw);
             let off = wrap_pi(self.yaw - a).abs();
             (a, off, if off < FRAC_PI_2 { a } else { a + PI })
         };
@@ -1096,8 +1107,17 @@ impl Fighter {
 
     /// Per-frame facing (driver 0x8003F098, after both fighters' move logic): the auto-turn, then the tracking
     /// mode the commit chose (switch 0x8003F890, facing_re §3).
-    fn track(&mut self, gd: &GameData) {
-        let (a2a, off, target) = self.geometry();
+    /// `seen`: both roots before this frame's root motion (mine, the opponent's): Tekken Tag takes the angle
+    /// between them (+0x3A, 0x371330) before the roots move (0x34E748).
+    fn track(&mut self, gd: &GameData, seen: Option<[Vec3; 2]>) {
+        let (a2a, off, target) = match seen.filter(|_| self.tag_rules(gd)) {
+            Some([me, opp]) => {
+                let d = opp - me;
+                self.seen = (d.x * d.x + d.z * d.z > 1.0).then(|| PI - tag_atan(d.x as i32, -d.z as i32) as f32 * ANGLE);
+                self.geometry_from(self.seen)
+            }
+            None => self.geometry(),
+        };
         if let Some((step, left)) = self.turn {
             self.yaw += step;
             if self.locked && !self.thrown {
@@ -1217,7 +1237,8 @@ impl Fighter {
                 // Tekken Tag leans the other way but in Tekken 3's 0x71C case (0x3706D4), and rebases the origin as the
                 // basis turns (+0x126): the step's path follows the facing round the opponent
                 let lean = if self.tag_rules(gd) && o == 0x11C7 { -self.lateral } else { self.lateral };
-                self.yaw = target + lean * (o as f32 * ANGLE) * frame as f32 / len as f32;
+                // (Tekken Tag in integers: 0x3706F4)
+                self.yaw = if self.tag_rules(gd) { target + lean * (o * frame as i32 / len as i32) as f32 * ANGLE } else { target + lean * (o as f32 * ANGLE) * frame as f32 / len as f32 };
                 if self.tag_rules(gd) {
                     self.rebase();
                 }
@@ -1786,6 +1807,10 @@ impl Fighter {
             0x31 => self.stun == 0 && self.stun_timer == 0,
             0x32 => self.stun != 0 || self.stun_timer != 0,
             // opponent lying (ground attacks, pick-ups)
+            // Tekken Tag's 0x36: the body push moved me last frame (+0x3E8 / +0x3F0, 0x371CF0): a dash pushing on
+            // goes on instead of breaking into the run. shortcut: Tekken 3's and Tag's 0x37 (the same and the
+            // opponent's +0x135 clear) stay false until checked there
+            0x33 if self.tag_rules(gd) => self.pushed,
             0x35 => o.posture & posture::LYING != 0,
             0x36 => o.posture & posture::LYING == 0,
             0x37 => o.posture & posture::LYING != 0 && o.jump_start == 0 && distance <= param as f32,
@@ -2017,21 +2042,8 @@ impl Fighter {
         self.deal_damage = deal;
         self.self_damage = own;
         self.effects = effects;
-        // pushback from a hit or block, along its direction
-        if let Some(p) = &mut self.pushback {
-            p.frame += 1;
-            let c = &p.curve;
-            let mut step = if p.frame <= c.constant_frames { c.velocity } else { 0 };
-            if (1..=8).contains(&p.frame) {
-                step += c.impulses[p.frame as usize - 1];
-                if self.side_chain > 0 {
-                    step += 40 * self.side_chain as i32 + 10;
-                }
-            }
-            self.position += Vec3::new(p.direction.x, 0.0, p.direction.y) * step as f32;
-            if p.frame >= c.constant_frames.max(8) {
-                self.pushback = None;
-            }
+        if !self.tag_rules(gd) {
+            self.push_back();
         }
         // root motion (0x8003AAF4): the clip's root as stored, turned by the root basis, on top of the origin; a
         // root pinned after a landing adds only its height
@@ -2050,6 +2062,28 @@ impl Fighter {
             (self.juggle, self.juggle_bias) = (0, 0); // landed: the juggle counter starts again
         }
         self.hit_flash = self.hit_flash.saturating_sub(1);
+    }
+
+    /// One frame of the pushback from a hit or block, along its direction.
+    fn push_back(&mut self) {
+        if let Some(p) = &mut self.pushback {
+            p.frame += 1;
+            let c = &p.curve;
+            let mut step = if p.frame <= c.constant_frames { c.velocity } else { 0 };
+            if (1..=8).contains(&p.frame) {
+                step += c.impulses[p.frame as usize - 1];
+                if self.side_chain > 0 {
+                    step += 40 * self.side_chain as i32 + 10;
+                }
+            }
+            self.position += match p.tag {
+                Some([s, c]) => Vec3::new((step * s / 0x7FFF) as f32, 0.0, (step * c / 0x7FFF) as f32),
+                None => Vec3::new(p.direction.x, 0.0, p.direction.y) * step as f32,
+            };
+            if p.frame >= c.constant_frames.max(8) {
+                self.pushback = None;
+            }
+        }
     }
 
     /// The clip's root at the frame now: the offset from the origin and the height.
@@ -2349,6 +2383,27 @@ fn root_offset(r: Vec3, yaw: f32, scale: Option<i32>) -> Vec3 {
 fn tag_sin_cos(a: f32) -> [i32; 2] {
     let a = (a / ANGLE).round() as i32 >> 4;
     [ball::sin12(a), ball::cos12(a)].map(|v| v.clamp(-0xFFF, 0xFFF) * 8)
+}
+
+/// Tekken Tag's atan2 (0x357FA0) of the i16s `dx`, `dz`: the angle from +z toward +x in 16-bit units, from its
+/// 45° table 0x4FC680 (floor(atan(i / 1024) x 2048 / pi)) at the smaller over the larger x 4096 / 4, x 16.
+fn tag_atan(dx: i32, dz: i32) -> i32 {
+    let (x, z) = (dx as i16 as i32, dz as i16 as i32);
+    let (ax, az) = (x.abs(), z.abs());
+    let t = |r: i32| (f64::from(r >> 2).datan2(1024.0) * 2048.0 / std::f64::consts::PI) as i32;
+    let v = if ax == az {
+        0x200
+    } else if ax < az {
+        t((ax << 12) / az)
+    } else {
+        0x400 - t((az << 12) / ax)
+    } << 4;
+    (match (z >= 0, x >= 0) {
+        (true, true) => v,
+        (true, false) => !v,
+        (false, true) => 0x7FFF - v,
+        (false, false) => v - 0x8000,
+    }) & 0xFFFF
 }
 
 fn sight_of(o: &Fighter, gd: &GameData) -> Opponent {
@@ -2795,7 +2850,7 @@ impl Fight {
         if let Some(e) = self.extra.as_mut().filter(|e| !e.inactive) {
             (e.opponent.root, e.opponent.evasive) = (player.root, player.evasive);
             if e.freeze == 0 {
-                e.track(&gd);
+                e.track(&gd, None);
             }
         }
         for (i, frozen) in frozen.into_iter().enumerate() {
@@ -2806,8 +2861,13 @@ impl Fight {
             };
             let f = &mut self.fighters[i];
             (f.opponent.root, f.opponent.evasive) = (root, evasive);
+            // Tekken Tag moves the pushback in the facing pass (0x36FEF0), from the frame the reaction is committed
+            // shortcut: also through a hit-stop longer than 1 frame, which was not seen in PCSX2; check one there
+            if f.tag_rules(&gd) {
+                f.push_back();
+            }
             if !frozen {
-                f.track(&gd);
+                f.track(&gd, idle.is_none().then_some([roots_before[i], roots_before[1 - i]]));
                 // (Tekken Tag turns the basis before the root's update of the frame: the rebase shows at once)
                 if f.rebase_root {
                     f.root_motion(&gd, anims[i]);
@@ -3446,7 +3506,7 @@ impl Fight {
                 }
                 let away = -glam::Vec2::new(to_attacker.x, to_attacker.z).normalize_or_zero();
                 let curve = PushbackCurve { index: 0, constant_frames: 0, velocity: 0, impulses };
-                self.fighters[v].pushback = Some(Pushback { curve, frame: 0, direction: away });
+                self.fighters[v].pushback = Some(Pushback { curve, frame: 0, direction: away, tag: None });
             } else {
                 let (slot, curve, angle) = if blocked {
                     (10 + st, param(6), param(0))
@@ -3516,7 +3576,15 @@ impl Fight {
                 let away = -glam::Vec2::new(to_attacker.x, to_attacker.z).normalize_or_zero();
                 let turn = angle as f32 * std::f32::consts::TAU / 65536.0;
                 let direction = glam::Vec2::from_angle(turn).rotate(away);
-                self.fighters[v].pushback = gd.reactions.pushback_curves.entries.iter().find(|c| c.index as i32 == curve_ref).map(|curve| Pushback { curve: curve.clone(), frame: 0, direction });
+                // Tekken Tag: +0x156 = the last facing pass's angle to the attacker (+0x3A) turned by the angle,
+                // less half a turn (0x36B8E0)
+                let fv = &self.fighters[v];
+                let tag = fv.tag_rules(gd).then(|| {
+                    let to = fv.seen.unwrap_or_else(|| fv.geometry().0);
+                    let a = (((PI - to) / ANGLE).round() as i32 + angle - 0x8000) >> 4;
+                    [ball::sin12(a), -ball::cos12(a)].map(|v| v.clamp(-0xFFF, 0xFFF) * 8)
+                });
+                self.fighters[v].pushback = gd.reactions.pushback_curves.entries.iter().find(|c| c.index as i32 == curve_ref).map(|curve| Pushback { curve: curve.clone(), frame: 0, direction, tag });
             }
             self.fighters[v].struck_in_move = true;
             let what = if blocked {
@@ -3648,7 +3716,7 @@ impl Fight {
                 impulses[k] = *v;
             }
             let curve = PushbackCurve { index: 0, constant_frames: mv_frames as i32 - 6, velocity: 40, impulses };
-            self.fighters[v].pushback = Some(Pushback { curve, frame: 0, direction });
+            self.fighters[v].pushback = Some(Pushback { curve, frame: 0, direction, tag: None });
         }
         spike
     }
@@ -3678,5 +3746,13 @@ mod tests {
         assert_eq!(root_offset(r, yaw, Some(4014)), Vec3::new(342.0, 0.0, 0.0));
         assert_eq!(root_offset(r, yaw, Some(4096)), Vec3::new(350.0, 0.0, 0.0));
         assert!((root_offset(r, yaw, None) - Vec3::new(350.0, 0.0, 0.0)).length() < 0.1);
+    }
+
+    #[test]
+    fn tekken_tags_atan_takes_its_table() {
+        // the axes (straight back is 0x7FFF, as 0x358064 has it), 45°, and the table's steps of 16: table entry 3 is 1
+        assert_eq!([(0, 100), (100, 0), (0, -100), (-100, 0), (50, 50)].map(|(x, z)| tag_atan(x, z)), [0, 0x4000, 0x7FFF, 0xBFFF, 0x2000]);
+        assert_eq!(tag_atan(12, 4096), 16);
+        assert_eq!(tag_atan(-12, 4096), 0xFFEF);
     }
 }
