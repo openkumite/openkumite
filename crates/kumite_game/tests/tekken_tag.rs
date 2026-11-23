@@ -1652,3 +1652,24 @@ fn bowl_hall_floor_edge_is_blended() {
     assert!(hall.sky.iter().any(|m| m.blend == 3));
     assert!(hall.sky.iter().filter(|m| m.blend == 3).all(|m| m.vertices.iter().any(|v| v.color[3] < 1.0)));
 }
+
+/// Op 16 in ending 35: Devil's type-2 beams run along his head's heading, 204 along and 220 down a frame; their ends
+/// on the 13th frame where PCSX2 has them (the beam record 0x8A7AD0 + 0x50 read over PINE; mm, our axes).
+#[test]
+fn devils_beams_in_ending_35_run_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    let mut s = kumite_game::ending::EndingScene::new(&a, &d, 35, 0).unwrap();
+    let mut ends = vec![];
+    while s.frame() < 660 {
+        s.step();
+        if [233, 658].contains(&s.frame()) {
+            ends.extend(s.beams.iter().filter_map(|b| b.3).map(|(p, q)| (p * 1000.0, q * 1000.0)));
+        }
+    }
+    let want = [((-1642.0, 3831.0, -6188.0), (-1666.0, 1191.0, -3752.0)), ((-15.0, 4037.0, 9182.0), (9.0, 1397.0, 6746.0))];
+    assert_eq!(ends.len(), 2, "{ends:?}");
+    for ((p, q), (wp, wq)) in ends.iter().zip(want) {
+        assert!(p.distance(glam::Vec3::from(wp)) < 150.0 && q.distance(glam::Vec3::from(wq)) < 150.0, "{p} {q}");
+    }
+}
