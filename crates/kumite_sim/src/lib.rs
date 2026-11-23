@@ -3287,7 +3287,8 @@ impl Fight {
         let mut striking = [None; 2];
         for (i, f) in self.fighters.iter().enumerate() {
             let mv = f.current_move(gd);
-            let Some(byte) = mv.attack.as_ref().and_then(|a| a.header_bytes.first().copied()).filter(|&b| b >= 0x18 && !f.inactive) else { continue };
+            // (Tekken 3's descriptors: Tekken Tag's strikes run between bone pairs)
+            let Some(byte) = mv.attack.as_ref().filter(|a| a.pairs.is_empty()).and_then(|a| a.header_bytes.first().copied()).filter(|&b| b >= 0x18 && !f.inactive) else { continue };
             let key = (mv.active[0]..=mv.active[1]).contains(&f.frame).then_some((f.current.index, f.frame));
             if key.is_some() && self.objects.started[i] != key {
                 let slots = anims[i].volumes(f, gd).map_or(bodies[i].slots, |v| v.slots);
