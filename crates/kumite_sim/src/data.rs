@@ -429,6 +429,9 @@ pub struct ModelEntry {
     /// Tekken Tag: its hands (the game layer's `hands`).
     #[serde(default)]
     pub hands: Option<HandsEntry>,
+    /// Tekken Tag: its face (the game layer's `tagface`).
+    #[serde(default)]
+    pub face: Option<FaceEntry>,
     /// Tekken Tag: its scale of the motions' root (player +0x4FC, 4096 = 1); None: 4096.
     #[serde(default)]
     pub motion_scale: Option<i32>,
@@ -441,4 +444,15 @@ pub struct HandsEntry {
     pub file: String,
     pub default: u32,
     pub ops: bool,
+}
+
+/// A Tekken Tag model's face: `file` its poses (characters/), the poses it blinks with (0x416CB0), shows while the
+/// move's flag 0x800 is on (0x416D38) and while hit (0x416DC0).
+#[derive(Clone, Debug, Deserialize)]
+pub struct FaceEntry {
+    pub file: String,
+    pub blink: i16,
+    #[serde(rename = "move")]
+    pub moving: i16,
+    pub hit: i16,
 }

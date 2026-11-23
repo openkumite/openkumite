@@ -22,6 +22,7 @@ pub mod rumble;
 pub mod scene;
 pub mod sound;
 pub mod tag;
+pub mod tagface;
 pub mod vfx;
 pub mod weather;
 
@@ -61,6 +62,8 @@ pub struct Body {
     pub joints: Vec<(usize, Vec3)>,
     /// Tekken Tag: its hands' poses (None: Tekken 3, or a pack without them).
     pub hands: Option<hands::Poses>,
+    /// Tekken Tag: its face's poses (None: Tekken 3, a masked model, or a pack without them).
+    pub face: Option<tagface::Poses>,
     /// Tekken Tag: its scale of the motions' root, 4096 = 1 (the moveset index's `motion_scale`).
     pub motion_scale: i32,
 }
@@ -352,6 +355,8 @@ pub struct Game {
     /// Tekken Tag's fingers, and whether the round is in round states 1-2 (the fight, the K.O.: gp-0x7268).
     pub hands: [hands::Hands; 2],
     pub hand_live: bool,
+    /// Tekken Tag's faces: blinks and expressions.
+    pub tag_faces: [tagface::Face; 2],
     /// Tekken Tag's wings (True Ogre's and Devil's).
     pub wings: [face::WingState; 2],
     /// The mode's K.O. style (Fight::ko_collapse), kept across rounds.
@@ -430,7 +435,12 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     if let Some(bytes) = entry.hands.as_ref().and_then(|h| kumite_fs::read(&assets.root.join("characters").join(&h.file)).ok()) {
         character.add_motions(&bytes).with_context(|| format!("the hands of model {record}"))?;
     }
+    // its face poses likewise (none: the face stays as bound)
+    if let Some(bytes) = entry.face.as_ref().and_then(|f| kumite_fs::read(&assets.root.join("characters").join(&f.file)).ok()) {
+        character.add_motions(&bytes).with_context(|| format!("the face of model {record}"))?;
+    }
     let hands = entry.hands.as_ref().and_then(|h| hands::Poses::new(&character, h));
+    let face = entry.face.as_ref().and_then(|f| tagface::Poses::new(&character, f));
     let root = character.nodes.iter().position(|n| n.parent.is_none()).context("no root node")?;
     let hurt = sphere_layout(&rules["hurt_spheres"], &character, id)?;
     let push = sphere_layout(&rules["push_spheres"], &character, id)?;
@@ -441,7 +451,7 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let extra = if tag { strike_slots(id, entry.moveset_id) } else { Vec::new() };
     let joints = if tag { joint_places(&rules["joints"], record, id) } else { Vec::new() };
     let motion_scale = entry.motion_scale.unwrap_or(4096);
-    let body = Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden: Vec::new(), bones, extra, joints, hands, motion_scale };
+    let body = Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden: Vec::new(), bones, extra, joints, hands, face, motion_scale };
     // the copying character: its own moveset is never played; outside a bout's rounds it stays the setup's fighter
     // shortcut: Force's bosses and the tag brawl's draw their fighter too (0x800B2770), here they keep this one,
     // and Force's player draws without a seed of the match (the same fighters every run)
@@ -561,6 +571,7 @@ fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
         extra: if own.bones.is_empty() { Vec::new() } else { strike_slots(COPIER as u64, id) },
         joints: own.joints.clone(),
         hands: own.hands.clone(),
+        face: own.face.clone(),
         motion_scale: own.motion_scale,
     }
 }
@@ -666,6 +677,7 @@ impl Game {
             faces: Default::default(),
             hands: Default::default(),
             hand_live: false,
+            tag_faces: Default::default(),
             wings: Default::default(),
             ko_collapse: true,
             guard_damage: false,
@@ -722,6 +734,7 @@ impl Game {
         // shortcut: the benched member's fingers are not kept, they ease in from the model's again; upgrade by
         // benching them with the body
         self.hands[i] = Default::default();
+        self.tag_faces[i] = Default::default();
     }
 
     /// The fight's arena, for a game whose camera has a projection per arena (Tekken Tag; Tekken 3's is one).
@@ -1500,6 +1513,21 @@ impl Game {
             let ops = m.properties.iter().flatten().filter(|q| q.frame == f.frame).map(|q| (q.op, q.arg));
             self.hands[i].step(p, cues, ops);
         }
+        // the faces (0x362C28, after the hands' ops; the game's rand() as the blinks')
+        for i in 0..2 {
+            let Some(p) = &self.bodies[i].face else { continue };
+            let f = &self.fight.fighters[i];
+            let m = f.current_move(&self.fight.data);
+            // (Tekken Tag's flag 0x800 and bit 22 are bits 18 and 30 once loaded, kumite_sim::dialect)
+            let cues = tagface::Cues { moving: m.flags24.raw & 0x4_0000 != 0, hit: m.posture.raw & 4 != 0 && m.flags24.raw & 0x4000_0000 == 0 };
+            let ops = m.properties.iter().flatten().filter(|q| q.frame == f.frame).map(|q| (q.op, q.arg));
+            let seed = &mut self.face_rand;
+            let mut rand = || {
+                *seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
+                (*seed >> 16) & 0x7FFF
+            };
+            self.tag_faces[i].step(p, cues, ops, &mut rand);
+        }
     }
 
     /// Each head's frame (0x8003B17C → 0x80039074): on while the round is live and the move lets the head
@@ -1556,6 +1584,9 @@ impl Game {
         let (mut pose, place) = self.pose_animated(i);
         if let (None, Some(local)) = (self.display, self.heads[i].local) {
             turn_head(&self.bodies[i], &mut pose, local);
+        }
+        if let Some(p) = &self.bodies[i].face {
+            self.tag_faces[i].apply(p, &self.bodies[i].character, &mut pose);
         }
         if let Some(p) = &self.bodies[i].hands {
             self.hands[i].apply(p, &self.bodies[i].character, &mut pose);
