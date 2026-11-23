@@ -95,9 +95,10 @@ fn vs_skinned(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
         if (look.y > 1.5 && look.y < 2.5) {
             o.env = vec4(ttt_env(o.normal), look.zw);
         }
-        // (the programs divide the depth by w less the bias, the mm the vertex lies farther: along its line of sight)
+        // (the programs divide the depth by w less the bias: the vertex's depth as if it lay that many mm farther along the
+        // view's axis, w being its distance along it)
         if (look.x > 0.0) {
-            let b = g.view_proj * vec4(p + normalize(p - g.eye.xyz) * look.x, 1.0);
+            let b = g.view_proj * vec4(p + g.forward.xyz * look.x, 1.0);
             o.clip.z = b.z / b.w * o.clip.w;
         }
     }
