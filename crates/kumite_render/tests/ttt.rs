@@ -32,6 +32,16 @@ fn ttt_fighters_on_an_arena() {
         .collect();
     // (an opaque primitive, then a blended one)
     assert!(fighters.iter().all(|c| c.blend_from > 0 && c.blend_from < c.indices.len()));
+    // Law's satin (converter format 67): environment-mapped, multiplied by the next layer's alpha, the third added;
+    // his trousers 50 mm behind; filtered texels
+    if let Ok(law) = assets.character(363).map_err(|e| eprintln!("no model 363: {e:#}")) {
+        let [shade, add] = law.layers;
+        if law.blend_from < shade && shade < add && law.filtered {
+            assert!(law.vertices.iter().any(|v| v.look[1] == 2.0 && v.look[2] > 0.0) && law.vertices.iter().any(|v| v.look[0] > 0.04));
+        } else {
+            eprintln!("an older pack: no draw modes");
+        }
+    }
     let stage = assets.stage(0).unwrap();
     assert!(stage.sky_model && !stage.sky.is_empty() && !stage.meshes.is_empty());
 
@@ -53,9 +63,9 @@ fn ttt_fighters_on_an_arena() {
     // facing each other 2 m apart (a motion's forward is -z): one standing, one at frame 20 of its moveset's 30th motion
     let mut gpu = Vec::new();
     for (k, c) in fighters.iter().enumerate() {
-        let verts: Vec<SkinVertex> = c.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal }).collect();
+        let verts: Vec<SkinVertex> = c.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal, look: v.look }).collect();
         assert!(c.clips.len() > 30);
-        let model = r.skinned(&verts, &c.indices, c.blend_from, r.texture(c.texture.width, c.texture.height, &c.texture.rgba));
+        let model = r.skinned(&verts, &c.indices, c.blend_from, c.layers, r.texture(c.texture.width, c.texture.height, &c.texture.rgba));
         let (clip, frame) = if k == 0 { (c.clip("motion_0000").unwrap(), 0) } else { (30, 20) };
         let pose = c.pose(clip, frame, true);
         // (the motion's tracks bound to the fighter's joints by name)

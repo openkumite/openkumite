@@ -149,8 +149,8 @@ fn retarget(to: &mut Character, from: &Character, clip: usize, to_ttt: bool) -> 
 fn render(r: &mut Renderer, fighters: &[(&Character, Vec<Mat4>)], name: &str) {
     let mut gpu = Vec::new();
     for (k, (c, pose)) in fighters.iter().enumerate() {
-        let verts: Vec<SkinVertex> = c.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal }).collect();
-        let model = r.skinned(&verts, &c.indices, c.blend_from, r.texture(c.texture.width, c.texture.height, &c.texture.rgba));
+        let verts: Vec<SkinVertex> = c.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal, look: v.look }).collect();
+        let model = r.skinned(&verts, &c.indices, c.blend_from, c.layers, r.texture(c.texture.width, c.texture.height, &c.texture.rgba));
         let x = (k as f32 - (fighters.len() - 1) as f32 / 2.0) * 1.3;
         r.update_bones(&model, &c.skin_matrices(pose, Mat4::from_translation(Vec3::new(x, 0.0, 0.0))));
         gpu.push(model);
