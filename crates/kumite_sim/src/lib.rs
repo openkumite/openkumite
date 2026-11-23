@@ -379,6 +379,11 @@ pub struct Sphere {
 pub trait Animations {
     /// `partner`: the animation belongs to the opponent's character (a borrowed throw-victim move).
     fn root(&self, anim: &str, frame: u32, partner: bool) -> Option<Vec3>;
+    /// Tekken Tag: the body's scale of its motions' root (player +0x4FC, 4096 = 1: its model's +0xC percent, 0x3AF7D0);
+    /// a borrowed move takes the opponent's (0x363A80).
+    fn root_scale(&self, _partner: bool) -> i32 {
+        4096
+    }
     /// Tekken Tag: `f`'s volumes in the pose of its frame now (its strikes and hurt spheres are posed before the
     /// hit test, 0x34F288); None: the caller's, the frame before's (Tekken 3's strikes are baked paths).
     fn volumes(&self, _f: &Fighter, _gd: &GameData) -> Option<BodyVolumes> {
@@ -507,6 +512,10 @@ pub struct Fighter {
     commits_root: bool,
     /// Sign of the current move's lateral root motion (sidestep facing offset, mode 0xA).
     lateral: f32,
+    /// Tekken Tag: the basis turned, the origin is rebased at the next root update (+0x126).
+    rebase_root: bool,
+    /// The root as drawn before this frame's update.
+    shown_root: Vec3,
     pub health: i32,
     /// Full health in whole points (the VS handicap scales it: 70..140 %).
     pub max_health: i32,
@@ -668,6 +677,8 @@ impl Fighter {
             pin: 0,
             commits_root: false,
             lateral: 0.0,
+            rebase_root: false,
+            shown_root: Vec3::ZERO,
             health: max_health * ONE,
             max_health,
             character: None,
@@ -1035,10 +1046,9 @@ impl Fighter {
             let prev = (af as i32 - self.frame_step).max(0) as u32;
             let partner = self.current.bank == Bank::Partner;
             if let (Some(r), Some(rp)) = (anims.root(anim, af, partner), anims.root(anim, prev, partner)) {
-                let (s, c) = self.root_yaw.dsin_cos();
-                let turn = |d: Vec3| Vec3::new(d.x * c + d.z * s, 0.0, -d.x * s + d.z * c);
-                self.position = Vec3::new(root.x, self.position.y, root.z) - turn(rp);
-                self.offset = turn(r);
+                let scale = self.tag_rules(gd).then(|| anims.root_scale(partner));
+                self.position = Vec3::new(root.x, self.position.y, root.z) - root_offset(rp, self.root_yaw, scale);
+                self.offset = root_offset(r, self.root_yaw, scale);
             }
         }
         self.commits_root = self.current_move(gd).flags24.raw & 0x1000_0000 != 0;
@@ -1196,7 +1206,7 @@ impl Fighter {
                     // Tekken Tag rebases the origin as the basis turns (+0x126, 0x37068C): the root stays and the
                     // roll goes on from there, so its path curves instead of swinging round the start
                     if self.tag_rules(gd) {
-                        self.rebase(step);
+                        self.rebase();
                     }
                 }
             }
@@ -1209,7 +1219,7 @@ impl Fighter {
                 let lean = if self.tag_rules(gd) && o == 0x11C7 { -self.lateral } else { self.lateral };
                 self.yaw = target + lean * (o as f32 * ANGLE) * frame as f32 / len as f32;
                 if self.tag_rules(gd) {
-                    self.rebase(self.yaw - self.root_yaw);
+                    self.rebase();
                 }
                 self.root_yaw = self.yaw;
             }
@@ -1218,14 +1228,10 @@ impl Fighter {
         self.evasive = self.evasive.saturating_sub(1);
     }
 
-    /// The root basis turns by `step` with the root kept where it is (Tekken Tag's +0x126, 0x37068C): the origin takes
-    /// the difference, so the move goes on from there.
-    fn rebase(&mut self, step: f32) {
-        let (s, c) = step.dsin_cos();
-        let o = self.offset;
-        let turned = Vec3::new(o.x * c + o.z * s, 0.0, -o.x * s + o.z * c);
-        self.position += o - turned;
-        self.offset = turned;
+    /// The root basis turned (Tekken Tag's +0x126, 0x37068C): at the next root update the origin goes to the root
+    /// less the clip's frame before in the new basis (0x34FA60), so the move goes on from where it stands.
+    fn rebase(&mut self) {
+        self.rebase_root = true;
     }
 
     /// Limit a tracking step so the move's total turn stays within `limit`; reaching it ends the tracking (mode 6).
@@ -1945,6 +1951,11 @@ impl Fighter {
             let reached = if self.frame_step > 0 { exec != 255 && self.frame >= exec } else { self.frame as i64 <= exec as i64 };
             if reached {
                 self.commit(gd, to, self.queued_alias, transition, false, anims);
+                // Tekken Tag draws the new move's root on the frame it starts (0x34E748 runs after the move logic)
+                if self.tag_rules(gd) {
+                    self.shown_root = self.root();
+                    self.root_motion(gd, anims);
+                }
                 return;
             }
         }
@@ -2024,14 +2035,9 @@ impl Fighter {
         }
         // root motion (0x8003AAF4): the clip's root as stored, turned by the root basis, on top of the origin; a
         // root pinned after a landing adds only its height
-        let (anim, f) = self.animation(gd);
-        let partner = self.current.bank == Bank::Partner;
         let before = self.root();
-        if let Some(r) = anims.root(anim, f, partner) {
-            let (s, c) = self.root_yaw.dsin_cos();
-            self.offset = if self.pin == 0 { Vec3::new(r.x * c + r.z * s, 0.0, -r.x * s + r.z * c) } else { Vec3::ZERO };
-            self.anim_root_y = r.y;
-        }
+        self.shown_root = self.root();
+        self.root_motion(gd, anims);
         self.fly();
         if self.air.is_none() {
             self.drift(gd);
@@ -2044,6 +2050,23 @@ impl Fighter {
             (self.juggle, self.juggle_bias) = (0, 0); // landed: the juggle counter starts again
         }
         self.hit_flash = self.hit_flash.saturating_sub(1);
+    }
+
+    /// The clip's root at the frame now: the offset from the origin and the height.
+    fn root_motion(&mut self, gd: &GameData, anims: &dyn Animations) {
+        let (anim, f) = self.animation(gd);
+        let partner = self.current.bank == Bank::Partner;
+        if let Some(r) = anims.root(anim, f, partner) {
+            let scale = self.tag_rules(gd).then(|| anims.root_scale(partner));
+            let prev = (f as i32 - self.frame_step).max(0) as u32;
+            if let Some(rp) = anims.root(anim, prev, partner).filter(|_| std::mem::take(&mut self.rebase_root)) {
+                let root = self.shown_root;
+                self.position = Vec3::new(root.x, self.position.y, root.z) - root_offset(rp, self.root_yaw, scale);
+            }
+            self.offset = if self.pin == 0 { root_offset(r, self.root_yaw, scale) } else { Vec3::ZERO };
+            // Tekken Tag's height is scaled as the distance (0x363AB8)
+            self.anim_root_y = scale.map_or(r.y, |s| (r.y.round() as i32 * s / 4096) as f32);
+        }
     }
 
     /// Juggle flight (0x8003F238): the physics height replaces the animation's root height until landing, with
@@ -2304,6 +2327,23 @@ pub enum KoRule {
 }
 
 /// What a fighter sees of another (the snapshot `Fighter::opponent` holds).
+/// A clip's root `r` (game units, its own axes) as the offset from the origin, turned by the root basis `yaw`.
+/// Tekken Tag (`scale`: the body's, 4096 = 1) in the game's integers (0x363AB8, 0x34E938): the stored polar root's
+/// distance times the scale, cut toward zero, then along the facing plus the root's heading on the 4096 sine table,
+/// each product cut toward zero (the facing is 0x8000 less the basis, both 65536 a turn).
+fn root_offset(r: Vec3, yaw: f32, scale: Option<i32>) -> Vec3 {
+    let Some(scale) = scale else {
+        let (s, c) = yaw.dsin_cos();
+        return Vec3::new(r.x * c + r.z * s, 0.0, -r.x * s + r.z * c);
+    };
+    let turn = |a: f64| (a * 65536.0 / std::f64::consts::TAU).round() as i32;
+    let (x, z) = (f64::from(r.x), f64::from(r.z));
+    let heading = turn(x.datan2(-z));
+    let distance = ((x * x + z * z).sqrt().round() as i32 * scale / 4096) & 0x7FFF;
+    let a = (0x8000 - turn(f64::from(yaw)) + heading) >> 4;
+    Vec3::new(-(distance * ball::sin12(a) / 4096) as f32, 0.0, (distance * ball::cos12(a) / 4096) as f32)
+}
+
 /// Tekken Tag's sine and cosine of an angle (0x357F18 / 0x357F58): its 4096 table at the angle's top 12 bits,
 /// within ±0xFFF, times 8 (0x7FF8 at most).
 fn tag_sin_cos(a: f32) -> [i32; 2] {
@@ -2768,6 +2808,10 @@ impl Fight {
             (f.opponent.root, f.opponent.evasive) = (root, evasive);
             if !frozen {
                 f.track(&gd);
+                // (Tekken Tag turns the basis before the root's update of the frame: the rebase shows at once)
+                if f.rebase_root {
+                    f.root_motion(&gd, anims[i]);
+                }
             }
         }
         self.throw_damage(&gd);
@@ -2790,7 +2834,9 @@ impl Fight {
         let pair = !self.fighters[0].inactive && !self.fighters[1].inactive;
         let extra_on = self.extra.as_ref().is_some_and(|e| !e.inactive) && !self.fighters[0].inactive;
         if self.link.is_none() && pair {
-            self.separate(bodies.each_ref());
+            // Tekken Tag pushes the bodies in the pose of this frame (0x377338 after the moves' update)
+            let now: [Option<BodyVolumes>; 2] = std::array::from_fn(|i| anims[i].volumes(&self.fighters[i], &gd));
+            self.separate([now[0].as_ref().unwrap_or(&bodies[0]), now[1].as_ref().unwrap_or(&bodies[1])]);
         }
         if let (true, Some((_, body, _))) = (extra_on && self.link.is_none(), extra) {
             self.swap_extra();
@@ -3109,7 +3155,9 @@ impl Fight {
                 }
             }
         }
-        let roots = [self.fighters[0].root(), self.fighters[1].root()].map(point);
+        // (the drawn roots, +0x51C..+0x524: their height in, so a stance's bob counts as a step)
+        let drawn = |f: &Fighter| f.root() + Vec3::Y * f.anim_root_y;
+        let roots = [drawn(&self.fighters[0]), drawn(&self.fighters[1])].map(point);
         let angle = |f: &Fighter| (f.yaw * 4096.0 / std::f32::consts::TAU).round() as i32;
         let cut = |v: i32| v / 4096;
         // a trade: both attacking, their points 200 ahead within 500 of each other and passed (their places' gap
@@ -3132,7 +3180,7 @@ impl Fight {
             isqrt((0..3).map(|k| s16(roots[i].get(k).copied().unwrap_or(0) - p.get(k).copied().unwrap_or(0)).pow(2)).sum()) & 0xFFFF
         });
         for f in &mut self.fighters {
-            f.push_prev = Some(f.root());
+            f.push_prev = Some(drawn(f));
         }
         if depth <= 0 {
             return;
@@ -3160,7 +3208,7 @@ impl Fight {
             f.position.z += (d[1] / half) as f32;
             f.pushed = true;
             // (the next frame measures from here: 0x8A7A90 keeps the place after the push)
-            f.push_prev = Some(f.root());
+            f.push_prev = Some(drawn(f));
         }
     }
 
@@ -3614,4 +3662,21 @@ pub fn direction_quadrant(yaw: f32, from: Vec3, other: Vec3) -> usize {
     let to = d.x.datan2(d.z);
     let diff = (to - yaw + std::f32::consts::FRAC_PI_4).rem_euclid(std::f32::consts::TAU);
     ((diff / FRAC_PI_2) as usize).min(3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tekken_tags_root_is_scaled_and_cut_as_the_ps2s() {
+        // Paul's walk 74 at frame 8 (heading 32767, distance 350) facing +x: Xiaoyu's scale (98 %%) takes it to 342
+        // (350 x 4014 / 4096 = 342.99, cut), as PCSX2's +0x51C; at 4096 the whole 350, and Tekken 3's floats keep it
+        let h = f64::from(32767u16) * std::f64::consts::TAU / 65536.0;
+        let r = Vec3::new((h.sin() * 350.0) as f32, 1039.0, (-h.cos() * 350.0) as f32);
+        let yaw = FRAC_PI_2;
+        assert_eq!(root_offset(r, yaw, Some(4014)), Vec3::new(342.0, 0.0, 0.0));
+        assert_eq!(root_offset(r, yaw, Some(4096)), Vec3::new(350.0, 0.0, 0.0));
+        assert!((root_offset(r, yaw, None) - Vec3::new(350.0, 0.0, 0.0)).length() < 0.1);
+    }
 }

@@ -429,6 +429,9 @@ pub struct ModelEntry {
     /// Tekken Tag: its hands (the game layer's `hands`).
     #[serde(default)]
     pub hands: Option<HandsEntry>,
+    /// Tekken Tag: its scale of the motions' root (player +0x4FC, 4096 = 1); None: 4096.
+    #[serde(default)]
+    pub motion_scale: Option<i32>,
 }
 
 /// A Tekken Tag model's hands: `file` its poses (characters/), `default` the kind the load eases both hands to and
