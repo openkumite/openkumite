@@ -2864,22 +2864,23 @@ fn digits(painter: &egui::Painter, v: &View, art: &Art, t: &Value, n: u32, x: f3
 }
 
 /// One 3D character standing on the select (`select.models`, FRONTEND.md 9): its slot (side + 2 * member), model
-/// record, whether it is a pick, its body with the clips of its aliases 0 and 3, and the frames since it came or was
-/// picked.
+/// record, whether it is a pick, its body with the clips of its aliases 0 and 3, how far it is lifted, and the frames
+/// since it came or was picked.
 pub struct Poser {
     pub slot: usize,
     pub record: usize,
     picked: bool,
     pub character: Arc<kumite_assets::Character>,
     clips: [usize; 2],
+    lift: f32,
     frame: u32,
 }
 
-/// The select's 3D characters, and the bodies loaded so far (a model record's, with its two clips).
+/// The select's 3D characters, and the bodies loaded so far (a model record's, with its two clips and lift).
 #[derive(Default)]
 pub struct Posers {
     pub shown: Vec<Poser>,
-    loaded: Vec<(usize, Arc<kumite_assets::Character>, [usize; 2])>,
+    loaded: Vec<(usize, Arc<kumite_assets::Character>, [usize; 2], f32)>,
 }
 
 impl Posers {
@@ -2896,7 +2897,7 @@ impl Posers {
                 None => {
                     let id = roster.characters.iter().find(|c| c.costumes.contains(&record)).map_or(0, |c| c.id);
                     match self.load(assets, d, record, id) {
-                        Ok((character, clips)) => self.shown.push(Poser { slot, record, picked, character, clips, frame: 0 }),
+                        Ok((character, clips, lift)) => self.shown.push(Poser { slot, record, picked, character, clips, lift, frame: 0 }),
                         Err(e) => log::warn!("select model {record}: {e:#}"),
                     }
                 }
@@ -2907,10 +2908,10 @@ impl Posers {
         }
     }
 
-    /// Model `record` (character `id`) with its select clips (`select.models.motions[id]`), loaded once.
-    fn load(&mut self, assets: &kumite_assets::Assets, d: &Data, record: usize, id: usize) -> anyhow::Result<(Arc<kumite_assets::Character>, [usize; 2])> {
+    /// Model `record` (character `id`) with its select clips (`select.models.motions[id]`) and lift, loaded once.
+    fn load(&mut self, assets: &kumite_assets::Assets, d: &Data, record: usize, id: usize) -> anyhow::Result<(Arc<kumite_assets::Character>, [usize; 2], f32)> {
         if let Some(l) = self.loaded.iter().find(|l| l.0 == record) {
-            return Ok((l.1.clone(), l.2));
+            return Ok((l.1.clone(), l.2, l.3));
         }
         let names = &d.raw["select"]["models"]["motions"][id];
         let mut ch = assets.character(record)?;
@@ -2924,9 +2925,16 @@ impl Posers {
             ch.clip(name).ok_or_else(|| anyhow::anyhow!("motions/{name}.glb holds no clip {name}"))
         };
         let clips = [clip(0)?, clip(1)?];
+        // (a third value, the Tekken 3 crossover's: the height its standing clip's top is lifted to, so a body shorter
+        // than Tekken Tag's (Gon) is in the picture; Tekken Tag's own stand on the floor)
+        let lift = names[2].as_f64().map_or(0.0, |h| {
+            let frames = ch.clips.get(clips[0]).map_or(0, |c| c.frames);
+            let top = (0..frames).flat_map(|f| ch.pose(clips[0], f, false)).map(|m| m.w_axis.y * 1000.0).fold(0.0, f32::max);
+            (h as f32 - top).max(0.0)
+        });
         let ch = Arc::new(ch);
-        self.loaded.push((record, ch.clone(), clips));
-        Ok((ch, clips))
+        self.loaded.push((record, ch.clone(), clips, lift));
+        Ok((ch, clips, lift))
     }
 
     /// Each one's node matrices and placement (metres): a pick's pose (alias 3) once, then alias 0 over and over, at
@@ -2942,8 +2950,8 @@ impl Posers {
                 let (clip, f) = if p.picked && f < n(p.clips[1]) { (p.clips[1], f) } else { (p.clips[0], (f - if p.picked { n(p.clips[1]) } else { 0 }) % n(p.clips[0])) };
                 let at = &places[p.slot];
                 // (the game's x, z as the picture's x, -z, on the floor (the game sets y from the pose: the table's is not
-                // kept); its 65536ths of a turn, the picture facing -z)
-                let place = kumite_game::placement(glam::Vec3::new(num(&at[0]), 0.0, -num(&at[2])), std::f32::consts::PI - num(&at[3]) * std::f32::consts::TAU / 65536.0);
+                // kept) or its lift above; its 65536ths of a turn, the picture facing -z)
+                let place = kumite_game::placement(glam::Vec3::new(num(&at[0]), p.lift, -num(&at[2])), std::f32::consts::PI - num(&at[3]) * std::f32::consts::TAU / 65536.0);
                 (p.character.pose(clip, f as usize, false), place)
             })
             .collect()
