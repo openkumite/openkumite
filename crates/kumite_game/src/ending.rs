@@ -363,14 +363,16 @@ impl EndingScene {
             w.step();
         }
         // the beams (0x378398): the start, then the type's line (as a fight's) along the head's heading (0x378760:
-        // its -x), a frame on each frame, for its frames
+        // the head's point (-100, 0, 0), our node's +x: PCSX2's beams run there), a frame on each frame, for its
+        // frames; type 2 (0x378A28) steps 204 along and 220 down in a scene, twice a fight's
         self.beams.clear();
         for s in 0..2 {
             let Some((kind, k, frames)) = self.lasers[s] else { continue };
             let (Some(head), Some(&model)) = (self.head(s), self.slots[s].0.and_then(|m| self.records.get(m))) else { continue };
             let eyes = head.w_axis.truncate();
-            let d = head.transform_vector3(-Vec3::X);
-            let line = (k >= 0).then(|| kumite_sim::laser_line(kind, eyes * UNITS, d.x.atan2(d.z), k)).flatten();
+            let d = head.transform_vector3(Vec3::X);
+            let steps = if kind == 2 { 2 * k } else { k };
+            let line = (k >= 0).then(|| kumite_sim::laser_line(kind, eyes * UNITS, d.x.atan2(d.z), steps)).flatten();
             self.beams.push((s, model, kind, line.map(|(p, q)| (p / UNITS, q / UNITS)), eyes));
             self.lasers[s] = (k + 1 < frames).then_some((kind, k + 1, frames));
         }
