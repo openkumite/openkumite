@@ -663,11 +663,12 @@ impl Roster {
         let ball = read("ball.json");
         // (Tekken Tag: Tekken Ball with the Tekken 3 slice's ball.json)
         let ball_court = ball["types"].as_array().is_some_and(|t| !t.is_empty()).then(|| ball["constants"]["stage"].as_u64()).flatten().map(|s| s as usize);
-        let costume_of = selections.iter().filter_map(|s| Some((s["model_record"].as_u64()? as usize, s["costume"].as_u64()? as usize))).collect();
+        // by model: not the nameless selections 88-91 (descriptor 0x800223D8, BGM 1) that borrow character 0's model
+        let owned = || selections.iter().filter(|s| s["name"] != "");
+        let costume_of = owned().filter_map(|s| Some((s["model_record"].as_u64()? as usize, s["costume"].as_u64()? as usize))).collect();
         let by_selection = selections.iter().filter_map(|s| Some((s["selection"].as_u64()? as usize, (s["character"].as_u64()? as usize, s["model_record"].as_u64()? as usize)))).collect();
-        let bgm_of = selections.iter().filter_map(|s| Some((s["model_record"].as_u64()? as usize, s["bgm_id"].as_u64()? as usize))).collect();
-        let voice_of = selections
-            .iter()
+        let bgm_of = owned().filter_map(|s| Some((s["model_record"].as_u64()? as usize, s["bgm_id"].as_u64()? as usize))).collect();
+        let voice_of = owned()
             .filter_map(|s| {
                 let character = s["character"].as_u64()? as usize;
                 // (an extra fighter's: its own, `voice_row`)
@@ -2795,6 +2796,29 @@ mod tests {
         assert_eq!(r.portrait(5, 2).portrait, 18, "Character 5's third costume shows character 18's portrait");
         assert_eq!(r.portrait(0, 0).glow, [0xD9, 0, 0x1C], "Character 0's red glow");
         assert!(!r.ui.items[0].name.is_empty());
+    }
+
+    // an arcade opponent (costume 0): its home stage and fight music, the selection descriptor's (0x80097D40 +10,
+    // +11), the BGM SELECT's arranged and arcade columns (0x80024FD0)
+    #[test]
+    fn arcade_opponents_play_their_stage_and_music() {
+        let (Some(r), Ok(a)) = (roster(), kumite_assets::Assets::new(crate::test_assets())) else { return };
+        let Ok(sound) = kumite_game::sound::SoundData::load(&a) else { return };
+        #[rustfmt::skip]
+        let table = [
+            (0, 0, 7, "42", "16"), (1, 1, 8, "35", "10"), (2, 5, 9, "36", "11"), (3, 11, 10, "33", "09"), (4, 2, 11, "46", "20"),
+            (5, 9, 12, "38", "12"), (6, 4, 13, "30", "07"), (7, 3, 14, "45", "19"), (8, 10, 15, "25", "02"), (9, 8, 16, "31", "08"),
+            (10, 12, 17, "32", "06"), (11, 1, 18, "34", "06"), (12, 0, 19, "23", "06"), (13, 12, 20, "29", "05"), (14, 6, 21, "39", "13"),
+            (15, 2, 22, "37", "06"), (16, 9, 23, "27", "06"), (17, 13, 26, "26", "06"), (18, 9, 24, "21", "06"), (19, 14, 25, "22", "06"),
+            (20, 6, 27, "41", "15"),
+        ];
+        for (id, stage, bgm, arranged, arcade) in table {
+            let opp = arcade_setup(&r, (0, 0), 1, &[id], 0);
+            assert_eq!((opp.stage, r.music_of(id, 0)), (stage, Some(bgm)), "character {id}");
+            let file = |column| sound.music_column(bgm, column).and_then(|t| t.file.file_stem()?.to_str().map(String::from));
+            assert_eq!((file(0).as_deref(), file(1).as_deref()), (Some(arranged), Some(arcade)), "BGM {bgm}");
+        }
+        assert_eq!(r.costume_of.get(&71), Some(&0), "character 0's first model is his costume 0");
     }
 
     #[test]
