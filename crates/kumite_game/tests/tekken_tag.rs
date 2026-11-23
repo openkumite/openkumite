@@ -342,10 +342,12 @@ fn devils_laser_strikes() {
     assert!(!drawn || (strips > 2 && flares == 15), "{strips} strips, {flares} frames of the flare");
 }
 
-/// The strikes take the game's joint places (0x439A80), not the drawn skeleton's: Jack-2's knee is 390 down his
-/// thigh, not 440, so his 1+3 (alias 3811, foot A) grabs Hwoarang 780 away (alias 3924) as in PCSX2 (frame 64).
+/// Jack-2 and Paul against Hwoarang and Paul, picked on the select (PCSX2): Jack walks in, his body pushes Hwoarang
+/// back as he comes, and his 1+3 (alias 3811) then misses from 850 away: no grab (alias 3924), as on the PS2 (the
+/// grab seen before came from a run that kept the select's models). The stance's phase is the PS2 run's (11 frames
+/// on), the pad read 2 frames late.
 #[test]
-fn jack2s_grab_reaches_with_the_games_joints() {
+fn jack2s_walk_pushes_and_his_grab_misses_as_on_the_ps2() {
     let Some(a) = assets() else { return };
     let mut g = Game::load(&a, [603, HWOARANG]).unwrap();
     g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
@@ -353,11 +355,18 @@ fn jack2s_grab_reaches_with_the_games_joints() {
     while b.phase != Phase::Fight {
         b.step([Pad::default(); 2]);
     }
-    let grab = parse_script("f*40,n*2,1+3*2,n*60").unwrap().into_iter().position(|pad| {
+    let ps2 = [(30, 89, 1012), (35, 207, 1093), (40, 263, 1122), (44, 284, 1134)];
+    let mut grab = false;
+    for (k, pad) in parse_script("n*13,f*40,n*2,1+3*2,n*60").unwrap().into_iter().enumerate() {
         b.step([pad, Pad::default()]);
-        b.game.fight.fighters[0].alias == 3924
-    });
-    assert!(grab.is_some_and(|k| (60..=66).contains(&k)), "the grab on frame {grab:?}");
+        let f = &b.game.fight.fighters;
+        grab |= f[0].alias == 3924;
+        if let Some(&(_, x0, x1)) = ps2.iter().find(|p| p.0 + 11 == k) {
+            let (r0, r1) = (f[0].root().x as i32, f[1].root().x as i32);
+            assert!((r0 - x0).abs() <= 5 && (r1 - x1).abs() <= 5, "frame {}: {r0} {r1}, the PS2 {x0} {x1}", k - 11);
+        }
+    }
+    assert!(!grab, "the grab");
 }
 
 /// Mokujin (no moves of his own) fights as another fighter, drawn from Tekken Tag's pool (0x35C850): he jabs.
