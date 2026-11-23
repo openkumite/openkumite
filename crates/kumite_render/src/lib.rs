@@ -458,8 +458,8 @@ pub struct StaticMesh {
     /// Drawn without depth, sorted far to near each frame as the original hardware's ordering table does (the backdrop
     /// drum): its positions and triangles.
     sorted: Option<(Vec<Vec3>, Vec<[u32; 3]>)>,
-    /// 0 drawn over what is behind it; 1 added to it, 2 multiplying it (Tekken Tag's lights and gloss, its painted
-    /// shadows: drawn after the stage, depth-tested, never written).
+    /// 0 drawn over what is behind it; 1 added to it, 2 multiplying it, 3 blended over it (Tekken Tag's lights and
+    /// gloss, its painted shadows, its fades: drawn after the stage, depth-tested, never written).
     blend: u8,
     /// A sky mesh drawn after the stage's strips, as the PS2 draws an arena's objects after the arena (0x3D10D0
     /// after 0x3DE6C0): its painted shadows do not darken them.
@@ -915,7 +915,7 @@ impl Renderer {
             let stage_blends = ["vs_static", "vs_sky"]
                 .into_iter()
                 .flat_map(|vs| {
-                    [("fs_stage_add", add), ("fs_stage_shade", shade)]
+                    [("fs_stage_add", add), ("fs_stage_shade", shade), ("fs_stage_blend", wgpu::BlendState::ALPHA_BLENDING.color)]
                         .map(|(fs, c)| make("stage strips", &static_layout, vs, fs, &static_vb, false, LessEqual, tri, Some(wgpu::BlendState { color: c, alpha: keep })))
                 })
                 .collect();
@@ -1792,11 +1792,11 @@ impl Renderer {
                 }
             }
         }
-        // the stage's added and multiplying strips (Tekken Tag's), over the stage it lights or shades
-        let strips: Vec<(usize, &StaticMesh)> = statics.iter().map(|m| (0, *m)).chain(sky.iter().map(|m| (2, *m))).filter(|(_, m)| m.blend > 0 && !m.late).collect();
+        // the stage's added, multiplying and blended strips (Tekken Tag's), over the stage it lights, shades or fades
+        let strips: Vec<(usize, &StaticMesh)> = statics.iter().map(|m| (0, *m)).chain(sky.iter().map(|m| (3, *m))).filter(|(_, m)| m.blend > 0 && !m.late).collect();
         // (then the late meshes: opaque with the stage's depth, then their own strips)
         let late = sky.iter().filter(|m| m.late);
-        let late = late.clone().filter(|m| m.blend == 0).map(|m| (usize::MAX, *m)).chain(late.filter(|m| m.blend > 0).map(|m| (2, *m)));
+        let late = late.clone().filter(|m| m.blend == 0).map(|m| (usize::MAX, *m)).chain(late.filter(|m| m.blend > 0).map(|m| (3, *m)));
         let strips: Vec<(usize, &StaticMesh)> = strips.into_iter().chain(late).collect();
         if !strips.is_empty() {
             let mut pass = begin(&mut enc, ("stage strips", wgpu::LoadOp::Load, wgpu::LoadOp::Load));
@@ -1995,7 +1995,7 @@ impl Renderer {
             {
                 let mut pass = target(&mut enc, "glow", &gl.views[0], Some(wgpu::LoadOp::Load), black);
                 pass.set_bind_group(0, &self.globals_group, &[]);
-                for (base, m) in statics.iter().map(|m| (0, *m)).chain(sky.iter().map(|m| (2, *m))).filter(|(_, m)| m.blend == 1) {
+                for (base, m) in statics.iter().map(|m| (0, *m)).chain(sky.iter().map(|m| (3, *m))).filter(|(_, m)| m.blend == 1) {
                     let Some(pipeline) = gp.stage_blends.get(base) else { continue };
                     pass.set_pipeline(pipeline);
                     pass.set_bind_group(1, m.texture.group(smooth), &[]);
