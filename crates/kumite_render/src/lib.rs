@@ -81,6 +81,8 @@ pub struct SkinVertex {
     pub weights: [f32; 4],
     /// Bind-pose normal (zero: lit by the face's own normal).
     pub normal: [f32; 3],
+    /// Tekken Tag's fighters' depth bias, lighting and its two values (`kumite_assets::SkinVertex::look`).
+    pub look: [f32; 4],
 }
 
 /// The fighters' shadows (0x8003AFCC): each fighter's shadow mesh moved along the light onto the floor, drawn in
@@ -329,6 +331,8 @@ pub struct Grass {
 struct Pipes {
     skinned_pipeline: wgpu::RenderPipeline,
     skinned_blend_pipeline: wgpu::RenderPipeline,
+    /// A character's multiplying and additive primitives (Tekken Tag's GS ALPHA 0x89, 0x48).
+    skinned_layer_pipelines: [wgpu::RenderPipeline; 2],
     /// The fighters' shadows.
     shadow_pipeline: wgpu::RenderPipeline,
     floor_shadow_pipeline: wgpu::RenderPipeline,
@@ -426,8 +430,10 @@ pub struct SkinnedModel {
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     count: u32,
-    /// The indices from here to `count` are drawn blended, after every model's others.
+    /// The indices from here to `count` are drawn blended, after every model's others: multiplying ones to
+    /// `layers[0]`, additive ones to `layers[1]`, then ordinary ones.
     blend_from: u32,
+    layers: [u32; 2],
     bones: wgpu::Buffer,
     bones_group: wgpu::BindGroup,
     texture: Arc<Texture>,
@@ -806,7 +812,7 @@ impl Renderer {
         let skinned_layout = layout(&[Some(&globals_layout), Some(&texture_layout), Some(&bones_layout)]);
         let static_layout = layout(&[Some(&globals_layout), Some(&texture_layout)]);
 
-        let skin_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Uint16x4, 3 => Float32x4, 4 => Float32x3];
+        let skin_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Uint16x4, 3 => Float32x4, 4 => Float32x3, 5 => Float32x4];
         let static_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4];
         use wgpu::CompareFunction::{Always, Less, LessEqual};
         let skin_vb = [wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<SkinVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &skin_attrs }];
@@ -878,9 +884,14 @@ impl Renderer {
                 })
             };
             let skinned_pipeline = make("skinned", &skinned_layout, "vs_skinned", "fs_lit", &skin_vb, true, Less, tri, None);
+            let keep_alpha = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+            let times_alpha = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::SrcAlpha, operation: wgpu::BlendOperation::Add };
+            let add_colour = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
             // a character's blended primitive (Tekken Tag's): over what is drawn by its texture's alpha, depth not written; its
             // overlays lie on the opaque layer, which the GS's ZTST GEQUAL lets them cover
             let skinned_blend_pipeline = make("skinned blend", &skinned_layout, "vs_skinned", "fs_lit_blend", &skin_vb, false, LessEqual, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
+            let layer = |label, fs, color| make(label, &skinned_layout, "vs_skinned", fs, &skin_vb, false, LessEqual, tri, Some(wgpu::BlendState { color, alpha: keep_alpha }));
+            let skinned_layer_pipelines = [layer("skinned shade", "fs_lit_shade", times_alpha), layer("skinned add", "fs_lit_add", add_colour)];
             let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, None);
             let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, Always, tri, None);
             let sky_depth_pipeline = make("sky depth", &static_layout, "vs_sky", "fs_unlit", &static_vb, true, Less, tri, None);
@@ -935,6 +946,7 @@ impl Renderer {
             Pipes {
                 skinned_pipeline,
                 skinned_blend_pipeline,
+                skinned_layer_pipelines,
                 shadow_pipeline,
                 floor_shadow_pipeline,
                 blob_pipeline,
@@ -1357,8 +1369,9 @@ impl Renderer {
         self.write_mips(texture, &texels);
     }
 
-    /// A character's GPU model: `indices` from `blend_from` on are its blended primitives'.
-    pub fn skinned(&self, vertices: &[SkinVertex], indices: &[u32], blend_from: usize, texture: Arc<Texture>) -> SkinnedModel {
+    /// A character's GPU model: `indices` from `blend_from` on are its blended primitives': multiplying ones to
+    /// `layers[0]`, additive ones to `layers[1]`, then ordinary ones (`kumite_assets::Character::layers`).
+    pub fn skinned(&self, vertices: &[SkinVertex], indices: &[u32], blend_from: usize, layers: [usize; 2], texture: Arc<Texture>) -> SkinnedModel {
         let vbuf = self.buffer(bytemuck::cast_slice(vertices), wgpu::BufferUsages::VERTEX);
         let ibuf = self.buffer(bytemuck::cast_slice(indices), wgpu::BufferUsages::INDEX);
         let bones = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1373,7 +1386,9 @@ impl Renderer {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: bones.as_entire_binding() }],
         });
         let count = indices.len() as u32;
-        SkinnedModel { vbuf, ibuf, count, blend_from: (blend_from as u32).min(count), bones, bones_group, texture, shadow: None, motion: Default::default() }
+        let blend_from = (blend_from as u32).min(count);
+        let layers = layers.map(|l| (l as u32).clamp(blend_from, count));
+        SkinnedModel { vbuf, ibuf, count, blend_from, layers: [layers[0], layers[1].max(layers[0])], bones, bones_group, texture, shadow: None, motion: Default::default() }
     }
 
     /// Give a model its shadow mesh (skinned to the model's joints).
@@ -1884,14 +1899,22 @@ impl Renderer {
                 stats.draw_calls += 1;
                 stats.triangles += m.count / 3;
             }
-            pass.set_pipeline(&pipes.skinned_blend_pipeline);
-            for m in models.iter().filter(|m| m.blend_from < m.count) {
-                pass.set_bind_group(1, m.texture.group(smooth), &[]);
-                pass.set_bind_group(2, &m.bones_group, &[]);
-                pass.set_vertex_buffer(0, m.vbuf.slice(..));
-                pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(m.blend_from..m.count, 0, 0..1);
-                stats.draw_calls += 1;
+            // (Law's satin: the environment-mapped opaque layer, multiplied by the next one's alpha, the third added)
+            for (k, pipe) in pipes.skinned_layer_pipelines.iter().chain([&pipes.skinned_blend_pipeline]).enumerate() {
+                pass.set_pipeline(pipe);
+                for m in models {
+                    let range = [m.blend_from, m.layers[0], m.layers[1], m.count];
+                    let (Some(&from), Some(&to)) = (range.get(k), range.get(k + 1)) else { continue };
+                    if from >= to {
+                        continue;
+                    }
+                    pass.set_bind_group(1, m.texture.group(smooth), &[]);
+                    pass.set_bind_group(2, &m.bones_group, &[]);
+                    pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                    pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(from..to, 0, 0..1);
+                    stats.draw_calls += 1;
+                }
             }
             if let (false, Some(white)) = (flat_bufs.is_empty(), self.white.as_ref()) {
                 pass.set_bind_group(1, &white.bind_group, &[]);

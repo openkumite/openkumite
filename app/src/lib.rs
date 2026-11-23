@@ -387,11 +387,11 @@ static SHADOWS: std::sync::OnceLock<kumite_assets::Shadows> = std::sync::OnceLoc
 
 /// A character's GPU model, with the shadow mesh its model record casts.
 fn skinned_character(r: &Renderer, c: &kumite_assets::Character, record: usize) -> SkinnedModel {
-    let verts: Vec<SkinVertex> = c.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal }).collect();
+    let verts: Vec<SkinVertex> = c.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal, look: v.look }).collect();
     let texture = if c.filtered { r.texture_smooth(c.texture.width, c.texture.height, &c.texture.rgba) } else { r.texture(c.texture.width, c.texture.height, &c.texture.rgba) };
-    let mut model = r.skinned(&verts, &c.indices, c.blend_from, texture);
+    let mut model = r.skinned(&verts, &c.indices, c.blend_from, c.layers, texture);
     if let Some((v, i)) = SHADOWS.get().and_then(|s| s.of(record)).and_then(|m| c.shadow(m)) {
-        let v: Vec<SkinVertex> = v.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal }).collect();
+        let v: Vec<SkinVertex> = v.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal, look: v.look }).collect();
         r.set_shadow(&mut model, &v, &i);
     }
     model
@@ -1600,8 +1600,8 @@ impl App {
                 if clips.is_empty() {
                     continue;
                 }
-                let verts: Vec<SkinVertex> = ch.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal }).collect();
-                let model = r.skinned(&verts, &ch.indices, ch.blend_from, r.texture(ch.texture.width, ch.texture.height, &ch.texture.rgba));
+                let verts: Vec<SkinVertex> = ch.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal, look: v.look }).collect();
+                let model = r.skinned(&verts, &ch.indices, ch.blend_from, ch.layers, r.texture(ch.texture.width, ch.texture.height, &ch.texture.rgba));
                 bodies.push((k as usize, ch, model, clips));
             }
             if bodies.is_empty() {

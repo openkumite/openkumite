@@ -91,6 +91,10 @@ pub struct SkinVertex {
     pub weights: [f32; 4],
     /// The vertex normal (bind pose; zero when the model has none).
     pub normal: [f32; 3],
+    /// Tekken Tag's fighters (TEXCOORD_1, TEXCOORD_2; zero elsewhere): how far its depth lies behind it (metres), its
+    /// lighting (0 lit, 1 the texture as it is, 2 environment-mapped, 3 lit with a highlight, 4 the highlight alone),
+    /// and the highlight's strength and squarings or the environment map's size in the texture.
+    pub look: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -202,6 +206,9 @@ pub struct Character {
     /// The indices from here on are the blended primitives' (material `BLEND`: Tekken Tag's), drawn after the others
     /// with their texture's alpha; `indices.len()` when there are none.
     pub blend_from: usize,
+    /// Where the blended indices' kinds start: the multiplying ones (`shade`, Cd x As: GS ALPHA 0x89) from
+    /// `blend_from`, the additive ones (Cs x As + Cd, 0x48) from `layers[0]`, the ordinary ones from `layers[1]`.
+    pub layers: [usize; 2],
     pub texture: Image,
     /// The texture's sampler asks for linear filtering (Tekken Tag's fighters: TEX1 0x61, 0x521CE0); else its texels
     /// are sharp.
@@ -266,7 +273,8 @@ impl Character {
             bail!("a skin's inverse bind matrices are not one a joint");
         }
         let mut vertices = Vec::new();
-        let (mut indices, mut blended) = (Vec::new(), Vec::new());
+        // the opaque primitives, and the blended ones by kind: multiplying (`shade`), `additive`, ordinary
+        let (mut indices, mut blended) = (Vec::new(), [Vec::new(), Vec::new(), Vec::new()]);
         let mesh = if motions_only { None } else { Some(doc.meshes().next().context("no mesh")?) };
         for prim in mesh.iter().flat_map(|m| m.primitives()) {
             let r = prim.reader(get);
@@ -276,21 +284,32 @@ impl Character {
             let jo: Vec<[u16; 4]> = r.read_joints(0).context("joints")?.into_u16().collect();
             let we: Vec<[f32; 4]> = r.read_weights(0).context("weights")?.into_f32().collect();
             let nm: Vec<[f32; 3]> = r.read_normals().map(|n| n.collect()).unwrap_or_default();
+            let look = |k| -> Vec<[f32; 2]> { r.read_tex_coords(k).map(|t| t.into_f32().collect()).unwrap_or_default() };
+            let (l1, l2) = (look(1), look(2));
             if uv.len() < pos.len() || jo.len() < pos.len() || we.len() < pos.len() || jo.iter().flatten().any(|&j| j as usize >= joints.len()) {
                 bail!("a primitive's attributes disagree");
             }
             for (i, (((&pos, &uv), &joints), &weights)) in pos.iter().zip(&uv).zip(&jo).zip(&we).enumerate() {
-                vertices.push(SkinVertex { pos, uv, joints, weights, normal: nm.get(i).copied().unwrap_or_default() });
+                let ([a, b], [c, d]) = (l1.get(i).copied().unwrap_or_default(), l2.get(i).copied().unwrap_or_default());
+                vertices.push(SkinVertex { pos, uv, joints, weights, normal: nm.get(i).copied().unwrap_or_default(), look: [a, b, c, d] });
             }
             let prim_indices: Vec<u32> = r.read_indices().context("indices")?.into_u32().collect();
             if prim_indices.iter().any(|&i| i as usize >= pos.len()) {
                 bail!("an index past the vertices");
             }
-            let to = if prim.material().alpha_mode() == gltf::material::AlphaMode::Blend { &mut blended } else { &mut indices };
+            let to = match (prim.material().alpha_mode(), prim.material().name()) {
+                (gltf::material::AlphaMode::Blend, Some("shade")) => &mut blended[0],
+                (gltf::material::AlphaMode::Blend, Some("additive")) => &mut blended[1],
+                (gltf::material::AlphaMode::Blend, _) => &mut blended[2],
+                _ => &mut indices,
+            };
             to.extend(prim_indices.into_iter().map(|i| i + base));
         }
         let blend_from = indices.len();
-        indices.append(&mut blended);
+        let layers = [blend_from + blended[0].len(), blend_from + blended[0].len() + blended[1].len()];
+        for b in &mut blended {
+            indices.append(b);
+        }
         let texture = if motions_only { Image { width: 0, height: 0, rgba: Vec::new() } } else { to_image(images.first().context("no texture")?)? };
         let mut clips = Vec::new();
         for a in doc.animations() {
@@ -338,7 +357,7 @@ impl Character {
         let wings = extras.as_ref().and_then(|e| serde_json::from_value::<Wings>(e["wings"].clone()).ok()).filter(|w| w.nodes.iter().all(|&n| n < nodes.len()) && !w.frames.is_empty());
         let cloth: Vec<ClothNode> = extras.and_then(|e| serde_json::from_value(e["cloth"].clone()).ok()).unwrap_or_default();
         let cloth = cloth.into_iter().filter(|c| nodes.get(c.node).is_some_and(|n| n.parent.is_some())).collect();
-        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, texture, filtered, mark, wings, clips, clip_index, cloth })
+        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, layers, texture, filtered, mark, wings, clips, clip_index, cloth })
     }
 
     /// The wings at their track's `frame` (clamped to its end): each wing node turned and scaled so in its parent, its
@@ -443,6 +462,7 @@ impl Character {
             vertices: self.vertices.clone(),
             indices: self.indices.clone(),
             blend_from: self.blend_from,
+            layers: self.layers,
             texture: self.texture.clone(),
             filtered: self.filtered,
             mark: self.mark,

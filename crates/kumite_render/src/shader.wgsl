@@ -71,12 +71,16 @@ struct VsOut {
     @location(4) dropped: f32,
     // Tekken Tag's arena: how much of the fog colour (0: none)
     @location(5) fog: f32,
+    // Tekken Tag's fighter's environment map: its coordinates (repeating) and its size in the texture (zw 0: none)
+    @location(6) env: vec4<f32>,
 };
 
-// Standard 4-joint linear blend skinning.
+// Standard 4-joint linear blend skinning. Tekken Tag's fighters (its three lights) lit per vertex as its VU0
+// programs light them (0x3439B0), and their depth pushed back by their bias.
 @vertex
 fn vs_skinned(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
-              @location(2) joints: vec4<u32>, @location(3) weights: vec4<f32>, @location(4) normal: vec3<f32>) -> VsOut {
+              @location(2) joints: vec4<u32>, @location(3) weights: vec4<f32>, @location(4) normal: vec3<f32>,
+              @location(5) look: vec4<f32>) -> VsOut {
     let skin = weights.x * bones[joints.x] + weights.y * bones[joints.y]
              + weights.z * bones[joints.z] + weights.w * bones[joints.w];
     let p = (skin * vec4(pos, 1.0)).xyz;
@@ -86,7 +90,54 @@ fn vs_skinned(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
     o.color = vec4(1.0);
     o.world = p;
     o.normal = (skin * vec4(normal, 0.0)).xyz;
+    if (g.key_color.w > 1.5) {
+        o.color = vec4(ttt_light(o, look), 1.0);
+        if (look.y > 1.5 && look.y < 2.5) {
+            o.env = vec4(ttt_env(o.normal), look.zw);
+        }
+        // (the programs divide the depth by w less the bias, the mm the vertex lies farther: along its line of sight)
+        if (look.x > 0.0) {
+            let b = g.view_proj * vec4(p + normalize(p - g.eye.xyz) * look.x, 1.0);
+            o.clip.z = b.z / b.w * o.clip.w;
+        }
+    }
     return o;
+}
+
+// The way to the eye from the fighter's root (VU0 word 11: the eye less player +0x590, normalised).
+fn ttt_to_eye() -> vec3<f32> {
+    return normalize(g.eye.xyz - bones[0][3].xyz);
+}
+
+// A Tekken Tag fighter's vertex colour (128 = 1), by its lighting `look.y`: 0 the ambient and three lights on its
+// summed normal (program 0x000, not normalised), 1 and 2 none (the GS's decal), 3 those on the normalised normal and
+// light 0's highlight added to light 0 (0x04A), 4 the highlight alone (0x0EA): (R . L0)^(2^n) x strength, R the
+// way to the eye reflected about the normal; the hit light as in Tekken 3's. Saturating at 255.
+fn ttt_light(o: VsOut, look: vec4<f32>) -> vec3<f32> {
+    let mode = look.y;
+    if (mode > 0.5 && mode < 2.5) { return vec3(1.0); }
+    var n = o.normal;
+    var s = 0.0;
+    if (mode > 2.5) {
+        n = normalize(n);
+        let v = ttt_to_eye();
+        s = dot(2.0 * n * dot(n, v) - v, g.light_dir.xyz);
+        for (var k = 0; k < min(i32(look.w), 32); k++) { s = s * s; }
+        s = s * look.z;
+    }
+    let cap = vec3(255.0 / 128.0);
+    if (mode > 3.5) { return min(g.key_color.rgb * s, cap); }
+    let hit = g.hit_colour.rgb * max(0.0, dot(n, normalize(g.hit_pos.xyz - o.world + vec3(0.0, 0.0001, 0.0))));
+    let l = g.ambient.rgb + g.key_color.rgb * (max(0.0, dot(n, g.light_dir.xyz)) + s)
+        + g.lights[1].rgb * max(0.0, dot(n, g.lights[0].xyz)) + g.lights[3].rgb * max(0.0, dot(n, g.lights[2].xyz));
+    return min(l, cap) + hit;
+}
+
+// A Tekken Tag fighter's environment map's coordinates (program 0x186): half of one plus the camera's x and y (down)
+// of the way to the eye plus the normalised normal.
+fn ttt_env(normal: vec3<f32>) -> vec2<f32> {
+    let h = ttt_to_eye() + normalize(normal);
+    return 0.5 * (1.0 + vec2(dot(h, g.view_x.xyz), -dot(h, g.view_y.xyz)));
 }
 
 // A fighter's shadow (0x80035F2C's matrix): each vertex moved along the light onto the floor.
@@ -418,7 +469,7 @@ fn floor_light(p: vec3<f32>) -> f32 {
 // (the engine lights per vertex with NCCS/NCCT; this is a stand-in until normals are ported).
 @fragment
 fn fs_lit(i: VsOut) -> @location(0) vec4<f32> {
-    let t = texel(i.uv);
+    let t = fighter_texel(i);
     let a = cut(t.a);
     return vec4(lit(i, t.rgb), a);
 }
@@ -426,8 +477,28 @@ fn fs_lit(i: VsOut) -> @location(0) vec4<f32> {
 // A character's blended primitive (Tekken Tag's): lit the same, over the picture by the texture's alpha.
 @fragment
 fn fs_lit_blend(i: VsOut) -> @location(0) vec4<f32> {
-    let t = texel(i.uv);
+    let t = fighter_texel(i);
     return vec4(lit(i, t.rgb), t.a);
+}
+
+// Tekken Tag's fighters' other blendings: Cd x As (GS ALPHA 0x89) and Cs x As + Cd (0x48).
+@fragment
+fn fs_lit_shade(i: VsOut) -> @location(0) vec4<f32> {
+    return vec4(0.0, 0.0, 0.0, fighter_texel(i).a);
+}
+
+@fragment
+fn fs_lit_add(i: VsOut) -> @location(0) vec4<f32> {
+    let t = fighter_texel(i);
+    return vec4(lit(i, t.rgb) * t.a, 0.0);
+}
+
+// A character's texel; an environment map's repeating over its part of the texture.
+fn fighter_texel(i: VsOut) -> vec4<f32> {
+    if (i.env.z > 0.0) {
+        return texel(i.uv + fract(i.env.xy) * i.env.zw);
+    }
+    return texel(i.uv);
 }
 
 fn lit(i: VsOut, t: vec3<f32>) -> vec3<f32> {
@@ -443,11 +514,9 @@ fn lit(i: VsOut, t: vec3<f32>) -> vec3<f32> {
         }
         let hit = g.hit_colour.rgb * max(0.0, dot(n, to_hit));
         if (g.key_color.w > 1.5) {
-            // Tekken Tag's three lights (each side's light block, 0x353918): the ambient and each colour × max(0, n·L),
-            // 128 = 1, the GS's modulation saturating at 255
-            let l3 = g.ambient.rgb + g.key_color.rgb * max(0.0, dot(n, g.light_dir.xyz))
-                + g.lights[1].rgb * max(0.0, dot(n, g.lights[0].xyz)) + g.lights[3].rgb * max(0.0, dot(n, g.lights[2].xyz));
-            return min(t * (min(l3, vec3(255.0 / 128.0)) + hit), vec3(1.0));
+            // Tekken Tag's three lights (each side's light block, 0x353918), per vertex (vs_skinned), the GS's
+            // modulation saturating at 255
+            return min(t * i.color.rgb, vec3(1.0));
         }
         let lum = g.ambient.rgb + g.key_color.rgb * max(0.0, dot(n, g.light_dir.xyz)) + 0.5 * g.key_color.rgb * max(0.0, n.y);
         return min(t * (g.material.rgb * lum + hit), vec3(1.0));
