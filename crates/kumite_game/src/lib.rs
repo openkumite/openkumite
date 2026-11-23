@@ -61,6 +61,8 @@ pub struct Body {
     pub joints: Vec<(usize, Vec3)>,
     /// Tekken Tag: its hands' poses (None: Tekken 3, or a pack without them).
     pub hands: Option<hands::Poses>,
+    /// Tekken Tag: its scale of the motions' root, 4096 = 1 (the moveset index's `motion_scale`).
+    pub motion_scale: i32,
 }
 
 /// The joints of the bone slots, slot by slot (the arcade engine's matrix slots; Tekken Tag's converter names them so).
@@ -106,6 +108,14 @@ impl Animations for FighterAnims<'_> {
             self.other.root_of(anim, frame)
         } else {
             self.own.root_of(anim, frame)
+        }
+    }
+
+    fn root_scale(&self, partner: bool) -> i32 {
+        if partner {
+            self.other.motion_scale
+        } else {
+            self.own.motion_scale
         }
     }
 
@@ -430,7 +440,8 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let bones = if tag { BONE_SLOTS.iter().map(|&j| character.nodes.iter().position(|n| n.name == j).with_context(|| format!("no joint {j}"))).collect::<Result<_>>()? } else { Vec::new() };
     let extra = if tag { strike_slots(id, entry.moveset_id) } else { Vec::new() };
     let joints = if tag { joint_places(&rules["joints"], record, id) } else { Vec::new() };
-    let body = Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden: Vec::new(), bones, extra, joints, hands };
+    let motion_scale = entry.motion_scale.unwrap_or(4096);
+    let body = Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden: Vec::new(), bones, extra, joints, hands, motion_scale };
     // the copying character: its own moveset is never played; outside a bout's rounds it stays the setup's fighter
     // shortcut: Force's bosses and the tag brawl's draw their fighter too (0x800B2770), here they keep this one,
     // and Force's player draws without a seed of the match (the same fighters every run)
@@ -550,6 +561,7 @@ fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
         extra: if own.bones.is_empty() { Vec::new() } else { strike_slots(COPIER as u64, id) },
         joints: own.joints.clone(),
         hands: own.hands.clone(),
+        motion_scale: own.motion_scale,
     }
 }
 

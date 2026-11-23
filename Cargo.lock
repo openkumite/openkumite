@@ -3971,7 +3971,7 @@ dependencies = [
 [[package]]
 name = "ok_tekken_tag_converter"
 version = "0.1.0"
-source = "git+https://github.com/openkumite/ok_tekken_tag_converter?branch=main#7d5a19baca05c626d30b731253e2c9dfc165e0ec"
+source = "git+https://github.com/openkumite/ok_tekken_tag_converter?branch=main#e9c23951a95922e617b648469f97f904218b1624"
 dependencies = [
  "anyhow",
  "filmcraft-mpeg2v",
