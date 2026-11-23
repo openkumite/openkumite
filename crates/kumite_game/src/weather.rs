@@ -621,7 +621,7 @@ impl Weather {
             let k = level * (1.0 - fade);
             let [r, g, b] = colour;
             let (color, blend) = if add { ([k * r, k * g, k * b, 1.0], Blend::Add) } else { ([r, g, b, k.min(1.0)], Blend::Half) };
-            out.push(Sprite { pos, size, cell, color, blend, mirror: false, nearer: 0.0 });
+            out.push(Sprite { pos, size, cell, color, blend, mirror: false, nearer: 0.0, sheet: 0 });
         };
         for p in self.particles.iter().filter(|p| p.age > 0) {
             if let (Some((at, fr)), Some(s)) = (self.place(p, p.age - 1), self.streams.get(p.stream)) {
@@ -659,7 +659,7 @@ impl Weather {
                     let pos = at + aside * l.copies;
                     let alpha = level - fade * (pos - eye).dot(forward);
                     if alpha > 0.0 {
-                        out.push(Sprite { pos, size: l.size, cell, color: [1.0, 1.0, 1.0, alpha.min(1.0)], blend: Blend::Half, mirror: false, nearer: 0.0 });
+                        out.push(Sprite { pos, size: l.size, cell, color: [1.0, 1.0, 1.0, alpha.min(1.0)], blend: Blend::Half, mirror: false, nearer: 0.0, sheet: 0 });
                     }
                 }
             }

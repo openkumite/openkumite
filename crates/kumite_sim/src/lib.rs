@@ -2133,23 +2133,33 @@ impl Fighter {
         if !self.tag_rules(gd) || self.character != Some(29) || a.pairs.first().map(|p| p[1]) != Some(0x18) {
             return None;
         }
-        let head = *bones.get(2)?;
-        let cut = |v: i32, t: i32| v * t / 0x8000;
-        let [up15, out15] = tag_sin_cos(-0xAAA as f32 * ANGLE);
-        // (step along the facing and up; the place back along the facing and up)
-        let (along, up, back, high) = match self.current.index {
-            4175 => (200, 0, 50, 170),
-            4177 | 4179 => (102, -110, -100, 160),
-            4180 => (cut(300, out15), -cut(300, up15), -40, 170),
+        let kind = match self.current.index {
+            4175 => 1,
+            4177 | 4179 => 2,
+            4180 => 4,
             _ => return None,
         };
-        let k = (self.frame as i32 - mv.active[0] as i32).max(0);
-        let [s, c] = tag_sin_cos(self.yaw);
-        let start = head + Vec3::new(-cut(back, s) as f32, high as f32, -cut(back, c) as f32);
-        let mut end = start + Vec3::new(cut(along, s) as f32, up as f32, cut(along, c) as f32) * k as f32;
-        end.y = end.y.max(0.0);
-        Some((start, end))
+        laser_line(kind, *bones.get(2)?, self.yaw, (self.frame as i32 - mv.active[0] as i32).max(0))
     }
+}
+
+/// Devil's beam of type `kind` (0x378248's: 1 0x378810, 2 0x378A28, 4 0x378E70; 3, 0x378C48's sweep, is none) from
+/// the head `head` heading `yaw`, `k` frames on: its start and end (game units; the end kept on the floor).
+pub fn laser_line(kind: u32, head: Vec3, yaw: f32, k: i32) -> Option<(Vec3, Vec3)> {
+    let cut = |v: i32, t: i32| v * t / 0x8000;
+    let [up15, out15] = tag_sin_cos(-0xAAA as f32 * ANGLE);
+    // (step along the facing and up; the place back along the facing and up)
+    let (along, up, back, high) = match kind {
+        1 => (200, 0, 50, 170),
+        2 => (102, -110, -100, 160),
+        4 => (cut(300, out15), -cut(300, up15), -40, 170),
+        _ => return None,
+    };
+    let [s, c] = tag_sin_cos(yaw);
+    let start = head + Vec3::new(-cut(back, s) as f32, high as f32, -cut(back, c) as f32);
+    let mut end = start + Vec3::new(cut(along, s) as f32, up as f32, cut(along, c) as f32) * k.max(0) as f32;
+    end.y = end.y.max(0.0);
+    Some((start, end))
 }
 
 /// Segment against a hurt sphere, the game's way (0x8004770C): a height-band clip, then a horizontal

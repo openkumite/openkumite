@@ -20,8 +20,10 @@
 //!
 //! Op 28 opens, beats and folds True Ogre's and Devil's wings. Op 25 puts an arena's object in a hand ([`EndingScene::props`]). Op 12 shows Jin's mark (his texture channel 0's frame 0, [`EndingScene::marks`]).
 //!
-//! Not played: ops 10 (the characters' own effects, 0x3A2BC0), 15 (True
-//! Ogre's fire, 0x3A4EE8), 16 (0x378368's table 0x8A7B70), 30 (objects 0x3ACF50); the EMBU's 9-11; ops 17 / 18 at nodes 0x4000-0x4002
+//! Op 16 fires Devil's beam ([`EndingScene::beams`]). Op 10 plays the actor's own effect (0x3A2BC0, [`Burst`]).
+//!
+//! Not played: ops 15 (True
+//! Ogre's fire, 0x3A4EE8), 30 (objects 0x3ACF50); the EMBU's 9-11; ops 17 / 18 at nodes 0x4000-0x4002
 //! (op 25's prop matrix 0x444CD0, 20 objects 0x3ACCD0); the face track (its joints are not mapped).
 
 use crate::UNITS;
@@ -122,12 +124,13 @@ impl Fade {
     }
 }
 
-/// A burst ops 17 / 18 threw this frame (0x3A2758): its kind (0 the hit spark, 1 set 3's, 2 the guard's, 3 the dust),
-/// where (metres), the way it turns to, whether it is dust more than 500 mm up (3 particles, not the arena's), its spin
-/// (radians a frame).
+/// A burst ops 17 / 18 threw this frame (0x3A2758): its kind (0 the hit spark, 1 set 3's, 2 the guard's, 3 the dust;
+/// 4 op 10's, the character effect of model record `model`, 0x3A2BC0), where (metres), the way it turns to, whether
+/// it is dust more than 500 mm up (3 particles, not the arena's), its spin (radians a frame).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Burst {
     pub kind: usize,
+    pub model: usize,
     pub pos: Vec3,
     pub dir: Option<Vec3>,
     pub high: bool,
@@ -176,6 +179,11 @@ pub struct EndingScene {
     pub marks: [bool; 2],
     /// Per actor slot: its wings (op 28), stepped every frame.
     wings: [crate::face::WingState; 2],
+    /// Per actor slot: op 16's beam (0x8A7B70: its type, the frame count, -1 its start, and its frames).
+    lasers: [Option<(u32, i32, i32)>; 2],
+    /// The beams this frame: actor slot, its model record, the beam's type, start and end (metres; none on its first
+    /// frame), its eyes.
+    pub beams: Vec<(usize, usize, u32, Option<(Vec3, Vec3)>, Vec3)>,
     /// The music started (the EMBU's op 13: its BGM).
     pub music: Option<usize>,
     /// The bursts thrown this frame.
@@ -261,6 +269,8 @@ impl EndingScene {
             ranges: [None; 2],
             marks: [false; 2],
             wings: Default::default(),
+            lasers: [None; 2],
+            beams: Vec::new(),
             music: None,
             bursts: Vec::new(),
             flashes: Vec::new(),
@@ -313,7 +323,7 @@ impl EndingScene {
                 17 => {
                     let s = (a & 1) as usize;
                     if let (Some(p), Some(q)) = (self.node_at(s, b), self.node_at(1 - s, last)) {
-                        self.bursts.push(Burst { kind: (a as usize >> 1) & 3, pos: p, dir: Some(p - q), high: false, spin: 0.0 });
+                        self.bursts.push(Burst { kind: (a as usize >> 1) & 3, model: 0, pos: p, dir: Some(p - q), high: false, spin: 0.0 });
                     }
                 }
                 // the dust at slot a & 1's node b (0x62: its place on the floor), spinning c x 2 pi / 4096 a frame
@@ -322,9 +332,20 @@ impl EndingScene {
                     let s = (a & 1) as usize;
                     let at = if b == 0x62 { self.node_at(s, 0).map(|p| (p * Vec3::new(1.0, 0.0, 1.0), false)) } else { self.node_at(s, b).map(|p| (p, p.y * UNITS > 500.0)) };
                     if let Some((pos, high)) = at {
-                        self.bursts.push(Burst { kind: 3, pos, dir: None, high, spin: last as f32 * std::f32::consts::TAU / 4096.0 });
+                        self.bursts.push(Burst { kind: 3, model: 0, pos, dir: None, high, spin: last as f32 * std::f32::consts::TAU / 4096.0 });
                     }
                 }
+                // slot c & 1's own effect at its node b (0x3A2BC0)
+                // shortcut: b = 0x4003 (the point 0x5F6280 through the actor's +0x974 matrix) is not played
+                10 => {
+                    let s = (last & 1) as usize;
+                    let model = self.slots[s].0.and_then(|k| self.records.get(k)).copied();
+                    if let (Some(model), Some(pos)) = (model, self.node_at(s, b)) {
+                        self.bursts.push(Burst { kind: 4, model, pos, dir: None, high: false, spin: 0.0 });
+                    }
+                }
+                // slot a & 1's beam: type b for c frames (0x378368)
+                16 => self.lasers[(a & 1) as usize] = Some((b.max(0) as u32, -1, last)),
                 // slot a & 1's texture channel 0 to frame 1 (b = 0) or 0 (0x3AB924)
                 12 => self.marks[(a & 1) as usize] = b != 0,
                 // slot a & 1's wings to state b (0x3AB8D0: True Ogre's and Devil's +0xB052)
@@ -338,6 +359,18 @@ impl EndingScene {
         }
         for w in &mut self.wings {
             w.step();
+        }
+        // the beams (0x378398): the start, then the type's line (as a fight's) along the head's heading (0x378760:
+        // its -x), a frame on each frame, for its frames
+        self.beams.clear();
+        for s in 0..2 {
+            let Some((kind, k, frames)) = self.lasers[s] else { continue };
+            let (Some(head), Some(&model)) = (self.head(s), self.slots[s].0.and_then(|m| self.records.get(m))) else { continue };
+            let eyes = head.w_axis.truncate();
+            let d = head.transform_vector3(-Vec3::X);
+            let line = (k >= 0).then(|| kumite_sim::laser_line(kind, eyes * UNITS, d.x.atan2(d.z), k)).flatten();
+            self.beams.push((s, model, kind, line.map(|(p, q)| (p / UNITS, q / UNITS)), eyes));
+            self.lasers[s] = (k + 1 < frames).then_some((kind, k + 1, frames));
         }
         let ending = self.ending.is_some() && self.camera_frame() >= self.frames().len();
         self.done |= ending || c >= MAX_FRAMES;
@@ -488,6 +521,13 @@ impl EndingScene {
     }
 
     /// Slot `s`'s node `n` (the game's numbering, the model's nodes') in metres; none for an empty slot or 0x4000 up.
+    /// Actor slot `s`'s head node's matrix in the world.
+    fn head(&self, s: usize) -> Option<Mat4> {
+        let (m, pose, place) = self.pose(s)?;
+        let n = self.characters.get(m)?.nodes.iter().position(|n| n.name == "head")?;
+        Some(place * *pose.get(n)?)
+    }
+
     fn node_at(&self, s: usize, n: i32) -> Option<Vec3> {
         let (_, pose, place) = self.pose(s)?;
         Some(place.transform_point3(pose.get(usize::try_from(n).ok()?)?.w_axis.truncate()))
