@@ -187,6 +187,8 @@ const LASER_LIGHT: u32 = 54;
 #[derive(Clone, Debug)]
 struct Laser {
     flare: u32,
+    /// Its frames with the end on the floor (+0x10).
+    floor: u32,
     jitters: [u16; 36],
 }
 
@@ -574,7 +576,7 @@ impl Vfx {
     /// a 500 mm segment from its end back (at most 36), the end's of its sheet's special slot 2, the rest of slot 1,
     /// each segment's frame its jitter (0..6, random at the start, + 1 a frame); half as wide on screen as 7200 x the
     /// width (100 t + 50, the wider 130 t + 70) over w; the first 15 frames the flare at the eyes `head` (slot 0's
-    /// frames, 5529600 / w). Its start (0x3A8C50) lights the fighters pink from the eyes (gp-0x6EA8, 54 frames).
+    /// frames, 5529600 / w); where its end lies on the floor, the arena's dust. Its start (0x3A8C50) lights the fighters pink from the eyes (gp-0x6EA8, 54 frames).
     pub fn laser(&mut self, i: usize, model: usize, from: Vec3, to: Vec3, head: Vec3, t: f32, wide: bool) {
         let Some(c) = self.data.as_ref().and_then(|d| d.characters.get(&model)).cloned() else { return };
         let (Some(set), [flare, rest, end, ..]) = (c.burst, c.special.as_slice()) else { return };
@@ -586,7 +588,7 @@ impl Vfx {
             for j in jitters.iter_mut().take(18) {
                 *j = (self.rand() & 7) as u16;
             }
-            self.lasers[i] = Some(Laser { flare: 0, jitters });
+            self.lasers[i] = Some(Laser { flare: 0, floor: 0, jitters });
             self.light = Some(([1.0, 0x80 as f32 / 255.0, 1.0], LASER_LIGHT, head, LASER_LIGHT));
         }
         let Some(l) = self.lasers[i].as_mut() else { return };
@@ -594,6 +596,10 @@ impl Vfx {
             self.flares.push(Sprite { pos: head, size: 2.0 * 5_529_600.0 * GS_W, cell, color: [1.0; 4], blend: Blend::Add, mirror: false, nearer: 0.0, sheet: set.sheet });
         }
         l.flare += 1;
+        // an end on the floor throws the dust there, its first frame and every 8th (0x378500 -> 0x379090)
+        let floored = to.y <= 0.0;
+        let dust = floored && l.floor & 7 == 0;
+        l.floor += u32::from(floored);
         let width = if wide { 130.0 * t + 70.0 } else { 100.0 * t + 50.0 };
         let n = (((to - from).length() * UNITS / 500.0) as usize).min(36);
         let step = (to - from) / n.max(1) as f32;
@@ -603,6 +609,9 @@ impl Vfx {
             let cell = cells.get(*j as usize).copied().unwrap_or(0);
             self.ribbons.push(Ribbon { from: to - step * k as f32, to: to - step * (k + 1) as f32, half: 7200.0 * width * GS_W, sheet: set.sheet, cell });
             *j += 1;
+        }
+        if dust {
+            self.burst_at(3, to, None, false, 0.0);
         }
     }
 
