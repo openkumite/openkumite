@@ -1221,6 +1221,12 @@ impl Renderer {
         self.upload(width, height, rgba, [&self.sampler, &self.sampler_smooth, &self.sampler_aniso[0]])
     }
 
+    /// Upload an RGBA8 texture whose texels are filtered (linear, no mipmaps) whatever the setting, but the enhanced
+    /// look's: as the PS2 draws Tekken Tag's fighters.
+    pub fn texture_smooth(&self, width: u32, height: u32, rgba: &[u8]) -> Arc<Texture> {
+        self.upload(width, height, rgba, [&self.sampler_smooth, &self.sampler_smooth, &self.sampler_aniso[0]])
+    }
+
     /// Upload an RGBA8 texture that tiles both ways, its texels sharp (or smooth by the setting).
     pub fn texture_tiled(&self, width: u32, height: u32, rgba: &[u8]) -> Arc<Texture> {
         self.upload(width, height, rgba, [&self.sampler_tiled[0], &self.sampler_tiled[1], &self.sampler_aniso[1]])

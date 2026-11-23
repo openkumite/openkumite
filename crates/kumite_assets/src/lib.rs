@@ -203,6 +203,9 @@ pub struct Character {
     /// with their texture's alpha; `indices.len()` when there are none.
     pub blend_from: usize,
     pub texture: Image,
+    /// The texture's sampler asks for linear filtering (Tekken Tag's fighters: TEX1 0x61, 0x521CE0); else its texels
+    /// are sharp.
+    pub filtered: bool,
     /// Tekken Tag's Jin: the texels of his texture channel's other frame, the mark (the texture's extras `mark`: the
     /// rectangle x, y, w, h and where in the texture its marked texels are).
     pub mark: Option<[u32; 6]>,
@@ -330,11 +333,12 @@ impl Character {
         let name = doc.scenes().next().and_then(|s| s.name().map(str::to_string)).unwrap_or_default();
         let extras = doc.textures().next().and_then(|t| serde_json::from_str::<serde_json::Value>(t.extras().as_ref()?.get()).ok());
         let mark = extras.and_then(|e| serde_json::from_value(e["mark"].clone()).ok());
+        let filtered = doc.textures().next().is_some_and(|t| t.sampler().mag_filter() == Some(gltf::texture::MagFilter::Linear));
         let extras = doc.skins().next().and_then(|s| serde_json::from_str::<serde_json::Value>(s.extras().as_ref()?.get()).ok());
         let wings = extras.as_ref().and_then(|e| serde_json::from_value::<Wings>(e["wings"].clone()).ok()).filter(|w| w.nodes.iter().all(|&n| n < nodes.len()) && !w.frames.is_empty());
         let cloth: Vec<ClothNode> = extras.and_then(|e| serde_json::from_value(e["cloth"].clone()).ok()).unwrap_or_default();
         let cloth = cloth.into_iter().filter(|c| nodes.get(c.node).is_some_and(|n| n.parent.is_some())).collect();
-        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, texture, mark, wings, clips, clip_index, cloth })
+        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, texture, filtered, mark, wings, clips, clip_index, cloth })
     }
 
     /// The wings at their track's `frame` (clamped to its end): each wing node turned and scaled so in its parent, its
@@ -440,6 +444,7 @@ impl Character {
             indices: self.indices.clone(),
             blend_from: self.blend_from,
             texture: self.texture.clone(),
+            filtered: self.filtered,
             mark: self.mark,
             wings: self.wings.clone(),
             clips: self.clips_of(donor),
