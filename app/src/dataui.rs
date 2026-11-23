@@ -45,7 +45,8 @@ fn kind(job: &Job) -> Kind {
 }
 
 /// Tekken Tag Tournament's game-only pack's budget: its conversion must stay within it (checked by the packs' test).
-pub const TTT_PACK: u64 = 900_000_000;
+// (0.92 GB at format 68: the endings' face tracks in their clips)
+pub const TTT_PACK: u64 = 950_000_000;
 
 /// About how much a part's conversion writes (its pack, and the extras it installs), with an archive's unpacked image.
 pub fn needed(part: Part, input: &Path) -> u64 {

@@ -1412,6 +1412,21 @@ fn jins_mark_in_ending_13() {
     assert!(w > 0 && h > 0 && (x + w).max(sx + w) <= jin.texture.width && (y + h).max(sy + h) <= jin.texture.height);
 }
 
+/// The face track (converter format 68): in ending 28 Jin's mouth (node 23) moves with the track, its place more than
+/// 5 mm up and down over the scene.
+#[test]
+fn jins_face_moves_in_ending_28() {
+    let Some(a) = assets() else { return };
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    let s = kumite_game::ending::EndingScene::new(&a, &d, 28, 0).unwrap();
+    let jin = s.characters.iter().position(|c| c.nodes.get(23).is_some_and(|n| n.name == "node_23")).unwrap();
+    let clip = s.characters[jin].clip("ending_28_1").unwrap();
+    let Some(places) = s.characters[jin].clips[clip].translations[23].clone() else { return eprintln!("no face track: convert the game again") };
+    let z: Vec<f32> = places.iter().map(|p| p.z).collect();
+    let (lo, hi) = (z.iter().copied().fold(f32::MAX, f32::min), z.iter().copied().fold(f32::MIN, f32::max));
+    assert!(hi - lo > 0.005, "{lo} {hi}");
+}
+
 /// Op 28: Devil's wings (model 663: nodes 103-108, 47 frames) open in ending 32 from frame 819.
 #[test]
 fn devils_wings_open_in_ending_32() {
