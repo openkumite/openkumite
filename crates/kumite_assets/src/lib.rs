@@ -540,7 +540,8 @@ pub struct Mesh {
     /// How it moves (the primitive's extras: the arcade stages' carousel, helicopter rotors and flames).
     pub motion: Option<Motion>,
     /// 1 added to what is behind it, 2 multiplying it (its material named `additive` or `shade`: Tekken Tag's
-    /// lights and gloss, its painted shadows); 0 drawn over it.
+    /// lights and gloss, its painted shadows), 3 blended over it by the texel's and the vertex's alpha; 0 drawn over
+    /// it.
     pub blend: u8,
 }
 
@@ -798,6 +799,9 @@ impl Stage {
                 let blend = match prim.material().name() {
                     Some("additive") => 1,
                     Some("shade") => 2,
+                    // Tekken Tag's ordinary blend (ALPHA 0x44, unnamed) faded by its vertices' alpha: the hall's
+                    // floor's dark edge, a mist
+                    None if prim.material().alpha_mode() == gltf::material::AlphaMode::Blend && col.iter().any(|c| c[3] < 1.0) => 3,
                     _ => 0,
                 };
                 out.push(Mesh { texture, vertices, indices, motion, blend });

@@ -1643,3 +1643,12 @@ fn heads_and_eyes_follow_the_opponent() {
     let centres = |v: &kumite_sim::BodyVolumes| v.hurt.iter().map(|s| s.centre).collect::<Vec<_>>();
     assert_eq!(centres(&b.game.spheres()[0]), centres(&kumite_game::volumes(&b.game.bodies[0], &pose, place)), "the spheres keep the motion's head");
 }
+
+/// The Bowl hall's floor edge (ALPHA 0x44, faded by its vertices' alpha) is blended, not cut out black.
+#[test]
+fn bowl_hall_floor_edge_is_blended() {
+    let Some(a) = assets() else { return };
+    let hall = a.stage(kumite_game::bowl::ARENA).unwrap();
+    assert!(hall.sky.iter().any(|m| m.blend == 3));
+    assert!(hall.sky.iter().filter(|m| m.blend == 3).all(|m| m.vertices.iter().any(|v| v.color[3] < 1.0)));
+}

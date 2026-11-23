@@ -583,6 +583,14 @@ fn fs_stage_add(i: VsOut) -> @location(0) vec4<f32> {
     return vec4(mix(t.rgb * i.color.rgb, g.fog_colour.rgb, i.fog) * t.a * i.color.a, 0.0);
 }
 
+// Tekken Tag's ordinary blend (ALPHA 0x44): the texel over the frame by its alpha times the vertex's
+@fragment
+fn fs_stage_blend(i: VsOut) -> @location(0) vec4<f32> {
+    if (i.dropped > 0.0) { discard; }
+    let t = texel(i.uv);
+    return vec4(mix(t.rgb * i.color.rgb, g.fog_colour.rgb, i.fog), t.a * i.color.a);
+}
+
 @fragment
 fn fs_stage_shade(i: VsOut) -> @location(0) vec4<f32> {
     if (i.dropped > 0.0) { discard; }
