@@ -5736,7 +5736,8 @@ impl App {
                 if let (Some((ch, pose, place)), Some(Some(model))) = (run.scene.partner_pose(), run.partners.get(run.scene.bowl.current)) {
                     r.update_bones(model, &ch.skin_matrices(&pose, place));
                 }
-                let fov_y = kumite_game::view_camera(&kumite_sim::camera::View { h: 500, ..Default::default() }).2;
+                // (the PS2's projection 0x4334C0 in the Bowl, read in PCSX2: 768.75 a unit across, a fight's)
+                let fov_y = kumite_game::view_camera(&kumite_sim::camera::View { h: 442, ..Default::default() }).2;
                 let (e, t) = run.scene.camera();
                 // (or the debug orbit camera about its target)
                 let mut cam = match self.debug.free_cam {
