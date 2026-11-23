@@ -2264,7 +2264,7 @@ impl Fighter {
 
     /// Tekken Tag: the joint turns and the root height eased, while an ease is on (for the pose drawn).
     pub fn eased(&self) -> Option<(Turns, f32)> {
-        (self.ease.mode != 0).then(|| (self.shown_turns, (self.shown_height as f32 - self.anim_root_y)))
+        (self.ease.mode != 0).then_some((self.shown_turns, self.shown_height as f32 - self.anim_root_y))
     }
 
     /// Juggle flight (0x8003F238): the physics height replaces the animation's root height until landing, with
@@ -2574,7 +2574,7 @@ fn orthonormal(m: [i16; 9]) -> [i16; 9] {
     let at = |k: usize| m[k] as i32;
     let x = unit([at(0), at(3), at(6)]);
     let d = (at(1) * x[0] + at(4) * x[1] + at(7) * x[2]) >> 12;
-    let y = unit([at(1) - (d * x[0] >> 12), at(4) - (d * x[1] >> 12), at(7) - (d * x[2] >> 12)]);
+    let y = unit([at(1) - ((d * x[0]) >> 12), at(4) - ((d * x[1]) >> 12), at(7) - ((d * x[2]) >> 12)]);
     let z = [cut(x[1] * y[2]) - cut(x[2] * y[1]), cut(x[2] * y[0]) - cut(x[0] * y[2]), cut(x[0] * y[1]) - cut(x[1] * y[0])];
     [x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]].map(|v| v as i16)
 }
