@@ -789,8 +789,8 @@ enum MovingKind {
 
 impl Scene {
     /// The stage's moving meshes as they are now.
-    /// shortcut: by the game's steps since the stage was loaded, not the fight's frames: they move on through a
-    /// pause and do not follow a replay's seeking; upgrade: the fight's frame counter.
+    /// shortcut: by the game's steps since the stage was loaded (held through a pause), not the fight's frames: they
+    /// do not follow a replay's seeking; upgrade: the fight's frame counter.
     fn animate(&mut self, r: &Renderer) {
         let frame = self.frame;
         // (the camera's turn about y: what King's clouds turn from)
@@ -1643,6 +1643,14 @@ impl App {
                 .is_some_and(|f| f.pause.is_some() || f.practice.as_ref().is_some_and(|p| p.open) || f.ttt_practice.as_ref().is_some_and(|p| p.open) || matches!(f.bout.phase, Phase::MatchOver { .. }))
     }
 
+    /// A pause (the pause menu, practice's menu, Bowl's pause pages): the whole game holds its frame, the arena's
+    /// motion and weather with the fighters.
+    fn game_paused(&self) -> bool {
+        self.tag.as_ref().is_some_and(|t| t.pause.is_some())
+            || self.bowl.as_ref().is_some_and(|b| b.pause.is_some() || b.page.is_some())
+            || self.fight.as_ref().is_some_and(|f| f.pause.is_some() || f.practice.as_ref().is_some_and(|p| p.open) || f.ttt_practice.as_ref().is_some_and(|p| p.open))
+    }
+
     /// The soft reset (0x8005101C): START held with SELECT pressed (nothing else held but L1 / R1) leaves a fight,
     /// a select screen or OPTION for the main menu, the music and sounds stopped. True when it did.
     fn soft_reset(&mut self) -> bool {
@@ -1767,7 +1775,8 @@ impl App {
             _ => None,
         };
         let mut thunder = vec![];
-        if let Some(s) = self.scene.as_mut() {
+        let paused = self.game_paused();
+        if let Some(s) = self.scene.as_mut().filter(|_| !paused) {
             s.frame += 1;
             if let Some((eye, forward, fov)) = view {
                 let look = glam::camera::rh::view::look_at_mat4(eye, eye + forward, glam::Vec3::Y);
@@ -5442,9 +5451,10 @@ impl App {
     fn draw(&mut self) {
         self.debug.frame_tick();
         let page_full = self.page_full_screen();
+        let held = self.debug.paused || self.game_paused();
         let Some(r) = self.renderer.as_mut() else { return };
         // (paused: the step itself)
-        let k = if self.debug.paused { 1.0 } else { self.lag.as_secs_f32() / STEP.as_secs_f32() };
+        let k = if held { 1.0 } else { self.lag.as_secs_f32() / STEP.as_secs_f32() };
         r.set_motion(self.logic_steps, k);
         // a tag battle's swap: the side shows its other member's GPU model; the win pose: the loser's place the winner's
         // partner's (put back first)
@@ -5931,7 +5941,8 @@ impl App {
         if let (Some(b), Some(data)) = (ball, self.roster.ball.as_deref()) {
             // its shadow in the stage's shadow colour (the beach's: black)
             let shade = self.scene.as_ref().and_then(|s| s.shadow).map(|s| s.colour);
-            ballview::draw(b, data, &self.roster.ball_hud["court_lines"], &cam, self.frames, shade, &mut flat_alpha, &mut flat_add);
+            let frame = self.fight.as_ref().map_or(0, |f| f.bout.game.fight.frame);
+            ballview::draw(b, data, &self.roster.ball_hud["court_lines"], &cam, frame, shade, &mut flat_alpha, &mut flat_add);
         }
         let effects_tex = self.scene.as_ref().and_then(|s| s.effects.clone());
         let particles = effects_tex.as_deref().map(|texture| kumite_render::Particles {
@@ -6130,7 +6141,7 @@ impl App {
                             let window = ctx.content_rect();
                             let project = |m: glam::Vec3| project_point(&cam, size, window, &view, m);
                             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("force_hud"))).with_clip_rect(view.rect);
-                            run.draw(&painter, &view, art, hud, roster, &f.bout, frames, &project);
+                            run.draw(&painter, &view, art, hud, roster, &f.bout, f.bout.game.fight.frame, &project);
                         }
                         if let Some(p) = &f.practice {
                             let view = art::Screen::fit(ctx.content_rect());
