@@ -5712,6 +5712,9 @@ impl App {
                 cam.sky_depth = scene.sky_model;
                 cam.background = Some(scene.background);
                 scene_lighting(&mut cam, scene);
+                // op 10's effect and op 16's beam light the actors too (0x3531F0 from 0x3A2BC0 / 0x3A8C50; PCSX2's
+                // ending 28: Jin red in his lightning)
+                cam.hit_light = self.vfx.as_ref().and_then(|v| v.hit_light()).map(|(c, k, p)| (c.map(|x| x * k), p));
                 (cam, Vec::new())
             }
             // the attract embu: its two slots on the scripted camera
