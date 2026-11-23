@@ -152,7 +152,7 @@ struct Scene {
     /// `sky_picture` (how it follows the camera, its texture and size, a white texture for its plain colours).
     sky_model: bool,
     sky_cull: bool,
-    /// The model shares the floor's depth (Tekken Tag's arenas).
+    /// Tekken Tag's arena (`drum_depth: "floor"`): drawn on the frame's sRGB bytes, as the GS does.
     sky_floor_depth: bool,
     sky_picture: Option<(kumite_assets::SkyPicture, Arc<kumite_render::Texture>, [f32; 2], Arc<kumite_render::Texture>)>,
     /// The full-screen fill behind the stage (sRGB; one stage's sky blue, black elsewhere).
@@ -5699,7 +5699,6 @@ impl App {
                 cam.sky_first = scene.sky_first;
                 cam.sky_cull = !scene.sky_model || scene.sky_cull;
                 cam.sky_depth = scene.sky_model;
-                cam.sky_floor_depth = scene.sky_floor_depth;
                 cam.background = Some(scene.background);
                 scene_lighting(&mut cam, scene);
                 (cam, Vec::new())
@@ -5722,7 +5721,6 @@ impl App {
                 // (an arcade stage's model: both sides of its faces)
                 cam.sky_cull = !scene.sky_model || scene.sky_cull;
                 cam.sky_depth = scene.sky_model;
-                cam.sky_floor_depth = scene.sky_floor_depth;
                 cam.background = Some(scene.background);
                 scene_lighting(&mut cam, scene);
                 (cam, Vec::new())
@@ -5767,7 +5765,6 @@ impl App {
                 // (an arcade stage's model: both sides of its faces)
                 cam.sky_cull = !scene.sky_model || scene.sky_cull;
                 cam.sky_depth = scene.sky_model;
-                cam.sky_floor_depth = scene.sky_floor_depth;
                 cam.background = Some(scene.background);
                 (cam, Vec::new())
             }
@@ -6809,11 +6806,10 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
         (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, true, false);
     }
     // an arcade stage: its model around the fighters' midpoint (x, z; 0x801D9118 of the arcade program), drawn after
-    // the floor without depth, far faces first
+    // the floor, hidden where the floor lies nearer (the helipad's tower below its deck, as the arcade shows it)
     if scene.sky_model {
         cam.sky = glam::Mat4::from_translation(glam::Vec3::new(mid.x, 0.0, mid.z));
-        (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, false, scene.sky_cull);
-        (cam.sky_depth, cam.sky_floor_depth) = (true, scene.sky_floor_depth);
+        (cam.sky_y_scale, cam.sky_first, cam.sky_cull, cam.sky_depth) = (1.0, false, scene.sky_cull, true);
     }
     // Force's backdrop wall, the original's 2D strip (0x800B4914): drawn first, the floor over it up to the wall; not
     // turned by the camera's roll but stepped up along the screen (its posts stay upright)
