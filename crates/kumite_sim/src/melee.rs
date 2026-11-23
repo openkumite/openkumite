@@ -304,7 +304,7 @@ impl Melee {
             let f = &mut self.actors[i];
             (f.opponent.root, f.opponent.evasive) = (root, evasive);
             if !frozen && !f.inactive {
-                f.track(&gd);
+                f.track(&gd, None);
             }
         }
         // the moves' damage to themselves (timed ops 0x0C / 0x0D), then the throws'
