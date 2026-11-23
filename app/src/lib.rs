@@ -200,9 +200,11 @@ struct Scene {
     flare: Option<Flare>,
     /// And its weather (stages.json `weather`: smoke, steam, wisps, beacons), a frame on each 60 Hz step.
     weather: Option<kumite_game::weather::Weather>,
-    /// The eye as it was last drawn (m: what the stage's objects that face the camera turn to), and its projection.
+    /// The eye as it was last drawn (m, in the arena's axes: what the stage's objects that face the camera turn to),
+    /// and its projection of the arena's axes; where the arena was drawn (it follows the fighters).
     eye: glam::Vec3,
     view_proj: glam::Mat4,
+    arena: glam::Vec3,
     /// The arena's objects its code moves by the camera and by chance (stages.json `objects`).
     objects: Option<kumite_game::arena_motion::ArenaMotion>,
 }
@@ -1451,6 +1453,7 @@ impl App {
             weather: None,
             eye: glam::Vec3::ZERO,
             view_proj: glam::Mat4::IDENTITY,
+            arena: glam::Vec3::ZERO,
             objects: None,
         };
         // the arcade game's stage in its place, when the arcade pack has one and the setting asks for it
@@ -1765,7 +1768,8 @@ impl App {
             s.frame += 1;
             if let Some((eye, forward, fov)) = view {
                 let look = glam::camera::rh::view::look_at_mat4(eye, eye + forward, glam::Vec3::Y);
-                (s.eye, s.view_proj) = (eye, glam::camera::rh::proj::directx::perspective(fov, 640.0 / 448.0, 0.05, 400.0) * look);
+                let proj = glam::camera::rh::proj::directx::perspective(fov, 640.0 / 448.0, 0.05, 400.0) * look;
+                (s.eye, s.view_proj) = (eye - s.arena, proj * glam::Mat4::from_translation(s.arena));
             }
             if let Some(w) = s.weather.as_mut() {
                 w.step();
@@ -5761,9 +5765,10 @@ impl App {
             cam.y_stretch = 480.0 / 448.0;
         }
         if let Some(s) = self.scene.as_mut() {
-            s.eye = cam.eye;
-            s.view_proj = cam.projection(r.aspect()) * cam.view();
-            s.place_people(r, glam::Vec3::new(cam.sky.w_axis.x, 0.0, cam.sky.w_axis.z));
+            s.arena = glam::Vec3::new(cam.sky.w_axis.x, 0.0, cam.sky.w_axis.z);
+            s.eye = cam.eye - s.arena;
+            s.view_proj = cam.projection(r.aspect()) * cam.view() * glam::Mat4::from_translation(s.arena);
+            s.place_people(r, s.arena);
         }
         let (sky, statics, models): (Vec<_>, Vec<_>, Vec<_>) = match (&self.scene, &self.fight) {
             (None, None) => (vec![], vec![], self.posers.shown.iter().filter_map(|p| self.poser_models.get(&p.record)).collect()),
