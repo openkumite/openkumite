@@ -134,8 +134,10 @@ pub struct Clip {
     pub frames: usize,
     /// Per node: rotation per frame, or `None` if the node keeps its rest rotation.
     pub rotations: Vec<Option<Vec<Quat>>>,
-    /// Per node: translation per frame (only the root carries one: root motion).
+    /// Per node: translation per frame (the root's: root motion; Tekken Tag's scenes' face nodes' places).
     pub translations: Vec<Option<Vec<Vec3>>>,
+    /// Per node: scale per frame (Tekken Tag's scenes' face nodes), else none.
+    pub scales: Vec<Option<Vec<Vec3>>>,
 }
 
 /// gamedata/shadows.json (export_shadows): the fighters' shadow meshes, each with the model records it serves.
@@ -291,7 +293,8 @@ impl Character {
         let texture = if motions_only { Image { width: 0, height: 0, rgba: Vec::new() } } else { to_image(images.first().context("no texture")?)? };
         let mut clips = Vec::new();
         for a in doc.animations() {
-            let mut clip = Clip { name: a.name().unwrap_or_default().to_string(), frames: 0, rotations: vec![None; nodes.len()], translations: vec![None; nodes.len()] };
+            let mut clip =
+                Clip { name: a.name().unwrap_or_default().to_string(), frames: 0, rotations: vec![None; nodes.len()], translations: vec![None; nodes.len()], scales: vec![None; nodes.len()] };
             for ch in a.channels() {
                 let r = ch.reader(get);
                 let node = ch.target().node().index();
@@ -305,6 +308,11 @@ impl Character {
                         let v: Vec<Vec3> = t.map(Vec3::from).collect();
                         clip.frames = clip.frames.max(v.len());
                         clip.translations[node] = Some(v);
+                    }
+                    gltf::animation::util::ReadOutputs::Scales(s) => {
+                        let v: Vec<Vec3> = s.map(Vec3::from).collect();
+                        clip.frames = clip.frames.max(v.len());
+                        clip.scales[node] = Some(v);
                     }
                     _ => {}
                 }
@@ -392,7 +400,10 @@ impl Character {
                 t.x = 0.0;
                 t.z = 0.0;
             }
-            let local = Mat4::from_rotation_translation(r, t);
+            let local = match c.scales[i].as_ref() {
+                Some(s) => Mat4::from_scale_rotation_translation(s[f.min(s.len() - 1)], r, t),
+                None => Mat4::from_rotation_translation(r, t),
+            };
             world[i] = n.parent.map_or(local, |p| world[p] * local);
         }
         world
@@ -464,8 +475,10 @@ impl Character {
                     .nodes
                     .iter()
                     .zip(&from)
-                    .map(|(n, j)| Some(j.filter(|_| n.parent.is_none()).and_then(|j| c.translations.get(j)?.as_ref())?.iter().map(|t| *t * size).collect()))
+                    // (the root's scaled to this skeleton; another node's, a scene's face, as it is)
+                    .map(|(n, j)| Some(c.translations.get((*j)?)?.as_ref()?.iter().map(|t| if n.parent.is_none() { *t * size } else { *t }).collect()))
                     .collect(),
+                scales: from.iter().map(|j| j.and_then(|j| c.scales.get(j)?.clone())).collect(),
             })
             .collect()
     }

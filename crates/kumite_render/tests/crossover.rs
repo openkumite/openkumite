@@ -125,7 +125,8 @@ fn retarget(to: &mut Character, from: &Character, clip: usize, to_ttt: bool) -> 
     let joint = |n: &str| BONES.iter().copied().find(|b| n.split('.').next() == Some(b));
     let leg = |c: &Character| c.nodes.iter().filter(|n| n.name == "shin_A" || n.name == "foot_A").map(|n| n.translation.length()).sum::<f32>();
     let size = leg(to) / leg(from);
-    let mut out = Clip { name: format!("{}_retargeted", c.name), frames: c.frames, rotations: vec![None; to.nodes.len()], translations: vec![None; to.nodes.len()] };
+    let mut out =
+        Clip { name: format!("{}_retargeted", c.name), frames: c.frames, rotations: vec![None; to.nodes.len()], translations: vec![None; to.nodes.len()], scales: vec![None; to.nodes.len()] };
     for (i, n) in to.nodes.iter().enumerate() {
         let Some(j) = joint(&n.name) else { continue };
         let Some(s) = from.nodes.iter().position(|o| o.name == j) else { continue };
