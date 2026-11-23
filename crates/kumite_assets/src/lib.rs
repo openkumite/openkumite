@@ -405,6 +405,25 @@ impl Character {
         Some((vertices, indices))
     }
 
+    /// Lit as Tekken Tag's select lights its characters (its VU0 programs, 0x4FA7E0): the highlight's program 0x04A is
+    /// a copy of the plain light's (0x000), and the highlight alone (0x0EA) ends at once, its strips not drawn.
+    pub fn select_look(&mut self) {
+        for v in &mut self.vertices {
+            if v.look[1] == 3.0 {
+                v.look[1] = 0.0;
+            }
+        }
+        let ends = [self.blend_from, self.layers[0], self.layers[1], self.indices.len()];
+        let (mut kept, mut start) = (Vec::with_capacity(self.indices.len()), 0);
+        let mut at = [0; 4];
+        for (k, &end) in ends.iter().enumerate() {
+            let alone = |t: &[u32]| t.iter().all(|&i| self.vertices.get(i as usize).is_some_and(|v| v.look[1] == 4.0));
+            kept.extend(self.indices.get(start..end).unwrap_or_default().chunks(3).filter(|t| !alone(t)).flatten());
+            (at[k], start) = (kept.len(), end);
+        }
+        (self.blend_from, self.layers, self.indices) = (at[0], [at[1], at[2]], kept);
+    }
+
     pub fn clip(&self, name: &str) -> Option<usize> {
         self.clip_index.get(name).copied()
     }
