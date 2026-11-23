@@ -145,13 +145,11 @@ pub struct Camera {
     /// The drum's panels seen from behind are not drawn (the original hardware's NCLIP: one of the original's drums,
     /// which the camera can stand outside of); off for a drum around the camera (an extra stage's, Ball's strip).
     pub sky_cull: bool,
-    /// The drum is a model drawn with a depth buffer of its own (an arcade stage's): over the floor everywhere, its
-    /// faces hiding one another by their depth, the fighters over all of it. The arcade game sorts its faces instead,
-    /// and so do the original's drums here; sorted by triangle, a model's large faces come out in the wrong order.
+    /// The drum is a model drawn with depth (an arcade stage's, Tekken Tag's arenas): one depth buffer for it, the
+    /// floor and the fighters, so the floor hides what of the model lies under it (the arcade's helipad tower below
+    /// the deck) and the model the fighters behind it. The arcade game sorts its faces instead, and so do the
+    /// original's drums here; sorted by triangle, a model's large faces come out in the wrong order.
     pub sky_depth: bool,
-    /// With `sky_depth`: the model is depth-tested against the floor too, one depth buffer for all (Tekken Tag's
-    /// arenas): the floor hides the ground under it, the model the fighters behind it.
-    pub sky_floor_depth: bool,
     /// The stage's fill behind everything (sRGB 0..255), else the renderer's clear colour.
     pub background: Option<[u8; 3]>,
     /// The stage meshes' placement (the floor follows the fighters by whole map periods).
@@ -231,7 +229,6 @@ impl Camera {
             sky_first: false,
             sky_cull: true,
             sky_depth: false,
-            sky_floor_depth: false,
             background: None,
             floor: Mat4::IDENTITY,
             hit_light: None,
@@ -339,9 +336,8 @@ struct Pipes {
     blob_pipeline: wgpu::RenderPipeline,
     static_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
-    /// The drum with depth (`Camera::sky_depth`), and the stage meshes' depth alone (no colour written).
+    /// The drum with depth (`Camera::sky_depth`).
     sky_depth_pipeline: wgpu::RenderPipeline,
-    static_depth_pipeline: wgpu::RenderPipeline,
     /// The stage's added and multiplying strips: on the floor (vs_static) and on the model (vs_sky), each kind.
     stage_blends: Vec<wgpu::RenderPipeline>,
     backdrop_pipeline: wgpu::RenderPipeline,
@@ -886,9 +882,8 @@ impl Renderer {
             let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, None);
             let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, Always, tri, None);
             let sky_depth_pipeline = make("sky depth", &static_layout, "vs_sky", "fs_unlit", &static_vb, true, Less, tri, None);
-            // (the colour kept as it is: only the depth is written)
+            // (what is drawn kept as it is: the blends' alpha)
             let keep = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-            let static_depth_pipeline = make("static depth", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, Some(wgpu::BlendState { color: keep, alpha: keep }));
             let backdrop_pipeline = make("backdrop", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, Always, tri, None);
             let sub = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Subtract };
             let negative_pipeline = make("negative", &static_layout, "vs_backdrop", "fs_unlit", &static_vb, false, Always, tri, Some(wgpu::BlendState { color: sub, alpha: keep }));
@@ -944,7 +939,6 @@ impl Renderer {
                 static_pipeline,
                 sky_pipeline,
                 sky_depth_pipeline,
-                static_depth_pipeline,
                 stage_blends,
                 backdrop_pipeline,
                 negative_pipeline,
@@ -1760,9 +1754,10 @@ impl Renderer {
                 stats.draw_calls += 1;
             }
             // the drum goes after the floor without depth (the game's OT 1010 vs 1021), or first on the stage
-            // stages.json names
-            let order = if cam.sky_first { [(&pipes.sky_pipeline, sky), (&pipes.static_pipeline, statics)] } else { [(&pipes.static_pipeline, statics), (&pipes.sky_pipeline, sky)] };
-            for (pipeline, meshes) in order.into_iter().filter(|o| !(sky_depth && std::ptr::eq(o.0, &pipes.sky_pipeline))) {
+            // stages.json names; a model with depth after the floor, against its depth
+            let drum = if sky_depth { &pipes.sky_depth_pipeline } else { &pipes.sky_pipeline };
+            let order = if cam.sky_first { [(drum, sky), (&pipes.static_pipeline, statics)] } else { [(&pipes.static_pipeline, statics), (drum, sky)] };
+            for (pipeline, meshes) in order {
                 pass.set_pipeline(pipeline);
                 for m in meshes.iter().filter(|m| m.blend == 0 && !m.late) {
                     pass.set_bind_group(1, m.texture.group(smooth), &[]);
@@ -1771,28 +1766,6 @@ impl Renderer {
                     pass.draw_indexed(0..m.count, 0, 0..1);
                     stats.draw_calls += 1;
                     stats.triangles += m.count / 3;
-                }
-            }
-        }
-        // a model with depth: over the floor with a depth buffer of its own; then the floor's depth again, for the
-        // fighters and their shadows
-        if sky_depth {
-            let passes = [("stage model", &pipes.sky_depth_pipeline, sky), ("floor depth", &pipes.static_depth_pipeline, statics)];
-            for (label, pipeline, meshes) in passes.into_iter().take(if cam.sky_floor_depth { 1 } else { 2 }) {
-                let depth = if cam.sky_floor_depth { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(1.0) };
-                let mut pass = begin(&mut enc, (label, wgpu::LoadOp::Load, depth));
-                pass.set_bind_group(0, &self.globals_group, &[]);
-                pass.set_pipeline(pipeline);
-                for m in meshes.iter().filter(|m| m.blend == 0 && !m.late) {
-                    pass.set_bind_group(1, m.texture.group(smooth), &[]);
-                    pass.set_vertex_buffer(0, m.vbuf.slice(..));
-                    pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..m.count, 0, 0..1);
-                    stats.draw_calls += 1;
-                    // (the floor's triangles are counted where its colour is drawn)
-                    if std::ptr::eq(pipeline, &pipes.sky_depth_pipeline) {
-                        stats.triangles += m.count / 3;
-                    }
                 }
             }
         }

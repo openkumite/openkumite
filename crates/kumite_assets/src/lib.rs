@@ -649,8 +649,8 @@ pub struct Stage {
     /// both sides of its faces are drawn, but with `sky_cull` (`drum_cull`: wound anticlockwise from the front).
     pub sky_model: bool,
     pub sky_cull: bool,
-    /// The model shares the floor's depth buffer (scene extras `drum_depth: "floor"`: Tekken Tag's arenas, which the
-    /// PS2 draws with one z-buffer), so the floor hides what lies under it and the model hides the fighters.
+    /// Scene extras `drum_depth: "floor"`: Tekken Tag's arenas, which the PS2 draws with one z-buffer for the model,
+    /// the floor and the fighters.
     pub sky_floor_depth: bool,
     /// The 2D panorama behind the model (scene extras `sky`), and how it follows the camera.
     pub sky_picture: Option<SkyPicture>,
