@@ -389,6 +389,29 @@ pub trait Animations {
     fn volumes(&self, _f: &Fighter, _gd: &GameData) -> Option<BodyVolumes> {
         None
     }
+    /// Tekken Tag: the turns of the 18 joint slots at a frame of a clip (their local matrices, 4096 = 1), for the
+    /// pose ease ([`Ease`]).
+    fn turns(&self, _anim: &str, _frame: u32, _partner: bool) -> Option<Turns> {
+        None
+    }
+}
+
+/// The 18 joint slots' local turns (3 x 3, rows, 4096 = 1), as the PS2 keeps them (player +0x630 + 0x50 n, +4).
+pub type Turns = [[i16; 9]; 18];
+
+/// Tekken Tag's pose ease (0x373428, player +0xB5DC..+0xB891): a delta from one motion's pose and root height to
+/// another's, added at the weight count / frames (0x34E938, 0x3A02C0) to every slot past the hips.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Ease {
+    /// +0xB5DC: 0 none; 1 from the pose last shown, the weight down to 0 (a move's start); 2 toward the queued move's
+    /// first frame, 3 toward the next move's, the weight up to 1.
+    mode: u8,
+    /// +0xB878 / +0xB880.
+    frames: i32,
+    count: i32,
+    /// +0xB872 and +0xB630: the deltas at weight 1.
+    height: i32,
+    turns: Turns,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -648,6 +671,13 @@ pub struct Fighter {
     /// Tekken Tag: the root at the last body push (its step since then shares the push, 0x377338); none before the
     /// first.
     pub push_prev: Option<Vec3>,
+    /// Tekken Tag: the pose ease; the move of the frame before (+0xB5E8); the pose and root height last shown
+    /// (+0xB390, +0xB5D2); struck, until a move starts on a frame it is not (+0xF3: 0x371F58, 0x36A8F8).
+    ease: Ease,
+    ease_last: Option<Current>,
+    shown_turns: Turns,
+    shown_height: i32,
+    reacting: bool,
 }
 
 /// Facing angles in game units (u16 turn = 0x10000), as the actor keeps them (0x80043A94): `off` (+0x2E) the
@@ -748,6 +778,11 @@ impl Fighter {
             screen_right: 0.0,
             juggle_bias: 0,
             push_prev: None,
+            ease: Ease::default(),
+            ease_last: None,
+            shown_turns: [[0; 9]; 18],
+            shown_height: 0,
+            reacting: false,
         };
         f.current = f.resolve(neutral).unwrap_or(f.current);
         f
@@ -890,6 +925,7 @@ impl Fighter {
     /// commit, an auto-turn and the per-frame tracking mode (facing_re §2.2). `end`: an END link.
     fn commit(&mut self, gd: &GameData, to: Current, alias: usize, transition: u32, end: bool, anims: &dyn Animations) {
         let buffered = std::mem::take(&mut self.queued_buffered);
+        self.reacting &= self.struck;
         let t = transition & 0x3F;
         self.recover_guard = match t {
             TRANSITION_CONTINUE => 1,
@@ -1980,6 +2016,7 @@ impl Fighter {
                 if self.tag_rules(gd) {
                     self.shown_root = self.root();
                     self.root_motion(gd, anims);
+                    self.ease(gd, anims);
                 }
                 return;
             }
@@ -2050,6 +2087,9 @@ impl Fighter {
         let before = self.root();
         self.shown_root = self.root();
         self.root_motion(gd, anims);
+        if self.tag_rules(gd) {
+            self.ease(gd, anims);
+        }
         self.fly();
         if self.air.is_none() {
             self.drift(gd);
@@ -2101,6 +2141,130 @@ impl Fighter {
             // Tekken Tag's height is scaled as the distance (0x363AB8)
             self.anim_root_y = scale.map_or(r.y, |s| (r.y.round() as i32 * s / 4096) as f32);
         }
+    }
+
+    /// Tekken Tag's pose ease for the frame (0x373428, after the move logic), then the root height and the joint
+    /// turns drawn with it (0x34E938, 0x34EF20).
+    fn ease(&mut self, gd: &GameData, anims: &dyn Animations) {
+        let (anim, f) = self.animation(gd);
+        let Some(raw) = anims.turns(anim, f, self.current.bank == Bank::Partner) else { return };
+        let (m, frame, last) = (self.current_move(gd), self.frame as i32, self.ease_last);
+        let (fl, frames, active, next) = (m.flags24.tag, m.frames as i32, m.active.map(|a| a as i32), m.next.alias);
+        let last_move = last.and_then(|c| self.moves(gd, c.bank).moves.get(c.index));
+        // +0x134: a new motion started (0x36A9A0)
+        let new_motion = self.started_with.is_some_and(|t| matches!(t & 0x3F, 1 | 3) || last_move.is_some_and(|l| l.anim != m.anim));
+        let last_fl = last_move.map_or(0, |l| l.flags24.tag);
+        self.ease_last = Some(self.current);
+        // (+0x131: down for the round)
+        let ko = self.health <= 0;
+        // no ease from the pose shown (a3), none toward the next move (s2). shortcut: player +0x17E (transition bit
+        // 0x4000, Unknown's only) is left out
+        let cut = fl & 0x181 != 0 || self.reacting || last_fl & fl & 0x40 != 0 || ko;
+        let hold = fl & 2 != 0 || (active[0] != 0 && frame <= active[1]) || self.juggle != 0 || (self.air.is_some() && self.reacting) || ko;
+        let e = &mut self.ease;
+        if match e.mode {
+            1 => e.count == 0 || cut,
+            2 => e.count == e.frames || hold,
+            3 => e.count == e.frames || new_motion || hold,
+            _ => false,
+        } {
+            e.mode = 0;
+        }
+        let mode = e.mode;
+        // 0x3736B8: another move eases in from the pose shown over the frames to its first active one (16 at most), 4
+        // without one (16 a throw's victim's), not past its end. shortcut: the same move again does only when player
+        // +0xF8 is 3, which is not followed
+        let left = (frames - frame).max(0);
+        let n = match active[0] {
+            _ if cut || last.is_none_or(|l| l == self.current) || left == 0 => 0,
+            0 if self.chain < 0 => 16,
+            0 => 4,
+            a if frame < a - 1 => (a - frame - 1).min(16),
+            _ => 0,
+        };
+        let mut start = (n.min(left) >= 2).then_some((1, n.min(left)));
+        if start.is_none() && !matches!(mode, 1 | 2) && !hold {
+            // 0x3737B0: past its last active frame, toward the queued move's start over the frames to the switch,
+            // unless that start is in the next move's active frames
+            if let Some((to, exec, t)) = self.queued.filter(|_| !self.queued_buffered) {
+                let exec = if exec == 255 { frames } else { exec as i32 };
+                // (0x36BF58: the frame the queued move starts on)
+                let first = if matches!(t & 0x3F, 2 | 18..=22 | 25 | 26 | 0x1D | 0x2C) { exec } else { 0 };
+                let next = self.moves(gd, to.bank).moves.get(to.index).map_or([0, 0], |m| m.active.map(|a| a as i32));
+                let n = exec - frame + 1;
+                if frame < exec && active[1] < frame && (next[0] == 0 || first + 1 < next[0] || next[1] < first + 1) && n >= 2 {
+                    start = Some((2, n));
+                }
+            }
+            // 0x3738C0: the last 15 frames toward the next move's first
+            if start.is_none() && mode == 0 && self.queued.is_none() && left < 16 {
+                let n = if self.frame_step > 0 { left + 1 } else { frame };
+                start = (n >= 2).then_some((3, n));
+            }
+        }
+        match start {
+            // 0x373930: the deltas, from the pose shown to this frame's (1), from this move's frame to the next move's
+            // first (2, 3)
+            Some((mode, n)) => {
+                let [a, b] = match mode {
+                    1 => [Some((self.shown_turns, self.shown_height)), Some((raw, self.anim_root_y as i32))],
+                    2 => {
+                        let (to, exec, t) = self.queued.unwrap_or((self.current, 0, 0));
+                        let exec = if exec == 255 { frames as u32 } else { exec };
+                        let first = if matches!(t & 0x3F, 2 | 18..=22 | 25 | 26 | 0x1D | 0x2C) { exec } else { 0 };
+                        [self.pose_at(gd, anims, to, first), self.pose_at(gd, anims, self.current, exec)]
+                    }
+                    _ => {
+                        let next = self.resolve(next).unwrap_or(self.current);
+                        [self.pose_at(gd, anims, next, 0), self.pose_at(gd, anims, self.current, if self.frame_step > 0 { frames as u32 } else { 0 })]
+                    }
+                };
+                let (Some(a), Some(b)) = (a, b) else { return };
+                self.ease = Ease {
+                    mode,
+                    frames: n,
+                    count: if mode == 1 { n - 1 } else { 0 },
+                    height: (a.1 - b.1) as i16 as i32,
+                    turns: std::array::from_fn(|j| std::array::from_fn(|k| a.0[j][k].wrapping_sub(b.0[j][k]))),
+                };
+            }
+            // 0x373D48: the count runs down (1) or up (2, 3)
+            None => {
+                let e = &mut self.ease;
+                match e.mode {
+                    0 => e.frames = 0,
+                    1 => e.count = (e.count - 1).max(0),
+                    _ => e.count = (e.count + 1).min(e.frames),
+                }
+            }
+        }
+        // 0x34EB4C, 0x3A0340, 0x3A02C0: the deltas at the weight, on the height and each slot past the hips
+        let e = self.ease;
+        let w2 = if e.frames != 0 { (e.count << 12) / e.frames * 2 } else { 0x2000 };
+        let part = |d: i32| {
+            let v = d * w2;
+            (v + if v < 0 { 0x1FFF } else { 0 }) >> 13
+        };
+        let h = self.anim_root_y as i32;
+        self.shown_height = if e.mode != 0 && e.frames != 0 { (h as i16 as i32 + part(e.height)) as i16 as i32 } else { h };
+        self.shown_turns = raw;
+        if e.mode != 0 {
+            for (s, (r, d)) in self.shown_turns.iter_mut().zip(raw.iter().zip(&e.turns)).skip(1) {
+                *s = orthonormal(std::array::from_fn(|k| (r[k] as i32 + part(d[k] as i32)) as i16));
+            }
+        }
+    }
+
+    /// Tekken Tag: move `c`'s joint turns and scaled root height at `frame` (0x363BD8).
+    fn pose_at(&self, gd: &GameData, anims: &dyn Animations, c: Current, frame: u32) -> Option<(Turns, i32)> {
+        let (anim, partner) = (&self.moves(gd, c.bank).moves.get(c.index)?.anim, c.bank == Bank::Partner);
+        let y = anims.root(anim, frame, partner)?.y.round() as i32 * anims.root_scale(partner) / 4096;
+        Some((anims.turns(anim, frame, partner)?, y))
+    }
+
+    /// Tekken Tag: the joint turns and the root height eased, while an ease is on (for the pose drawn).
+    pub fn eased(&self) -> Option<(Turns, f32)> {
+        (self.ease.mode != 0).then(|| (self.shown_turns, (self.shown_height as f32 - self.anim_root_y)))
     }
 
     /// Juggle flight (0x8003F238): the physics height replaces the animation's root height until landing, with
@@ -2380,6 +2544,41 @@ fn root_offset(r: Vec3, yaw: f32, scale: Option<i32>) -> Vec3 {
 
 /// Tekken Tag's sine and cosine of an angle (0x357F18 / 0x357F58): its 4096 table at the angle's top 12 bits,
 /// within ±0xFFF, times 8 (0x7FF8 at most).
+/// Tekken Tag's square root (0x39BCF8): Newton's from the power of two past the halving.
+fn tag_isqrt(n: u32) -> u32 {
+    if n == 0 {
+        return 0;
+    }
+    let (mut x, mut b) = (1u32, n);
+    while x < b {
+        (x, b) = (x << 1, b >> 1);
+    }
+    loop {
+        let y = (n / x).wrapping_add(x) >> 1;
+        if y >= x {
+            return x;
+        }
+        x = y;
+    }
+}
+
+/// A turn made orthonormal again (0x3A0388): its first column to unit length (0x39BDF0), the second square to it
+/// and to unit length, the third their cross product (0x39BEC8); 4096 = 1.
+fn orthonormal(m: [i16; 9]) -> [i16; 9] {
+    let cut = |v: i32| (v + if v < 0 { 0xFFF } else { 0 }) >> 12;
+    let unit = |v: [i32; 3]| {
+        let n = tag_isqrt(v.iter().fold(0i32, |a, x| a.wrapping_add(x.wrapping_mul(*x))) as u32) as i32;
+        let k = if n > 0 { 0x100_0000 / n } else { n };
+        v.map(|x| cut(x.wrapping_mul(k)))
+    };
+    let at = |k: usize| m[k] as i32;
+    let x = unit([at(0), at(3), at(6)]);
+    let d = (at(1) * x[0] + at(4) * x[1] + at(7) * x[2]) >> 12;
+    let y = unit([at(1) - (d * x[0] >> 12), at(4) - (d * x[1] >> 12), at(7) - (d * x[2] >> 12)]);
+    let z = [cut(x[1] * y[2]) - cut(x[2] * y[1]), cut(x[2] * y[0]) - cut(x[0] * y[2]), cut(x[0] * y[1]) - cut(x[1] * y[0])];
+    [x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]].map(|v| v as i16)
+}
+
 fn tag_sin_cos(a: f32) -> [i32; 2] {
     let a = (a / ANGLE).round() as i32 >> 4;
     [ball::sin12(a), ball::cos12(a)].map(|v| v.clamp(-0xFFF, 0xFFF) * 8)
@@ -3587,6 +3786,7 @@ impl Fight {
                 self.fighters[v].pushback = gd.reactions.pushback_curves.entries.iter().find(|c| c.index as i32 == curve_ref).map(|curve| Pushback { curve: curve.clone(), frame: 0, direction, tag });
             }
             self.fighters[v].struck_in_move = true;
+            self.fighters[v].reacting = true;
             let what = if blocked {
                 "blocks"
             } else if counter {
@@ -3746,6 +3946,15 @@ mod tests {
         assert_eq!(root_offset(r, yaw, Some(4014)), Vec3::new(342.0, 0.0, 0.0));
         assert_eq!(root_offset(r, yaw, Some(4096)), Vec3::new(350.0, 0.0, 0.0));
         assert!((root_offset(r, yaw, None) - Vec3::new(350.0, 0.0, 0.0)).length() < 0.1);
+    }
+
+    #[test]
+    fn tekken_tags_eased_turns_are_squared_up() {
+        // halfway between no turn and a quarter turn about y: the columns back to unit length and square
+        let half = [2048, 0, 2048, 0, 4096, 0, -2048, 0, 2048];
+        assert_eq!(orthonormal(half), [2896, 0, 2896, 0, 4096, 0, -2896, 0, 2896]);
+        assert_eq!(orthonormal([4096, 0, 0, 0, 4096, 0, 0, 0, 4096]), [4096, 0, 0, 0, 4096, 0, 0, 0, 4096]);
+        assert_eq!((tag_isqrt(0), tag_isqrt(1), tag_isqrt(16_777_216), tag_isqrt(99)), (0, 1, 4096, 9));
     }
 
     #[test]

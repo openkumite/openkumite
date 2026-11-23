@@ -26,7 +26,7 @@ pub mod vfx;
 pub mod weather;
 
 use kumite_sim::camera::{CameraData, EndCam, FightCamera, Sample, Shot, Subject, View};
-use kumite_sim::{Animations, BodyVolumes, Fight, GameData, Sphere};
+use kumite_sim::{Animations, BodyVolumes, Fight, GameData, Sphere, Turns};
 use std::collections::VecDeque;
 
 /// Converted glTF space is metres; the simulation works in game units (≈ mm).
@@ -119,6 +119,20 @@ impl Animations for FighterAnims<'_> {
         }
     }
 
+    fn turns(&self, anim: &str, frame: u32, partner: bool) -> Option<Turns> {
+        let src = if partner { self.other } else { self.own };
+        let (nodes, clip) = (&self.own.character.nodes, src.character.clips.get(src.character.clip(anim)?)?);
+        let mut turns = [[0; 9]; 18];
+        for (t, &n) in turns.iter_mut().zip(&self.own.bones) {
+            let node = nodes.get(n)?;
+            let j = if partner { src.character.nodes.iter().position(|o| o.name == node.name) } else { Some(n) };
+            let r = j.and_then(|j| clip.rotations.get(j)?.as_ref()).and_then(|v| v.get((frame as usize).min(v.len().saturating_sub(1)))).copied().unwrap_or(node.rotation);
+            let c = Mat3::from_quat(r).to_cols_array_2d();
+            *t = std::array::from_fn(|k| (c[k % 3][k / 3] * 4096.0).round() as i16);
+        }
+        (self.own.bones.len() >= 18).then_some(turns)
+    }
+
     fn volumes(&self, f: &kumite_sim::Fighter, gd: &kumite_sim::GameData) -> Option<BodyVolumes> {
         if self.own.bones.is_empty() {
             return None;
@@ -126,7 +140,7 @@ impl Animations for FighterAnims<'_> {
         let partner = f.current.bank == kumite_sim::data::Bank::Partner;
         let other = if partner { self.other } else { self.own };
         let (anim, frame) = f.animation(gd);
-        let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw };
+        let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw, ease: f.eased() };
         let (pose, place) = shown_pose(self.own, other, &shown);
         Some(volumes(self.own, &pose, place))
     }
@@ -141,6 +155,8 @@ pub struct Snapshot {
     pub partner: bool,
     pub root: Vec3,
     pub yaw: f32,
+    /// Tekken Tag's pose ease: the joint slots' turns and the root's lift (game units) eased.
+    pub ease: Option<(Turns, f32)>,
 }
 
 /// Frames a secondary joint takes to go over from the last clip's pose to the new one.
@@ -1046,7 +1062,7 @@ impl Game {
     /// What fighter `i` shows now (for the replay record).
     pub fn snapshot(&self, i: usize) -> Snapshot {
         let f = &self.fight.fighters[i];
-        Snapshot { clip: self.clip(i), partner: !std::ptr::eq(self.clip_owner(i), &*self.bodies[i]), root: f.root(), yaw: f.yaw }
+        Snapshot { clip: self.clip(i), partner: !std::ptr::eq(self.clip_owner(i), &*self.bodies[i]), root: f.root(), yaw: f.yaw, ease: f.eased() }
     }
 
     /// The camera's frame, then each fighter's side for the next one: where its pelvis falls on the screen
@@ -1342,7 +1358,7 @@ impl Game {
         let borrowed = self.fight.data.tag_moves && body.character.clip(anim).is_none();
         let partner = f.current.bank == kumite_sim::data::Bank::Partner || borrowed;
         let other = if partner { opponent } else { body };
-        let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw };
+        let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw, ease: f.eased() };
         Some(shown_pose(body, other, &shown))
     }
 
@@ -1606,6 +1622,16 @@ pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Ma
         Some((clip, frame)) => body.character.pose(clip, frame, true),
         None => body.character.pose(0, 0, true),
     };
+    if let Some((turns, lift)) = shown.ease {
+        // (the slots past the hips take the eased turns, rows of 4096; the body rises by the eased height)
+        for (t, &n) in turns.iter().zip(&body.bones).skip(1) {
+            let c = |k: usize| Vec3::new(t[k].into(), t[k + 3].into(), t[k + 6].into()) / 4096.0;
+            head::set_local(&body.character.nodes, &mut pose, n, Mat3::from_cols(c(0), c(1), c(2)));
+        }
+        for m in &mut pose {
+            *m = Mat4::from_translation(Vec3::Y * lift / UNITS) * *m;
+        }
+    }
     // (a hidden node's mesh shrinks into its joint)
     for &n in &body.hidden {
         if let Some(m) = pose.get_mut(n) {

@@ -241,7 +241,7 @@ impl TagGame {
         let partner = f.current.bank == kumite_sim::data::Bank::Partner;
         let (anim, frame) = f.animation(&self.melee.fight.data);
         let owner = if partner { &self.bodies[self.melee.facing(i)] } else { &self.bodies[i] };
-        Snapshot { clip: owner.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw }
+        Snapshot { clip: owner.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw, ease: f.eased() }
     }
 
     fn pose_animated(&self, i: usize) -> (Vec<Mat4>, Mat4) {

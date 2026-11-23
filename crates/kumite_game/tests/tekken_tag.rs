@@ -420,7 +420,8 @@ fn pauls_belt_sways() {
 }
 
 /// The body push measures each side's step from where the last push left it (0x377338 against 0x8A7A90): Paul's
-/// u/f+3 walks Hwoarang's guard back and they part 1004 apart in PCSX2 (1102 when the step left the push out).
+/// u/f+3 walks Hwoarang's guard back and they part 1004 apart in PCSX2 (1102 when the step left the push out). The
+/// move eases in from the stance's pose (0x373428): his hips 103, 94, 86, ..., 8, 0 below the motion's, as in PCSX2.
 #[test]
 fn the_push_after_a_guard_parts_them_as_on_the_ps2() {
     let Some(a) = assets() else { return };
@@ -430,9 +431,15 @@ fn the_push_after_a_guard_parts_them_as_on_the_ps2() {
     while b.phase != Phase::Fight {
         b.step([Pad::default(); 2]);
     }
+    let mut hips = Vec::new();
     for pad in parse_script("n*2,u+1+2*2,n*80,u+3+4*2,n*80,u/f+1*2,n*80,u/f+3*2,n*40").unwrap() {
         b.step([pad, Pad::default()]);
+        let p = &b.game.fight.fighters[0];
+        if p.alias == 4677 && p.frame <= 13 {
+            hips.push(p.eased().map_or(1, |e| e.1 as i32));
+        }
     }
+    assert_eq!(hips, [-103, -94, -86, -77, -68, -60, -51, -43, -34, -25, -17, -8, 0]);
     let f = &b.game.fight.fighters;
     let apart = f[0].root().distance(f[1].root());
     assert!((apart - 1004.0).abs() < 30.0, "{apart}");
@@ -1337,7 +1344,7 @@ fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: imp
 /// alone) still 240, 237, 201 and 312, holding back 140), here a cell's eight matches each; a seed replays the same.
 /// (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands. Neither CPU holds a direction
 /// in its own recoveries' END windows: 0 of 72 frames on the PS2, 0 of 70 here.) Stage 4's eight matches swing by
-/// about 50 a minute with any change of the fights (352 to 412 with the pushback a frame earlier, as on the PS2).
+/// about 50 a minute with any change of the fights (412 without the moves' pose ease, 316 with it).
 #[test]
 fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     let Some(a) = assets() else { return };
@@ -1348,7 +1355,7 @@ fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     });
     let dmg: Vec<(u32, u32)> = cells.iter().map(|c| (c.0, c.1)).collect();
     eprintln!("damage a minute, still / holding back: {dmg:?}");
-    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 420), (110, 190)), ((200, 315), (110, 180))].into_iter().enumerate() {
+    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 380), (110, 190)), ((200, 315), (110, 180))].into_iter().enumerate() {
         assert!((still.0..=still.1).contains(&dmg[k].0) && (back.0..=back.1).contains(&dmg[k].1), "cell {k}: {:?}", dmg[k]);
         assert!(dmg[k].1 < dmg[k].0, "holding back takes less");
     }
