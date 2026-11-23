@@ -2915,6 +2915,7 @@ impl Posers {
         }
         let names = &d.raw["select"]["models"]["motions"][id];
         let mut ch = assets.character(record)?;
+        ch.select_look();
         let mut clip = |k: usize| -> anyhow::Result<usize> {
             let name = names[k].as_str().ok_or_else(|| anyhow::anyhow!("no select motions for character {id}"))?;
             if ch.clip(name).is_none() {

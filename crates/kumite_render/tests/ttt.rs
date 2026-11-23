@@ -42,6 +42,16 @@ fn ttt_fighters_on_an_arena() {
             eprintln!("an older pack: no draw modes");
         }
     }
+    // the select's programs (0x4FA7E0): Ogre's highlight lit plainly, his highlight-alone strips not drawn
+    if let Ok(mut ogre) = assets.character(534).map_err(|e| eprintln!("no model 534: {e:#}")) {
+        if ogre.vertices.iter().any(|v| v.look[1] == 4.0) {
+            let n = ogre.indices.len();
+            ogre.select_look();
+            assert!(ogre.vertices.iter().all(|v| v.look[1] != 3.0) && ogre.indices.len() < n && ogre.indices.len() % 3 == 0);
+            assert!(ogre.blend_from <= ogre.layers[0] && ogre.layers[0] <= ogre.layers[1] && ogre.layers[1] <= ogre.indices.len());
+            assert!(ogre.indices.chunks(3).all(|t| t.iter().any(|&i| ogre.vertices[i as usize].look[1] != 4.0)));
+        }
+    }
     let stage = assets.stage(0).unwrap();
     assert!(stage.sky_model && !stage.sky.is_empty() && !stage.meshes.is_empty());
 
