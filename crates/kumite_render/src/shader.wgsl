@@ -58,7 +58,7 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
-@group(2) @binding(0) var<uniform> bones: array<mat4x4<f32>, 128>;
+@group(2) @binding(0) var<uniform> bones: array<mat4x4<f32>, 160>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,

@@ -481,7 +481,9 @@ impl StaticMesh {
     }
 }
 
-pub const MAX_BONES: usize = 128;
+/// Tekken Tag's fighters with swaying nodes skin on up to 160 (Law's sleeves: nodes 134-147); 10 KB of uniforms, within
+/// WebGL2's 16 KB. The shader's `bones` array is as long.
+pub const MAX_BONES: usize = 160;
 
 /// The final pass: the scene's target stretched over the window (a full-screen triangle).
 const BLIT_WGSL: &str = "
