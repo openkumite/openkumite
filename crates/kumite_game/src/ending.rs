@@ -336,11 +336,13 @@ impl EndingScene {
                     }
                 }
                 // slot c & 1's own effect at its node b (0x3A2BC0)
-                // shortcut: b = 0x4003 (the point 0x5F6280 through the actor's +0x974 matrix) is not played
+                // (0x4003: the point 0x5F6280, (40, 0, 500) mm, in the actor's own frame, +0x974 and +0x988, 0x3AB3E8)
                 10 => {
                     let s = (last & 1) as usize;
                     let model = self.slots[s].0.and_then(|k| self.records.get(k)).copied();
-                    if let (Some(model), Some(pos)) = (model, self.node_at(s, b)) {
+                    let at =
+                        if b == 0x4003 { self.pose(s).and_then(|(_, pose, place)| Some((place * *pose.first()?).transform_point3(Vec3::new(40.0, 0.0, -500.0) / UNITS))) } else { self.node_at(s, b) };
+                    if let (Some(model), Some(pos)) = (model, at) {
                         self.bursts.push(Burst { kind: 4, model, pos, dir: None, high: false, spin: 0.0 });
                     }
                 }
