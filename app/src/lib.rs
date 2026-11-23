@@ -5901,7 +5901,10 @@ impl App {
                 let Some(t) = self.effect_sheets.entry(file.clone()).or_insert_with(|| effect_atlas(r, &root.join("pictures/effects").join(file))).clone() else { continue };
                 let (mut a, mut b) = (Vec::new(), Vec::new());
                 let group: Vec<_> = others.iter().filter(|s| s.sheet == id).copied().collect();
-                effect_quads(&group, (*cols, *rows), &cam, &mut Vec::new(), &mut b, &mut a);
+                // (Tekken 3's half-blended gas on Tekken 3's sheet: at its colour's alpha, a half)
+                let mut half = Vec::new();
+                effect_quads(&group, (*cols, *rows), &cam, &mut half, &mut b, &mut a);
+                a.extend(half);
                 ribbon_quads(v.ribbons.iter().filter(|b| b.sheet == id), (*cols, *rows), &cam, &mut b);
                 sheets.push((t, a, b));
             }

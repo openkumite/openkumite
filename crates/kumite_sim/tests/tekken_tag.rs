@@ -27,6 +27,7 @@ fn body(f: &Fighter, opponent: &Fighter) -> BodyVolumes {
         hurt: (0..14).map(|k| Sphere { centre: r + Vec3::Y * (150.0 + 110.0 * k as f32), radius: 250.0, zone: k }).collect(),
         push: vec![Sphere { centre: r + Vec3::Y * 900.0, radius: 300.0, zone: 0 }],
         bones: vec![opponent.root() + Vec3::Y * 1100.0; 18],
+        ..Default::default()
     }
 }
 

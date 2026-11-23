@@ -110,6 +110,11 @@ pub struct EffectsData {
     pub bursts: HashMap<String, BurstSet>,
     /// Tekken Tag's characters' picture sheets (`pictures/effects/` file, columns, rows): sprite sheet k + 1.
     pub sheets: Vec<(String, u32, u32)>,
+    /// Gon's fire (its start and loop, its end) and gas, and their sheet (Tekken Tag's: Tekken 3's atlas, `t3`).
+    pub fire: Strip,
+    pub fire_end: Strip,
+    pub gas: Strip,
+    pub objects_sheet: usize,
 }
 
 impl EffectsData {
@@ -161,6 +166,15 @@ impl EffectsData {
             })
             .collect();
         let bursts = v["bursts"].as_object().into_iter().flatten().map(|(name, b)| (name.clone(), burst(b, 0))).collect();
+        // (Tekken Tag's: Tekken 3's strips on its atlas, a sheet of its own)
+        let t3 = &v["t3"];
+        let objects_sheet = t3["sheet"]["file"].as_str().map_or(0, |file| {
+            let n = |k: &str| t3["sheet"][k].as_u64().unwrap_or(1).max(1) as u32;
+            sheets.push((file.to_string(), n("cols"), n("rows")));
+            sheets.len()
+        });
+        let strips = if t3.is_null() { &v["strips"] } else { &t3["strips"] };
+        let object = |name: &str| Strip { cells: cells(&strips[name]["cells"]), life: 0 };
         Some(Self {
             cols: v["atlas"]["cols"].as_u64()? as u32,
             rows: v["atlas"]["rows"].as_u64()? as u32,
@@ -173,6 +187,10 @@ impl EffectsData {
             ground,
             bursts,
             sheets,
+            fire: object("fire"),
+            fire_end: object("fire_end"),
+            gas: object("gas"),
+            objects_sheet,
         })
     }
 }
@@ -296,7 +314,33 @@ pub struct Vfx {
     lasers: Vec<Option<Laser>>,
     pub ribbons: Vec<Ribbon>,
     flares: Vec<Sprite>,
+    /// The effect objects' pictures this frame (Gon's fire and gas), and the fires on struck fighters.
+    objects: Vec<Sprite>,
+    burns: Vec<Burn>,
 }
+
+/// A fire on a fighter Gon's fire struck (effect object 0xB, 0x80072E74): on a bone slot of the victim for 60-75
+/// frames, its loop's cells (`count` its phase), then rising off it (`rise`, m a frame) 7 frames looped and 5 ending.
+#[derive(Clone, Debug)]
+pub struct Burn {
+    pub victim: usize,
+    pub slot: usize,
+    pub pos: Vec3,
+    pub state: u8,
+    pub count: i32,
+    pub left: i32,
+    pub rise: f32,
+    pub mirror: bool,
+}
+
+/// The bone slots a struck fighter burns on (0x80025180).
+const BURN_SLOTS: [usize; 10] = [1, 2, 4, 8, 5, 9, 12, 13, 15, 16];
+/// The pictures' sizes (their corners: 0x80025584 ±432, 0x800256A0 ±345, 0x80025770 ±250 units) and the fires'
+/// light (0x8002517C, 48 frames).
+const FIRE_SIZE: f32 = 0.864;
+const BURN_SIZE: f32 = 0.690;
+const GAS_SIZE: f32 = 0.5;
+const FIRE_LIGHT: [f32; 3] = [1.0, 128.0 / 255.0, 0.0];
 
 impl Vfx {
     pub fn new(assets: &kumite_assets::Assets) -> Self {
@@ -338,6 +382,8 @@ impl Vfx {
             lasers: Vec::new(),
             ribbons: Vec::new(),
             flares: Vec::new(),
+            objects: Vec::new(),
+            burns: Vec::new(),
         }
     }
 
@@ -378,6 +424,8 @@ impl Vfx {
         self.lasers.clear();
         self.ribbons.clear();
         self.flares.clear();
+        self.objects.clear();
+        self.burns.clear();
     }
 
     /// A hit-spark slot (the 4th overwrites the oldest). `dir`: the strike direction (moving sparks only).
@@ -552,6 +600,7 @@ impl Vfx {
             },
             &|i, name| game.body_of(i)?.character.nodes.iter().position(|n| n.name == name),
         );
+        self.objects(&fight.objects.list);
         // Devil's beam (0x378600): from the active window's start to 30 frames past its end, its width narrowing
         self.ribbons.clear();
         self.flares.clear();
@@ -649,6 +698,14 @@ impl Vfx {
             } else {
                 // every hit: the red spark thrown along the strike (0x80076C28)
                 self.effect("spark", &data.spark, pos, Some(strike), Blend::Add, eye);
+                // Gon's fire sets the struck one burning (0x80076D24 -> 0x8006EF60)
+                // shortcut: a struck Gon burns on all ten slots, the game on one, larger (+0xD bit 5)
+                if matches!(h.limb, 0x18 | 0x1A) {
+                    for slot in BURN_SLOTS {
+                        let r = self.rand() as i32;
+                        self.burns.push(Burn { victim: h.victim, slot, pos, state: 1, count: r >> 4, left: (r & 15) + 60, rise: 0.0, mirror: r & 1 != 0 });
+                    }
+                }
                 if h.damage.max(h.base_damage) >= HEAVY {
                     self.char_spark(models.get(h.attacker).copied().unwrap_or(0), pos, Some(strike), eye);
                     // fire / projectile attacks (limb bytes 0x18..0x1C) have their own effects instead
@@ -658,6 +715,7 @@ impl Vfx {
                 }
             }
         }
+        self.burn(at, node);
         for &(f, i, o) in actors {
             for e in &f.effects {
                 match *e {
@@ -683,6 +741,73 @@ impl Vfx {
                     }
                 }
             }
+        }
+    }
+
+    /// The struck fighters' fires one frame (0x80073054 / 0x800732A4 / 0x80073394).
+    fn burn(&mut self, at: &dyn Fn(usize, usize) -> Option<Vec3>, node: &dyn Fn(usize, &str) -> Option<usize>) {
+        let mut burns = std::mem::take(&mut self.burns);
+        for b in &mut burns {
+            b.count += 1;
+            match b.state {
+                1 => {
+                    if let Some(p) = crate::BONE_SLOTS.get(b.slot).and_then(|name| node(b.victim, name)).and_then(|n| at(b.victim, n)) {
+                        b.pos = p;
+                    }
+                    if self.rand() >> 8 & 15 == 0 {
+                        self.light = Some((FIRE_LIGHT, LIGHT_FRAMES, b.pos, LIGHT_FRAMES));
+                    }
+                    b.left -= 1;
+                    if b.left < 0 {
+                        (b.state, b.count) = (2, 0);
+                    }
+                }
+                _ => {
+                    // (rising: 0x18000 more a frame in 16.16 units)
+                    b.rise += 1.5 / UNITS;
+                    b.pos.y += b.rise;
+                    if b.state == 2 && b.count >= 8 {
+                        (b.state, b.count) = (3, 0);
+                    }
+                }
+            }
+        }
+        burns.retain(|b| b.state < 3 || b.count < 5);
+        self.burns = burns;
+    }
+
+    /// The effect objects' pictures (drawn after their move, 0x8006FC84): the fire's growing, looped and ending
+    /// cells, 2 frames each, lighting the fighters now and then (0x800720EC); the gas puff's.
+    fn objects(&mut self, list: &[kumite_sim::objects::Object]) {
+        use kumite_sim::objects::Kind;
+        self.objects.clear();
+        let Some(d) = self.data.clone() else { return };
+        let sprite = |strip: &Strip, k: i32, pos: Vec3, size: f32, blend: Blend, mirror: bool| {
+            let cell = *strip.cells.get(usize::try_from(k).ok()?)?;
+            let a = if blend == Blend::Half { 0.5 } else { 1.0 };
+            Some(Sprite { pos, size, cell, color: [1.0, 1.0, 1.0, a], blend, mirror, nearer: 0.0, sheet: d.objects_sheet })
+        };
+        for o in list {
+            let pos = o.pos / UNITS;
+            let s = match (o.kind, o.state) {
+                (Kind::Fire, 1) => sprite(&d.fire, o.count >> 1, pos, FIRE_SIZE, Blend::Add, o.mirror),
+                (Kind::Fire, 2) => sprite(&d.fire, 4 + ((o.count & 6) >> 1), pos, FIRE_SIZE, Blend::Add, o.mirror),
+                (Kind::Fire, _) => sprite(&d.fire_end, o.count >> 1, pos, FIRE_SIZE, Blend::Add, o.mirror),
+                (Kind::Gas, _) => sprite(&d.gas, o.count >> 1, pos, GAS_SIZE, Blend::Half, o.mirror),
+                _ => None,
+            };
+            self.objects.extend(s);
+            if o.kind == Kind::Fire && self.rand() >> 8 & 15 == 0 {
+                self.light = Some((FIRE_LIGHT, LIGHT_FRAMES, pos, LIGHT_FRAMES));
+            }
+        }
+        for b in &self.burns {
+            let s = match b.state {
+                1 => sprite(&d.fire, 4 + ((b.count & 6) >> 1), b.pos, BURN_SIZE, Blend::Add, b.mirror),
+                2 => sprite(&d.fire, 4 + ((b.count - 1) >> 1), b.pos, BURN_SIZE, Blend::Add, b.mirror),
+                _ => sprite(&d.fire_end, b.count >> 1, b.pos, BURN_SIZE, Blend::Add, b.mirror),
+            };
+            self.objects.extend(s);
         }
     }
 
@@ -784,6 +909,7 @@ impl Vfx {
         }
         if let Some(d) = &self.data {
             out.extend_from_slice(&self.flares);
+            out.extend_from_slice(&self.objects);
             for p in &self.particles {
                 let ramp = &d.heavy[p.ramp];
                 let i = (p.age as usize * 16 / p.life.max(1) as usize).min(ramp.len().saturating_sub(1));
@@ -824,6 +950,8 @@ mod tests {
             lasers: vec![],
             ribbons: vec![],
             flares: vec![],
+            objects: vec![],
+            burns: vec![],
         };
         v.effect("block", &data.block, Vec3::new(1.0, 1.0, 0.0), None, Blend::Add, Vec3::ZERO);
         assert!(v.sprites().is_empty() && v.slots.iter().all(Option::is_none));

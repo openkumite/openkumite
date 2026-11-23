@@ -84,6 +84,29 @@ fn hit_and_hit_back() {
     }
 }
 
+/// Gon's fire (1+2) and gas (b+4) in Tekken Tag: their objects strike Paul (a fire's hit, a gas's), who loses health
+/// and reacts; drawn from Tekken 3's pictures the install put beside Tekken Tag's (effects.json `t3`).
+#[test]
+fn gons_fire_and_gas() {
+    let Some(a) = assets() else { return };
+    for (moves, byte) in [("1+2,n*120", kumite_sim::objects::FIRE), ("f*60,b+4,n*120", kumite_sim::objects::GAS)] {
+        let mut b = Bout::new(Game::load(&a, [GON, PAUL]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+        while b.phase != Phase::Fight {
+            b.step([Pad::default(); 2]);
+        }
+        b.game.fight.fighters[1].guard_input = false;
+        let (mut hit, mut objects) = (None, 0);
+        for pad in parse_script(moves).unwrap() {
+            b.step([pad, Pad::default()]);
+            objects = objects.max(b.game.fight.objects.list.len());
+            hit = hit.or(b.game.fight.hits.iter().find(|h| h.victim == 1).map(|h| (h.limb, h.damage)));
+        }
+        assert!(objects > 0 && hit.is_some_and(|(limb, d)| limb == byte && d > 0), "{moves}: {objects} objects, hit {hit:?}");
+    }
+    let fx = kumite_game::vfx::EffectsData::load(&a).unwrap();
+    assert!(fx.objects_sheet > 0 && !fx.fire.cells.is_empty() && !fx.gas.cells.is_empty(), "Tekken 3's pictures");
+}
+
 /// Paul's throw (1+3) on Doctor B. walking in, and Gon's on Paul: both link, every frame on a motion its body has.
 /// (Gon, Tekken 3's unthrowable fighter, is too small for Paul's.)
 #[test]
