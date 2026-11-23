@@ -95,9 +95,10 @@ fn vs_skinned(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
         if (look.y > 1.5 && look.y < 2.5) {
             o.env = vec4(ttt_env(o.normal), look.zw);
         }
-        // (the programs divide the depth by w less the bias, the mm the vertex lies farther: along its line of sight)
+        // (the programs divide the depth by w less the bias: the vertex's depth as if it lay that many mm farther along the
+        // view's axis, w being its distance along it)
         if (look.x > 0.0) {
-            let b = g.view_proj * vec4(p + normalize(p - g.eye.xyz) * look.x, 1.0);
+            let b = g.view_proj * vec4(p + g.forward.xyz * look.x, 1.0);
             o.clip.z = b.z / b.w * o.clip.w;
         }
     }
@@ -475,23 +476,40 @@ fn fs_lit(i: VsOut) -> @location(0) vec4<f32> {
 }
 
 // A character's blended primitive (Tekken Tag's): lit the same, over the picture by the texture's alpha.
-@fragment
-fn fs_lit_blend(i: VsOut) -> @location(0) vec4<f32> {
-    let t = fighter_texel(i);
+fn blended(i: VsOut, z: bool) -> vec4<f32> {
+    let t = alpha_test(fighter_texel(i), z);
     return vec4(lit(i, t.rgb), t.a);
 }
 
 // Tekken Tag's fighters' other blendings: Cd x As (GS ALPHA 0x89) and Cs x As + Cd (0x48).
-@fragment
-fn fs_lit_shade(i: VsOut) -> @location(0) vec4<f32> {
-    return vec4(0.0, 0.0, 0.0, fighter_texel(i).a);
+fn shaded(i: VsOut, z: bool) -> vec4<f32> {
+    return vec4(0.0, 0.0, 0.0, alpha_test(fighter_texel(i), z).a);
+}
+
+fn added(i: VsOut, z: bool) -> vec4<f32> {
+    let t = alpha_test(fighter_texel(i), z);
+    return vec4(lit(i, t.rgb) * t.a, 0.0);
+}
+
+// TEST_2 0x5180B (0x521CE0): texels of As >= 0x80 (255 here) pass and write their depth (the `_z` pipelines, drawn
+// first), the others only their colour (AFAIL FB_ONLY)
+fn alpha_test(t: vec4<f32>, z: bool) -> vec4<f32> {
+    if ((t.a > 254.5 / 255.0) != z) { discard; }
+    return t;
 }
 
 @fragment
-fn fs_lit_add(i: VsOut) -> @location(0) vec4<f32> {
-    let t = fighter_texel(i);
-    return vec4(lit(i, t.rgb) * t.a, 0.0);
-}
+fn fs_lit_blend(i: VsOut) -> @location(0) vec4<f32> { return blended(i, false); }
+@fragment
+fn fs_lit_blend_z(i: VsOut) -> @location(0) vec4<f32> { return blended(i, true); }
+@fragment
+fn fs_lit_shade(i: VsOut) -> @location(0) vec4<f32> { return shaded(i, false); }
+@fragment
+fn fs_lit_shade_z(i: VsOut) -> @location(0) vec4<f32> { return shaded(i, true); }
+@fragment
+fn fs_lit_add(i: VsOut) -> @location(0) vec4<f32> { return added(i, false); }
+@fragment
+fn fs_lit_add_z(i: VsOut) -> @location(0) vec4<f32> { return added(i, true); }
 
 // A character's texel; an environment map's repeating over its part of the texture.
 fn fighter_texel(i: VsOut) -> vec4<f32> {

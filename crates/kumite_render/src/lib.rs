@@ -330,9 +330,9 @@ pub struct Grass {
 /// The 3D pass's pipelines for one colour target format.
 struct Pipes {
     skinned_pipeline: wgpu::RenderPipeline,
-    skinned_blend_pipeline: wgpu::RenderPipeline,
-    /// A character's multiplying and additive primitives (Tekken Tag's GS ALPHA 0x89, 0x48).
-    skinned_layer_pipelines: [wgpu::RenderPipeline; 2],
+    /// A character's blended primitives (Tekken Tag's) by kind: multiplying, additive (GS ALPHA 0x89, 0x48), ordinary;
+    /// each first its texels of As >= 0x80 with their depth, then the others without.
+    skinned_blend_pipelines: [wgpu::RenderPipeline; 6],
     /// The fighters' shadows.
     shadow_pipeline: wgpu::RenderPipeline,
     floor_shadow_pipeline: wgpu::RenderPipeline,
@@ -887,11 +887,19 @@ impl Renderer {
             let keep_alpha = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
             let times_alpha = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::SrcAlpha, operation: wgpu::BlendOperation::Add };
             let add_colour = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-            // a character's blended primitive (Tekken Tag's): over what is drawn by its texture's alpha, depth not written; its
-            // overlays lie on the opaque layer, which the GS's ZTST GEQUAL lets them cover
-            let skinned_blend_pipeline = make("skinned blend", &skinned_layout, "vs_skinned", "fs_lit_blend", &skin_vb, false, LessEqual, tri, Some(wgpu::BlendState::ALPHA_BLENDING));
-            let layer = |label, fs, color| make(label, &skinned_layout, "vs_skinned", fs, &skin_vb, false, LessEqual, tri, Some(wgpu::BlendState { color, alpha: keep_alpha }));
-            let skinned_layer_pipelines = [layer("skinned shade", "fs_lit_shade", times_alpha), layer("skinned add", "fs_lit_add", add_colour)];
+            // a character's blended primitive (Tekken Tag's): over what is drawn by its texture's alpha, depth written by
+            // its texels of As >= 0x80 only (TEST_2 0x5180B); its overlays lie on the opaque layer, which the GS's ZTST
+            // GEQUAL lets them cover
+            let layer = |label, fs, z, color| make(label, &skinned_layout, "vs_skinned", fs, &skin_vb, z, LessEqual, tri, Some(wgpu::BlendState { color, alpha: keep_alpha }));
+            let blend = wgpu::BlendState::ALPHA_BLENDING;
+            let skinned_blend_pipelines = [
+                layer("skinned shade z", "fs_lit_shade_z", true, times_alpha),
+                layer("skinned shade", "fs_lit_shade", false, times_alpha),
+                layer("skinned add z", "fs_lit_add_z", true, add_colour),
+                layer("skinned add", "fs_lit_add", false, add_colour),
+                make("skinned blend z", &skinned_layout, "vs_skinned", "fs_lit_blend_z", &skin_vb, true, LessEqual, tri, Some(blend)),
+                make("skinned blend", &skinned_layout, "vs_skinned", "fs_lit_blend", &skin_vb, false, LessEqual, tri, Some(blend)),
+            ];
             let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, None);
             let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, Always, tri, None);
             let sky_depth_pipeline = make("sky depth", &static_layout, "vs_sky", "fs_unlit", &static_vb, true, Less, tri, None);
@@ -945,8 +953,7 @@ impl Renderer {
             });
             Pipes {
                 skinned_pipeline,
-                skinned_blend_pipeline,
-                skinned_layer_pipelines,
+                skinned_blend_pipelines,
                 shadow_pipeline,
                 floor_shadow_pipeline,
                 blob_pipeline,
@@ -1900,11 +1907,11 @@ impl Renderer {
                 stats.triangles += m.count / 3;
             }
             // (Law's satin: the environment-mapped opaque layer, multiplied by the next one's alpha, the third added)
-            for (k, pipe) in pipes.skinned_layer_pipelines.iter().chain([&pipes.skinned_blend_pipeline]).enumerate() {
+            for (k, pipe) in pipes.skinned_blend_pipelines.iter().enumerate() {
                 pass.set_pipeline(pipe);
                 for m in models {
                     let range = [m.blend_from, m.layers[0], m.layers[1], m.count];
-                    let (Some(&from), Some(&to)) = (range.get(k), range.get(k + 1)) else { continue };
+                    let (Some(&from), Some(&to)) = (range.get(k / 2), range.get(k / 2 + 1)) else { continue };
                     if from >= to {
                         continue;
                     }
