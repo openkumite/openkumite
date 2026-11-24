@@ -1712,7 +1712,14 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
             })
             .collect()
     };
-    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones }
+    // the head and the pelvis, in units, in Tekken 3's joint axes (where Gon's fire and gas start; Tekken Tag's are
+    // those turned half a turn about x, ok_tekken3_converter::ttt's `turn`)
+    let axes = if body.bones.is_empty() { Mat4::IDENTITY } else { Mat4::from_diagonal(glam::Vec4::new(1.0, -1.0, -1.0, 1.0)) };
+    let slot = |n: usize| {
+        let m = place * pose.get(n).copied().unwrap_or(Mat4::IDENTITY) * axes;
+        Mat4::from_cols(m.x_axis, m.y_axis, m.z_axis, (m.w_axis.truncate() * UNITS).extend(1.0))
+    };
+    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones, slots: [slot(body.chest), slot(body.pelvis)] }
 }
 
 /// Render camera for a game view: eye and look direction in glTF metres (y up), vertical field of view from

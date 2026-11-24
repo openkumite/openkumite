@@ -16,6 +16,7 @@ pub mod detmath;
 pub mod dialect;
 pub mod input;
 pub mod melee;
+pub mod objects;
 
 use anyhow::{Context, Result};
 use data::{Bank, Cancel, CancelKind, Move, MoveRef, Moveset, PushbackCurve, Reactions, Shared};
@@ -109,6 +110,9 @@ pub struct BodyVolumes {
     /// The pose's bone slots (world; Tekken Tag's strikes run between them, [`data::Attack::pairs`]). Empty for
     /// Tekken 3, whose strikes are baked.
     pub bones: Vec<Vec3>,
+    /// The head's and the pelvis's world matrices (game units: turned and scaled as the body, placed in units), where
+    /// the effect objects that strike start (bone slots 2 and 11, [`objects`]).
+    pub slots: [glam::Mat4; 2],
 }
 /// Round clock for the default option (40 s).
 pub const ROUND_FRAMES: u32 = 40 * 60;
@@ -2490,6 +2494,8 @@ pub struct Fight {
     pub idle_target: Option<Vec3>,
     /// Tekken Tag's tag battle: each side's two members ([`Fight::start_tag`]); the fighters are the active ones.
     pub teams: Option<Box<[TagTeam; 2]>>,
+    /// The effect objects that strike (Gon's fire and gas).
+    pub objects: objects::Objects,
 }
 
 /// An arena's walk grid (metres, x along a row, rows along z): cells a fighter's root cannot enter.
@@ -2658,6 +2664,7 @@ impl Fight {
             walls: None,
             idle_target: None,
             teams: None,
+            objects: objects::Objects::default(),
         }
     }
 
@@ -3086,6 +3093,8 @@ impl Fight {
                 }
             }
         }
+        // the effect objects (0x8006F0F4, 0x8006F5C0), seeing last frame's contacts
+        self.step_objects(&gd, bodies, anims);
         // the hit pass's per-frame flags (cleared at 0x80044008) and the body push's
         for f in &mut self.fighters {
             (f.struck, f.whiffed, f.pushed) = (false, false, false);
@@ -3471,6 +3480,27 @@ impl Fight {
         }
     }
 
+    /// A move of descriptor byte 0x18 or more starts its object on each frame of its active window; the objects
+    /// strike for their owner while it is in such a move past the window's start.
+    fn step_objects(&mut self, gd: &GameData, bodies: &[BodyVolumes; 2], anims: [&dyn Animations; 2]) {
+        let mut striking = [None; 2];
+        for (i, f) in self.fighters.iter().enumerate() {
+            let mv = f.current_move(gd);
+            // (Tekken 3's descriptors: Tekken Tag's strikes run between bone pairs)
+            let Some(byte) = mv.attack.as_ref().filter(|a| a.pairs.is_empty()).and_then(|a| a.header_bytes.first().copied()).filter(|&b| b >= 0x18 && !f.inactive) else { continue };
+            let key = (mv.active[0]..=mv.active[1]).contains(&f.frame).then_some((f.current.index, f.frame));
+            if key.is_some() && self.objects.started[i] != key {
+                let slots = anims[i].volumes(f, gd).map_or(bodies[i].slots, |v| v.slots);
+                self.objects.start(i, byte, f.frame == mv.active[0], &slots);
+            }
+            self.objects.started[i] = key;
+            striking[i] = (f.frame >= mv.active[0]).then_some(byte);
+        }
+        if !self.objects.list.is_empty() {
+            self.objects.step(striking, [self.fighters[1].struck, self.fighters[0].struck]);
+        }
+    }
+
     /// Both directions are tested before any reaction is applied, so trades hit both fighters.
     fn resolve_hits(&mut self, gd: &GameData, bodies: [&BodyVolumes; 2], anims: [&dyn Animations; 2]) {
         let mut hits = Vec::new();
@@ -3481,6 +3511,9 @@ impl Fight {
         for a in 0..2 {
             let mut segs = self.fighters[a].attack_segments(gd);
             segs.extend(self.fighters[a].pair_segments(gd, &bodies[a].bones));
+            if !self.fighters[a].connected {
+                segs.extend(self.objects.strikes(a));
+            }
             self.fighters[a].last_bones.clone_from(&bodies[a].bones);
             strike_down[a] = segs.first().map_or(0.0, |(p, q)| p.y - q.y);
             if log::log_enabled!(log::Level::Debug) {
