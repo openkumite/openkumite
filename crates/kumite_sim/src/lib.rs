@@ -3214,10 +3214,14 @@ impl Fight {
         }
         let pair = !self.fighters[0].inactive && !self.fighters[1].inactive;
         let extra_on = self.extra.as_ref().is_some_and(|e| !e.inactive) && !self.fighters[0].inactive;
+        let mut posed = None;
         if self.link.is_none() && pair {
             // Tekken Tag pushes the bodies in the pose of this frame (0x377338 after the moves' update)
             let now: [Option<BodyVolumes>; 2] = std::array::from_fn(|i| anims[i].volumes(&self.fighters[i], &gd));
             self.separate([now[0].as_ref().unwrap_or(&bodies[0]), now[1].as_ref().unwrap_or(&bodies[1])]);
+            // Tekken Tag's hit pass (0x371D68) strikes in the pose made before the push moves the bodies (0x34F3D8,
+            // then 0x371C68)
+            posed = (self.data.tag_push && self.extra.is_none()).then_some(now);
         }
         if let (true, Some((_, body, _))) = (extra_on && self.link.is_none(), extra) {
             self.swap_extra();
@@ -3226,7 +3230,7 @@ impl Fight {
         }
         // (hits are still detected after a K.O. or time-up: a falling body can be struck again)
         if self.link.is_none() && pair {
-            let now: [Option<BodyVolumes>; 2] = std::array::from_fn(|i| anims[i].volumes(&self.fighters[i], &gd));
+            let now: [Option<BodyVolumes>; 2] = posed.unwrap_or_else(|| std::array::from_fn(|i| anims[i].volumes(&self.fighters[i], &gd)));
             self.resolve_hits(&gd, [now[0].as_ref().unwrap_or(&bodies[0]), now[1].as_ref().unwrap_or(&bodies[1])], anims);
         }
         // the other soldier's hits on the player and the player's on it, as a pair of their own (actor 2)

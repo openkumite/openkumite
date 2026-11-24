@@ -279,6 +279,30 @@ fn a_jump_drifts_along_its_basis() {
     assert!(z.is_some_and(|z| (-127.0..=-119.0).contains(&z)), "{z:?}");
 }
 
+/// The hit pass strikes in the pose made before the push moves the bodies (0x34F3D8, then 0x371C68, 0x371D68): Jun's
+/// b+1 from a walk reaches Hwoarang (both holding 1+2 through the intro) on its first active frame, so on frame 29 she
+/// is at x 656 as in PCSX2 (in the pushed pose: a frame later, 616).
+#[test]
+fn a_strike_lands_in_the_pose_before_the_push() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [672, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    let hold = Pad { buttons: 3, ..Pad::default() };
+    while b.phase != Phase::Fight {
+        b.step([hold; 2]);
+    }
+    let mut x = None;
+    for pad in parse_script("n*62,f*30,n*2,b+1*2,n*30").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        if f.alias == 356 && f.frame == 29 {
+            x = Some(f.root().x);
+        }
+    }
+    assert!(x.is_some_and(|x| (652.0..=660.0).contains(&x)), "{x:?}");
+}
+
 /// Ogre's strike slot 0x13 is his slot 6 (0x34F2C0, body 14 only): his b+2 (alias 359, bones 0x13) reaches Lei from
 /// 1000 as in PCSX2.
 #[test]
