@@ -431,7 +431,7 @@ impl TagGame {
         let spheres = self.spheres();
         let facing: Vec<usize> = (0..4).map(|i| self.melee.facing(i)).collect();
         let bodies = &self.bodies;
-        let anims: Vec<FighterAnims> = (0..4).map(|i| FighterAnims { own: &bodies[i], other: &bodies[facing[i]] }).collect();
+        let anims: Vec<FighterAnims> = (0..4).map(|i| FighterAnims { own: &bodies[i], other: &bodies[facing[i]], springs: &[] }).collect();
         let anims: Vec<&dyn Animations> = anims.iter().map(|a| a as &dyn Animations).collect();
         self.melee.step(&pads, &spheres.iter().collect::<Vec<_>>(), &anims);
         self.step_faces();

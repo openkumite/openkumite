@@ -343,6 +343,8 @@ const BURN_SLOTS: [usize; 10] = [1, 2, 4, 8, 5, 9, 12, 13, 15, 16];
 /// The pictures' sizes (their corners: 0x80025584 ±432, 0x800256A0 ±345, 0x80025770 ±250 units) and the fires'
 /// light (0x8002517C, 48 frames).
 const FIRE_SIZE: f32 = 0.864;
+/// Tekken Tag's True Ogre's flame at its full size (metres; as PCSX2 shows it at 0.6, a stream as thick as his foe).
+const TAG_FIRE_SIZE: f32 = 2.8;
 const BURN_SIZE: f32 = 0.690;
 const GAS_SIZE: f32 = 0.5;
 const FIRE_LIGHT: [f32; 3] = [1.0, 128.0 / 255.0, 0.0];
@@ -605,7 +607,7 @@ impl Vfx {
             },
             &|i, name| game.body_of(i)?.character.nodes.iter().position(|n| n.name == name),
         );
-        self.objects(&fight.objects.list);
+        self.objects(&fight.objects.list, &models);
         // Devil's beam (0x378600): from the active window's start to 30 frames past its end, its width narrowing
         self.ribbons.clear();
         self.flares.clear();
@@ -783,7 +785,7 @@ impl Vfx {
 
     /// The effect objects' pictures (drawn after their move, 0x8006FC84): the fire's growing, looped and ending
     /// cells, 2 frames each, lighting the fighters now and then (0x800720EC); the gas puff's.
-    fn objects(&mut self, list: &[kumite_sim::objects::Object]) {
+    fn objects(&mut self, list: &[kumite_sim::objects::Object], models: &[usize]) {
         use kumite_sim::objects::Kind;
         self.objects.clear();
         let Some(d) = self.data.clone() else { return };
@@ -798,11 +800,35 @@ impl Vfx {
                 (Kind::Fire, 1) => sprite(&d.fire, o.count >> 1, pos, FIRE_SIZE, Blend::Add, o.mirror),
                 (Kind::Fire, 2) => sprite(&d.fire, 4 + ((o.count & 6) >> 1), pos, FIRE_SIZE, Blend::Add, o.mirror),
                 (Kind::Fire, _) => sprite(&d.fire_end, o.count >> 1, pos, FIRE_SIZE, Blend::Add, o.mirror),
+                // (Ogre's breath: the fire's cells, its end's corners turned over every other frame, 0x800719C0)
+                // shortcut: drawn square at the fire's size, the PS1's quad is 690 x 864; upgrade with a sprite of two sizes
+                (Kind::Breath, 1) => sprite(&d.fire, o.count >> 1, pos, FIRE_SIZE, Blend::Add, o.mirror),
+                (Kind::Breath, 2) => sprite(&d.fire, 4 + ((o.count & 6) >> 1), pos, FIRE_SIZE, Blend::Add, o.mirror),
+                (Kind::Breath, _) => sprite(&d.fire_end, o.count >> 1, pos, FIRE_SIZE, Blend::Add, o.count & 1 != 0),
+                // (Tekken Tag's True Ogre's flame: its special part's first slot, frame by frame of 30, growing from
+                // 0.2 to 0.6 its first 8 frames, fading its last 7 (+0x54, +0x58), added)
+                // shortcut: its quad's size (0x345A00's for +0x44 192) is not read, it is matched by eye to PCSX2's
+                (Kind::TagFire, 1..) => {
+                    let c = models.get(o.owner).and_then(|m| d.characters.get(m));
+                    let cell = c.and_then(|c| c.special.first()).and_then(|s| s.get(usize::try_from(o.frames).ok()?)).copied();
+                    let scale = if o.state == 1 { 0.2 + 0.05 * o.count as f32 } else { 0.6 };
+                    let fade = if o.state == 4 { o.count as f32 / 14.0 } else { 0.0 };
+                    c.and_then(|c| c.burst.as_ref()).zip(cell).map(|(set, cell)| Sprite {
+                        pos,
+                        size: TAG_FIRE_SIZE * scale,
+                        cell,
+                        color: [1.0, 1.0, 1.0, 1.0 - fade],
+                        blend: Blend::Add,
+                        mirror: false,
+                        nearer: 0.0,
+                        sheet: set.sheet,
+                    })
+                }
                 (Kind::Gas, _) => sprite(&d.gas, o.count >> 1, pos, GAS_SIZE, Blend::Half, o.mirror),
                 _ => None,
             };
             self.objects.extend(s);
-            if o.kind == Kind::Fire && self.rand() >> 8 & 15 == 0 {
+            if matches!(o.kind, Kind::Fire | Kind::Breath) && self.rand() >> 8 & 15 == 0 {
                 self.light = Some((FIRE_LIGHT, LIGHT_FRAMES, pos, LIGHT_FRAMES));
             }
         }

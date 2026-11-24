@@ -66,6 +66,8 @@ pub struct Body {
     pub face: Option<tagface::Poses>,
     /// Tekken Tag: its scale of the motions' root, 4096 = 1 (the moveset index's `motion_scale`).
     pub motion_scale: i32,
+    /// Tekken Tag: its spring slots ([`springs`]).
+    pub springs: Vec<kumite_sim::Spring>,
 }
 
 /// The joints of the bone slots, slot by slot (the arcade engine's matrix slots; Tekken Tag's converter names them so).
@@ -103,7 +105,12 @@ impl Body {
 struct FighterAnims<'a> {
     own: &'a Body,
     other: &'a Body,
+    /// Its spring slots' last frame (Game::springs).
+    springs: &'a [Spring],
 }
+
+/// A spring slot's turn in its parent's axes and its tip's place (Body::springs).
+type Spring = (kumite_sim::Turn, [i32; 3]);
 
 impl Animations for FighterAnims<'_> {
     fn root(&self, anim: &str, frame: u32, partner: bool) -> Option<Vec3> {
@@ -144,7 +151,8 @@ impl Animations for FighterAnims<'_> {
         let other = if partner { self.other } else { self.own };
         let (anim, frame) = f.animation(gd);
         let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw, ease: f.eased() };
-        let (pose, place) = shown_pose(self.own, other, &shown);
+        let (mut pose, place) = shown_pose(self.own, other, &shown);
+        step_springs(self.own, &mut pose, place, self.springs);
         Some(volumes(self.own, &pose, place))
     }
 }
@@ -385,6 +393,8 @@ pub struct Game {
     pub tag_faces: [tagface::Face; 2],
     /// Tekken Tag's wings (True Ogre's and Devil's).
     pub wings: [face::WingState; 2],
+    /// Tekken Tag's spring slots (Body::springs): each one's turn in its parent's axes and its tip's place.
+    pub springs: [Vec<Spring>; 2],
     /// The mode's K.O. style (Fight::ko_collapse), kept across rounds.
     pub ko_collapse: bool,
     /// Tekken Tag's GUARD DAMAGE option (Fight::guard_damage), kept across rounds.
@@ -477,7 +487,24 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let extra = if tag { strike_slots(id, entry.moveset_id) } else { Vec::new() };
     let joints = if tag { joint_places(&rules["joints"], record, id) } else { Vec::new() };
     let motion_scale = entry.motion_scale.unwrap_or(4096);
-    let body = Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden: Vec::new(), bones, extra, joints, hands, face, motion_scale };
+    let body = Body {
+        character,
+        model_record: record,
+        root,
+        hurt,
+        push,
+        chest,
+        torso,
+        pelvis,
+        hidden: Vec::new(),
+        bones,
+        extra,
+        joints,
+        hands,
+        face,
+        motion_scale,
+        springs: if tag { springs(id) } else { Vec::new() },
+    };
     // the copying character: its own moveset is never played; outside a bout's rounds it stays the setup's fighter
     // shortcut: Force's bosses and the tag brawl's draw their fighter too (0x800B2770), here they keep this one,
     // and Force's player draws without a seed of the match (the same fighters every run)
@@ -599,6 +626,7 @@ fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
         hands: own.hands.clone(),
         face: own.face.clone(),
         motion_scale: own.motion_scale,
+        springs: Vec::new(),
     }
 }
 
@@ -612,6 +640,50 @@ fn joint_places(j: &serde_json::Value, record: usize, id: u64) -> Vec<(usize, Ve
     parents.zip(places).enumerate().map(|(s, (p, at))| (p.as_u64().map_or(s, |p| p as usize), Vec3::new(f(at, 0), f(at, 1), f(at, 2)) / UNITS)).collect()
 }
 
+/// Tekken Tag's spring slots (0x34E640's tables by body): Roger's tail and True Ogre's 20 (his 18 and 19 are his
+/// wings' instead, 0x3626B8).
+fn springs(body: u64) -> Vec<kumite_sim::Spring> {
+    let at = |slot, rest, len, lag, down| kumite_sim::Spring { slot, rest, len, lag, down };
+    match body {
+        17 => vec![at(18, [16615, 125, 9392], 128, 128, 24), at(19, [1, 110, 370], 128, 128, 24), at(20, [-6, -258, -386], 128, 128, 24)],
+        20 => vec![at(20, [0, 0, 9658], 128, 1, 0)],
+        _ => Vec::new(),
+    }
+}
+
+/// Tekken Tag's spring slots (0x34C508, each frame after the moves, before the strikes) one after the other (a slot
+/// on a spring follows its new turn): each one's turn set in `pose`, from their last frame `last`; their new state.
+fn step_springs(body: &Body, pose: &mut [Mat4], place: Mat4, last: &[Spring]) -> Vec<Spring> {
+    let c = Mat3::from_diagonal(Vec3::new(1.0, -1.0, -1.0));
+    let mut out = Vec::with_capacity(body.springs.len());
+    for (k, sp) in body.springs.iter().enumerate() {
+        let Some(n) = slot_node(body, sp.slot) else { break };
+        let (Some(&parent), Some(&own)) = (body.character.nodes[n].parent.and_then(|p| pose.get(p)), pose.get(n)) else { break };
+        // (the game's world axes: y down, z flipped; the node frames are the game's)
+        let r = c * Mat3::from_mat4(place * parent);
+        let turn: kumite_sim::Turn = std::array::from_fn(|row| std::array::from_fn(|col| (r.col(col)[row] * 4096.0).round() as i32));
+        let at = c * place.transform_point3(own.w_axis.truncate()) * UNITS;
+        let (local, tip) = sp.step(&turn, [at.x, at.y, at.z].map(|v| v.round() as i32), last.get(k).map(|s| s.1));
+        head::set_local(&body.character.nodes, pose, n, turn_mat3(&local));
+        out.push((local, tip));
+    }
+    out
+}
+
+/// A game turn (rows of 4096) as the node frames' matrix.
+fn turn_mat3(t: &kumite_sim::Turn) -> Mat3 {
+    Mat3::from_cols_array_2d(&t.map(|r| r.map(|v| v as f32 / 4096.0))).transpose()
+}
+
+/// The drawn node of strike slot `slot` past 17 (18-20): its joint's child nearest its place.
+fn slot_node(body: &Body, slot: usize) -> Option<usize> {
+    let &(_, joint, at) = body.extra.iter().find(|e| e.0 == slot && (18..=20).contains(&slot))?;
+    let parent = if joint < body.bones.len() { body.bones.get(joint).copied() } else { slot_node(body, joint) }?;
+    let nodes = &body.character.nodes;
+    let d = |n: usize| nodes[n].translation.distance(at);
+    (0..nodes.len()).filter(|&n| nodes[n].parent == Some(parent) && d(n) < 0.03).min_by(|&a, &b| d(a).total_cmp(&d(b)))
+}
+
 /// Tekken Tag's strike slots past the 18 joints (player +0x630 + 0x50 a slot) a body has with a moveset: (slot, the
 /// joint slot it hangs on, its place in that joint's axes, metres).
 /// 0x34F3D8 puts them in before each frame's strikes (0x5F5E50): the sword fighter's (moveset 4) 22 and 23 on hand B,
@@ -619,8 +691,9 @@ fn joint_places(j: &serde_json::Value, record: usize, id: u64) -> Vec<(usize, Ve
 /// (0x439A80's places, the drawn glbs' nodes 98-100): True Ogre's 18 on hand A, 19 on 18, 20 on the pelvis (PCSX2: his
 /// 20 behind the hips); Roger's tail, 18 on the pelvis, 19 on 18, 20 on 19. A slot on a slot past 17 is turned as
 /// that one's node.
-/// shortcut: their sway (0x34C508) and True Ogre's wing code (0x3626B8: his 18 / 19 take arm A's tracks, PCSX2's are
-/// some 600 from these) are left out: Roger's tail tip is some 270 from PCSX2's in a sweep
+/// Roger's three and True Ogre's 20 sway on springs instead ([`springs`]).
+/// shortcut: True Ogre's wing code (0x3626B8: his 18 / 19, and his slots 5 / 6, flap by a counter and his rise) is left
+/// out, his 18 / 19 take arm A's tracks (PCSX2's are some 600 from these); port it with his wings' flaps
 fn strike_slots(body: u64, moveset: i64) -> Vec<(usize, usize, Vec3)> {
     let at = |slot, joint, [x, y, z]: [f32; 3]| (slot, joint, Vec3::new(x, y, z) / UNITS);
     let mut out = Vec::new();
@@ -705,6 +778,7 @@ impl Game {
             hand_live: false,
             tag_faces: Default::default(),
             wings: Default::default(),
+            springs: Default::default(),
             ko_collapse: true,
             guard_damage: false,
             tag_carry: [None; 2],
@@ -761,6 +835,7 @@ impl Game {
         // benching them with the body
         self.hands[i] = Default::default();
         self.tag_faces[i] = Default::default();
+        self.springs[i].clear();
     }
 
     /// The fight's arena, for a game whose camera has a projection per arena (Tekken Tag; Tekken 3's is one).
@@ -1177,10 +1252,10 @@ impl Game {
         } else {
             let spheres = self.spheres();
             let [b0, b1] = &self.bodies;
-            let (a0, a1) = (FighterAnims { own: b0, other: b1 }, FighterAnims { own: b1, other: b0 });
+            let (a0, a1) = (FighterAnims { own: b0, other: b1, springs: &self.springs[0] }, FighterAnims { own: b1, other: b0, springs: &self.springs[1] });
             // Force's other soldier
             let extra_spheres = self.actor_spheres(2);
-            let extra_anims = self.extra_body.as_deref().map(|b| FighterAnims { own: b, other: b0 });
+            let extra_anims = self.extra_body.as_deref().map(|b| FighterAnims { own: b, other: b0, springs: &[] });
             let extra = match (&extra_spheres, &extra_anims) {
                 (Some(sp), Some(an)) => Some((self.extra_pad, sp, an as &dyn Animations)),
                 _ => None,
@@ -1200,6 +1275,7 @@ impl Game {
         self.step_faces();
         self.step_heads();
         self.step_hands();
+        self.step_springs();
         let shot = [self.snapshot(0), self.snapshot(1)];
         if self.recorded.len() >= REPLAY_RING {
             self.recorded.pop_front();
@@ -1220,7 +1296,7 @@ impl Game {
         let n = self.fight.actor_count();
         let spheres: Vec<BodyVolumes> = (0..n).map(|k| self.actor_spheres(k).unwrap_or_default()).collect();
         let bodies: Vec<Arc<Body>> = (0..n).map(|k| self.body_of(k).cloned().unwrap_or_else(|| self.bodies[0].clone())).collect();
-        let anims: Vec<FighterAnims> = (0..n).map(|k| FighterAnims { own: &bodies[k], other: &bodies[self.fight.opponent_index(k).min(n - 1)] }).collect();
+        let anims: Vec<FighterAnims> = (0..n).map(|k| FighterAnims { own: &bodies[k], other: &bodies[self.fight.opponent_index(k).min(n - 1)], springs: &[] }).collect();
         let a: Vec<&dyn Animations> = anims.iter().map(|a| a as &dyn Animations).collect();
         let mut pads = vec![pads[0], pads[1], self.extra_pad, self.partner_pad];
         pads.extend((4..n).map(|k| self.more_pad.get(k - 4).copied().unwrap_or_default()));
@@ -1642,7 +1718,27 @@ impl Game {
     fn pose_animated(&self, i: usize) -> (Vec<Mat4>, Mat4) {
         // (live, a borrowed clip is its owner's, as `clip` took it: in Force's co-op, any foe's)
         let (shown, other) = self.display.map_or_else(|| (self.snapshot(i), self.clip_owner(i)), |d| (d[i], &self.bodies[1 - i]));
-        shown_pose(&self.bodies[i], other, &shown)
+        let (mut pose, place) = shown_pose(&self.bodies[i], other, &shown);
+        if self.display.is_none() {
+            let b = &self.bodies[i];
+            for (sp, (local, _)) in b.springs.iter().zip(&self.springs[i]) {
+                if let Some(n) = slot_node(b, sp.slot) {
+                    head::set_local(&b.character.nodes, &mut pose, n, turn_mat3(local));
+                }
+            }
+        }
+        (pose, place)
+    }
+
+    /// Tekken Tag's spring slots, stepped as the fight step's volumes stepped them.
+    fn step_springs(&mut self) {
+        for i in 0..2 {
+            if !self.bodies[i].springs.is_empty() {
+                let (shown, other) = (self.snapshot(i), self.clip_owner(i));
+                let (mut pose, place) = shown_pose(&self.bodies[i], other, &shown);
+                self.springs[i] = step_springs(&self.bodies[i], &mut pose, place, &self.springs[i]);
+            }
+        }
     }
 
     /// Collision volumes of both fighters for the pose currently shown (game units).
@@ -1723,26 +1819,17 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
     }
     // (slots 18-20 past 17 are the drawn nodes at their places, which the motions turn: the joint's child nearest the
     // place, then that node's; a slot on one of them follows it)
-    let nodes = &body.character.nodes;
-    let mut more: Vec<(usize, Vec3, Option<usize>)> = Vec::new();
+    let mut more: Vec<(usize, Vec3)> = Vec::new();
     for &(slot, joint, at) in &body.extra {
-        let on = match slots.get(joint) {
-            Some(&q) => Some((q, body.bones.get(joint).copied())),
-            None => more.iter().find(|m| m.0 == joint).map(|m| (m.1, m.2)),
-        };
-        let Some((q, parent)) = on else { continue };
-        let node = parent.filter(|_| (18..=20).contains(&slot)).and_then(|pn| {
-            let d = |n: usize| nodes[n].translation.distance(at);
-            (0..nodes.len()).filter(|&n| nodes[n].parent == Some(pn) && d(n) < 0.03).min_by(|&a, &b| d(a).total_cmp(&d(b)))
-        });
-        let p = match node.and_then(|n| pose.get(n)) {
+        let Some(q) = slots.get(joint).copied().or_else(|| more.iter().find(|m| m.0 == joint).map(|m| m.1)) else { continue };
+        let p = match slot_node(body, slot).and_then(|n| pose.get(n)) {
             Some(m) => m.w_axis.truncate(),
             None => q + turn(joint).transform_vector3(at),
         };
         if let Some(b) = bones.get_mut(slot) {
             *b = place.transform_point3(p) * UNITS;
         }
-        more.push((slot, p, node));
+        more.push((slot, p));
     }
     let make = |layout: &[(usize, Vec3, f32, usize)]| -> Vec<Sphere> {
         layout

@@ -2329,8 +2329,8 @@ impl Fighter {
 
     /// Tekken Tag's strike this frame (0x34F288): each pair's segment from bone `start` to bone `end` of the pose, or
     /// from the end bone's place a frame before when `start` is 0.
-    /// Ogre's (body 14) slot 0x13 is slot 6. shortcut: the projectiles' slots 0x18 / 0x19 (0x346310) give no segment,
-    /// port them with the projectiles
+    /// Ogre's (body 14) slot 0x13 is slot 6. True Ogre's slot 0x18 is his fire's (objects::TAG_FIRE).
+    /// shortcut: the other projectiles' slot 0x19 (0x3A5810) gives no segment; port it with them
     fn pair_segments(&self, gd: &GameData, bones: &[Vec3]) -> Vec<(Vec3, Vec3)> {
         let mv = self.current_move(gd);
         let Some(a) = mv.attack.as_ref().filter(|a| !a.pairs.is_empty()) else { return vec![] };
@@ -2586,6 +2586,96 @@ fn orthonormal(m: [i16; 9]) -> [i16; 9] {
     let y = unit([at(1) - ((d * x[0]) >> 12), at(4) - ((d * x[1]) >> 12), at(7) - ((d * x[2]) >> 12)]);
     let z = [cut(x[1] * y[2]) - cut(x[2] * y[1]), cut(x[2] * y[0]) - cut(x[0] * y[2]), cut(x[0] * y[1]) - cut(x[1] * y[0])];
     [x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]].map(|v| v as i16)
+}
+
+/// A Tekken Tag spring slot (0x34C508, tables set by 0x34E640): Roger's tail (slots 18-20, params 0x43BC40) and True
+/// Ogre's (20, 0x43BC30). `rest` its turn in its parent's axes (16-bit angles, 0x43BC50 / 0x43BC68), `len` the tip's
+/// reach along its x (params +8), `lag` and `down` the weights of 256 of the tip's last place and of gravity (+4, +6).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spring {
+    pub slot: usize,
+    pub rest: [i32; 3],
+    pub len: i32,
+    pub lag: i32,
+    pub down: i32,
+}
+
+/// A 4096 turn as rows (0x20-byte matrices' 3x3), game axes (y down).
+pub type Turn = [[i32; 3]; 3];
+
+/// 0x39A670: a x b, each product cut toward zero.
+pub fn turn_mul(a: &Turn, b: &Turn) -> Turn {
+    std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| (a[i][k] * b[k][j]) / 4096).sum::<i32>() as i16 as i32))
+}
+
+/// 0x39B310: m x v, each product cut toward zero.
+pub fn turn_apply(m: &Turn, v: [i32; 3]) -> [i32; 3] {
+    std::array::from_fn(|i| (0..3).map(|k| (i64::from(m[i][k]) * i64::from(v[k]) / 4096) as i32).sum())
+}
+
+/// 0x39BAE8: Rz x Ry x Rx of 12-bit angles (the 4096 sine table 0x4FCE88).
+fn euler(a: [i32; 3]) -> Turn {
+    let sc = |a: i32| (ball::sin12(a), ball::cos12(a));
+    let ((sx, cx), (sy, cy), (sz, cz)) = (sc(a[0]), sc(a[1]), sc(a[2]));
+    let rx = [[4096, 0, 0], [0, cx, -sx], [0, sx, cx]];
+    let ry = [[cy, 0, sy], [0, 4096, 0], [-sy, 0, cy]];
+    let rz = [[cz, -sz, 0], [sz, cz, 0], [0, 0, 4096]];
+    turn_mul(&turn_mul(&rz, &ry), &rx)
+}
+
+/// 0x3662D8 then 0x39C0E0: the 12-bit angle of (x, y) from its 45° table 0x4FC680, within ±0x800.
+fn tag_atan12(mut x: i32, mut y: i32) -> i32 {
+    while x.abs() > 0x1F_FFFF || y.abs() > 0x1F_FFFF {
+        (x, y) = (x / 2, y / 2);
+    }
+    let t = |i: i32| (f64::from(i).datan2(1024.0) * 2048.0 / std::f64::consts::PI) as i32;
+    let (ax, ay) = (x.abs(), y.abs());
+    let v = match (x >= 0, y >= 0) {
+        _ if x == 0 && y == 0 => 0,
+        (true, true) if ax >= ay => t((ay << 10) / ax),
+        (true, true) => 0x400 - t((ax << 10) / ay),
+        (true, false) if ax >= ay => 0x1000 - t((ay << 10) / ax),
+        (true, false) => 0xC00 + t((ax << 10) / ay),
+        (false, true) if ax >= ay => 0x800 - t((ay << 10) / ax),
+        (false, true) => 0x400 + t((ax << 10) / ay),
+        (false, false) if ax >= ay => 0x800 + t((ay << 10) / ax),
+        (false, false) => 0xC00 - t((ax << 10) / ay),
+    };
+    if v >= 0x800 {
+        v - 0x1000
+    } else {
+        v
+    }
+}
+
+impl Spring {
+    /// One frame of 0x34C508: the slot's turn in its parent's axes, from the parent's world turn `parent`, the slot's
+    /// world place `at` and the tip's place last frame `tip` (None: the first frame, the rest turn); and the tip's place
+    /// this frame (game units and axes, y down).
+    pub fn step(&self, parent: &Turn, at: [i32; 3], tip: Option<[i32; 3]>) -> (Turn, [i32; 3]) {
+        let rest = euler(self.rest.map(|a| (a as i16 >> 4) as i32));
+        let local = match tip {
+            None => rest,
+            Some(mut tip) => {
+                let world = turn_mul(parent, &rest);
+                let inv: Turn = std::array::from_fn(|i| std::array::from_fn(|j| world[j][i]));
+                // (not below the floor)
+                tip[1] = tip[1].min(0);
+                let d = turn_apply(&inv, std::array::from_fn(|k| tip[k] - at[k]));
+                let n = tag_isqrt(d.iter().fold(0i32, |a, x| a.wrapping_add(x.wrapping_mul(*x))) as u32) as i32;
+                let unit = d.map(|x| x.wrapping_mul(if n > 0 { 0x100_0000 / n } else { n }) / 4096);
+                // (down, 0x39B4C8 of (0, 4096, 0)); the arena's wind (0x1FAB6D0, 0x3D3D08) is left out: none blows
+                let mut s: [i32; 3] = std::array::from_fn(|k| (unit[k] * self.lag + inv[k][1] * self.down) / 256);
+                s[0] += (256 - self.lag - self.down) * 16;
+                let yaw = tag_atan12(s[0], -s[2]);
+                let pitch = tag_atan12(tag_isqrt((s[0] * s[0] + s[2] * s[2]) as u32) as i32, s[1]);
+                turn_mul(&rest, &euler([0, yaw, pitch]))
+            }
+        };
+        let world = turn_mul(parent, &local);
+        let reach = turn_apply(&world, [self.len, 0, 0]);
+        (local, std::array::from_fn(|k| at[k] + reach[k]))
+    }
 }
 
 fn tag_sin_cos(a: f32) -> [i32; 2] {
@@ -3544,7 +3634,10 @@ impl Fight {
         for (i, f) in self.fighters.iter().enumerate() {
             let mv = f.current_move(gd);
             // (Tekken 3's descriptors: Tekken Tag's strikes run between bone pairs)
-            let Some(byte) = mv.attack.as_ref().filter(|a| a.pairs.is_empty()).and_then(|a| a.header_bytes.first().copied()).filter(|&b| b >= 0x18 && !f.inactive) else { continue };
+            // (Tekken Tag's True Ogre: a strike to slot 0x18 is his fire, 0x3A6390)
+            let fire = mv.attack.as_ref().filter(|a| a.pairs.first().is_some_and(|p| p[1] == 0x18) && f.tag_rules(gd) && f.character == Some(20)).map(|_| objects::TAG_FIRE);
+            let byte = fire.or_else(|| mv.attack.as_ref().filter(|a| a.pairs.is_empty()).and_then(|a| a.header_bytes.first().copied()).filter(|&b| b >= 0x18));
+            let Some(byte) = byte.filter(|_| !f.inactive) else { continue };
             let key = (mv.active[0]..=mv.active[1]).contains(&f.frame).then_some((f.current.index, f.frame));
             if key.is_some() && self.objects.started[i] != key {
                 let slots = anims[i].volumes(f, gd).map_or(bodies[i].slots, |v| v.slots);
@@ -4045,6 +4138,18 @@ mod tests {
         assert_eq!(orthonormal(half), [2896, 0, 2896, 0, 4096, 0, -2896, 0, 2896]);
         assert_eq!(orthonormal([4096, 0, 0, 0, 4096, 0, 0, 0, 4096]), [4096, 0, 0, 0, 4096, 0, 0, 0, 4096]);
         assert_eq!((tag_isqrt(0), tag_isqrt(1), tag_isqrt(16_777_216), tag_isqrt(99)), (0, 1, 4096, 9));
+    }
+
+    /// 0x366108's quadrants, and a level spring (Roger's weights) sagging under gravity (y down) from its rest.
+    #[test]
+    fn a_spring_sags_from_its_rest() {
+        assert_eq!([(100, 0), (0, 100), (-100, 0), (0, -100), (100, 100), (-100, -50)].map(|(x, y)| tag_atan12(x, y)), [0, 0x400, -0x800, -0x400, 0x200, -0x6D2]);
+        let s = Spring { slot: 18, rest: [0; 3], len: 128, lag: 128, down: 24 };
+        let up: Turn = [[4096, 0, 0], [0, 4096, 0], [0, 0, 4096]];
+        let (first, tip) = s.step(&up, [0, -500, 0], None);
+        assert_eq!((first, tip), (up, [128, -500, 0]));
+        let (next, tip) = s.step(&up, [0, -500, 0], Some(tip));
+        assert!(next != up && tip[1] > -500 && tip[0] > 120, "{next:?} {tip:?}");
     }
 
     #[test]

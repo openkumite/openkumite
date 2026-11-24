@@ -6,11 +6,12 @@ use kumite_assets::Assets;
 use kumite_game::vfx::{Blend, Sprite, Vfx};
 use kumite_game::{parse_script, Game};
 use kumite_sim::input::Pad;
-use kumite_sim::objects::{Kind, FIRE, GAS};
+use kumite_sim::objects::{Kind, BREATH, FIRE, GAS};
 use std::path::PathBuf;
 
 const GON: usize = 239;
 const PAUL: usize = 71;
+const TRUE_OGRE: usize = 199;
 
 fn assets() -> Option<Assets> {
     let root = std::env::var_os("OPENKUMITE_ASSETS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets"));
@@ -35,7 +36,12 @@ pub struct Seen {
 
 /// Gon (P1) plays `script` against an idle Paul standing `gap` units apart (the fight starts them 2000 apart).
 fn gon(a: &Assets, script: &str, gap: f32) -> Seen {
-    let mut g = Game::load(a, [GON, PAUL]).unwrap();
+    duel(a, GON, script, gap)
+}
+
+/// Model `model` (P1) plays `script` against an idle Paul standing `gap` units apart.
+fn duel(a: &Assets, model: usize, script: &str, gap: f32) -> Seen {
+    let mut g = Game::load(a, [model, PAUL]).unwrap();
     let mut vfx = Vfx::new(a);
     let fx = vfx.data.clone().expect("effects.json");
     g.fight.fighters[1].guard_input = false;
@@ -53,7 +59,7 @@ fn gon(a: &Assets, script: &str, gap: f32) -> Seen {
         s.burn_frames += usize::from(drawn.iter().filter(fire).any(|p| p.pos.distance(victim) < 1.0));
         let f = &g.fight;
         s.objects = s.objects.max(f.objects.list.len());
-        for o in f.objects.list.iter().filter(|o| o.kind == Kind::Fire) {
+        for o in f.objects.list.iter().filter(|o| matches!(o.kind, Kind::Fire | Kind::Breath)) {
             s.reach = s.reach.max((o.pos - f.fighters[0].root()).length());
         }
         s.hits.extend(f.hits.iter().filter(|h| h.victim == 1).map(|h| (k, h.damage, h.limb)));
@@ -77,6 +83,18 @@ fn gons_fire_strikes_at_range_and_ends() {
     assert!(near.burn_frames >= 60, "{near:?}");
     let far = gon(&a, "1+2,n*100", 4000.0);
     assert!(far.hits.is_empty() && far.reach > 2000.0 && far.reach < 4000.0, "{far:?}");
+}
+
+/// True Ogre's 1+2 (move 168, descriptor byte 0x18): his breath streams from his mouth through the active frames
+/// 58-126 and strikes Paul 2 m away (each flame some 5 m out at most: 7 frames at 160, then 256 a frame); 8 m away
+/// nothing reaches him.
+#[test]
+fn true_ogres_breath_strikes() {
+    let Some(a) = assets() else { return };
+    let near = duel(&a, TRUE_OGRE, "1+2,n*160", 2000.0);
+    assert!(near.objects > 10 && near.hits.first().is_some_and(|h| h.2 == BREATH && h.1 > 0 && h.0 >= 57), "{near:?}");
+    let far = duel(&a, TRUE_OGRE, "1+2,n*160", 8000.0);
+    assert!(far.hits.is_empty() && far.reach > 2000.0, "{far:?}");
 }
 
 /// b+4: Gon turns his back, the gas's puffs come out at Paul and strike him close by; 2.5 m off, nothing.

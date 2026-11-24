@@ -9,17 +9,39 @@
 //! - byte 0x1B, Gon's gas (0x8006EDFC -> object 0x13, 0x800747EC): on the active window's first frame, a source at
 //!   the pelvis (slot 11) at (0, 200, 0), which lets out [`GAS`]'s puffs (object 0x14, 0x80074A30): each at its
 //!   height, put its distance along the source's heading on its first frame, then rising; 54 frames, striking for 46.
+//! - byte 0x18, Ogre's and True Ogre's breath (0x8006E99C -> object 6, 0x800711AC): Gon's fire from (600, 0, 50) in
+//!   the head's axes (the other side's z: -50), its heading turned by rand() (up to 63 / 4096 of a turn in pitch,
+//!   31 in yaw) at 160 units a frame, 256 once grown; 7 frames growing, 5-8 looped, 8 ending (it strikes for 4).
+//! - Tekken Tag's True Ogre (body 20) on a move striking to slot 0x18 ([`TAG_FIRE`]; 0x3A6390 -> 0x3A4EE8 each
+//!   active frame): a flame (task 0x3A44F8) from 200 along the head's heading towards 400, its pitch and
+//!   yaw turned by up to pi / 32 and pi / 64 (rand(), 0x3A94B0), 160 units a frame; 8 frames growing, then 256 a
+//!   frame, held 5-8, 7 fading; on along the floor 216 over it. Each striking flame's travel is a strike of its
+//!   owner's (0x346230's segments, read by 0x3770E0); none strike once the opponent burns (+0xC04, 0x346378).
 //!
-//! shortcut: Ogre's breath (byte 0x18, object 6) and bytes 0x19 / 0x1C (object 10) start nothing yet; port them here.
+//! shortcut: the breath's sparks and floor flames (objects 7 and 9, drawn only) and bytes 0x19 / 0x1C (object 10)
+//! start nothing yet; port them here.
 
+use crate::detmath::DetMath;
 use glam::{Mat4, Vec3};
 
 /// Gon's fire's and gas's descriptor bytes.
 pub const FIRE: u32 = 0x1A;
 pub const GAS: u32 = 0x1B;
+pub const BREATH: u32 = 0x18;
+/// Tekken Tag's True Ogre's fire: its moves' strike to slot 0x18 (no descriptor byte; this stands for it).
+pub const TAG_FIRE: u32 = 0x118;
+/// The flame's start and its heading's second point (0x437BF0: z of the drawn head node +0x1770, the head slot's x).
+const TAG_FIRE_AT: [Vec3; 2] = [Vec3::new(200.0, 0.0, 0.0), Vec3::new(400.0, 0.0, 0.0)];
+/// The flame's speeds (0x3A3518's 160, then 256) and its height over the floor.
+const TAG_FIRE_SPEED: [f32; 2] = [160.0, 256.0];
+const TAG_FIRE_FLOOR: f32 = 216.0;
 /// The fire's start and its heading's second point in the head's axes (0x80098820), the gas's in the pelvis's
 /// (0x80098840): the bones' axes (x along the facing, y down), turned onto the drawn joints' (x, −y, −z).
 const FIRE_AT: [Vec3; 2] = [Vec3::new(300.0, 0.0, -50.0), Vec3::new(800.0, 0.0, -50.0)];
+/// The breath's start and second point in the head's axes by its owner's side (0x80098800), as `FIRE_AT`.
+const BREATH_AT: [[Vec3; 2]; 2] = [[Vec3::new(600.0, 0.0, -50.0), Vec3::new(800.0, 0.0, -50.0)], [Vec3::new(600.0, 0.0, 50.0), Vec3::new(800.0, 0.0, 50.0)]];
+/// The breath's speeds (0xA00, then 0x1000 at 0x800717A0).
+const BREATH_SPEED: [f32; 2] = [160.0, 256.0];
 const GAS_AT: [Vec3; 2] = [Vec3::new(0.0, -200.0, 0.0), Vec3::new(0.0, -600.0, 0.0)];
 /// The fire's speed (0x800 at 0x8006E120: 128 units a frame) and its lowest height (y −0xD8).
 const FIRE_SPEED: f32 = 128.0;
@@ -37,6 +59,8 @@ const PUFF_RISE: f32 = 0x3999 as f32 / 65536.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
     Fire,
+    Breath,
+    TagFire,
     /// The gas's source: its heading (sine, cosine of the yaw) and the next puff.
     GasSource {
         heading: [f32; 2],
@@ -70,6 +94,8 @@ pub struct Objects {
     seed: u32,
     /// Each fighter's move and frame an object last started on (a hit-stop holds the frame: one start a frame).
     pub started: [Option<(usize, u32)>; 2],
+    /// Tekken Tag: each fighter's opponent burns from its fire (+0xC04): its new flames do not strike.
+    pub burned: [bool; 2],
 }
 
 impl Objects {
@@ -83,6 +109,8 @@ impl Objects {
     pub fn start(&mut self, owner: usize, byte: u32, first: bool, slots: &[Mat4; 2]) {
         let (m, at, kind) = match byte {
             FIRE => (slots[0], FIRE_AT, Kind::Fire),
+            BREATH => (slots[0], BREATH_AT[owner.min(1)], Kind::Breath),
+            TAG_FIRE => (slots[0], TAG_FIRE_AT, Kind::TagFire),
             GAS if first => (slots[1], GAS_AT, Kind::GasSource { heading: [0.0, 1.0], next: 0 }),
             _ => return,
         };
@@ -92,13 +120,22 @@ impl Objects {
             Kind::GasSource { next, .. } => Kind::GasSource { heading: glam::Vec2::new(d.x, d.z).normalize_or(glam::Vec2::Y).to_array(), next },
             k => k,
         };
-        let vel = if kind == Kind::Fire { d.normalize_or_zero() * FIRE_SPEED } else { Vec3::ZERO };
+        let vel = match kind {
+            Kind::Fire => d.normalize_or_zero() * FIRE_SPEED,
+            // (its heading: turned by rand() on its first frame)
+            Kind::Breath | Kind::TagFire => d.normalize_or_zero(),
+            _ => Vec3::ZERO,
+        };
         self.list.push(Object { kind, owner, pos: p, prev: p, vel, strikes: false, state: 0, count: -1, frames: 0, left: 0, mirror: false });
     }
 
     /// One frame (0x8006F5C0): `striking[k]` whether fighter k is still in its object's move past the active window's
     /// start (its descriptor byte), `struck[k]` whether fighter k's opponent was struck last frame.
     pub fn step(&mut self, striking: [Option<u32>; 2], struck: [bool; 2]) {
+        // (Tekken Tag: a fire's strike landed, the opponent burns; over with the move)
+        for k in 0..2 {
+            self.burned[k] = striking[k] == Some(TAG_FIRE) && (self.burned[k] || struck[k]);
+        }
         let mut i = 0;
         // (puffs let out this frame move this frame too: the pool's list runs on to its end)
         while i < self.list.len() {
@@ -110,6 +147,11 @@ impl Objects {
                     let hit = struck.get(o.owner).copied().unwrap_or(false);
                     self.fire(&mut o, on(FIRE), hit)
                 }
+                Kind::Breath => {
+                    let hit = struck.get(o.owner).copied().unwrap_or(false);
+                    self.fire(&mut o, on(BREATH), hit)
+                }
+                Kind::TagFire => self.tag_fire(&mut o, on(TAG_FIRE)),
                 Kind::GasSource { heading, next } => {
                     o.count += 1;
                     if let Some(&[_, far, high]) = GAS_PUFFS.get(next).filter(|p| on(GAS) && o.count as f32 >= p[0]) {
@@ -152,17 +194,30 @@ impl Objects {
         if o.strikes && struck && (1..=2).contains(&o.state) {
             return false;
         }
+        let breath = o.kind == Kind::Breath;
         if o.state == 0 {
             // 0x80072194: strikes, 5-8 looped frames
             o.state = 1;
             let r = self.rand();
             (o.strikes, o.mirror, o.left) = (on, r & 1 != 0, ((r >> 2) & 3) + 5);
+            if breath {
+                // 0x80071540: the heading's pitch and yaw (0x8006DF34, the game's y down and z flipped) turned
+                let turn = |v: i32| v as f32 * std::f32::consts::TAU / 4096.0;
+                let d = Vec3::new(o.vel.x, -o.vel.y, -o.vel.z);
+                let yaw = d.z.datan2(d.x) + turn(((r >> 6) & 0x3F) - 0x1F);
+                let pitch = glam::Vec2::new(d.x, d.z).length().datan2(d.y) + turn(((r >> 4) & 0x7F) - 0x3F);
+                let (h, v) = (pitch.dsin(), pitch.dcos());
+                o.vel = Vec3::new(h * yaw.dcos(), -v, -h * yaw.dsin()) * BREATH_SPEED[0];
+            }
         }
         match o.state {
             1 => {
                 o.count += 1;
                 if o.count >= 7 {
                     (o.state, o.count) = (2, self.rand());
+                    if breath {
+                        o.vel = o.vel.normalize_or_zero() * BREATH_SPEED[1];
+                    }
                 }
             }
             2 => {
@@ -170,15 +225,19 @@ impl Objects {
                 o.frames += 1;
                 if o.frames >= o.left {
                     (o.state, o.count) = (4, -1);
+                    // (the breath's end picks its corners again, 0x800718A4)
+                    if breath {
+                        o.mirror = self.rand() & 1 != 0;
+                    }
                 }
             }
             _ => {
                 o.count += 1;
-                if o.count >= 9 {
+                if o.count >= if breath { 8 } else { 9 } {
                     return false;
                 }
-                // (0x800255E0: it strikes for the end's first 3 frames)
-                o.strikes &= o.count < 3;
+                // (0x800255E0: it strikes for the end's first 3 frames; the breath's 4, 0x80025534)
+                o.strikes &= o.count < if breath { 4 } else { 3 };
             }
         }
         o.prev = o.pos;
@@ -186,7 +245,49 @@ impl Objects {
         // low enough: on along the floor, level (0x8006E0D0)
         if o.pos.y < FIRE_FLOOR {
             o.pos.y = FIRE_FLOOR;
-            o.vel = Vec3::new(o.vel.x, 0.0, o.vel.z).normalize_or_zero() * FIRE_SPEED;
+            let speed = if breath { o.vel.length() } else { FIRE_SPEED };
+            o.vel = Vec3::new(o.vel.x, 0.0, o.vel.z).normalize_or_zero() * speed;
+        }
+        true
+    }
+
+    /// Tekken Tag's flame (0x3A44F8): false when it is gone. `count` its frames in the stage (+0x16), `frames` its
+    /// picture of the 30 (+0x1E), `left` its frames held.
+    fn tag_fire(&mut self, o: &mut Object, on: bool) -> bool {
+        let burned = self.burned.get(o.owner).copied().unwrap_or(false);
+        // (libc rand, 0x40FBD0, and 0x3A94B0's 0..1 of its low 24 bits)
+        let mut rand = || {
+            self.seed = self.seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
+            (self.seed & 0x7FFF_FFFF) as i32
+        };
+        let along = |pitch: f32, yaw: f32, speed: f32| Vec3::new(yaw.dsin() * pitch.dcos(), pitch.dsin(), yaw.dcos() * pitch.dcos()) * speed;
+        let angles = |v: Vec3| (v.y.datan2(glam::Vec2::new(v.x, v.z).length()), v.x.datan2(v.z));
+        o.strikes &= on && !burned;
+        match o.state {
+            0 => {
+                let mut unit = || (rand() & 0xFF_FFFF) as f32 / 16_777_216.0 * 2.0 - 1.0;
+                let (pitch, yaw) = angles(o.vel);
+                let (pitch, yaw) = (pitch + unit() * std::f32::consts::PI / 32.0, yaw + unit() * std::f32::consts::PI / 64.0);
+                o.vel = along(pitch, yaw, TAG_FIRE_SPEED[0]);
+                (o.state, o.count, o.frames, o.strikes) = (1, 0, rand() % 30, on && !burned);
+                return true;
+            }
+            1 if o.count >= 8 => {
+                (o.state, o.count, o.left) = (2, 0, ((rand() >> 2) & 3) + 5);
+                let (pitch, yaw) = angles(o.vel);
+                o.vel = along(pitch, yaw, TAG_FIRE_SPEED[1]);
+            }
+            2 if o.count >= o.left => (o.state, o.count) = (4, 0),
+            4 if o.count >= 7 => return false,
+            _ => {}
+        }
+        o.frames = (o.frames + 1) % 30;
+        o.prev = o.pos;
+        o.pos += o.vel;
+        o.count += 1;
+        if o.pos.y < TAG_FIRE_FLOOR {
+            o.pos.y = TAG_FIRE_FLOOR;
+            o.vel = Vec3::new(o.vel.x, 0.0, o.vel.z).normalize_or_zero() * TAG_FIRE_SPEED[1];
         }
         true
     }
