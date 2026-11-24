@@ -548,6 +548,9 @@ pub struct Fighter {
     shown_root: Vec3,
     /// Tekken Tag: the angle to the opponent of the last facing pass (+0x3A), which the next frame's moves take.
     seen: Option<f32>,
+    /// Tekken Tag: the facing target (+0x44) of the last facing pass with the pair more than 0x200 apart (0x370FEC:
+    /// nearer, it is kept).
+    basis: Option<f32>,
     pub health: i32,
     /// Full health in whole points (the VS handicap scales it: 70..140 %).
     pub max_health: i32,
@@ -719,6 +722,7 @@ impl Fighter {
             rebase_root: false,
             shown_root: Vec3::ZERO,
             seen: None,
+            basis: None,
             health: max_health * ONE,
             max_health,
             character: None,
@@ -1154,7 +1158,12 @@ impl Fighter {
             Some([me, opp]) => {
                 let d = opp - me;
                 self.seen = (d.x * d.x + d.z * d.z > 1.0).then(|| PI - tag_atan(d.x as i32, -d.z as i32) as f32 * ANGLE);
-                self.geometry_from(self.seen)
+                let (a, off, target) = self.geometry_from(self.seen);
+                // (the pair distance gp-0x74C8 is the integer square root)
+                if self.basis.is_none() || (d.x as i64).pow(2) + (d.z as i64).pow(2) >= 0x201 * 0x201 {
+                    self.basis = Some(target);
+                }
+                (a, off, self.basis.unwrap_or(target))
             }
             None => self.geometry(),
         };
@@ -3551,10 +3560,19 @@ impl Fight {
                     }
                 })
                 .collect();
-            // an attack drops the forearms'
-            if m.active[0] != 0 {
-                r.iter_mut().skip(1).take(2).for_each(|x| *x = 0.0);
-            }
+            // an attack drops the forearms'; else an airborne one (+0x135) struck its 6 and 7, one in a move of flags24
+            // bit 0x400 its 4 to 7 (0x377EC0)
+            let (j0, j1) = (m.bytes_18.jump_start, m.bytes_18.jump_end);
+            let drop = if m.active[0] != 0 {
+                1..3
+            } else if (f.juggle != 0 || j0 != 0 && (j0..=j1).contains(&f.frame)) && f.reacting {
+                6..8
+            } else if m.flags24.raw & 0x400 != 0 {
+                4..8
+            } else {
+                0..0
+            };
+            r.iter_mut().take(drop.end).skip(drop.start).for_each(|x| *x = 0.0);
             r
         });
         // in the game's integers (0x377338): the spheres' places and radii as its s16, the square roots as
@@ -3924,9 +3942,10 @@ impl Fight {
                         let fv = &mut self.fighters[v];
                         fv.start_reaction(to, alias);
                         // blocks and counter hits (0x800309E4, 0x80030C8C): the root basis on the attacker, and the
-                        // body turning to it while it reels (mode 7)
+                        // body turning to it while it reels (mode 7); Tekken Tag's basis is the facing pass's target
+                        // +0x44 (0x36B8FC), not one from the roots now
                         if blocked || counter {
-                            fv.root_yaw = fv.geometry().2;
+                            fv.root_yaw = fv.basis.unwrap_or_else(|| fv.geometry().2);
                             fv.mode = 7;
                         }
                         if !blocked && !lying && !counter && quadrant != 0 {
