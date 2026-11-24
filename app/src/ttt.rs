@@ -133,7 +133,7 @@ pub struct Data {
     pub force: bool,
     /// SURVIVAL's CPU profiles (ai.json `survival`): max wins, difficulty, lowest and highest level.
     survival: Vec<[usize; 4]>,
-    /// `--ttt-unlocks original`: characters selectable by the unlock schedule as on the PS2 (else every one).
+    /// `--ttt-unlocks original`: characters, modes and extras unlocked over play as on the PS2 (else every one).
     pub original_unlocks: bool,
 }
 
@@ -200,6 +200,26 @@ impl Data {
     }
     fn in_pool(&self, stage: u32, c: usize) -> bool {
         self.has(0, stage, c)
+    }
+    /// The unlock stage and the endings seen the menus go by: the save's with `--ttt-unlocks original`, else the last
+    /// stage and every ending (the save keeps only what was earned).
+    fn unlock_stage(&self, p: &Progress) -> u32 {
+        if self.original_unlocks {
+            p.stage
+        } else {
+            LAST_STAGE
+        }
+    }
+    fn seen(&self, p: &Progress) -> u64 {
+        if self.original_unlocks {
+            p.seen
+        } else {
+            u64::MAX
+        }
+    }
+    /// The Bowl's JUKEBOX: once a 200 game unlocked it (+0x202), else always.
+    fn jukebox_open(&self, p: &Progress) -> bool {
+        !self.original_unlocks || p.bowl_bonus[0]
     }
     /// Tekken Bowl is open at unlock stage `stage` (the schedule's kind 5).
     fn bowl_open(&self, stage: u32) -> bool {
@@ -1098,7 +1118,7 @@ impl Select {
         let c = roster.characters.get(i)?;
         let index = |n: usize| c.costumes.iter().position(|r| roster.costume_of.get(r) == Some(&n));
         // (a costume the character has; Armor King's fifth once his ending was seen: 0x3AE608, config +0x10 bit 18)
-        let has = |n: usize| index(n).is_some() && !(n == 4 && c.id == ARMOR_KING && progress.seen >> 18 & 1 == 0);
+        let has = |n: usize| index(n).is_some() && !(n == 4 && c.id == ARMOR_KING && d.seen(progress) >> 18 & 1 == 0);
         let or = |n: usize, other: usize| if has(n) { n } else { other };
         let mut costume = match button {
             0x80 => 0,
@@ -1216,7 +1236,7 @@ impl Front {
     fn items(d: &Data, p: &Progress) -> Vec<(u32, String)> {
         let open = |i: &&Value| {
             let mode = int(&i["mode"]) as u32;
-            i["locked"] != true || (mode == THEATER && p.seen != 0 && d.endings.is_some()) || (mode == BOWL && d.bowl_open(p.stage))
+            i["locked"] != true || (mode == THEATER && d.seen(p) != 0 && d.endings.is_some()) || (mode == BOWL && d.bowl_open(d.unlock_stage(p)))
         };
         let mut items: Vec<(u32, String)> =
             d.raw["menu"]["items"].as_array().into_iter().flatten().filter(open).map(|i| (int(&i["mode"]) as u32, i["label"].as_str().unwrap_or_default().to_string())).collect();
@@ -1515,7 +1535,7 @@ impl Front {
                 return Outcome::TttSaved;
             }
             Page::Theater { cursor } => {
-                let rows = theater(&d, progress.seen);
+                let rows = theater(&d, progress);
                 let [r, c] = cursor;
                 let len = |r: usize| rows.get(r).map_or(1, Vec::len).max(1);
                 match key {
@@ -1567,7 +1587,7 @@ impl Front {
                     }
                     Key::Start | Key::Button(_) | Key::Back => {
                         sfx::play(sound(&d, "cancel"));
-                        let rows = theater(&d, progress.seen);
+                        let rows = theater(&d, progress);
                         let at = rows.iter().position(|r| r.first().is_some_and(|c| matches!(c.1, Cell::Music))).unwrap_or(0);
                         Some(Page::Theater { cursor: [at, 0] })
                     }
@@ -1834,16 +1854,21 @@ impl Front {
             Page::Theater { cursor: [r, c] } => {
                 backdrop(painter, v, art);
                 font(painter, v, art, d, "THEATER", W / 2.0, 20.0, 0.6, Color32::WHITE);
-                let rows = theater(d, progress.seen);
+                let rows = theater(d, progress);
                 let first = r.saturating_sub(6).min(rows.len().saturating_sub(13));
                 for (k, row) in rows.iter().enumerate().skip(first).take(13) {
                     let y = 80.0 + 26.0 * (k - first) as f32;
-                    // cells as wide as the row's longest label (about 7.5 a letter), squeezed to fit the screen
-                    let longest = row.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0) as f32;
-                    let n = row.len().max(1) as f32;
-                    let step = (longest * 7.5 + 14.0).max(72.0).min((W - 60.0) / n);
+                    // the row's own character's further costumes show only their "(nP)" (a row of six long names
+                    // would not fit), a guest's (Kuma's PANDA) its whole label; each cell as wide as its text
+                    fn name(l: &str) -> &str {
+                        l.split_once(')').map_or("", |x| x.1)
+                    }
+                    let mut at = 30.0;
                     for (j, (label, cell)) in row.iter().enumerate() {
-                        let x = if row.len() == 1 { W / 2.0 } else { 30.0 + step * (j as f32 + 0.5) };
+                        let label = if j > 0 && name(label) == name(&row[0].0) { &label[..label.len() - name(label).len()] } else { label.as_str() };
+                        let step = small_width(d, label) + 20.0;
+                        let x = if row.len() == 1 { W / 2.0 } else { at + step / 2.0 };
+                        at += step;
                         if k == *r && j == *c {
                             Art::shade(painter, v, sv([x - step / 2.0, y - 3.0, step, 22.0]), [Color32::from_rgba_unmultiplied(40, 80, 200, 150); 4]);
                         }
@@ -1899,9 +1924,10 @@ enum Cell {
 }
 
 /// Theater's rows (0x3544C8, 0x3545A8): each character with an ending seen, its cells the costumes labelled whose
-/// ending was seen; then OPENING MOVIE, ARCADE MOVIE, EMBU (and EMBU2, not shown: the last unlock's), MUSIC PLAYER,
-/// EXIT THEATER MENU.
-fn theater(d: &Data, seen: u64) -> Vec<Vec<(String, Cell)>> {
+/// ending was seen; then OPENING MOVIE, ARCADE MOVIE, EMBU (and EMBU2 once the last unlock set config +0x37), MUSIC
+/// PLAYER, EXIT THEATER MENU.
+fn theater(d: &Data, p: &Progress) -> Vec<Vec<(String, Cell)>> {
+    let (seen, embu2) = (d.seen(p), d.unlock_stage(p) >= LAST_STAGE);
     let Some(e) = d.endings.as_deref() else { return vec![vec![("EXIT THEATER MENU".into(), Cell::Exit)]] };
     let t = &e.raw["theater"];
     let mut rows: Vec<Vec<(String, Cell)>> = (0..34)
@@ -1921,7 +1947,7 @@ fn theater(d: &Data, seen: u64) -> Vec<Vec<(String, Cell)>> {
         (_, Some(_)) if !e.embu.is_empty() => Cell::Embu(x["cast"].as_u64().unwrap_or(0) as usize),
         _ => Cell::None,
     };
-    rows.extend(t["extras"].as_array().into_iter().flatten().filter(|x| x["cast"].is_null()).map(|x| vec![(x["label"].as_str().unwrap_or_default().to_string(), cell(x))]));
+    rows.extend(t["extras"].as_array().into_iter().flatten().filter(|x| x["cast"].is_null() || embu2).map(|x| vec![(x["label"].as_str().unwrap_or_default().to_string(), cell(x))]));
     rows.push(vec![("MUSIC PLAYER".into(), Cell::Music)]);
     rows.push(vec![("EXIT THEATER MENU".into(), Cell::Exit)]);
     rows
@@ -2356,7 +2382,7 @@ fn draw_game_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data, cur
     // box, in their colours where it applies, else `off`
     if let Some(&row) = game_rows(d).get(cursor).filter(|&&r| r != ARCADE_ROW) {
         let (m, mask) = (&g["modes"], int(&d.raw["options"][row]["modes"]));
-        let open = d.bowl_open(progress().stage);
+        let open = d.bowl_open(d.unlock_stage(&progress()));
         let items: Vec<&Value> = d.raw["menu"]["items"].as_array().into_iter().flatten().filter(|i| int(&i["mode"]) < BOWL as usize || (int(&i["mode"]) == BOWL as usize && open)).collect();
         let (top, dy, size) = (num(&m["y"]), num(&m["dy"]), num(&m["size"]));
         let [b0, b1] = [num(&m["box"]["x"][0]), num(&m["box"]["x"][1])];
@@ -5128,7 +5154,7 @@ fn bowl_callout(painter: &egui::Painter, v: &View, art: &Art, d: &Data, scene: &
 /// and OFF.
 pub fn bowl_options_key(d: &Data, cursor: &mut usize, key: Key) -> bool {
     let mut p = progress();
-    let juke = p.bowl_bonus[0];
+    let juke = d.jukebox_open(&p);
     match key {
         Key::Up | Key::Down => {
             sfx::play(sound(d, "cursor"));
@@ -5192,7 +5218,7 @@ pub fn draw_bowl_options(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
         let end = chrome(painter, v, art, d, label, 155.0, y, Some(if cursor == k { 11 } else { 5 }), 4.0);
         chrome(painter, v, art, d, if on { "ON" } else { "OFF" }, end, y, Some(if on { 16 } else { 12 }), 4.0);
     }
-    if progress().bowl_bonus[0] {
+    if d.jukebox_open(&progress()) {
         // JUKEBOX: its track (OFF: none), the arrows either side under the cursor
         let name = progress().jukebox.and_then(|k| music(d).get(k).map(|m| m.1.clone())).unwrap_or_else(|| "OFF".into());
         if cursor == 2 {
@@ -5399,8 +5425,14 @@ mod tests {
         let endings = serde_json::json!({"table": [[1, 1], [2]], "endings": [{}, {}, {}], "playback": {"unknown": 2},
             "theater": {"labels": [["(1P)PAUL", "(2P)PAUL"], ["(1P)LAW"]], "extras": [{"label": "OPENING MOVIE", "movie": 14}, {"label": "EMBU", "scene": 1}, {"label": "EMBU2", "cast": 1}]}});
         let e = EndingData::new(endings, &Value::Null).unwrap();
-        let d = Data::load(&serde_json::json!({"front_end": {}}), &Value::Null, &serde_json::json!({}), Some(e), vec![], None, false, &Value::Null).unwrap();
-        let rows = |seen| theater(&d, seen).into_iter().map(|r| r.into_iter().map(|c| (c.0, c.1)).collect::<Vec<_>>()).collect::<Vec<_>>();
+        let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 9, "label": "THEATER", "locked": true}]}}});
+        let mut d = Data::load(&fe, &Value::Null, &serde_json::json!({}), Some(e), vec![], None, false, &Value::Null).unwrap();
+        // by default: THEATER on the menu, every ending and EMBU2 in it
+        let all = theater(&d, &Progress::default());
+        assert_eq!((all.len(), &all[0][1].0, &all[4][0].0), (7, &"(2P)PAUL".to_string(), &"EMBU2".to_string()));
+        assert!(Front::items(&d, &Progress::default()).iter().any(|i| i.0 == THEATER));
+        Arc::get_mut(&mut d).unwrap().original_unlocks = true;
+        let rows = |seen| theater(&d, &Progress { seen, ..Progress::default() }).into_iter().map(|r| r.into_iter().map(|c| (c.0, c.1)).collect::<Vec<_>>()).collect::<Vec<_>>();
         let tail =
             [vec![("OPENING MOVIE".to_string(), Cell::Movie(14))], vec![("EMBU".into(), Cell::None)], vec![("MUSIC PLAYER".into(), Cell::Music)], vec![("EXIT THEATER MENU".into(), Cell::Exit)]];
         assert_eq!(rows(0), tail);
@@ -5427,9 +5459,12 @@ mod tests {
         let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE", "locked": false},
             {"mode": 8, "label": "TEKKEN BOWL", "locked": true}, {"mode": 9, "label": "THEATER", "locked": true}]},
             "unlocks": {"schedule": [{"stage": 10, "kind": 5, "character": 0}]}}});
-        let d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![], None, false, &Value::Null).unwrap();
-        let modes = |stage| Front::items(&d, &Progress { stage, ..Progress::default() }).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
-        assert_eq!((modes(9), modes(10)), (vec![ARCADE], vec![ARCADE, BOWL]));
+        let mut d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![], None, false, &Value::Null).unwrap();
+        let modes = |d: &Data, stage| Front::items(d, &Progress { stage, ..Progress::default() }).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
+        // open from the start by default; with --ttt-unlocks original at stage 10
+        assert_eq!(modes(&d, 0), vec![ARCADE, BOWL]);
+        Arc::get_mut(&mut d).unwrap().original_unlocks = true;
+        assert_eq!((modes(&d, 9), modes(&d, 10)), (vec![ARCADE], vec![ARCADE, BOWL]));
         // its select: P1 picks two; 2P's START joins
         let mut s = Select::new(BOWL, &d, None);
         assert_eq!((s.sides[0].need, s.sides[1].player), (2, None));

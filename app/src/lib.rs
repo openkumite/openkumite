@@ -8436,8 +8436,9 @@ Game:
   --player NAME|ID             ... with this character
   --costume C                  ... in this costume
   --difficulty 0..2            ... at this difficulty
-  --ttt-unlocks all|original   Tekken Tag: every character selectable (default), or unlocked as on the PS2 (the
-                               save's progress is kept either way)
+  --ttt-unlocks all|original   Tekken Tag: every character, mode and extra open (default: Tekken Bowl, Theater's
+                               endings and EMBU2, the JUKEBOX...), or unlocked over play as on the PS2 (the save
+                               keeps only what was earned, either way)
   --mute                       no sound (M toggles it in the game)
 
 Straight into a mode (debugging; past the menus):

@@ -1385,6 +1385,31 @@ fn play_ending(a: &Assets, d: &kumite_game::ending::EndingData, e: usize) -> Vec
     out
 }
 
+/// Theater (all open by default) plays each cell's ending: every labelled character x costume with an ending loads
+/// and runs to its end (Unknown's is a movie), and both EMBU casts load.
+#[test]
+fn theater_plays_every_ending() {
+    let Some(a) = assets() else { return };
+    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
+    let unknown = d.raw["playback"]["unknown"].as_u64();
+    let mut played = 0;
+    for c in 0..34 {
+        for k in (0..8).filter(|&k| d.raw["theater"]["labels"][c][k].is_string()) {
+            let Some(e) = d.ending(c, k).filter(|&e| Some(e as u64) != unknown) else { continue };
+            let mut s = kumite_game::ending::EndingScene::new(&a, &d, e, k).unwrap_or_else(|err| panic!("character {c} costume {k}: {err:#}"));
+            let mut f = 0;
+            while !s.done && f < 20000 {
+                s.step();
+                f += 1;
+            }
+            assert!(s.done, "character {c} costume {k}: ending {e} ends");
+            played += 1;
+        }
+    }
+    assert!(played > 60, "{played}");
+    assert!((0..2).all(|cast| kumite_game::ending::EndingScene::embu(&a, &d, cast).is_ok()));
+}
+
 /// The EMBU's camera as PCSX2 showed it at its counter 1100, one ahead of the view (our frame 1099): the view 0x415808's eye (-339, -2152,
 /// -2338) game units, here turned half round about the arena (screen 11 turns the arena so: PCSX2 shows the pagoda
 /// and the gate's steps on path 0 at counter 420, where the arena as it stands has the lion); and its people: none in
