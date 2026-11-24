@@ -366,6 +366,8 @@ pub struct Vfx {
     /// The auras' pictures this frame, and each actor's aura particles' frame counters (+0x16).
     auras: Vec<Sprite>,
     aura_frames: HashMap<usize, Vec<u32>>,
+    /// Each actor's root as drawn the frame before (player +0x590 / +0x598: the hit pass runs before the draw).
+    drawn: Vec<Option<Vec3>>,
 }
 
 /// A fire on a fighter Gon's fire struck (effect object 0xB, 0x80072E74): on a bone slot of the victim for 60-75
@@ -465,6 +467,7 @@ impl Vfx {
             embers: Vec::new(),
             auras: Vec::new(),
             aura_frames: HashMap::new(),
+            drawn: Vec::new(),
         }
     }
 
@@ -542,6 +545,7 @@ impl Vfx {
         self.embers.clear();
         self.auras.clear();
         self.aura_frames.clear();
+        self.drawn.clear();
     }
 
     /// A hit-spark slot (the 4th overwrites the oldest). `dir`: the strike direction (moving sparks only).
@@ -878,10 +882,10 @@ impl Vfx {
                         let left = 60 + (self.rand() & 15) as i32;
                         self.burns.push(Burn { victim: h.victim, attacker: h.attacker, slot, pos, state: 1, count, left, rise: 0.0, mirror: false, tag: true });
                     }
-                    // and a fire on the floor at the struck one's feet
-                    // shortcut: at its root, the game's player +0x590 / +0x598; upgrade if PCSX2 shows it off his feet
+                    // and a fire on the floor at the struck one's feet: his root as last drawn (+0x590 / +0x598)
                     if let Some(&(f, ..)) = actors.iter().find(|a| a.1 == h.victim) {
-                        self.floor_fire(h.attacker, f.root() / UNITS);
+                        let at = self.drawn.get(h.victim).copied().flatten().unwrap_or(f.root() / UNITS);
+                        self.floor_fire(h.attacker, at);
                     }
                 } else if matches!(h.limb, 0x18 | 0x1A) {
                     for slot in BURN_SLOTS {
@@ -924,6 +928,12 @@ impl Vfx {
                     }
                 }
             }
+        }
+        for &(f, i, _) in actors {
+            if self.drawn.len() <= i {
+                self.drawn.resize(i + 1, None);
+            }
+            self.drawn[i] = Some(f.root() / UNITS);
         }
     }
 
@@ -1250,6 +1260,7 @@ mod tests {
             embers: vec![],
             auras: vec![],
             aura_frames: HashMap::new(),
+            drawn: Vec::new(),
         };
         v.effect("block", &data.block, Vec3::new(1.0, 1.0, 0.0), None, Blend::Add, Vec3::ZERO);
         assert!(v.sprites().is_empty() && v.slots.iter().all(Option::is_none));

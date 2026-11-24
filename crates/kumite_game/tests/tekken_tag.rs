@@ -422,11 +422,16 @@ fn true_ogres_fire_sparks_and_sets_the_floor_alight() {
         b.step([Pad::default(); 2]);
     }
     let mut v = kumite_game::vfx::Vfx::new(&a);
-    let (mut sparks, mut floor) = (0, 0);
+    let (mut sparks, mut floor, mut feet) = (0, 0, None);
     for (k, pad) in parse_script("n*62,f*30,n*2,1+2*2,n*200").unwrap().into_iter().enumerate() {
+        // (the fire at his feet stands at his root as drawn the frame before the hit, player +0x590 / +0x598)
+        let drawn = b.game.fight.fighters[1].root() / 1000.0;
         b.step([pad, Pad::default()]);
         v.step(&b.game);
         let s = v.sprites();
+        if feet.is_none() && b.game.fight.hits.iter().any(|h| h.attacker == 0 && h.limb == 0x18) {
+            feet = Some(s.iter().any(|x| (x.pos.y - 0.366).abs() < 1e-4 && (x.pos.x - drawn.x).abs() < 1e-4 && (x.pos.z - drawn.z).abs() < 1e-4));
+        }
         let n = s.iter().filter(|x| (x.size - 0.0437).abs() < 0.001).count();
         let f = s.iter().filter(|x| x.size > 0.34 && x.size < 0.88 && (x.pos.y - 0.366).abs() < 1e-4).count();
         if std::env::var_os("EMBERS").is_some() {
@@ -434,7 +439,7 @@ fn true_ogres_fire_sparks_and_sets_the_floor_alight() {
         }
         (sparks, floor) = (sparks.max(n), floor.max(f));
     }
-    assert!((8..=40).contains(&sparks) && (1..=8).contains(&floor), "sparks {sparks} floor {floor}");
+    assert!((8..=40).contains(&sparks) && (1..=8).contains(&floor) && feet == Some(true), "sparks {sparks} floor {floor} feet {feet:?}");
 }
 
 /// The effects frame by frame (for a comparison with PCSX2's effect tasks): `OK_FX_MODEL` (Paul) vs Hwoarang,
