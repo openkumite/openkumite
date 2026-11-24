@@ -372,6 +372,7 @@ pub struct Vfx {
 #[derive(Clone, Debug)]
 pub struct Burn {
     pub victim: usize,
+    pub attacker: usize,
     pub slot: usize,
     pub pos: Vec3,
     pub state: u8,
@@ -823,12 +824,12 @@ impl Vfx {
                     for slot in TAG_BURN_NODES {
                         let count = (self.rand() % 30) as i32;
                         let left = 60 + (self.rand() & 15) as i32;
-                        self.burns.push(Burn { victim: h.victim, slot, pos, state: 1, count, left, rise: 0.0, mirror: false, tag: true });
+                        self.burns.push(Burn { victim: h.victim, attacker: h.attacker, slot, pos, state: 1, count, left, rise: 0.0, mirror: false, tag: true });
                     }
                 } else if matches!(h.limb, 0x18 | 0x1A) {
                     for slot in BURN_SLOTS {
                         let r = self.rand() as i32;
-                        self.burns.push(Burn { victim: h.victim, slot, pos, state: 1, count: r >> 4, left: (r & 15) + 60, rise: 0.0, mirror: r & 1 != 0, tag: false });
+                        self.burns.push(Burn { victim: h.victim, attacker: h.attacker, slot, pos, state: 1, count: r >> 4, left: (r & 15) + 60, rise: 0.0, mirror: r & 1 != 0, tag: false });
                     }
                 }
                 if h.damage.max(h.base_damage) >= HEAVY {
@@ -908,7 +909,7 @@ impl Vfx {
 
     /// The effect objects' pictures (drawn after their move, 0x8006FC84): the fire's growing, looped and ending
     /// cells, 2 frames each, lighting the fighters now and then (0x800720EC); the gas puff's.
-    fn objects(&mut self, list: &[kumite_sim::objects::Object], models: &[usize]) {
+    pub fn objects(&mut self, list: &[kumite_sim::objects::Object], models: &[usize]) {
         use kumite_sim::objects::Kind;
         self.objects.clear();
         let Some(d) = self.data.clone() else { return };
@@ -959,7 +960,7 @@ impl Vfx {
             if b.tag {
                 // (the attacker's flame cells, the flame's quad 0x400 at +0x54 0.4 (0x345C10); added at FIX +0x44
                 // 128, fading as it rises)
-                let c = models.get(1 - b.victim.min(1)).and_then(|m| d.characters.get(m));
+                let c = models.get(b.attacker).and_then(|m| d.characters.get(m));
                 let cell = c.and_then(|c| c.special.first()).and_then(|s| s.get(b.count.rem_euclid(30) as usize)).copied();
                 let k = 1.0 - if b.state == 2 { (-b.left) as f32 / 16.0 } else { 0.0 };
                 self.objects.extend(c.and_then(|c| c.burst.as_ref()).zip(cell).map(|(set, cell)| Sprite {

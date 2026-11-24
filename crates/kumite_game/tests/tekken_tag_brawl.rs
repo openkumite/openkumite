@@ -10,12 +10,16 @@ use ok_converter_common::io::StdFs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+mod brawl_fx;
+
 /// Paul's, Lei's and Xiaoyu's first models; Tekken 3's Gon and Doctor B.
 const PAUL: usize = 345;
 const LEI: usize = 372;
 const XIAOYU: usize = 432;
 const GON: usize = 239;
 const DOCTOR_B: usize = 247;
+/// Tekken Tag's True Ogre.
+const TRUE_OGRE: usize = 591;
 
 /// Tekken Tag's game root with the extras installed over it (once for the tests).
 fn assets() -> Option<Assets> {
@@ -81,4 +85,22 @@ fn free_for_all_runs_to_a_winner() {
     assert_eq!(g.wins.len(), 4);
     assert!(matches!(g.phase, TagPhase::MatchOver { .. }) && g.wins.iter().any(|&w| w >= 2), "{:?} {:?}", g.phase, g.wins);
     assert!((0..4).any(|v| (0..4).filter(|&k| hits.contains(&(k, v))).count() >= 2), "someone hit by two others");
+}
+
+/// Gon's fire (1+2) and True Ogre's (1+2, his strike to slot 0x18) in Tekken Tag's brawl: two on two they pass the
+/// team mate in the way and strike and burn the opponent behind him; each for themselves they strike the one in the
+/// way; the same pads give the same hashes.
+#[test]
+fn fire_strikes_across_teams() {
+    let Some(a) = assets() else { return };
+    for (model, gap) in [(GON, 1500.0), (TRUE_OGRE, 1800.0)] {
+        let records = [model, PAUL, LEI, XIAOYU];
+        let (hits, near, hashes) = brawl_fx::in_the_way(&a, records, [0, 0, 1, 1], "1+2*2,n*200", gap);
+        assert!(hits.iter().all(|h| h.1 != 1), "no friendly hits: {hits:?}");
+        assert!(hits.iter().any(|h| (h.0, h.1) == (0, 2)), "{hits:?}");
+        assert!(near[2] >= 60, "the opponent burns: {near:?}");
+        assert_eq!(hashes, brawl_fx::in_the_way(&a, records, [0, 0, 1, 1], "1+2*2,n*200", gap).2, "the same pads, the same match");
+        let (hits, _, _) = brawl_fx::in_the_way(&a, records, [0, 1, 2, 3], "1+2*2,n*200", gap);
+        assert!(hits.first().is_some_and(|h| (h.0, h.1) == (0, 1)), "the one in the way: {hits:?}");
+    }
 }

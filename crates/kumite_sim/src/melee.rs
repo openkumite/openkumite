@@ -63,6 +63,8 @@ pub struct Melee {
     pub tag_pairs: bool,
     /// Each pair's kept places for Tekken Tag's distance limit ([`Fight::kept`]): the pair, the fight's state.
     pub kept: Vec<(usize, usize, KeptPlaces)>,
+    /// The effect objects that strike (owners: actor indices); each pair's hit pass takes its two's.
+    pub objects: crate::objects::Objects,
 }
 
 /// [`Fight::kept`]'s state.
@@ -104,6 +106,7 @@ impl Melee {
             behind_cost: BEHIND_COST,
             tag_pairs: false,
             kept: Vec::new(),
+            objects: Default::default(),
         }
     }
 
@@ -130,6 +133,7 @@ impl Melee {
             behind_cost: 0.0,
             tag_pairs: false,
             kept: Vec::new(),
+            objects: Default::default(),
         };
         m.retarget();
         m
@@ -295,6 +299,8 @@ impl Melee {
     pub fn step(&mut self, pads: &[Pad], bodies: &[&BodyVolumes], anims: &[&dyn Animations]) {
         let n = self.actors.len();
         self.fight.frame += 1;
+        // (whose strikes landed last step: the objects' fire is gone on a hit)
+        let landed: Vec<bool> = (0..n).map(|k| self.hits.iter().any(|h| h.attacker == k)).collect();
         self.hits.clear();
         let gd = self.fight.data.clone();
         self.retarget();
@@ -414,6 +420,8 @@ impl Melee {
             }
             !over
         });
+        // the effect objects, seeing last step's contacts (as the pair fight's)
+        crate::step_objects(&mut self.objects, &gd, &self.actors, bodies, anims, &landed);
         for f in &mut self.actors {
             (f.struck, f.whiffed, f.pushed) = (false, false, false);
         }
@@ -462,8 +470,12 @@ impl Melee {
                 continue;
             }
             let pair = [now[a].as_ref().unwrap_or(bodies[a]), now[b].as_ref().unwrap_or(bodies[b])];
+            // (the two's striking objects, owned by their slots)
+            let own = |o: &crate::objects::Object| [a, b].iter().position(|&k| k == o.owner).filter(|_| o.strikes).map(|owner| crate::objects::Object { owner, ..o.clone() });
+            self.fight.objects.list = self.objects.list.iter().filter_map(own).collect();
             self.on_pair(a, b, |f| f.resolve_hits(&gd, pair, [anims[a], anims[b]]));
         }
+        self.fight.objects.list.clear();
         if self.state == MeleeState::Fighting && self.links.is_empty() {
             self.clock = self.clock.saturating_sub(1);
             let teams = self.teams();

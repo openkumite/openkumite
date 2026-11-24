@@ -2979,7 +2979,7 @@ impl Fight {
         let anims: Vec<&dyn Animations> = (0..n).map(|k| anims.get(k).copied().unwrap_or(fallback)).collect();
         m.step(&pads, &vols, &anims);
         swap(&mut self.fighters, &mut extra, &mut partner, &mut self.more, &mut m);
-        self.hits = std::mem::take(&mut m.hits);
+        self.hits = m.hits.clone();
         let linked = !m.links.is_empty();
         (self.coop, self.partner, self.extra) = (Some(m), Some(partner), Some(extra));
         // Ball 2 ON 2: the court for the four, then the ball
@@ -3197,7 +3197,8 @@ impl Fight {
             }
         }
         // the effect objects (0x8006F0F4, 0x8006F5C0), seeing last frame's contacts
-        self.step_objects(&gd, bodies, anims);
+        let struck = [self.fighters[1].struck, self.fighters[0].struck];
+        step_objects(&mut self.objects, &gd, &self.fighters, &[&bodies[0], &bodies[1]], &anims, &struck);
         // the hit pass's per-frame flags (cleared at 0x80044008) and the body push's
         for f in &mut self.fighters {
             (f.struck, f.whiffed, f.pushed) = (false, false, false);
@@ -3630,30 +3631,6 @@ impl Fight {
             f.pushed = true;
             // (the next frame measures from here: 0x8A7A90 keeps the place after the push)
             f.push_prev = Some(drawn(f));
-        }
-    }
-
-    /// A move of descriptor byte 0x18 or more starts its object on each frame of its active window; the objects
-    /// strike for their owner while it is in such a move past the window's start.
-    fn step_objects(&mut self, gd: &GameData, bodies: &[BodyVolumes; 2], anims: [&dyn Animations; 2]) {
-        let mut striking = [None; 2];
-        for (i, f) in self.fighters.iter().enumerate() {
-            let mv = f.current_move(gd);
-            // (Tekken 3's descriptors: Tekken Tag's strikes run between bone pairs)
-            // (Tekken Tag's True Ogre: a strike to slot 0x18 is his fire, 0x3A6390)
-            let fire = mv.attack.as_ref().filter(|a| a.pairs.first().is_some_and(|p| p[1] == 0x18) && f.tag_rules(gd) && f.character == Some(20)).map(|_| objects::TAG_FIRE);
-            let byte = fire.or_else(|| mv.attack.as_ref().filter(|a| a.pairs.is_empty()).and_then(|a| a.header_bytes.first().copied()).filter(|&b| b >= 0x18));
-            let Some(byte) = byte.filter(|_| !f.inactive) else { continue };
-            let key = (mv.active[0]..=mv.active[1]).contains(&f.frame).then_some((f.current.index, f.frame));
-            if key.is_some() && self.objects.started[i] != key {
-                let slots = anims[i].volumes(f, gd).map_or(bodies[i].slots, |v| v.slots);
-                self.objects.start(i, byte, f.frame == mv.active[0], &slots);
-            }
-            self.objects.started[i] = key;
-            striking[i] = (f.frame >= mv.active[0]).then_some(byte);
-        }
-        if !self.objects.list.is_empty() {
-            self.objects.step(striking, [self.fighters[1].struck, self.fighters[0].struck]);
         }
     }
 
@@ -4119,6 +4096,32 @@ pub fn direction_quadrant(yaw: f32, from: Vec3, other: Vec3) -> usize {
     let to = d.x.datan2(d.z);
     let diff = (to - yaw + std::f32::consts::FRAC_PI_4).rem_euclid(std::f32::consts::TAU);
     ((diff / FRAC_PI_2) as usize).min(3)
+}
+
+/// A move of descriptor byte 0x18 or more starts its object on each frame of its active window; the objects strike
+/// for their owner while it is in such a move past the window's start. `struck[k]`: fighter k's strike landed last
+/// frame (the fight's pair, or a brawl's actors).
+pub(crate) fn step_objects(objects: &mut objects::Objects, gd: &GameData, fighters: &[Fighter], bodies: &[&BodyVolumes], anims: &[&dyn Animations], struck: &[bool]) {
+    let mut striking = vec![None; fighters.len()];
+    objects.started.resize(fighters.len(), None);
+    for (i, f) in fighters.iter().enumerate() {
+        let mv = f.current_move(gd);
+        // (Tekken 3's descriptors: Tekken Tag's strikes run between bone pairs)
+        // (Tekken Tag's True Ogre: a strike to slot 0x18 is his fire, 0x3A6390)
+        let fire = mv.attack.as_ref().filter(|a| a.pairs.first().is_some_and(|p| p[1] == 0x18) && f.tag_rules(gd) && f.character == Some(20)).map(|_| objects::TAG_FIRE);
+        let byte = fire.or_else(|| mv.attack.as_ref().filter(|a| a.pairs.is_empty()).and_then(|a| a.header_bytes.first().copied()).filter(|&b| b >= 0x18));
+        let (Some(byte), Some(&body), Some(anim)) = (byte.filter(|_| !f.inactive), bodies.get(i), anims.get(i)) else { continue };
+        let key = (mv.active[0]..=mv.active[1]).contains(&f.frame).then_some((f.current.index, f.frame));
+        if key.is_some() && objects.started[i] != key {
+            let slots = anim.volumes(f, gd).map_or(body.slots, |v| v.slots);
+            objects.start(i, byte, f.frame == mv.active[0], &slots);
+        }
+        objects.started[i] = key;
+        striking[i] = (f.frame >= mv.active[0]).then_some(byte);
+    }
+    if !objects.list.is_empty() {
+        objects.step(&striking, struck);
+    }
 }
 
 #[cfg(test)]

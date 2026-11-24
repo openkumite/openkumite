@@ -4989,6 +4989,7 @@ impl App {
             };
             let node = |i: usize, name: &str| g.bodies[i].character.nodes.iter().position(|n| n.name == name);
             v.step_actors(&g.melee.hits, &models, &actors, eye, &at, &node);
+            v.objects(&g.melee.objects.list, &models);
         }
         if let Some(sound) = &self.sound {
             let banks: Vec<&str> = t.banks.iter().map(String::as_str).collect();

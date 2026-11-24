@@ -8,6 +8,8 @@ use kumite_sim::input::Pad;
 use kumite_sim::melee::RETARGET_MARGIN;
 use std::path::PathBuf;
 
+mod brawl_fx;
+
 fn assets() -> Option<Assets> {
     let root = std::env::var_os("OPENKUMITE_ASSETS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets"));
     Assets::new(&root).map_err(|e| eprintln!("skipping: {e:#}")).ok()
@@ -142,4 +144,26 @@ fn a_cpu_turns_round_to_its_target_behind() {
         off(&g) < 90.0
     });
     assert!(turned, "still {:.0} degrees off target {}", off(&g), g.melee.target[0]);
+}
+
+const GON: usize = 239;
+const TRUE_OGRE: usize = 199;
+
+/// Gon's fire (1+2) and True Ogre's breath (1+2) in the brawl: two on two they pass the team mate in the way and
+/// strike and burn the opponent behind him; each for themselves they strike the one in the way; the same pads give
+/// the same hashes.
+#[test]
+fn fire_and_breath_strike_across_teams() {
+    use kumite_sim::objects::{BREATH, FIRE};
+    let Some(a) = assets() else { return };
+    for (model, byte, gap) in [(GON, FIRE, 1500.0), (TRUE_OGRE, BREATH, 2000.0)] {
+        let records = [model, MODEL_71, MODEL_79, MODEL_103];
+        let (hits, near, hashes) = brawl_fx::in_the_way(&a, records, [0, 0, 1, 1], "1+2,n*200", gap);
+        assert!(hits.iter().all(|h| h.1 != 1), "no friendly hits: {hits:?}");
+        assert!(hits.contains(&(0, 2, byte)), "{hits:?}");
+        assert!(near[2] >= 60, "the opponent burns: {near:?}");
+        assert_eq!(hashes, brawl_fx::in_the_way(&a, records, [0, 0, 1, 1], "1+2,n*200", gap).2, "the same pads, the same match");
+        let (hits, _, _) = brawl_fx::in_the_way(&a, records, [0, 1, 2, 3], "1+2,n*200", gap);
+        assert!(hits.first().is_some_and(|&h| h == (0, 1, byte)), "the one in the way: {hits:?}");
+    }
 }
