@@ -441,9 +441,17 @@ pub struct SkinnedModel {
     shadow: Option<(wgpu::Buffer, wgpu::Buffer, u32)>,
     /// Smooth motion: the step of its last skinning matrices, the step's before and its own.
     motion: std::sync::Mutex<(u64, Vec<Mat4>, Vec<Mat4>)>,
+    /// Drawn with the stage, before the overlay's under part (Tekken Tag's arenas' people farther than the HUD's
+    /// depth, 1 m behind the farther fighter, 0x3C0098: the HUD covers them).
+    early: std::sync::atomic::AtomicBool,
 }
 
 impl SkinnedModel {
+    /// Draw the model before the overlay's under part, or with the characters (`early`).
+    pub fn set_early(&self, on: bool) {
+        self.early.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// The model's texture (its own: the face animation writes into it).
     pub fn texture(&self) -> &Texture {
         &self.texture
@@ -1401,7 +1409,7 @@ impl Renderer {
         let count = indices.len() as u32;
         let blend_from = (blend_from as u32).min(count);
         let layers = layers.map(|l| (l as u32).clamp(blend_from, count));
-        SkinnedModel { vbuf, ibuf, count, blend_from, layers: [layers[0], layers[1].max(layers[0])], bones, bones_group, texture, shadow: None, motion: Default::default() }
+        SkinnedModel { vbuf, ibuf, count, blend_from, layers: [layers[0], layers[1].max(layers[0])], bones, bones_group, texture, shadow: None, motion: Default::default(), early: Default::default() }
     }
 
     /// Give a model its shadow mesh (skinned to the model's joints).
@@ -1827,6 +1835,42 @@ impl Renderer {
                 stats.triangles += m.count / 3;
             }
         }
+        // the characters' opaque primitives, then their blended layers
+        let draw_skinned = |pass: &mut wgpu::RenderPass<'static>, models: &[&SkinnedModel], stats: &mut RenderStats| {
+            pass.set_pipeline(&pipes.skinned_pipeline);
+            for m in models {
+                pass.set_bind_group(1, m.texture.group(smooth), &[]);
+                pass.set_bind_group(2, &m.bones_group, &[]);
+                pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..m.blend_from, 0, 0..1);
+                stats.draw_calls += 1;
+                stats.triangles += m.count / 3;
+            }
+            // (Law's satin: the environment-mapped opaque layer, multiplied by the next one's alpha, the third added)
+            for (k, pipe) in pipes.skinned_blend_pipelines.iter().enumerate() {
+                pass.set_pipeline(pipe);
+                for m in models {
+                    let range = [m.blend_from, m.layers[0], m.layers[1], m.count];
+                    let (Some(&from), Some(&to)) = (range.get(k / 2), range.get(k / 2 + 1)) else { continue };
+                    if from >= to {
+                        continue;
+                    }
+                    pass.set_bind_group(1, m.texture.group(smooth), &[]);
+                    pass.set_bind_group(2, &m.bones_group, &[]);
+                    pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                    pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(from..to, 0, 0..1);
+                    stats.draw_calls += 1;
+                }
+            }
+        };
+        let (early, front): (Vec<&SkinnedModel>, Vec<&SkinnedModel>) = models.iter().partition(|m| m.early.load(std::sync::atomic::Ordering::Relaxed));
+        if !early.is_empty() {
+            let mut pass = begin(&mut enc, ("early models", wgpu::LoadOp::Load, wgpu::LoadOp::Load));
+            pass.set_bind_group(0, &self.globals_group, &[]);
+            draw_skinned(&mut pass, &early, &mut stats);
+        }
         // the 2D drawn behind the fighters, then the fighters over it
         if let Some(o) = overlay.as_deref_mut() {
             resolve(&mut enc);
@@ -1902,33 +1946,7 @@ impl Renderer {
                 pass.draw(0..*n, 0..1);
                 stats.draw_calls += 1;
             }
-            pass.set_pipeline(&pipes.skinned_pipeline);
-            for m in models {
-                pass.set_bind_group(1, m.texture.group(smooth), &[]);
-                pass.set_bind_group(2, &m.bones_group, &[]);
-                pass.set_vertex_buffer(0, m.vbuf.slice(..));
-                pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..m.blend_from, 0, 0..1);
-                stats.draw_calls += 1;
-                stats.triangles += m.count / 3;
-            }
-            // (Law's satin: the environment-mapped opaque layer, multiplied by the next one's alpha, the third added)
-            for (k, pipe) in pipes.skinned_blend_pipelines.iter().enumerate() {
-                pass.set_pipeline(pipe);
-                for m in models {
-                    let range = [m.blend_from, m.layers[0], m.layers[1], m.count];
-                    let (Some(&from), Some(&to)) = (range.get(k / 2), range.get(k / 2 + 1)) else { continue };
-                    if from >= to {
-                        continue;
-                    }
-                    pass.set_bind_group(1, m.texture.group(smooth), &[]);
-                    pass.set_bind_group(2, &m.bones_group, &[]);
-                    pass.set_vertex_buffer(0, m.vbuf.slice(..));
-                    pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(from..to, 0, 0..1);
-                    stats.draw_calls += 1;
-                }
-            }
+            draw_skinned(&mut pass, &front, &mut stats);
             if let (false, Some(white)) = (flat_bufs.is_empty(), self.white.as_ref()) {
                 pass.set_bind_group(1, &white.bind_group, &[]);
                 for (pipe, buf, n) in &flat_bufs {

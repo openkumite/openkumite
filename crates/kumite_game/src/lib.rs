@@ -396,6 +396,9 @@ pub struct Game {
     pub tag_faces: [tagface::Face; 2],
     /// Tekken Tag's wings (True Ogre's and Devil's).
     pub wings: [face::WingState; 2],
+    /// Tekken Tag's Unknown's wolf: its root's place (world, metres) as 0x34CC38 eases it; none: at once (the round's
+    /// first frame, 0x34CB50).
+    pub wolves: [Option<Vec3>; 2],
     /// Tekken Tag's spring slots (Body::springs): each one's turn in its parent's axes and its tip's place.
     pub springs: [Vec<Spring>; 2],
     /// The mode's K.O. style (Fight::ko_collapse), kept across rounds.
@@ -490,24 +493,9 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let extra = if tag { strike_slots(id, entry.moveset_id) } else { Vec::new() };
     let joints = if tag { joint_places(&rules["joints"], record, id) } else { Vec::new() };
     let motion_scale = entry.motion_scale.unwrap_or(4096);
-    let body = Body {
-        character,
-        model_record: record,
-        root,
-        hurt,
-        push,
-        chest,
-        torso,
-        pelvis,
-        hidden: Vec::new(),
-        bones,
-        extra,
-        joints,
-        hands,
-        face,
-        motion_scale,
-        springs: if tag { springs(id) } else { Vec::new() },
-    };
+    let hidden = blades_hidden(&character, entry.moveset_id);
+    let body =
+        Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden, bones, extra, joints, hands, face, motion_scale, springs: if tag { springs(id) } else { Vec::new() } };
     // the copying character: its own moveset is never played; outside a bout's rounds it stays the setup's fighter
     // shortcut: Force's bosses and the tag brawl's draw their fighter too (0x800B2770), here they keep this one,
     // and Force's player draws without a seed of the match (the same fighters every run)
@@ -612,7 +600,8 @@ impl Copier {
 /// The copying character's body `own` playing `donor`'s clips, as the fighter of moveset `id`: its accessory nodes
 /// (`bone_*`: the stick) hidden but with the sword fighter's.
 fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
-    let hidden = if id == SWORD_MOVESET { Vec::new() } else { own.character.nodes.iter().enumerate().filter(|(_, n)| n.name.starts_with("bone_")).map(|(i, _)| i).collect() };
+    let mut hidden = if id == SWORD_MOVESET { Vec::new() } else { own.character.nodes.iter().enumerate().filter(|(_, n)| n.name.starts_with("bone_")).map(|(i, _)| i).collect() };
+    hidden.extend(blades_hidden(&own.character, id));
     Body {
         character: own.character.with_clips_of(donor),
         model_record: own.model_record,
@@ -631,6 +620,11 @@ fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
         motion_scale: own.motion_scale,
         springs: Vec::new(),
     }
+}
+
+/// Tekken Tag's blades not drawn with moveset `id` (0x34D108: scaled to nothing).
+fn blades_hidden(c: &Character, id: i64) -> Vec<usize> {
+    c.blades.iter().filter(|b| b[1] as i64 != id).map(|b| b[0]).collect()
 }
 
 /// A body's joint places (rules.json `joints`: its model's own, else its body's): each slot's parent and place.
@@ -781,6 +775,7 @@ impl Game {
             hand_live: false,
             tag_faces: Default::default(),
             wings: Default::default(),
+            wolves: Default::default(),
             springs: Default::default(),
             ko_collapse: true,
             guard_damage: false,
@@ -1081,6 +1076,7 @@ impl Game {
             h.local = None;
         }
         self.looks = Default::default();
+        self.wolves = Default::default();
         self.step_camera();
     }
 
@@ -1583,6 +1579,15 @@ impl Game {
             let f = &self.fight.fighters[i];
             self.wings[i].state = i32::from(f.airborne_flag(gd) && f.juggle == 0);
             self.wings[i].step();
+            // Unknown's wolf: its root 150 up and 800 back from hers (in her root's parent's axes), eased there 1/12
+            // a frame in x, 1/16 in y and z (0x34CC38)
+            // shortcut: its noise (the sine table 0x4FCE88 at +0x3120 + rand() & 0x3F, some 20 mm) is not added
+            self.wolves[i] = (!self.bodies[i].character.follow.is_empty()).then(|| {
+                let (pose, place) = self.pose_animated(i);
+                let root = pose.get(self.bodies[i].root).map_or(Vec3::ZERO, |m| m.w_axis.truncate());
+                let target = place.transform_point3(root + Vec3::new(0.0, 0.15, -0.8));
+                self.wolves[i].map_or(target, |at| at + (target - at) * Vec3::new(1.0 / 12.0, 1.0 / 16.0, 1.0 / 16.0))
+            });
             if self.face_data.pupils_character.is_some_and(|c| self.characters[i] == Some(c)) && !self.head_off[i] {
                 let head = |k: usize| {
                     let (pose, place) = self.pose_animated(k);
@@ -1687,6 +1692,10 @@ impl Game {
     /// frame while one plays), the head turned to the opponent when it follows.
     pub fn pose(&self, i: usize) -> (Vec<Mat4>, Mat4) {
         let (mut pose, place) = self.pose_animated(i);
+        if let (Some(at), Some(root)) = (self.wolves[i], pose.get(self.bodies[i].root).copied()) {
+            let at = place.inverse().transform_point3(at).extend(1.0);
+            self.bodies[i].character.pose_follow(&mut pose, Mat4::from_cols(root.x_axis, root.y_axis, root.z_axis, at));
+        }
         if let (None, Some(local)) = (self.display, self.heads[i].local) {
             turn_head(&self.bodies[i], &mut pose, local);
         }

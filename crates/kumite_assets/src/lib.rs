@@ -227,6 +227,12 @@ pub struct Character {
     clip_index: HashMap<String, usize>,
     /// Tekken Tag's swaying nodes (none elsewhere).
     pub cloth: Vec<ClothNode>,
+    /// Tekken Tag's Unknown's wolf (the skin's extras `follow`): each wolf node and the body node whose turn it takes
+    /// (0x34CC38), parents first.
+    pub follow: Vec<[usize; 2]>,
+    /// Tekken Tag's Mokujin's and Unknown's blades (the skin's extras `moveset`): each node and the moveset it is drawn
+    /// with (0x34D108).
+    pub blades: Vec<[usize; 2]>,
 }
 
 impl Character {
@@ -375,9 +381,15 @@ impl Character {
         let filtered = doc.textures().next().is_some_and(|t| t.sampler().mag_filter() == Some(gltf::texture::MagFilter::Linear));
         let extras = doc.skins().next().and_then(|s| serde_json::from_str::<serde_json::Value>(s.extras().as_ref()?.get()).ok());
         let wings = extras.as_ref().and_then(|e| serde_json::from_value::<Wings>(e["wings"].clone()).ok()).filter(|w| w.nodes.iter().all(|&n| n < nodes.len()) && !w.frames.is_empty());
+        let pairs = |key: &str| -> Vec<[usize; 2]> { extras.as_ref().and_then(|e| serde_json::from_value(e[key].clone()).ok()).unwrap_or_default() };
+        let mut follow = pairs("follow");
+        follow.retain(|&[n, of]| n < nodes.len() && of < nodes.len() && n != of);
+        follow.sort_by_key(|&[n, _]| order.iter().position(|&o| o == n));
+        let mut blades = pairs("moveset");
+        blades.retain(|&[n, _]| n < nodes.len());
         let cloth: Vec<ClothNode> = extras.and_then(|e| serde_json::from_value(e["cloth"].clone()).ok()).unwrap_or_default();
         let cloth = cloth.into_iter().filter(|c| nodes.get(c.node).is_some_and(|n| n.parent.is_some())).collect();
-        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, layers, texture, filtered, mark, wings, clips, clip_index, cloth })
+        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, layers, texture, filtered, mark, wings, clips, clip_index, cloth, follow, blades })
     }
 
     /// The wings at their track's `frame` (clamped to its end): each wing node turned and scaled so in its parent, its
@@ -392,6 +404,21 @@ impl Character {
             let n = &self.nodes[i];
             let local = Mat4::from_scale_rotation_translation(Vec3::new(sx, sy, sz), Quat::from_xyzw(x, y, z, q).normalize(), n.translation);
             world[i] = n.parent.and_then(|p| world.get(p)).map_or(local, |p| *p * local);
+        }
+    }
+
+    /// Unknown's wolf as 0x34CC38 poses it ([`Character::follow`]): each wolf node keeps its own place in its parent
+    /// and takes its body node's turn in that one's parent; the root (the body's root's follower) is `root`
+    /// (character space).
+    pub fn pose_follow(&self, world: &mut [Mat4], root: Mat4) {
+        for &[n, of] in &self.follow {
+            let (Some(node), Some(&body)) = (self.nodes.get(n), world.get(of)) else { continue };
+            let Some(parent) = node.parent.and_then(|p| world.get(p)).copied() else { continue };
+            let new = match self.nodes.get(of).and_then(|b| b.parent).and_then(|p| world.get(p)) {
+                Some(q) => parent * Mat4::from_rotation_translation(Quat::from_mat4(&(q.inverse() * body)), node.translation),
+                None => root,
+            };
+            world[n] = new;
         }
     }
 
@@ -512,6 +539,8 @@ impl Character {
             clips: self.clips_of(donor),
             clip_index: donor.clip_index.clone(),
             cloth: self.cloth.clone(),
+            follow: self.follow.clone(),
+            blades: self.blades.clone(),
         }
     }
 
