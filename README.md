@@ -247,11 +247,11 @@ Records, unlocks and settings are kept as JSON in the system's application data 
 
 Every match is recorded and saved as a replay when it ends: Arcade, VS, Team Battle, Time Attack, Survival, Ball and
 its 2 ON 2, the extra levels, the tag brawl (Tag Arcade too), each Force stage (players joining on the way too), online
-ones as well. Practice is not, nor a match a cheat or a debug tool changed (its inputs no longer make it). The game is deterministic, so a replay is
+ones as well; in Tekken Tag its tag battles (Arcade, VS, Team Battle, Time Attack, Survival) and its TAG BRAWL too. Practice is not, nor Tekken Bowl, nor a match a cheat or a debug tool changed (its inputs no longer make it). The game is deterministic, so a replay is
 the match's setup and every step's inputs: a couple of KB a match. The newest 50 are kept (15 in a browser), plus any
 marked kept. Natively they are files in `replays/` in the save folder; in a browser, the page's storage.
 
-**REPLAYS** on the main menu lists them: START plays one, button 1 keeps it, button 2 (twice) deletes it, button 3
+**REPLAYS** on the main menu (Tekken 3's and Tekken Tag's) lists them: START plays one, button 1 keeps it, button 2 (twice) deletes it, button 3
 exports it, button 4 imports. While one
 plays:
 
@@ -286,7 +286,7 @@ older devices do not play it. From the command line: `openkumite --export-video 
 1920x1080] [--no-hud] [--free-cam YAW,PITCH,DIST,X,Y,Z]`.
 `sh packaging/demo_videos.sh` records AI-vs-AI matches headless and makes each an MP4 (`--help` for its options).
 
-A replay plays only on the game data it was recorded on. Before it plays it is run through once (copies kept for
+A replay plays only on the game data it was recorded on (the pack's fingerprint, `manifest.json`: a replay of an older conversion says so and does not play). Before it plays it is run through once (copies kept for
 seeking), and its end is checked against the state recorded: the viewer says **verified**, or that it differs; played
 to its end, it is checked again. Online, each computer saves its own replay; the last frames, past the match's end,
 may hold the other player's predicted inputs (the result is the same on both). `--replay ID|latest` plays one from the

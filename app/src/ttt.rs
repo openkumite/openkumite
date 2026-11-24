@@ -48,6 +48,8 @@ pub const FORCE: u32 = 0x101;
 pub const TAG_BRAWL: u32 = 0x102;
 /// ONLINE (OpenKumite's own: Tekken 3's rooms, VS BATTLE and TAG BRAWL there): no mode of the game's.
 pub const ONLINE: u32 = 0x103;
+/// REPLAYS (OpenKumite's own, Tekken 3's list of the matches recorded): no mode of the game's.
+pub const REPLAYS: u32 = 0x104;
 const OPTIONS: u32 = 11;
 /// Armor King's character id.
 const ARMOR_KING: usize = 26;
@@ -1284,7 +1286,7 @@ impl Front {
 
     /// The main menu's entries: of the locked ones, THEATER once an ending was seen (0x3BFED8), TEKKEN BOWL once the
     /// unlock stage opens it (Gallery is not here yet); OpenKumite's TEKKEN BALL and TEKKEN FORCE before OPTIONS with the
-    /// Tekken 3 slice, and its TAG BRAWL and ONLINE.
+    /// Tekken 3 slice, and its TAG BRAWL, ONLINE and REPLAYS.
     fn items(d: &Data, p: &Progress) -> Vec<(u32, String)> {
         let open = |i: &&Value| {
             let mode = int(&i["mode"]) as u32;
@@ -1300,6 +1302,7 @@ impl Front {
         }
         items.insert(items.iter().position(|i| i.0 == OPTIONS).unwrap_or(items.len()), (TAG_BRAWL, "TAG BRAWL".into()));
         items.insert(items.iter().position(|i| i.0 == OPTIONS).unwrap_or(items.len()), (ONLINE, "ONLINE".into()));
+        items.insert(items.iter().position(|i| i.0 == OPTIONS).unwrap_or(items.len()), (REPLAYS, "REPLAYS".into()));
         if cfg!(not(target_arch = "wasm32")) {
             items.push((u32::MAX, "EXIT".into()));
         }
@@ -1343,6 +1346,7 @@ impl Front {
                             Some(THEATER) => Some(Page::Theater { cursor: [0, 0] }),
                             Some(TAG_BRAWL) => return Outcome::TagBrawl,
                             Some(ONLINE) => return Outcome::TttOnline,
+                            Some(REPLAYS) => return Outcome::OpenReplays,
                             Some(m) => Some(Page::Select(Box::new(Select::new(m, &d, None)))),
                             None => None,
                         }
@@ -5862,9 +5866,9 @@ mod tests {
         let mut d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![], None, false, &Value::Null).unwrap();
         let modes = |d: &Data, stage| Front::items(d, &Progress { stage, ..Progress::default() }).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
         // open from the start by default; with --ttt-unlocks original at stage 10
-        assert_eq!(modes(&d, 0), vec![ARCADE, BOWL, TAG_BRAWL, ONLINE]);
+        assert_eq!(modes(&d, 0), vec![ARCADE, BOWL, TAG_BRAWL, ONLINE, REPLAYS]);
         Arc::get_mut(&mut d).unwrap().original_unlocks = true;
-        assert_eq!((modes(&d, 9), modes(&d, 10)), (vec![ARCADE, TAG_BRAWL, ONLINE], vec![ARCADE, BOWL, TAG_BRAWL, ONLINE]));
+        assert_eq!((modes(&d, 9), modes(&d, 10)), (vec![ARCADE, TAG_BRAWL, ONLINE, REPLAYS], vec![ARCADE, BOWL, TAG_BRAWL, ONLINE, REPLAYS]));
         // its select: P1 picks two; 2P's START joins
         let mut s = Select::new(BOWL, &d, None);
         assert_eq!((s.sides[0].need, s.sides[1].player), (2, None));
@@ -5885,7 +5889,7 @@ mod tests {
                 .filter(|&m| m != u32::MAX)
                 .collect::<Vec<_>>()
         };
-        assert_eq!((modes(None), modes(Some(23))), (vec![ARCADE, TAG_BRAWL, ONLINE, OPTIONS], vec![ARCADE, BALL, TAG_BRAWL, ONLINE, OPTIONS]));
+        assert_eq!((modes(None), modes(Some(23))), (vec![ARCADE, TAG_BRAWL, ONLINE, REPLAYS, OPTIONS], vec![ARCADE, BALL, TAG_BRAWL, ONLINE, REPLAYS, OPTIONS]));
         let (d, roster, mut seed) = (data(), roster(), 1);
         let d = Arc::new(Data { ball: Some(23), ..Arc::try_unwrap(d).unwrap() });
         let run = Run::new(&d, &roster, &Progress::default(), BALL, [vec![(0, 0)], vec![]], &mut seed);
@@ -5940,17 +5944,19 @@ mod tests {
     }
 
     /// TEKKEN FORCE is on the menu (before OPTIONS) only with the Tekken 3 slice's force.json; one pick. TAG BRAWL
-    /// always, before OPTIONS: it opens Tekken 3's list of its modes; ONLINE after it, Tekken 3's ONLINE screen.
+    /// always, before OPTIONS: it opens Tekken 3's list of its modes; ONLINE after it, Tekken 3's ONLINE screen;
+    /// REPLAYS, its replays' list.
     #[test]
     fn tekken_force_with_the_slice() {
         let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE"}, {"mode": 11, "label": "OPTIONS"}]}}});
         let d = |force| Data::load(&fe, &Value::Null, &serde_json::json!({}), None, vec![], None, force, &Value::Null).unwrap();
         let modes = |force| Front::items(&d(force), &Progress::default()).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
-        assert_eq!((modes(false), modes(true)), (vec![ARCADE, TAG_BRAWL, ONLINE, OPTIONS], vec![ARCADE, FORCE, TAG_BRAWL, ONLINE, OPTIONS]));
+        assert_eq!((modes(false), modes(true)), (vec![ARCADE, TAG_BRAWL, ONLINE, REPLAYS, OPTIONS], vec![ARCADE, FORCE, TAG_BRAWL, ONLINE, REPLAYS, OPTIONS]));
         assert_eq!(Select::new(FORCE, &d(true), None).sides[0].need, 1);
         let roster = Roster { ttt: Some(d(true)), ..roster() };
         assert!(matches!(Front::menu_on(&roster, TAG_BRAWL).key(0, Key::Start, &roster, &mut 1), Outcome::TagBrawl));
         assert!(matches!(Front::menu_on(&roster, ONLINE).key(0, Key::Start, &roster, &mut 1), Outcome::TttOnline));
+        assert!(matches!(Front::menu_on(&roster, REPLAYS).key(0, Key::Start, &roster, &mut 1), Outcome::OpenReplays));
     }
 
     #[test]

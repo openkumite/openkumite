@@ -1968,7 +1968,7 @@ impl App {
             }
             let was_playing = matches!(screen, Screen::Movie(m, _) if m.playing);
             // (the main menu waits while the replays are open over it: no idle return to the title)
-            let outcome = if self.replays.is_some() && matches!(screen, Screen::Menu(_)) { Outcome::None } else { screen.tick(&self.roster, &mut self.seed) };
+            let outcome = if self.replays.is_some() && matches!(screen, Screen::Menu(_) | Screen::Ttt(_)) { Outcome::None } else { screen.tick(&self.roster, &mut self.seed) };
             // Tekken Tag's select: its 3D characters follow it (their bodies dropped once it is left)
             match (&*screen, self.roster.ttt.as_deref()) {
                 (Screen::Ttt(f), Some(d)) if matches!(f.page, ttt::Page::Select(_)) => {
@@ -2446,7 +2446,7 @@ impl App {
                     let stage = number.map_or_else(|| "FINAL STAGE".to_string(), |n| format!("STAGE {}", n + 1));
                     (tape, format!("FORCE · {} · {}", name(start.player.0), stage), if winner == Some(0) { "STAGE CLEAR".into() } else { "GAME OVER".into() })
                 }
-                replay::Match::Fight { setup, .. } => {
+                replay::Match::Fight { setup, ttt, .. } => {
                     let mode = match setup.mode {
                         Mode::Arcade => "ARCADE",
                         Mode::Versus => "VS",
@@ -2460,7 +2460,10 @@ impl App {
                     let online = if rec.online { "ONLINE " } else { "" };
                     let score = format!("{}–{}", f.bout.wins[0], f.bout.wins[1]);
                     let result = winner.map_or_else(|| format!("DRAW {score}"), |w| format!("{} WINS {score}", f.names[w.min(1)]));
-                    (tape, format!("{online}{mode} · {} vs {}", f.names[0], f.names[1]), result)
+                    // (a Tekken Tag tag battle: each side's pair)
+                    let bench = ttt.as_ref().and_then(ttt::Run::bench);
+                    let side = |k: usize| bench.map_or_else(|| f.names[k].clone(), |b| format!("{} & {}", f.names[k], name(b[k].0)));
+                    (tape, format!("{online}{mode} · {} vs {}", side(0), side(1)), result)
                 }
                 replay::Match::Tag { .. } => return,
             }
@@ -2649,7 +2652,7 @@ impl App {
         if let Some(a) = self.audio.as_mut() {
             a.music(None);
         }
-        self.screen = Some(Screen::menu(menu::difficulty()));
+        self.screen = Some(if self.roster.ttt.is_some() { Screen::Ttt(Box::new(ttt::Front::menu_on(&self.roster, ttt::REPLAYS))) } else { Screen::menu(menu::difficulty()) });
         self.replays = Some(replay_view::Browser::new(self.assets.fingerprint(), Some(&v.id)));
     }
 
@@ -4959,6 +4962,12 @@ impl App {
                 }
             }
             None => t.game.step(pads),
+        }
+        if let Some(n) = self.hash_every.filter(|&n| n > 0) {
+            self.hash_steps += 1;
+            if self.hash_steps.is_multiple_of(n) {
+                log::info!("HASH {} {:016x}", self.hash_steps, t.game.state_hash());
+            }
         }
         t.hud.step(&t.game, self.roster.ttt.as_deref().map_or(self.hud.data.bar_w(), ttt::bar_w));
         let g = &t.game;
@@ -8566,7 +8575,7 @@ Debug and testing:
   --seed N                     the game's random seed
   --round-time SECONDS, --rounds N
                                every fight's round clock and the rounds to win (testing)
-  --hash-log N                 log the fight's state hash every N fight steps (native vs browser determinism)
+  --hash-log N                 log the fight's (or tag brawl's) state hash every N steps (determinism, replays)
   --net-synctest N             rollback check: every frame goes back N frames and runs them again (--mode vs)
   --net-local PORT --net-peer HOST:PORT --net-player 0|1
                                online VS over UDP (two windows: ports 7000/7001, players 0/1; same --mode args)

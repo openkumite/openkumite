@@ -157,7 +157,7 @@ OpenKumite's (not decoded): the menus' and the select's layout below the grid (p
 of file 182 / 141), the VS screen, which button gives which costume (1-4, START the fifth), which strip is which,
 the partner bar's place, the banners in the chrome font `003_001`, a play point a match, the Mokujin / Unknown slots
 shown once unlocked, Theater's layout, the staff roll's fonts (egui's) and its logo cards. Not done:
-Gallery, the records, the select timer, the help lines, Practice's own menus (a free fight), replays of a tag battle;
+Gallery, the records, the select timer, the help lines, Practice's own menus (a free fight);
 in the endings, the effect ops (sparks, objects, show / hide), the face and hand tracks, the arenas' background
 characters, BGM 7's start 134.87 s into its stream (the Theater's ending music starts at the stream's start); the
 movies (MPEG-2, not converted) and the EMBU exhibition.
