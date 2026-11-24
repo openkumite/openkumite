@@ -3578,7 +3578,8 @@ impl Fight {
         // (the drawn roots, +0x51C..+0x524: their height in, as eased, so a stance's bob counts as a step)
         let drawn = |f: &Fighter| f.root() + Vec3::Y * f.eased().map_or(f.anim_root_y, |e| f.anim_root_y + e.1);
         let roots = [drawn(&self.fighters[0]), drawn(&self.fighters[1])].map(point);
-        let angle = |f: &Fighter| (f.yaw * 4096.0 / std::f32::consts::TAU).round() as i32;
+        // (the basis +0x1A, not the body's facing +0x3C: a jump's re-aim turns only the body, 0x36FEE4)
+        let angle = |f: &Fighter| (f.root_yaw * 4096.0 / std::f32::consts::TAU).round() as i32;
         let cut = |v: i32| v / 4096;
         // a trade: both attacking, their points 200 ahead within 500 of each other and passed (their places' gap
         // against the points'): the whole push, at least 400, at once
