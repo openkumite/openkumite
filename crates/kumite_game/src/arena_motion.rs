@@ -21,6 +21,7 @@ fn f(v: &Value) -> f32 {
 
 /// The helicopter's flight (0x3D62A0): its place (mm), turn (x, y, z; drawn Rz Ry Rx), state (0 on its pad, 2 up,
 /// 3 down, 1 landed) and its state's count and values.
+#[derive(Clone)]
 struct Helicopter {
     name: String,
     c: Value,
@@ -37,6 +38,7 @@ struct Helicopter {
     dir: f32,
 }
 
+#[derive(Clone)]
 struct Car {
     name: String,
     lane: usize,
@@ -45,6 +47,7 @@ struct Car {
 
 /// A group of clouds: its route, place (mm), speed, and its members: the model (0-9), two angles, their rates and
 /// the two reaches of its drift.
+#[derive(Clone)]
 struct Cloud {
     route: [f32; 6],
     at: Vec3,
@@ -54,6 +57,7 @@ struct Cloud {
 
 /// A leaf (0x3D7378): its place (mm), turn (x, y, z; drawn Rx Ry Rz), state (0 lying, 1 blown up, 2 falling), its
 /// count and blow's length and push (mm a frame, x and z).
+#[derive(Clone)]
 struct Leaf {
     at: Vec3,
     turn: Vec3,
@@ -64,6 +68,7 @@ struct Leaf {
 }
 
 /// An arena's moving objects as they are now.
+#[derive(Clone)]
 pub struct ArenaMotion {
     heli: Option<Helicopter>,
     /// The lanes' x and speed (mm, mm a frame), the cars, and the lanes' table.

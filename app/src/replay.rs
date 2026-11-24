@@ -13,8 +13,8 @@ use kumite_sim::input::Pad;
 use serde::{Deserialize, Serialize};
 
 /// (2: the tag brawl and Force too, the match's kind in `game`; 3: the AI seats, `ai`; 4: a Tekken Tag match's
-/// run, its teams. An older one plays as one without)
-pub const VERSION: u32 = 4;
+/// run, its teams; 5: Tekken Bowl. An older one plays as one without)
+pub const VERSION: u32 = 5;
 /// The newest replays kept (natively; a browser's storage keeps fewer).
 pub const KEEP: usize = if cfg!(target_arch = "wasm32") { 15 } else { 50 };
 /// The longest match a replay holds (an hour): a longer one is a damaged file.
@@ -72,6 +72,9 @@ pub enum Match {
     /// A Force stage: its fight's setup, the run as the stage began, and players joining on the way (the step
     /// before which, and who: 1 the co-op partner, 2 and 3 for 3P and 4P).
     Force { setup: FightSetup, start: crate::forcerun::ForceStart, joins: Vec<(u64, u8)> },
+    /// Tekken Bowl: its teams (each the bowler, its partner) and the seed its game draws from; an input a step it
+    /// bowled (the pad of the player bowling, its START and SELECT).
+    Bowl { teams: Vec<crate::ttt::Team>, seed: u32 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -132,6 +135,7 @@ impl ReplayFile {
                         && start.more_players.iter().flatten().all(|&(c, costume, _)| pick((c, costume)))
                         && joins.iter().all(|&(_, who)| (1..=3).contains(&who))
                 }
+                Match::Bowl { teams, .. } => teams.len() <= 4 && teams.iter().any(|t| !t.is_empty()) && teams.iter().all(|t| t.len() <= 2 && t.iter().all(|&p| pick(p))),
             }
     }
 }

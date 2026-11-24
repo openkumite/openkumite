@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 /// A step of a script.
+#[derive(Clone)]
 struct Step {
     motions: Vec<usize>,
     model: i8,
@@ -19,6 +20,7 @@ struct Step {
 }
 
 /// A person's script and where it is in it.
+#[derive(Clone)]
 pub struct Walker {
     at: Vec3,
     heading: f32,

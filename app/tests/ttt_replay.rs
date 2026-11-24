@@ -1,7 +1,7 @@
-//! Tekken Tag's replays: a VS tag match (both sides scripted, tags and Devil's and True Ogre's moves) and a TAG BRAWL
-//! of four CPUs, recorded, then watched in another run: the state hash the same every step; a seek back lands on
-//! the state playing straight has; REPLAYS on Tekken Tag's main menu plays one and deletes one. On a Tekken Tag `assets/`
-//! (OK_TTT_ASSETS) and a GPU; skipped without either.
+//! Tekken Tag's replays: a VS tag match (both sides scripted, tags and Devil's and True Ogre's moves), a TAG BRAWL of
+//! four CPUs and a Tekken Bowl game, recorded, then watched in another run: the state hash the same every step (Bowl:
+//! at its end); a seek back lands on the state and the picture playing straight has; REPLAYS on Tekken Tag's main
+//! menu plays one and deletes one. On a Tekken Tag `assets/` (OK_TTT_ASSETS) and a GPU; skipped without either.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests: a failure stops them
 
 use std::path::{Path, PathBuf};
@@ -64,6 +64,30 @@ fn recorded_and_replayed(assets: &Path, name: &str, args: &[&str]) -> Option<Pat
     Some(save)
 }
 
+/// The newest replay sought back from step `from` (the viewer's LEFT: 200 steps back; the viewer pauses there) shows
+/// the match and the picture playing it straight to there shows.
+fn seek_lands(assets: &Path, save: &Path, name: &str, from: usize) {
+    let play = |shot: &str, frames: usize, keys: Option<String>| {
+        let out = save.join(shot).to_string_lossy().into_owned();
+        let frames = frames.to_string();
+        let mut a = vec!["--replay", "latest", "--shot", &out, "--frames", &frames];
+        a.extend(keys.iter().flat_map(|k| ["--keys", k.as_str()]));
+        let log = run(assets, save, &a);
+        let line = log.lines().find_map(|l| l.find("replay at step").map(|i| l[i..].to_string())).unwrap();
+        let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&out).unwrap()));
+        let mut reader = decoder.read_info().unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        reader.next_frame(&mut pixels).unwrap();
+        (line.split(", HUD").next().unwrap().to_string(), pixels)
+    };
+    let to = from - 200;
+    let (seek, straight) = (play("seek.png", from + 100, Some(format!("{from}:left"))), play("straight.png", to, None));
+    assert!(seek.0.starts_with(&format!("replay at step {to},")), "{name}: {}", seek.0);
+    assert_eq!(seek.0, straight.0, "{name}: after the seek back, the match as when played straight");
+    let differ = seek.1.iter().zip(&straight.1).filter(|(a, b)| a != b).count();
+    assert!(differ == 0, "{name}: after the seek back, {differ} bytes of the picture differ from playing straight");
+}
+
 /// A pad script of `pattern` repeated.
 fn script(pattern: &str) -> String {
     vec![pattern; 40].join(",")
@@ -79,20 +103,9 @@ fn a_vs_tag_match_replays_step_by_step() {
     let p2 = script("n*33,2,n*14,d/f+1,n*20,f*12,3+4,n*25,5,n*40,b*15,d+4,n*18,1,1,2,n*22,f+2,n*9");
     let args = ["--screen", "ttt-menu", "--keys", keys, "--p1", &p1, "--p2", &p2, "--round-time", "30", "--rounds", "2", "--frames", "14000"];
     let Some(save) = recorded_and_replayed(&assets, "vs", &args) else { return };
-    // a seek back (1700 to 1500) lands on the state playing straight to 1500 has
-    // shortcut: the match's state only, not the picture: the arena's own animation (its people, a carousel) runs by
-    // the frames drawn and is not in a seek's copy; upgrade: keep the scene's clock in `replay_view::Snapshot`
-    let play = |frames: &str, keys: Option<&str>| {
-        let out = save.join("seek.png").to_string_lossy().into_owned();
-        let mut a = vec!["--replay", "latest", "--shot", &out, "--frames", frames];
-        a.extend(keys.iter().flat_map(|k| ["--keys", k]));
-        let log = run(&assets, &save, &a);
-        let line = log.lines().find_map(|l| l.find("replay at step").map(|i| l[i..].to_string())).unwrap();
-        line.split(", HUD").next().unwrap().to_string()
-    };
-    let (seek, straight) = (play("1800", Some("1700:left")), play("1500", None));
-    assert!(seek.starts_with("replay at step 1500,"), "{seek}");
-    assert_eq!(seek, straight, "after the seek back, the match as when played straight");
+    // a seek back (1700 to 1500) lands on the state playing straight to 1500 has, and on its picture: the arena's
+    // own steps (its people, objects, weather) and the swaying nodes are in the seek's copy
+    seek_lands(&assets, &save, "vs", 1700);
     let _ = std::fs::remove_dir_all(&save);
 }
 
@@ -103,6 +116,25 @@ fn a_tag_brawl_replays_step_by_step() {
     if let Some(save) = recorded_and_replayed(&assets, "brawl", &args) {
         let _ = std::fs::remove_dir_all(&save);
     }
+}
+
+/// Tekken Bowl is recorded as Tekken 3's Ball is (a game to its end, `--screen bowl`'s scripted throws), and played
+/// back to the state recorded; a seek back lands on the game and the hall playing straight shows.
+#[test]
+fn a_tekken_bowl_game_replays() {
+    let Some(assets) = assets() else { return };
+    let save = save_dir("bowl");
+    let shot = save.join("rec.png").to_string_lossy().into_owned();
+    let log = run(&assets, &save, &["--screen", "bowl", "--shot", &shot, "--frames", "30000"]);
+    let Some(id) = replays(&save).pop() else {
+        eprintln!("skipping: no game was bowled (a GPU?):\n{log}");
+        return;
+    };
+    assert!(log.contains("saved: BOWL · "), "{log}");
+    let watched = run(&assets, &save, &["--replay", &id, "--shot", &shot, "--frames", "30000"]);
+    assert!(watched.contains("the state as recorded: Some(true)"), "the replay's end is not as recorded:\n{watched}");
+    seek_lands(&assets, &save, "bowl", 2500);
+    let _ = std::fs::remove_dir_all(&save);
 }
 
 /// REPLAYS on Tekken Tag's main menu (up from ARCADE: EXIT, OPTIONS, REPLAYS): START plays the newest, button 2

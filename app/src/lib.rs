@@ -211,6 +211,18 @@ struct Scene {
     objects: Option<kumite_game::arena_motion::ArenaMotion>,
 }
 
+/// What a step moves of the arena (its clock, where it stands, weather, objects and people) and the fighters'
+/// swaying nodes: a replay's seek copies them with the match.
+#[derive(Clone)]
+pub(crate) struct ArenaCopy {
+    frame: u64,
+    arena: glam::Vec3,
+    weather: Option<kumite_game::weather::Weather>,
+    objects: Option<kumite_game::arena_motion::ArenaMotion>,
+    walkers: Vec<kumite_game::crowd::Walker>,
+    cloth: Vec<kumite_game::Cloth>,
+}
+
 /// Tekken Tag's lens flare (0x3A1C78): its sun (m, the arena's axes), its strength, its nine discs (picture, size,
 /// brightness of 128).
 struct Flare {
@@ -324,6 +336,10 @@ struct BowlRun {
     top: Option<(Vec<kumite_game::bowl::Record>, Vec<Option<usize>>)>,
     /// The game's frame it ended on (the results' fade, 0x3F1370).
     over_at: u64,
+    /// The steps bowled, their inputs (a replay's: the pad of the player bowling), and a replay's to play.
+    steps: usize,
+    tape: kumite_game::bout::Tape,
+    play: Option<Arc<[kumite_game::bout::StepInput]>>,
 }
 
 impl BowlRun {
@@ -1229,6 +1245,8 @@ impl App {
             t.game.play(inputs);
         } else if let Some(f) = self.fight.as_mut() {
             f.bout.play(inputs);
+        } else if let Some(b) = self.bowl.as_mut() {
+            b.play = Some(inputs);
         } else {
             return;
         }
@@ -1270,26 +1288,34 @@ impl App {
         self.debug.paused = true;
     }
 
-    /// The replay's match as it is now (a seek's copy).
+    /// The replay's match as it is now, and the arena about it (a seek's copy).
     fn replay_snapshot(&self) -> Option<replay_view::Snapshot> {
-        use replay_view::Snapshot as S;
-        if let Some(t) = self.tag.as_ref() {
-            return Some(S::Tag(Box::new(t.game.clone()), Box::new(t.hud.clone())));
-        }
-        let f = self.fight.as_ref()?;
-        let force = self.force.as_ref().filter(|_| self.force_fight()).map(|run| Box::new(run.clone()));
-        Some(S::Fight { bout: Box::new(f.bout.clone()), force, hud: Box::new(self.hud.state.clone()), heard: Box::new(f.heard.clone()) })
+        use replay_view::Match as M;
+        let arena = self.scene.as_ref().map(|s| {
+            let cloth = self.fight.as_ref().map(|f| f.cloth.borrow().clone()).unwrap_or_default();
+            Box::new(ArenaCopy { frame: s.frame, arena: s.arena, weather: s.weather.clone(), objects: s.objects.clone(), walkers: s.people.iter().map(|p| p.walker.clone()).collect(), cloth })
+        });
+        let game = if let Some(t) = self.tag.as_ref() {
+            M::Tag(Box::new(t.game.clone()), Box::new(t.hud.clone()))
+        } else if let Some(b) = self.bowl.as_ref() {
+            M::Bowl(Box::new(b.scene.clone()), b.steps)
+        } else {
+            let f = self.fight.as_ref()?;
+            let force = self.force.as_ref().filter(|_| self.force_fight()).map(|run| Box::new(run.clone()));
+            M::Fight { bout: Box::new(f.bout.clone()), force, hud: Box::new(self.hud.state.clone()), heard: Box::new(f.heard.clone()) }
+        };
+        Some(replay_view::Snapshot { game, arena })
     }
 
     fn replay_restore(&mut self, snap: replay_view::Snapshot) {
-        use replay_view::Snapshot as S;
-        match snap {
-            S::Tag(g, hud) => {
+        use replay_view::Match as M;
+        match snap.game {
+            M::Tag(g, hud) => {
                 if let Some(t) = self.tag.as_mut() {
                     (t.game, t.hud) = (*g, *hud);
                 }
             }
-            S::Fight { bout, force, hud, heard } => {
+            M::Fight { bout, force, hud, heard } => {
                 if let Some(f) = self.fight.as_mut() {
                     (f.bout, f.heard) = (*bout, *heard);
                 }
@@ -1297,6 +1323,22 @@ impl App {
                     self.force = Some(*run);
                 }
                 self.hud.state = *hud;
+            }
+            M::Bowl(scene, steps) => {
+                if let Some(b) = self.bowl.as_mut() {
+                    // (the game over's places: taken again as it ends)
+                    (b.scene, b.steps, b.top) = (*scene, steps, None);
+                }
+            }
+        }
+        if let (Some(a), Some(s)) = (snap.arena, self.scene.as_mut()) {
+            let a = *a;
+            (s.frame, s.arena, s.weather, s.objects) = (a.frame, a.arena, a.weather, a.objects);
+            for (p, w) in s.people.iter_mut().zip(a.walkers) {
+                p.walker = w;
+            }
+            if let Some(f) = self.fight.as_ref() {
+                *f.cloth.borrow_mut() = a.cloth;
             }
         }
         // (the joins still to come: from this step on)
@@ -1309,7 +1351,7 @@ impl App {
         match (self.tag.as_ref(), self.fight.as_ref()) {
             (Some(t), _) => t.game.played(),
             (None, Some(f)) => f.bout.played(),
-            _ => 0,
+            _ => self.bowl.as_ref().map_or(0, |b| b.steps),
         }
     }
 
@@ -1318,15 +1360,16 @@ impl App {
         match (self.tag.as_ref(), self.fight.as_ref()) {
             (Some(t), _) => t.game.finished() && t.game.phase_frame >= TAG_SAVED_AFTER,
             (None, Some(f)) => f.bout.finished(),
-            _ => true,
+            _ => self.bowl.as_ref().is_none_or(|b| b.play.as_ref().is_none_or(|p| b.steps >= p.len())),
         }
     }
 
-    /// The state hash a replay is checked by: the bout's or the tag brawl's.
+    /// The state hash a replay is checked by: the bout's, the tag brawl's, Tekken Bowl's.
     fn match_hash(&self) -> u64 {
-        match (self.tag.as_ref(), self.fight.as_ref()) {
-            (Some(t), _) => t.game.state_hash(),
-            (None, Some(f)) => f.bout.game.state_hash(),
+        match (self.tag.as_ref(), self.fight.as_ref(), self.bowl.as_ref()) {
+            (Some(t), _, _) => t.game.state_hash(),
+            (None, Some(f), _) => f.bout.game.state_hash(),
+            (None, None, Some(b)) => b.scene.bowl.hash(),
             _ => 0,
         }
     }
@@ -1358,6 +1401,14 @@ impl App {
     /// One step of the replay's match, its sounds not played and without effects (the run-through, a seek): the
     /// fight's or the tag brawl's, a Force stage's logic after it, then the HUD's (and the sounds' log).
     fn replay_sim_step(&mut self) {
+        // (the arena as playing it moves it: its first step comes with the match's second, the match loaded in the
+        // step after the arena's)
+        if self.replay_played() > 0 {
+            let _ = self.step_arena(false);
+        }
+        if self.bowl.is_some() {
+            return self.bowl_step(Pad::default());
+        }
         if let Some(t) = self.tag.as_mut() {
             t.game.step([Pad::default(); 4]);
             t.hud.step(&t.game, self.roster.ttt.as_deref().map_or(self.hud.data.bar_w(), ttt::bar_w));
@@ -1768,8 +1819,9 @@ impl App {
         })
     }
 
-    /// One fixed 60 Hz logic step.
-    fn step(&mut self) {
+    /// The fighters' swaying nodes and the arena's step (its clock, weather, objects and people), before the match's
+    /// (`paused`: the arena held); the thunder it started. What a replay's seek runs too.
+    fn step_arena(&mut self, paused: bool) -> Vec<u16> {
         // (the swaying nodes move each frame, drawn or not: a frame not drawn would hold them)
         if let Some(fight) = self.fight.as_ref() {
             let game = fight.cutscene.as_ref().map_or(&fight.bout.game, |c| &c.scene.game);
@@ -1784,7 +1836,23 @@ impl App {
             (None, Some(t)) => t.game.melee.actors.iter().map(|a| a.root() / kumite_game::UNITS).collect(),
             _ => vec![],
         };
-        let landings = self.vfx.as_ref().map(|v| v.landings.clone()).unwrap_or_default();
+        // (the landings the effects take from the same move effects, `Vfx::step_actors`)
+        let landed = |a: &&kumite_sim::Fighter| a.effects.iter().any(|e| matches!(e, kumite_sim::MoveEffect::GroundImpact | kumite_sim::MoveEffect::LandingImpact));
+        let landings: Vec<glam::Vec3> = match (self.fight.as_ref(), self.tag.as_ref()) {
+            (Some(fight), _) => fight.bout.game.fight.fighters.iter().chain(fight.bout.game.fight.partner.as_deref()).filter(landed).map(|a| a.root() / kumite_game::UNITS).collect(),
+            (None, Some(t)) => t.game.melee.actors.iter().filter(landed).map(|a| a.root() / kumite_game::UNITS).collect(),
+            _ => vec![],
+        };
+        // (and where the arena is drawn: about what the camera frames, `stage_view`)
+        let arena = match (self.fight.as_ref(), self.tag.as_ref()) {
+            (Some(fight), _) => {
+                let g = &fight.bout.game;
+                let shown = |i: usize| g.display.map_or(g.fight.fighters[i].root(), |d| d[i].root);
+                Some((shown(0) + shown(1)) / 2.0)
+            }
+            (None, Some(t)) => Some(t.game.framing_points().iter().sum::<glam::Vec3>() / 2.0),
+            _ => None,
+        };
         // (and the fight camera, what the arena's objects see by when nothing is drawn between steps)
         let view = match (self.fight.as_ref(), self.tag.as_ref(), self.ttt_ending.as_ref().and_then(|e| e.scene.as_ref())) {
             (Some(fight), _, _) => Some(kumite_game::view_camera(&fight.bout.game.camera.view)),
@@ -1793,9 +1861,11 @@ impl App {
             _ => None,
         };
         let mut thunder = vec![];
-        let paused = self.game_paused();
         if let Some(s) = self.scene.as_mut().filter(|_| !paused) {
             s.frame += 1;
+            if let Some(mid) = arena {
+                s.arena = glam::Vec3::new(mid.x, 0.0, mid.z) / kumite_game::UNITS;
+            }
             if let Some((eye, forward, fov)) = view {
                 let look = glam::camera::rh::view::look_at_mat4(eye, eye + forward, glam::Vec3::Y);
                 let proj = glam::camera::rh::proj::directx::perspective(fov, 640.0 / 448.0, 0.05, 400.0) * look;
@@ -1816,6 +1886,12 @@ impl App {
                 p.walker.step(len);
             }
         }
+        thunder
+    }
+
+    /// One fixed 60 Hz logic step.
+    fn step(&mut self) {
+        let thunder = self.step_arena(self.game_paused());
         // (arena 4's thunder, 0x374D30)
         if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
             for s in thunder.into_iter().filter_map(|code| sound.tag_entry(code, 0, 4)) {
@@ -2430,6 +2506,7 @@ impl App {
     fn save_replay(&mut self) {
         let Some(rec) = self.replay_rec.take() else { return };
         let name = |c: usize| self.roster.characters.get(c).map_or_else(|| "?".to_string(), |c| c.name.clone());
+        let name_of = |id: usize| self.roster.by_id(id).map_or_else(|| "?".to_string(), |c| c.name.clone());
         let (tape, title, result) = if let Some(t) = self.tag.as_mut() {
             let Some(tape) = t.game.tape.take() else { return };
             let s = t.setup.match_slots();
@@ -2473,8 +2550,15 @@ impl App {
                     let side = |k: usize| bench.map_or_else(|| f.names[k].clone(), |b| format!("{} & {}", f.names[k], name(b[k].0)));
                     (tape, format!("{online}{mode} · {} vs {}", side(0), side(1)), result)
                 }
-                replay::Match::Tag { .. } => return,
+                replay::Match::Tag { .. } | replay::Match::Bowl { .. } => return,
             }
+        } else if let Some(b) = self.bowl.as_ref() {
+            let names: Vec<String> = b.teams.iter().map(|t| name_of(t[0])).collect();
+            let result = match b.scene.bowl.winner() {
+                Some(w) if names.len() > 1 => format!("{} WINS {}", names.get(w).map_or("?", String::as_str), b.scene.bowl.cards.get(w).map_or(0, |c| c.total())),
+                _ => b.scene.bowl.cards.iter().map(|c| c.total().to_string()).collect::<Vec<_>>().join("–"),
+            };
+            (b.tape.clone(), format!("BOWL · {}", names.join(" vs ")), result)
         } else {
             return;
         };
@@ -2546,6 +2630,13 @@ impl App {
                 self.force = Some(forcerun::ForceRun::from_start(data, &start));
                 self.replay_joins = joins;
                 self.load_fight(setup, Vec::new());
+            }
+            replay::Match::Bowl { teams, seed } => {
+                self.seed = seed;
+                if let Err(e) = self.start_bowl(&teams) {
+                    self.replay_next = None;
+                    self.debug.say(format!("Tekken Bowl: {e:#}"));
+                }
             }
         }
     }
@@ -2649,7 +2740,7 @@ impl App {
         let Some(v) = self.replay_view.take() else { return };
         kumite_game::bout::set_counters(v.counters_before);
         (self.debug.paused, self.debug.speed, self.debug.free_cam) = (false, 1.0, None);
-        (self.fight, self.scene, self.tag, self.force, self.ttt_run) = (None, None, None, None, None);
+        (self.fight, self.scene, self.tag, self.force, self.ttt_run, self.bowl) = (None, None, None, None, None, None);
         if let Some(stage) = self.replay_tag_stage.take() {
             self.tag_stage = stage;
         }
@@ -2824,10 +2915,7 @@ impl App {
                             None
                         }
                         Some(Screen::Tag(t)) => Some(t.finish(&self.roster)),
-                        Some(Screen::Ttt(f)) => {
-                            f.finish(&self.roster);
-                            None
-                        }
+                        Some(Screen::Ttt(f)) => f.finish(&self.roster),
                         _ => None,
                     };
                     queue.extend(self.host_start(outcome));
@@ -2902,7 +2990,7 @@ impl App {
         if room.host() {
             room.back();
         }
-        let mut rs = room::RoomScreen { note, ttt: self.roster.ttt.is_some(), ..Default::default() };
+        let mut rs = room::RoomScreen { note, modes: room::OnlineMode::list(self.roster.ttt.as_deref()), ..Default::default() };
         rs.update(room);
         self.screen = Some(Screen::Room(Box::new(rs)));
     }
@@ -2989,6 +3077,8 @@ impl App {
             room::MatchSetup::Ttt(run) => {
                 if let Some(d) = self.roster.ttt.clone() {
                     let setup = run.setup(&d);
+                    // (TEKKEN BALL: both sides played, 2 ON 2's partners the CPU's)
+                    self.ball_cpu = [false; 2];
                     self.ttt_run = Some(*run);
                     self.load_fight(setup, Vec::new());
                 }
@@ -4264,12 +4354,20 @@ impl App {
                 started: started.to_vec(),
                 top: None,
                 over_at: 0,
+                steps: 0,
+                tape: Default::default(),
+                play: None,
             });
             self.screen = None;
             self.fight = None;
             Ok(())
         })();
         self.renderer = Some(r);
+        // (recorded as a replay, or a replay's to play)
+        self.replay_rec = (result.is_ok() && self.replay_next.is_none()).then(|| ReplayRec { game: replay::Match::Bowl { teams: started.to_vec(), seed: self.seed }, online: false });
+        if result.is_ok() {
+            self.begin_replay();
+        }
         result
     }
 
@@ -4280,10 +4378,47 @@ impl App {
         let Some(run) = self.bowl.as_mut().filter(|r| r.pause.is_none() && r.page.is_none()) else { return };
         let who = run.scene.bowl.current;
         let (start, select) = (std::mem::take(&mut run.start), std::mem::take(&mut run.select));
-        // (BOWLING OPTIONS' SPECIAL EFFECTS, as set now)
-        run.scene.bowl.effects = !ttt::progress().bowl_off[1];
         let pad = pads[who.min(1)];
-        run.scene.step(Pad { start, buttons: pad.buttons | if select { kumite_sim::bowl::SELECT } else { 0 }, ..pad });
+        self.bowl_step(Pad { start, buttons: pad.buttons | if select { kumite_sim::bowl::SELECT } else { 0 }, ..pad });
+        if let Some(n) = self.hash_every.filter(|&n| n > 0 && self.bowl.is_some()) {
+            self.hash_steps += 1;
+            if self.hash_steps.is_multiple_of(n) {
+                log::info!("HASH {} {:016x}", self.hash_steps, self.match_hash());
+            }
+        }
+        if self.replay_view.is_some() && self.replay_finished() {
+            self.replay_ended();
+        }
+        let Some(run) = self.bowl.as_ref() else { return };
+        let Some(audio) = self.audio.as_mut() else { return };
+        for e in &run.scene.bowl.events {
+            let (code, player) = match *e {
+                kumite_sim::bowl::Event::Sound(code) => (code, who),
+                kumite_sim::bowl::Event::Voice { player, id } => (id, player),
+            };
+            let record = run.records.get(player).copied().unwrap_or(0);
+            if let Some(s) = self.sound.as_ref().and_then(|d| d.tag_entry(code, record, kumite_game::bowl::ARENA)) {
+                audio.sfx(&s.file, s.volume, s.speed);
+            }
+        }
+    }
+
+    /// One Tekken Bowl step with `pad` (a replay's: its input), recorded; the hall's burst, the spectators the ball hit;
+    /// the game over, saved as a replay.
+    fn bowl_step(&mut self, pad: Pad) {
+        let Some(run) = self.bowl.as_mut() else { return };
+        let pad = match run.play.as_ref() {
+            Some(inputs) => inputs.get(run.steps).map_or_else(Pad::default, |s| s.pads[0]),
+            None => pad,
+        };
+        if run.play.is_none() {
+            run.tape.push(kumite_game::bout::StepInput { pads: [pad, Pad::default()], ..Default::default() });
+        }
+        run.steps += 1;
+        // (BOWLING OPTIONS' SPECIAL EFFECTS, as set now: a run-through's and a seek's steps too)
+        run.scene.bowl.effects = !ttt::progress().bowl_off[1];
+        let over = run.scene.bowl.phase == kumite_sim::bowl::Phase::Over;
+        run.scene.step(pad);
         if let (Some(at), Some(w)) = (run.scene.burst.take(), self.scene.as_mut().and_then(|s| s.weather.as_mut())) {
             w.burst(at);
         }
@@ -4295,16 +4430,8 @@ impl App {
                 s.people.iter_mut().filter(near).for_each(|p| p.walker.leave());
             }
         }
-        let Some(audio) = self.audio.as_mut() else { return };
-        for e in &run.scene.bowl.events {
-            let (code, player) = match *e {
-                kumite_sim::bowl::Event::Sound(code) => (code, who),
-                kumite_sim::bowl::Event::Voice { player, id } => (id, player),
-            };
-            let record = run.records.get(player).copied().unwrap_or(0);
-            if let Some(s) = self.sound.as_ref().and_then(|d| d.tag_entry(code, record, kumite_game::bowl::ARENA)) {
-                audio.sfx(&s.file, s.volume, s.speed);
-            }
+        if !over && run.scene.bowl.phase == kumite_sim::bowl::Phase::Over && run.play.is_none() {
+            self.save_replay();
         }
     }
 
@@ -6285,7 +6412,7 @@ impl App {
                         let (at, inputs): (usize, Vec<(String, &kumite_sim::input::InputState)>) = match (tag, fight) {
                             (Some(t), _) => (t.game.played(), t.game.melee.actors.iter().enumerate().map(|(i, a)| (format!("{}P", i + 1), &a.input)).collect()),
                             (None, Some(f)) => (f.bout.played(), f.bout.game.fight.fighters.iter().take(2).enumerate().map(|(i, a)| (format!("P{}", i + 1), &a.input)).collect()),
-                            _ => (0, Vec::new()),
+                            _ => (bowl.map_or(0, |b| b.steps), Vec::new()),
                         };
                         v.ui(ctx, at, &inputs, paused, speed, debug.free_cam.is_some());
                     }
@@ -8236,12 +8363,9 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
                     kumite_sim::bowl::Phase::Power => Pad { buttons: press(g.power >= 90.0), ..Pad::default() },
                     _ => Pad::default(),
                 };
-                b.scene.step(pad);
-                // (the hall's smoke and SPECIAL EFFECTS' burst)
+                // (as played: recorded, SPECIAL EFFECTS' burst; and the hall's smoke)
+                app.bowl_step(pad);
                 if let Some(w) = app.scene.as_mut().and_then(|s| s.weather.as_mut()) {
-                    if let Some(at) = b.scene.burst.take() {
-                        w.burst(at);
-                    }
                     w.step();
                 }
             }
@@ -8596,7 +8720,7 @@ Debug and testing:
                                online VS over UDP (two windows: ports 7000/7001, players 0/1; same --mode args)
   --online ROOM                online: into the room of that code (WebRTC; --signal ws://HOST:PORT, default a
                                local matchbox_server; --host-room: this one creates it), then the room's screen
-                               (Tekken Tag's data: its VS BATTLE and TAG BRAWL there)
+                               (Tekken Tag's data: its VS BATTLE, TAG BRAWL, Ball and Force there)
   --host [PORT]                online by IP, no server: host a room on a UDP port (default 7000; over the internet
                                it must be forwarded to this computer)
   --join HOST[:PORT]           ... join a host's room

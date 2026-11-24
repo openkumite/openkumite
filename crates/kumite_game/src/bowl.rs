@@ -101,6 +101,7 @@ fn model_rotation(r: Mat3) -> Mat3 {
     flip * r * flip
 }
 
+#[derive(Clone)]
 pub struct BowlScene {
     pub bowl: Bowl,
     /// Per player: its character with the bowl clips.
