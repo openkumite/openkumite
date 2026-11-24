@@ -498,6 +498,17 @@ impl SoundData {
         self.step_actors(&fighters, &opponents, &voiced, &f.hits, &f.data, f.frame, state, &banks[..n], &characters[..n])
     }
 
+    /// The tag brawl's sounds: Tekken Tag's for its four (their model records), else [`SoundData::step_actors`]'s.
+    pub fn step_melee(&self, m: &kumite_sim::melee::Melee, models: &[usize], state: &mut SoundState, banks: &[&str], characters: &[usize]) -> Vec<Sound> {
+        let fighters: Vec<&kumite_sim::Fighter> = m.actors.iter().collect();
+        let opponents: Vec<usize> = (0..fighters.len()).map(|i| m.facing(i)).collect();
+        if let Some(t) = &self.tag {
+            return t.step_actors(&fighters, models, &opponents, &m.hits, &m.fight.data, state);
+        }
+        let voiced: Vec<usize> = (0..fighters.len()).collect();
+        self.step_actors(&fighters, &opponents, &voiced, &m.hits, &m.fight.data, m.fight.frame, state, banks, characters)
+    }
+
     /// The same for any number of actors: `opponents[i]` actor i's opponent (cmd 2 entries), the `voiced` actors
     /// play their move sounds; hits name actors by index; `characters` are the actors' voice rows (+0x1A).
     ///
@@ -930,13 +941,27 @@ impl Tag {
     /// The step's sounds (0x375B60 a fighter a frame, the hits, the arena's steps). Each fighter's voice bank and
     /// row come from its character file (a tag swap brings the partner's).
     fn step(&self, bout: &Bout, state: &mut SoundState) -> Vec<Sound> {
-        let (g, mut out) = (&bout.game, Vec::new());
-        let (f, arena) = (&g.fight, state.arena);
-        state.last.resize(2.max(state.last.len()), None);
-        state.script.resize(2.max(state.script.len()), None);
-        state.voice_lock.resize(2.max(state.voice_lock.len()), 0);
-        state.footstep.resize(2.max(state.footstep.len()), None);
-        let voices: [(u32, usize); 2] = std::array::from_fn(|i| self.voice_banks.iter().find(|v| v.model_record == g.bodies[i].model_record).map_or((0, usize::MAX), |v| (v.bank, v.voice_row)));
+        let (g, f) = (&bout.game, &bout.game.fight);
+        let models: Vec<usize> = g.bodies.iter().map(|b| b.model_record).collect();
+        let mut out = self.step_actors(&f.fighters.each_ref(), &models, &[1, 0], &f.hits, &f.data, state);
+        // Ball (the Tekken 3 slice's): its sounds are ids of a group of their own (ball.json `constants.sounds`)
+        for e in f.ball.iter().flat_map(|b| &b.events) {
+            if let kumite_sim::ball::BallEvent::Sound(id) = *e {
+                out.extend(self.sound(id, 0, state.arena, false));
+            }
+        }
+        out
+    }
+
+    /// The same for any number of actors (the tag brawl's): the models' voice banks, `opponents[i]` actor i's (a
+    /// script's kind 2 entries), hits naming actors by index.
+    fn step_actors(&self, fighters: &[&kumite_sim::Fighter], models: &[usize], opponents: &[usize], hits: &[kumite_sim::HitEvent], data: &kumite_sim::GameData, state: &mut SoundState) -> Vec<Sound> {
+        let (n, arena, mut out) = (fighters.len(), state.arena, Vec::new());
+        state.last.resize(n.max(state.last.len()), None);
+        state.script.resize(n.max(state.script.len()), None);
+        state.voice_lock.resize(n.max(state.voice_lock.len()), 0);
+        state.footstep.resize(n.max(state.footstep.len()), None);
+        let voices: Vec<(u32, usize)> = models.iter().map(|&m| self.voice_banks.iter().find(|v| v.model_record == m).map_or((0, usize::MAX), |v| (v.bank, v.voice_row))).collect();
         let rand = |seed: &mut u32| {
             *seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
             (*seed >> 16) & 0x7FFF
@@ -954,8 +979,8 @@ impl Tag {
                 out.extend(self.sound(id, bank, arena, false));
             }
         };
-        for i in 0..2 {
-            let fighter = &f.fighters[i];
+        for i in 0..n {
+            let fighter = fighters[i];
             let (bank, row) = voices[i];
             let now = (fighter.current, fighter.frame);
             let started = fighter.frame <= 1 && state.last[i].is_none_or(|(c, fr)| c != fighter.current || fr > 1);
@@ -973,10 +998,10 @@ impl Tag {
                     }
                 }
             }
-            let mv = fighter.current_move(&f.data);
+            let mv = fighter.current_move(data);
             let entries: Vec<&kumite_sim::data::SoundEntry> = mv.sounds.iter().flatten().take(3).collect();
             // the K.O. (+0x138): a category-2 voice, then the fighter is silent (+0xB6)
-            if f.hits.iter().any(|h| h.victim == i && h.health <= 0 && !h.blocked) {
+            if hits.iter().any(|h| h.victim == i && h.health <= 0 && !h.blocked) {
                 let k = self.rows.get(row).map_or(0, |r| r.counts[2]);
                 let c = ((rand(&mut state.seed) & 0xFF) as usize * k) >> 8;
                 out.extend(self.voice(row, 2, c).and_then(|v| self.sound(v, bank, arena, false)));
@@ -996,7 +1021,10 @@ impl Tag {
                     match kind {
                         0 => out.extend(self.sound(code as u16, bank, arena, false)),
                         1 => entry(&mut out, &mut state.footstep[i], i, code),
-                        2 => entry(&mut out, &mut state.footstep[1 - i], 1 - i, code),
+                        2 => {
+                            let o = opponents.get(i).copied().unwrap_or(i).min(n - 1);
+                            entry(&mut out, &mut state.footstep[o], o, code)
+                        }
                         _ => {}
                     }
                 }
@@ -1029,9 +1057,9 @@ impl Tag {
         // below 0xB) else 0x0D; guarded 0x10; the generic ids by the attacker's damage band and limb (end bone 0xC
         // and up a leg), an arm's band 0 one of two by rand(); the other ids as written
         let im = &self.impacts;
-        for h in &f.hits {
-            let Some(fa) = f.fighters.get(h.attacker) else { continue };
-            let mv = fa.current_move(&f.data);
+        for h in hits {
+            let Some(fa) = fighters.get(h.attacker) else { continue };
+            let mv = fa.current_move(data);
             let end = mv.attack.as_ref().and_then(|a| a.bones.as_ref()).map_or(0, |b| b.end0);
             if h.health <= 0 && !h.blocked {
                 out.extend(self.sound(im.ko[usize::from(end >= im.ko_arm_end_bone_below)], 0, arena, false));
@@ -1051,12 +1079,6 @@ impl Tag {
                     let column = if band == 0 { (rand(&mut state.seed) & 1) as usize } else { 0 };
                     rows.get(band).map_or(0, |r| r[column])
                 };
-                out.extend(self.sound(id, 0, arena, false));
-            }
-        }
-        // Ball (the Tekken 3 slice's): its sounds are ids of a group of their own (ball.json `constants.sounds`)
-        for e in f.ball.iter().flat_map(|b| &b.events) {
-            if let kumite_sim::ball::BallEvent::Sound(id) = *e {
                 out.extend(self.sound(id, 0, arena, false));
             }
         }

@@ -57,6 +57,9 @@ pub struct Melee {
     /// How much further a foe straight behind counts in the picks of a target (game units; Force's co-op: 0,
     /// the nearest).
     pub behind_cost: f32,
+    /// Tekken Tag's pair rules on each pair, as its pair fight's (the tag brawl under Tekken Tag): the facing from
+    /// the roots before the moves, the pushback in the facing pass, the push and hits in the pose of the frame.
+    pub tag_pairs: bool,
 }
 
 impl Melee {
@@ -82,7 +85,7 @@ impl Melee {
             })
             .collect();
         let target = (0..4).map(|i| (0..4).map(|d| (i + 2 + d) % 4).find(|&j| team[j] != team[i]).unwrap_or(i)).collect();
-        Self { fight, actors, team, target, links: Vec::new(), clock: ROUND_FRAMES, state: MeleeState::Fighting, hits: Vec::new(), leash: Some(LEASH), behind_cost: BEHIND_COST }
+        Self { fight, actors, team, target, links: Vec::new(), clock: ROUND_FRAMES, state: MeleeState::Fighting, hits: Vec::new(), leash: Some(LEASH), behind_cost: BEHIND_COST, tag_pairs: false }
     }
 
     /// How many teams there are.
@@ -95,7 +98,7 @@ impl Melee {
     pub fn with_actors(data: Arc<GameData>, actors: Vec<Fighter>, team: Vec<usize>) -> Self {
         let fight = Fight::new(data, actors[0].moveset.clone(), actors[1].moveset.clone());
         let target = (0..actors.len()).map(|i| (0..actors.len()).find(|&j| team[j] != team[i]).unwrap_or(i)).collect();
-        let mut m = Self { fight, actors, team, target, links: Vec::new(), clock: ROUND_FRAMES, state: MeleeState::Fighting, hits: Vec::new(), leash: None, behind_cost: 0.0 };
+        let mut m = Self { fight, actors, team, target, links: Vec::new(), clock: ROUND_FRAMES, state: MeleeState::Fighting, hits: Vec::new(), leash: None, behind_cost: 0.0, tag_pairs: false };
         m.retarget();
         m
     }
@@ -179,6 +182,14 @@ impl Melee {
             self.actors[i].opponent = sight_of(&self.actors[o], &self.fight.data);
         }
         changed
+    }
+
+    /// Each one sees whom it faces (before a round's first step).
+    pub fn see_targets(&mut self) {
+        for i in 0..self.actors.len() {
+            let o = self.facing(i);
+            self.actors[i].opponent = sight_of(&self.actors[o], &self.fight.data);
+        }
     }
 
     /// How far actor `j` counts for actor `i` in the picks of a target: the distance, a foe behind counting
@@ -276,6 +287,7 @@ impl Melee {
             f.early_end = if self.fight.ball_rules { gd.ball.end(f.alias) } else { None };
         }
         let frozen: Vec<bool> = self.actors.iter().map(|f| f.freeze > 0).collect();
+        let roots_before: Vec<Vec3> = self.actors.iter().map(Fighter::root).collect();
         // (each one's move frame before this step: a throw's victim that does not move on is held for good)
         let frame_before: Vec<u32> = self.actors.iter().map(|f| f.frame).collect();
         let fighting = self.state == MeleeState::Fighting;
@@ -284,7 +296,11 @@ impl Melee {
                 continue;
             }
             let facing_right = self.facing_right(i);
-            let pad = if fighting && self.standing(i) { pads[i] } else { Pad::default() };
+            let mut pad = if fighting && self.standing(i) { pads[i] } else { Pad::default() };
+            // (no partner to tag)
+            if self.tag_pairs {
+                pad.buttons &= !crate::input::TAG;
+            }
             self.actors[i].step(&gd, pad, facing_right, anims[i]);
         }
         // throws and holds: a link move pairs the actor with its partner (a thrown actor breaking free) or its
@@ -301,10 +317,19 @@ impl Melee {
         // facing, after every actor's logic, against where its opponent is now
         for (i, &frozen) in frozen.iter().enumerate() {
             let (root, evasive) = self.aim(i);
+            let seen = self.tag_pairs.then(|| [roots_before[i], roots_before[self.facing(i)]]);
             let f = &mut self.actors[i];
             (f.opponent.root, f.opponent.evasive) = (root, evasive);
+            // (Tekken Tag: the pushback in the facing pass, the facing from the roots before the moves, a rebase at
+            // once, as its pair fight's)
+            if self.tag_pairs && f.tag_rules(&gd) {
+                f.push_back();
+            }
             if !frozen && !f.inactive {
-                f.track(&gd, None);
+                f.track(&gd, seen);
+                if self.tag_pairs && f.rebase_root {
+                    f.root_motion(&gd, anims[i]);
+                }
             }
         }
         // the moves' damage to themselves (timed ops 0x0C / 0x0D), then the throws'
@@ -342,12 +367,23 @@ impl Melee {
             (f.struck, f.whiffed, f.pushed) = (false, false, false);
         }
         let free = |m: &Self, i: usize| !m.actors[i].inactive && m.linked_with(i).is_none();
+        // (Tekken Tag's: the volumes in the pose of this frame; Tekken 3's the frame before's)
+        let posed = |m: &Self| -> Vec<Option<BodyVolumes>> { (0..n).map(|i| if m.tag_pairs { anims[i].volumes(&m.actors[i], &gd) } else { None }).collect() };
+        let now = posed(self);
+        // each one's place of the last push, which Tekken Tag's push measures its step from: the same for each pair
+        // shortcut: a second pair measures from there through the first pair's push, upgrade if a crowd pushes oddly
+        let push_prev: Vec<Option<Vec3>> = self.actors.iter().map(|f| f.push_prev).collect();
         // body push between every pair outside a throw (team mates too)
         for a in 0..n {
             for b in a + 1..n {
                 if free(self, a) && free(self, b) {
-                    let pair = [bodies[a], bodies[b]];
-                    self.on_pair(a, b, |f| f.push_apart(pair));
+                    let pair = [now[a].as_ref().unwrap_or(bodies[a]), now[b].as_ref().unwrap_or(bodies[b])];
+                    if self.tag_pairs {
+                        (self.actors[a].push_prev, self.actors[b].push_prev) = (push_prev[a], push_prev[b]);
+                        self.on_pair(a, b, |f| f.separate(pair));
+                    } else {
+                        self.on_pair(a, b, |f| f.push_apart(pair));
+                    }
                 }
             }
         }
@@ -364,6 +400,7 @@ impl Melee {
                 }
             }
         }
+        let now = posed(self);
         // hits between the teams; the frame's parity orders the pairs
         let mut pairs: Vec<(usize, usize)> = (0..n).flat_map(|a| (0..n).map(move |b| (a, b))).filter(|&(a, b)| a < b && self.team[a] != self.team[b]).collect();
         if !even {
@@ -373,7 +410,7 @@ impl Melee {
             if !free(self, a) || !free(self, b) || (!self.standing(a) && !self.standing(b)) {
                 continue;
             }
-            let pair = [bodies[a], bodies[b]];
+            let pair = [now[a].as_ref().unwrap_or(bodies[a]), now[b].as_ref().unwrap_or(bodies[b])];
             self.on_pair(a, b, |f| f.resolve_hits(&gd, pair, [anims[a], anims[b]]));
         }
         if self.state == MeleeState::Fighting && self.links.is_empty() {

@@ -42,7 +42,7 @@ copied; the space it needs is checked before it starts. Choose:
 | Tekken 2 (PlayStation, USA v1.1) | its disc image | its fighters in the roster (optional) |
 | Counter-Strike (Half-Life) | the Half-Life folder, with `cstrike/` and `valve/` | its levels as arenas, two more Tekken Force stages (optional) |
 | Tekken 3 arcade (Namco System 12) | its ROM set: MAME's `tekken3.zip`, or the folder of its files | its 13 stages, 3D models, in place of the PlayStation game's panoramas (optional) |
-| Tekken Tag Tournament (PlayStation 2, USA v2.00, SLUS-20001) | its disc image | a game of its own (needed only as the main game; its own menus, select, modes and HUD; not yet in the browser) |
+| Tekken Tag Tournament (PlayStation 2, USA v2.00, SLUS-20001) | its disc image | a game of its own (needed only as the main game; its own menus, select, modes and HUD, and OpenKumite's Tag Brawl with its fighters; not yet in the browser) |
 
 With both Tekken 3 and Tekken Tag Tournament converted, the screen's MAIN GAME row chooses which one the game plays
 (kept as `openkumite_game` beside the save; none is Tekken 3). Each keeps its own records: Tekken Tag Tournament's in
@@ -104,7 +104,9 @@ cargo run --release -- --help     # the full command line
 ```
 
 The game starts at the title screen. Modes include Arcade, VS, Team Battle, Time Attack, Survival, Force,
-Practice and Watch CPU, plus OpenKumite's own Tag Brawl and Online.
+Practice and Watch CPU, plus OpenKumite's own Tag Brawl and Online. Tag Brawl (four fighters on the stage at once,
+two on two, each for themselves or a tag arcade; up to four players, the CPU in the empty seats) is on Tekken Tag
+Tournament's main menu too, with its fighters, arenas, HUD and sounds.
 
 ### Nix (Linux)
 
