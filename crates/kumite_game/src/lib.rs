@@ -167,12 +167,14 @@ pub const SECONDARY_BLEND: u32 = 8;
 
 /// The joints that hang or flap (the extra fighters' chains `chain*` and wing vertices `wing*`) carry their motion
 /// baked into each clip, where the game keeps swinging them across moves. When the clip changes they go over from the
-/// pose last shown to the new clip's over [`SECONDARY_BLEND`] frames (drawing only).
+/// pose last shown to the new clip's over [`SECONDARY_BLEND`] frames (drawing only), each on its parent as the clip
+/// poses it (Tekken 2's links hang from their bone's world matrix, 0x800811C4: the tail stays on the hips).
 #[derive(Clone, Debug, Default)]
 pub struct SecondaryBlend {
     clip: Option<(usize, bool)>,
     frame: u64,
     left: u32,
+    /// The joints' matrices on their parents.
     from: Vec<(usize, Mat4)>,
     last: Vec<(usize, Mat4)>,
 }
@@ -180,10 +182,15 @@ pub struct SecondaryBlend {
 impl SecondaryBlend {
     /// `pose`: the character's node matrices for the clip shown at game frame `frame` (changed in place).
     pub fn apply(&mut self, character: &kumite_assets::Character, clip: Option<(usize, bool)>, frame: u64, pose: &mut [Mat4]) {
-        let joints: Vec<usize> = character.nodes.iter().enumerate().filter(|(_, n)| n.name.starts_with("chain") || n.name.starts_with("wing")).map(|(i, _)| i).collect();
+        let nodes = &character.nodes;
+        let mut joints: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.name.starts_with("chain") || n.name.starts_with("wing")).map(|(i, _)| i).collect();
         if joints.is_empty() {
             return;
         }
+        // (parents first: a link's world is its blended parent's times its own)
+        joints.sort_by_key(|&j| std::iter::successors(Some(j), |&n| nodes.get(n).and_then(|n| n.parent)).take(nodes.len() + 1).count());
+        let parent = |pose: &[Mat4], j: usize| nodes.get(j).and_then(|n| n.parent).and_then(|p| pose.get(p).copied()).unwrap_or(Mat4::IDENTITY);
+        let mut local: Vec<(usize, Mat4)> = joints.iter().filter_map(|&j| Some((j, parent(pose, j).inverse() * *pose.get(j)?))).filter(|(_, m)| m.is_finite()).collect();
         if frame != self.frame {
             self.frame = frame;
             if clip != self.clip {
@@ -196,15 +203,18 @@ impl SecondaryBlend {
         }
         if self.left > 0 {
             let t = 1.0 - self.left as f32 / (SECONDARY_BLEND + 1) as f32;
-            for &(j, m) in &self.from {
-                if let Some(p) = pose.get_mut(j) {
-                    let (_, ra, ta) = m.to_scale_rotation_translation();
-                    let (_, rb, tb) = p.to_scale_rotation_translation();
-                    *p = Mat4::from_rotation_translation(ra.slerp(rb, t), ta.lerp(tb, t));
+            for (j, m) in &mut local {
+                if let Some(&(_, a)) = self.from.iter().find(|f| f.0 == *j) {
+                    let ((sa, ra, ta), (sb, rb, tb)) = (a.to_scale_rotation_translation(), m.to_scale_rotation_translation());
+                    *m = Mat4::from_scale_rotation_translation(sa.lerp(sb, t), ra.slerp(rb, t), ta.lerp(tb, t));
+                }
+                let world = parent(pose, *j) * *m;
+                if let Some(p) = pose.get_mut(*j) {
+                    *p = world;
                 }
             }
         }
-        self.last = joints.iter().filter_map(|&j| pose.get(j).map(|m| (j, *m))).collect();
+        self.last = local;
     }
 }
 

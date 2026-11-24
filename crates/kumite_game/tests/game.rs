@@ -2208,3 +2208,28 @@ fn the_rules_of_particular_moves_are_the_originals() {
     let s = &b.sounds;
     assert_eq!([s.serve, s.drop, s.bounce, s.pop, s.smash, s.hit[0], s.hit[1], s.guarded, s.bump], [0x4CE8, 0x4CE9, 0x4E6E, 0x7082, 0x4DAF, 0x4DAF, 0x4E6D, 0x7043, 0x704E]);
 }
+
+/// Tekken 2's King (model 910): over a clip change his tail goes over to the new clip's swing on his hips, not where
+/// the last clip's hips were (the body snaps; before, the tail was blended in the body's space and hung in the air).
+#[test]
+fn a_tekken_2_tail_stays_on_the_hips_over_a_clip_change() {
+    let Some(a) = assets() else { return };
+    let Ok(g) = Game::load(&a, [910, MODEL_71]) else { return eprintln!("the Tekken 2 pack is not there: skipped") };
+    let c = &g.bodies[0].character;
+    let node = |name: &str| c.nodes.iter().position(|n| n.name == name).unwrap();
+    let (pelvis, tail) = (node("pelvis"), node("chain0_0"));
+    let at = |clip: usize, frame: usize| c.pose(clip, frame, true);
+    let end = at(0, c.clips[0].frames.saturating_sub(1));
+    // the clip whose first pose has the hips farthest from the stance's last
+    let moved = |clip: usize| at(clip, 0)[pelvis].w_axis.distance(end[pelvis].w_axis);
+    let b = (1..c.clips.len()).max_by(|&x, &y| moved(x).total_cmp(&moved(y))).unwrap();
+    assert!(moved(b) > 0.3, "the hips move between the clips");
+    let mut blend = kumite_game::SecondaryBlend::default();
+    blend.apply(c, Some((0, false)), 1, &mut end.clone());
+    for f in 0..kumite_game::SECONDARY_BLEND as usize {
+        let mut p = at(b, f);
+        blend.apply(c, Some((b, false)), 2 + f as u64, &mut p);
+        let off = p[tail].w_axis.distance(at(b, f)[tail].w_axis);
+        assert!(off < 0.01, "frame {f}: the tail's root {off} m off the hips");
+    }
+}
