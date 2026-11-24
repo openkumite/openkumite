@@ -983,6 +983,8 @@ pub struct Select {
     /// Online (from the room's seed, drawn again on each key: the keys come at other frames on each computer, in the
     /// same order): what RANDOM picks; the room's clock in place of the select's timer, no stage select, nothing saved.
     pub online: Option<u32>,
+    /// Online, the room's time ran out: TEKKEN BALL goes on with the first ball, no ball type's page.
+    pub timed_out: bool,
 }
 
 impl Select {
@@ -1005,7 +1007,7 @@ impl Select {
         if mode == PRACTICE {
             sides[1] = side(Some(0), 1);
         }
-        Self { mode, sides, frame: 0, done: 0, tally, cont: None, memory, online: None }
+        Self { mode, sides, frame: 0, done: 0, tally, cont: None, memory, online: None, timed_out: false }
     }
 
     /// Online VS BATTLE's or TEKKEN BALL's (`mode`) select, the same on every computer (no save's cursors; 2P in).
@@ -1261,16 +1263,17 @@ impl Front {
     }
 
     /// Online, the room's time is up: the select's picks taken at once, alike on every computer (the room's seed);
-    /// the ball type's page, its ball.
-    // shortcut: the time runs out once: a ball type's page after it waits for a key, add a clock of its own if needed
+    /// TEKKEN BALL then with the first ball, as Tekken 3's select takes it when its time is up (`GridSelect::finish`),
+    /// on the ball type's page too.
     pub fn finish(&mut self, roster: &Roster) -> Option<Outcome> {
         match (&mut self.page, roster.ttt.as_deref()) {
             (Page::Select(s), Some(d)) => {
                 let mut seed = s.online.unwrap_or(1);
                 s.finish(d, roster, &Progress::online(), &mut seed);
+                s.timed_out = true;
                 None
             }
-            (Page::BallType { run, cursor, online: true }, _) => Some(Outcome::TttFight(Box::new(Run { ball: *cursor, ..*run.clone() }))),
+            (Page::BallType { run, online: true, .. }, _) => Some(Outcome::TttFight(Box::new(Run { ball: 0, ..*run.clone() }))),
             _ => None,
         }
     }
@@ -1706,7 +1709,7 @@ impl Front {
             // (online: the host's run goes to the room, on a RANDOM arena; TEKKEN BALL's after its ball type)
             Page::Select(s) if s.online.is_some() => {
                 if let Some(run) = s.tick(&d, roster, progress, seed) {
-                    if run.mode == BALL && roster.ball_types() > 1 {
+                    if run.mode == BALL && roster.ball_types() > 1 && !s.timed_out {
                         self.page = Page::BallType { run: Box::new(run), cursor: 0, online: true };
                         return Outcome::None;
                     }
@@ -5975,8 +5978,26 @@ mod tests {
         roster.ttt = Some(d.clone());
         let (mut seed, select) = (1, Select::online(&d, BALL, [0, 0], 7));
         assert!(select.sides.iter().all(|s| s.player.is_some() && s.need == 2));
+        // (the time up on the select, at another frame on each of two computers: the same picks, then the first ball
+        // at once on both)
+        let runs = [0, 37].map(|late| {
+            let (mut f, mut seed) = (Front { page: Page::Select(Box::new(select.clone())), frame: 0 }, seed);
+            f.key(0, Key::Right, &roster, &mut seed);
+            (0..late).for_each(|_| assert!(matches!(f.tick(&roster, &mut seed), Outcome::None)));
+            assert!(f.finish(&roster).is_none());
+            (0..200).find_map(|_| match f.tick(&roster, &mut seed) {
+                Outcome::TttFight(r) => Some(serde_json::to_string(&r).unwrap()),
+                _ => None,
+            })
+        });
+        assert!(runs[0].is_some() && runs[0] == runs[1], "{runs:?}");
+        let run: Run = serde_json::from_str(runs[0].as_deref().unwrap_or_default()).unwrap();
+        assert_eq!((run.ball, run.teams.iter().map(Vec::len).collect::<Vec<_>>()), (0, vec![2, 2]));
+        // (picked on the room's keys: the ball type's page)
         let mut f = Front { page: Page::Select(Box::new(select)), frame: 0 };
-        assert!(f.finish(&roster).is_none());
+        for (player, k) in [(0, Key::Button(0)), (0, Key::Right), (0, Key::Button(0)), (1, Key::Button(0)), (1, Key::Left), (1, Key::Button(0))] {
+            f.key(player, k, &roster, &mut seed);
+        }
         assert!((0..200).all(|_| matches!(f.tick(&roster, &mut seed), Outcome::None)));
         let Page::BallType { run, online: true, .. } = &f.page else { panic!("no ball type") };
         assert_eq!((run.stage, run.teams.iter().map(Vec::len).collect::<Vec<_>>()), (23, vec![2, 2]));
@@ -5984,6 +6005,8 @@ mod tests {
         assert!(matches!(back.key(0, Key::Back, &roster, &mut seed), Outcome::Quit));
         f.key(1, Key::Down, &roster, &mut seed);
         let Some(Outcome::TttFight(run)) = f.finish(&roster) else { panic!("no fight") };
+        assert_eq!(run.setup(&d).ball, Some((0, 0)), "the time up: the first ball");
+        let Outcome::TttFight(run) = Front { page: f.page.clone(), frame: 0 }.key(0, Key::Start, &roster, &mut seed) else { panic!("no fight") };
         assert_eq!(run.setup(&d).ball, Some((1, 0)));
         assert!(MatchSetup::Ttt(run.clone()).valid(&roster));
         for bad in [Run { stage: 3, ..*run.clone() }, Run { ball: 3, ..*run.clone() }] {
