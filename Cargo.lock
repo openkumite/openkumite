@@ -2844,7 +2844,6 @@ name = "kumite_packs"
 version = "0.5.1"
 dependencies = [
  "anyhow",
- "kumite_assets",
  "ok_converter_common",
  "ok_hl_cs_converter",
  "ok_tekken2_converter",
@@ -3954,7 +3953,7 @@ dependencies = [
 [[package]]
 name = "ok_tekken3_converter"
 version = "0.3.0"
-source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#dc0e6ca0551ac6f673afbe290d08c17615f21d47"
+source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#d9399776616b4ac4fb525f81ad65ed5c8f9f0b8b"
 dependencies = [
  "anyhow",
  "chrono",

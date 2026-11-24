@@ -56,12 +56,13 @@ impl Part {
         }
     }
 
-    /// A pack's manifest, checked (the Tekken 3 pack's: of the format this game reads).
+    /// A pack's manifest, checked (the Tekken 3 pack's: of its converter's format, so an older one is converted
+    /// again: format 9 brought Gon's fire and gas pictures).
     pub fn manifest(self, pack: &dyn Vfs) -> Option<Value> {
         match self {
             Part::T3 => {
                 let m: Value = serde_json::from_slice(&pack.read("manifest.json").ok()?).ok()?;
-                (m["format"].as_u64()? >= kumite_assets::FORMAT).then_some(m)
+                (m["format"].as_i64()? >= ok_tekken3_converter::convert_all::FORMAT).then_some(m)
             }
             Part::T2 => ok_tekken2_converter::pack::manifest(pack).ok(),
             Part::Cs => ok_hl_cs_converter::pack::manifest(pack).ok(),

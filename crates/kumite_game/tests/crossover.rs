@@ -95,16 +95,21 @@ fn gons_fire_and_gas() {
             b.step([Pad::default(); 2]);
         }
         b.game.fight.fighters[1].guard_input = false;
-        let (mut hit, mut objects) = (None, 0);
+        let mut vfx = kumite_game::vfx::Vfx::new(&a);
+        let sheet = vfx.data.as_ref().map_or(0, |d| d.objects_sheet);
+        assert!(sheet > 0, "Tekken 3's pictures");
+        let (mut hit, mut objects, mut drawn) = (None, 0, 0);
         for pad in parse_script(moves).unwrap() {
             b.step([pad, Pad::default()]);
+            vfx.step(&b.game);
             objects = objects.max(b.game.fight.objects.list.len());
             hit = hit.or(b.game.fight.hits.iter().find(|h| h.victim == 1).map(|h| (h.limb, h.damage)));
+            drawn += usize::from(vfx.sprites().iter().any(|s| s.sheet == sheet));
         }
         assert!(objects > 0 && hit.is_some_and(|(limb, d)| limb == byte && d > 0), "{moves}: {objects} objects, hit {hit:?}");
+        // drawn from Tekken 3's sheet: the gas's puffs a second, the fire and Paul's burning longer
+        assert!(drawn >= 60, "{moves}: drawn on {drawn} frames");
     }
-    let fx = kumite_game::vfx::EffectsData::load(&a).unwrap();
-    assert!(fx.objects_sheet > 0 && !fx.fire.cells.is_empty() && !fx.gas.cells.is_empty(), "Tekken 3's pictures");
 }
 
 /// Paul's throw (1+3) on Doctor B. walking in, and Gon's on Paul: both link, every frame on a motion its body has.

@@ -9,7 +9,6 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 serde_json.workspace = true
-kumite_assets.workspace = true
 # the converters (their repositories)
 ok_converter_common = { git = "https://github.com/openkumite/ok_converter_common", branch = "main", default-features = false }
 ok_tekken3_converter = { git = "https://github.com/openkumite/ok_tekken3_converter", branch = "main" }

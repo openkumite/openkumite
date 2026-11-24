@@ -3,6 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests: a failure stops them
 
 use kumite_assets::Assets;
+use kumite_game::vfx::{Blend, Sprite, Vfx};
 use kumite_game::{parse_script, Game};
 use kumite_sim::input::Pad;
 use kumite_sim::objects::{Kind, FIRE, GAS};
@@ -25,16 +26,31 @@ pub struct Seen {
     reach: f32,
     reactions: Vec<String>,
     stance: String,
+    /// The pictures drawn (kumite_game::vfx): the frames with gas puffs and the most at once (each half-blended at
+    /// half alpha, 0.5 m), the frames with fire burning on P2 (within a metre of its root).
+    gas_frames: usize,
+    gas_most: usize,
+    burn_frames: usize,
 }
 
 /// Gon (P1) plays `script` against an idle Paul standing `gap` units apart (the fight starts them 2000 apart).
 fn gon(a: &Assets, script: &str, gap: f32) -> Seen {
     let mut g = Game::load(a, [GON, PAUL]).unwrap();
+    let mut vfx = Vfx::new(a);
+    let fx = vfx.data.clone().expect("effects.json");
     g.fight.fighters[1].guard_input = false;
     g.fight.fighters[1].position.x = g.fight.fighters[0].position.x + gap;
     let mut s = Seen { stance: g.fight.fighters[1].current_move(&g.fight.data).anim.clone(), ..Seen::default() };
     for (k, pad) in parse_script(script).unwrap().into_iter().enumerate() {
         g.step([pad, Pad::default()]);
+        vfx.step(&g);
+        let drawn = vfx.sprites();
+        let gas: Vec<_> = drawn.iter().filter(|p| p.blend == Blend::Half && fx.gas.cells.contains(&p.cell)).collect();
+        assert!(gas.iter().all(|p| p.color == [1.0, 1.0, 1.0, 0.5] && p.size == 0.5 && p.sheet == fx.objects_sheet), "{gas:?}");
+        (s.gas_frames, s.gas_most) = (s.gas_frames + usize::from(!gas.is_empty()), s.gas_most.max(gas.len()));
+        let victim = g.fight.fighters[1].root() / 1000.0;
+        let fire = |p: &&Sprite| p.blend == Blend::Add && (fx.fire.cells.contains(&p.cell) || fx.fire_end.cells.contains(&p.cell));
+        s.burn_frames += usize::from(drawn.iter().filter(fire).any(|p| p.pos.distance(victim) < 1.0));
         let f = &g.fight;
         s.objects = s.objects.max(f.objects.list.len());
         for o in f.objects.list.iter().filter(|o| o.kind == Kind::Fire) {
@@ -54,9 +70,11 @@ fn gon(a: &Assets, script: &str, gap: f32) -> Seen {
 #[test]
 fn gons_fire_strikes_at_range_and_ends() {
     let Some(a) = assets() else { return };
-    let near = gon(&a, "1+2,n*100", 1500.0);
+    let near = gon(&a, "1+2,n*160", 1500.0);
     assert!(near.objects >= 1 && near.hits.len() == 1 && near.hits[0].2 == FIRE && near.hits[0].1 > 0, "{near:?}");
     assert!(near.hits[0].0 >= 45 && near.reactions[0] != near.stance, "from the active frame on, a reaction");
+    // Paul burns: object 0xB's fires on his bones for 60-75 frames (drawn, not only struck)
+    assert!(near.burn_frames >= 60, "{near:?}");
     let far = gon(&a, "1+2,n*100", 4000.0);
     assert!(far.hits.is_empty() && far.reach > 2000.0 && far.reach < 4000.0, "{far:?}");
 }
@@ -68,6 +86,8 @@ fn gons_gas_strikes_close_by() {
     let near = gon(&a, "b+4,n*100", 700.0);
     assert!(near.objects >= 8 && near.hits.len() == 1 && near.hits[0].2 == GAS && near.hits[0].1 > 0, "{near:?}");
     assert!(near.reactions[0] != near.stance, "a reaction");
+    // the puffs drawn: all eight at once, the cloud lingering past a puff's 54 frames
+    assert!(near.gas_most >= 8 && near.gas_frames > kumite_sim::objects::PUFF_LIFE as usize, "{near:?}");
     let far = gon(&a, "b+4,n*100", 2500.0);
     assert!(far.hits.is_empty() && far.objects >= 8, "{far:?}");
 }
