@@ -315,7 +315,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ok_packs_t3_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(dir(Part::Ttt, &root)).unwrap();
-        std::fs::write(root.join("manifest.json"), format!("{{\"format\": {}, \"fingerprint\": \"x\"}}", kumite_assets::FORMAT)).unwrap();
+        std::fs::write(root.join("manifest.json"), format!("{{\"format\": {}, \"fingerprint\": \"x\"}}", ok_tekken3_converter::convert_all::FORMAT)).unwrap();
         let t3 = State::of(&root, Game::T3);
         assert!(t3.playable() && t3.installed && !t3.has_packs() && layers(&root, &t3).is_empty() && t3.get(Part::Ttt).is_none());
         let manifest = serde_json::json!({"pack": "ttt", "format": ok_tekken_tag_converter::pack::FORMAT});
@@ -338,7 +338,7 @@ mod tests {
         assert_eq!(kumite_assets::Assets::new(&extras).unwrap().fingerprint(), "t");
         assert_eq!(ttt_layers(&root, &State::of(&root, Game::Ttt)), vec![extras.clone()]);
         assert!(layers(&root, &State::of(&root, Game::T3)).is_empty() && !root.join(EXTRAS).exists());
-        std::fs::write(root.join("manifest.json"), format!("{{\"format\": {}, \"fingerprint\": \"y\"}}", kumite_assets::FORMAT)).unwrap();
+        std::fs::write(root.join("manifest.json"), format!("{{\"format\": {}, \"fingerprint\": \"y\"}}", ok_tekken3_converter::convert_all::FORMAT)).unwrap();
         assert!(ttt_layers(&root, &State::of(&root, Game::Ttt)).is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }
