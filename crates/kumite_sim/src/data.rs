@@ -176,6 +176,9 @@ pub struct PushControl {
 pub struct Flags24 {
     pub raw: u32,
     pub camera_script: u32,
+    /// Tekken Tag's own bits, as on the disc (`raw` has those the engine knows, in its numbers).
+    #[serde(skip)]
+    pub tag: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]

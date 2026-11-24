@@ -342,10 +342,12 @@ fn devils_laser_strikes() {
     assert!(!drawn || (strips > 2 && flares == 15), "{strips} strips, {flares} frames of the flare");
 }
 
-/// The strikes take the game's joint places (0x439A80), not the drawn skeleton's: Jack-2's knee is 390 down his
-/// thigh, not 440, so his 1+3 (alias 3811, foot A) grabs Hwoarang 780 away (alias 3924) as in PCSX2 (frame 64).
+/// Jack-2 and Paul against Hwoarang and Paul, picked on the select (PCSX2): Jack walks in, his body pushes Hwoarang
+/// back as he comes, and his 1+3 (alias 3811) then misses from 850 away: no grab (alias 3924), as on the PS2 (the
+/// grab seen before came from a run that kept the select's models). The stance's phase is the PS2 run's (11 frames
+/// on), the pad read 2 frames late.
 #[test]
-fn jack2s_grab_reaches_with_the_games_joints() {
+fn jack2s_walk_pushes_and_his_grab_misses_as_on_the_ps2() {
     let Some(a) = assets() else { return };
     let mut g = Game::load(&a, [603, HWOARANG]).unwrap();
     g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
@@ -353,11 +355,18 @@ fn jack2s_grab_reaches_with_the_games_joints() {
     while b.phase != Phase::Fight {
         b.step([Pad::default(); 2]);
     }
-    let grab = parse_script("f*40,n*2,1+3*2,n*60").unwrap().into_iter().position(|pad| {
+    let ps2 = [(30, 89, 1012), (35, 207, 1093), (40, 263, 1122), (44, 284, 1134)];
+    let mut grab = false;
+    for (k, pad) in parse_script("n*13,f*40,n*2,1+3*2,n*60").unwrap().into_iter().enumerate() {
         b.step([pad, Pad::default()]);
-        b.game.fight.fighters[0].alias == 3924
-    });
-    assert!(grab.is_some_and(|k| (60..=66).contains(&k)), "the grab on frame {grab:?}");
+        let f = &b.game.fight.fighters;
+        grab |= f[0].alias == 3924;
+        if let Some(&(_, x0, x1)) = ps2.iter().find(|p| p.0 + 11 == k) {
+            let (r0, r1) = (f[0].root().x as i32, f[1].root().x as i32);
+            assert!((r0 - x0).abs() <= 5 && (r1 - x1).abs() <= 5, "frame {}: {r0} {r1}, the PS2 {x0} {x1}", k - 11);
+        }
+    }
+    assert!(!grab, "the grab");
 }
 
 /// Mokujin (no moves of his own) fights as another fighter, drawn from Tekken Tag's pool (0x35C850): he jabs.
@@ -420,7 +429,8 @@ fn pauls_belt_sways() {
 }
 
 /// The body push measures each side's step from where the last push left it (0x377338 against 0x8A7A90): Paul's
-/// u/f+3 walks Hwoarang's guard back and they part 1004 apart in PCSX2 (1102 when the step left the push out).
+/// u/f+3 walks Hwoarang's guard back and they part 1004 apart in PCSX2 (1102 when the step left the push out). The
+/// move eases in from the stance's pose (0x373428): his hips 103, 94, 86, ..., 8, 0 below the motion's, as in PCSX2.
 #[test]
 fn the_push_after_a_guard_parts_them_as_on_the_ps2() {
     let Some(a) = assets() else { return };
@@ -430,9 +440,15 @@ fn the_push_after_a_guard_parts_them_as_on_the_ps2() {
     while b.phase != Phase::Fight {
         b.step([Pad::default(); 2]);
     }
+    let mut hips = Vec::new();
     for pad in parse_script("n*2,u+1+2*2,n*80,u+3+4*2,n*80,u/f+1*2,n*80,u/f+3*2,n*40").unwrap() {
         b.step([pad, Pad::default()]);
+        let p = &b.game.fight.fighters[0];
+        if p.alias == 4677 && p.frame <= 13 {
+            hips.push(p.eased().map_or(1, |e| e.1 as i32));
+        }
     }
+    assert_eq!(hips, [-103, -94, -86, -77, -68, -60, -51, -43, -34, -25, -17, -8, 0]);
     let f = &b.game.fight.fighters;
     let apart = f[0].root().distance(f[1].root());
     assert!((apart - 1004.0).abs() < 30.0, "{apart}");
@@ -1337,7 +1353,7 @@ fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: imp
 /// alone) still 240, 237, 201 and 312, holding back 140), here a cell's eight matches each; a seed replays the same.
 /// (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands. Neither CPU holds a direction
 /// in its own recoveries' END windows: 0 of 72 frames on the PS2, 0 of 70 here.) Stage 4's eight matches swing by
-/// about 50 a minute with any change of the fights (352 to 412 with the pushback a frame earlier, as on the PS2).
+/// about 50 a minute with any change of the fights (412 without the moves' pose ease, 316 with it).
 #[test]
 fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     let Some(a) = assets() else { return };
@@ -1348,7 +1364,7 @@ fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     });
     let dmg: Vec<(u32, u32)> = cells.iter().map(|c| (c.0, c.1)).collect();
     eprintln!("damage a minute, still / holding back: {dmg:?}");
-    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 420), (110, 190)), ((200, 315), (110, 180))].into_iter().enumerate() {
+    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 380), (110, 190)), ((200, 315), (110, 180))].into_iter().enumerate() {
         assert!((still.0..=still.1).contains(&dmg[k].0) && (back.0..=back.1).contains(&dmg[k].1), "cell {k}: {:?}", dmg[k]);
         assert!(dmg[k].1 < dmg[k].0, "holding back takes less");
     }

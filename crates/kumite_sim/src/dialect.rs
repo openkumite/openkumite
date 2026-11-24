@@ -249,6 +249,7 @@ pub fn load(gamedata: &Path, rules: &serde_json::Value) -> Result<GameData> {
     // (the hand ops, Tekken Tag's 0x0F + v with v & 31 below 10, as HAND_OPS + v: the game layer's)
     let op = |o: u32| d.ops.iter().find(|p| p.0 == o).map(|p| p.1).or_else(|| o.checked_sub(0x0F).filter(|v| *v < 0x60 && v & 31 < 10).map(|v| HAND_OPS + v));
     for m in &mut moves {
+        m.flags24.tag = m.flags24.raw;
         m.flags24.raw = map_bits(m.flags24.raw);
         if let Some(ps) = m.properties.as_mut() {
             ps.retain_mut(|p| op(p.op).map(|o| p.op = o).is_some());
