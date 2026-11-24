@@ -67,7 +67,8 @@ fn two_on_two_runs_to_a_winner() {
     assert!(matches!(g.phase, TagPhase::MatchOver { winner: Some(_) }), "a team wins: {:?}", g.phase);
     assert!(hits.iter().all(|&(a, v)| g.melee.team[a] != g.melee.team[v]), "no friendly hits");
     assert!([1, 2, 3].iter().all(|&k| hits.iter().any(|h| h.0 == k)), "every CPU lands hits: {hits:?}");
-    assert!(widest < 7424.0, "a pair {widest:.0} apart");
+    // (the limit pulls back before the moves: a frame's moves past it at most)
+    assert!(widest < 7424.0 + 300.0, "a pair {widest:.0} apart");
     assert_eq!(hashes, brawl(&a, records, [0, 0, 1, 1], true).1, "the same pads, the same match");
 }
 

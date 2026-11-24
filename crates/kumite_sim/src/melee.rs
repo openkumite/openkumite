@@ -57,10 +57,16 @@ pub struct Melee {
     /// How much further a foe straight behind counts in the picks of a target (game units; Force's co-op: 0,
     /// the nearest).
     pub behind_cost: f32,
-    /// Tekken Tag's pair rules on each pair, as its pair fight's (the tag brawl under Tekken Tag): the facing from
-    /// the roots before the moves, the pushback in the facing pass, the push and hits in the pose of the frame.
+    /// Tekken Tag's pair rules on each pair, as its pair fight's (the tag brawl under Tekken Tag): the distance
+    /// limit, the facing from the roots before the moves, the pushback in the facing pass, the push and hits in the
+    /// pose of the frame.
     pub tag_pairs: bool,
+    /// Each pair's kept places for Tekken Tag's distance limit ([`Fight::kept`]): the pair, the fight's state.
+    pub kept: Vec<(usize, usize, KeptPlaces)>,
 }
+
+/// [`Fight::kept`]'s state.
+pub type KeptPlaces = ([[i32; 2]; 2], [u32; 2]);
 
 impl Melee {
     /// Actors 0, 1 are team 0 (on the left), 2, 3 team 1.
@@ -85,7 +91,20 @@ impl Melee {
             })
             .collect();
         let target = (0..4).map(|i| (0..4).map(|d| (i + 2 + d) % 4).find(|&j| team[j] != team[i]).unwrap_or(i)).collect();
-        Self { fight, actors, team, target, links: Vec::new(), clock: ROUND_FRAMES, state: MeleeState::Fighting, hits: Vec::new(), leash: Some(LEASH), behind_cost: BEHIND_COST, tag_pairs: false }
+        Self {
+            fight,
+            actors,
+            team,
+            target,
+            links: Vec::new(),
+            clock: ROUND_FRAMES,
+            state: MeleeState::Fighting,
+            hits: Vec::new(),
+            leash: Some(LEASH),
+            behind_cost: BEHIND_COST,
+            tag_pairs: false,
+            kept: Vec::new(),
+        }
     }
 
     /// How many teams there are.
@@ -98,7 +117,20 @@ impl Melee {
     pub fn with_actors(data: Arc<GameData>, actors: Vec<Fighter>, team: Vec<usize>) -> Self {
         let fight = Fight::new(data, actors[0].moveset.clone(), actors[1].moveset.clone());
         let target = (0..actors.len()).map(|i| (0..actors.len()).find(|&j| team[j] != team[i]).unwrap_or(i)).collect();
-        let mut m = Self { fight, actors, team, target, links: Vec::new(), clock: ROUND_FRAMES, state: MeleeState::Fighting, hits: Vec::new(), leash: None, behind_cost: 0.0, tag_pairs: false };
+        let mut m = Self {
+            fight,
+            actors,
+            team,
+            target,
+            links: Vec::new(),
+            clock: ROUND_FRAMES,
+            state: MeleeState::Fighting,
+            hits: Vec::new(),
+            leash: None,
+            behind_cost: 0.0,
+            tag_pairs: false,
+            kept: Vec::new(),
+        };
         m.retarget();
         m
     }
@@ -266,6 +298,25 @@ impl Melee {
         self.hits.clear();
         let gd = self.fight.data.clone();
         self.retarget();
+        // Tekken Tag's pair distance limit (0x1D00) on each pair in play, before the moves as its fight's
+        if self.tag_pairs {
+            for a in 0..n {
+                for b in a + 1..n {
+                    if self.actors[a].inactive || self.actors[b].inactive {
+                        continue;
+                    }
+                    let k = self.kept.iter().position(|e| (e.0, e.1) == (a, b));
+                    self.fight.kept = k.map(|k| self.kept[k].2);
+                    self.on_pair(a, b, |f| f.keep_together(&gd));
+                    let kept = self.fight.kept.take();
+                    match (k, kept) {
+                        (Some(k), Some(c)) => self.kept[k].2 = c,
+                        (None, Some(c)) => self.kept.push((a, b, c)),
+                        _ => {}
+                    }
+                }
+            }
+        }
         for i in 0..n {
             let o = self.facing(i);
             let mut sight = sight_of(&self.actors[o], &gd);

@@ -2503,7 +2503,7 @@ pub struct Fight {
     pub objects: objects::Objects,
     /// Tekken Tag's pair distance limit (0x371458): each fighter's kept place (x, z; 0x879610) and its move's flags
     /// of the frame before (gp-0x6508); None until the round's first frame (0x3713F0 starts them at the places).
-    pub kept: Option<([[i32; 2]; 2], [u32; 2])>,
+    pub kept: Option<melee::KeptPlaces>,
 }
 
 /// An arena's walk grid (metres, x along a row, rows along z): cells a fighter's root cannot enter.
