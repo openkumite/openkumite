@@ -200,8 +200,6 @@ struct Flashes {
     bolt: Vec<Option<(usize, usize)>>,
     /// Per flicker (0x8D5DB0): its count and, while it flickers, its list and place.
     flicker: Vec<(u32, Option<(usize, usize)>)>,
-    /// EMBU op 7's (0x3A7EB0): channel, list, place.
-    ops: Vec<(usize, usize, usize)>,
     /// The signs (0x3A7590): channel, its frames, state, count (256ths of a frame).
     signs: Vec<(usize, usize, u8, u32)>,
     /// Each channel's frame (None: as the stage has it).
@@ -358,16 +356,6 @@ impl Weather {
         }
     }
 
-    /// EMBU op 7 (0x3A7FA8): channel `channel` plays list `list` (op 7's table), then rests (channels 0-3 on frame 1,
-    /// 4-6 on frame 3).
-    pub fn flash_op(&mut self, channel: i32, list: i32) {
-        if let (Ok(c @ 0..7), Ok(l)) = (usize::try_from(channel), usize::try_from(list)) {
-            if self.flashes.lists.get(l).is_some_and(|l| l.first().is_some_and(|&v| v >= 0)) {
-                self.flashes.ops.push((c, l, 0));
-            }
-        }
-    }
-
     /// The frame texture channel `channel` shows (None: the stage's own).
     pub fn channel_frame(&self, channel: usize) -> Option<usize> {
         self.flashes.frames.get(channel).copied().flatten()
@@ -477,20 +465,6 @@ impl Weather {
                 }
             }
         }
-        // EMBU op 7's: a frame of the list each, then the channel at rest
-        for (c, l, i) in &mut fl.ops {
-            fl.frames[*c] = Some(at(&fl.lists, *l, *i).max(0) as usize);
-            *i += 1;
-        }
-        let lists = &fl.lists;
-        let frames = &mut fl.frames;
-        fl.ops.retain(|&(c, l, i)| {
-            let on = at(lists, l, i) >= 0;
-            if !on {
-                frames[c] = Some(if c < 4 { 1 } else { 3 });
-            }
-            on
-        });
         // the signs: held on frame 0, now and then played once at 0x80 (frame t >> 8), back to 0 past the last
         for (c, n, state, t) in &mut fl.signs {
             match state {
@@ -505,7 +479,7 @@ impl Weather {
                 _ => {}
             }
             let k = (*t >> 8) as usize;
-            if let Some(f) = frames.get_mut(*c) {
+            if let Some(f) = fl.frames.get_mut(*c) {
                 *f = Some(if *state == 2 && k < *n { k } else { 0 });
             }
         }
@@ -718,19 +692,11 @@ mod tests {
             "thunder": [0x1072, 0x1074, 0x1075], "roll": 0x1073, "near": [625.0, 312.5]}, "signs": [2]});
         let mut w = Weather::new(&v).unwrap();
         let looking = glam::camera::rh::proj::directx::perspective(1.0, 1.0, 0.1, 100.0);
-        // the EMBU: no task, only op 7 (channel 4, list 1: frames 1, 1, then 3: the list ends on the frame it shows
-        // its last, 0x3A7EB0, before 0x3A6C80 sends it)
+        // the EMBU: no task, the channels as the stage has them
         w.without_lightning();
         w.sign_frames(2, 3);
-        w.flash_op(4, 1);
-        let shown: Vec<Option<usize>> = (0..4)
-            .map(|_| {
-                w.flash(looking);
-                w.channel_frame(4)
-            })
-            .collect();
-        assert_eq!(shown, [Some(1), Some(1), Some(3), Some(3)]);
-        assert!(!w.lit() && w.sounds.is_empty());
+        w.flash(looking);
+        assert!(w.channel_frame(4).is_none() && !w.lit() && w.sounds.is_empty());
         // a sign plays its 3 frames once, each 2 frames, back on 0
         let mut seen = vec![];
         for _ in 0..3000 {
