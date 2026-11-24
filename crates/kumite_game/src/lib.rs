@@ -559,7 +559,7 @@ const COPY_POOL: [i64; 15] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16];
 /// 28-30).
 const COPY_POOL_TTT: [i64; 28] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 28, 29, 30];
 /// The moveset the fight's setup gives it before the first round's draw (0x8002A40C: its descriptor's).
-const COPY_DEFAULT: i64 = 9;
+pub const COPY_DEFAULT: i64 = 9;
 /// The copying character's id (actor +0x18).
 pub const COPIER: i64 = 15;
 /// The moveset whose fighter holds a sword: the copying character's stick shows with it.
@@ -600,8 +600,7 @@ impl Copier {
 /// The copying character's body `own` playing `donor`'s clips, as the fighter of moveset `id`: its accessory nodes
 /// (`bone_*`: the stick) hidden but with the sword fighter's.
 fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
-    let mut hidden = if id == SWORD_MOVESET { Vec::new() } else { own.character.nodes.iter().enumerate().filter(|(_, n)| n.name.starts_with("bone_")).map(|(i, _)| i).collect() };
-    hidden.extend(blades_hidden(&own.character, id));
+    let hidden = copy_hidden(&own.character, id);
     Body {
         character: own.character.with_clips_of(donor),
         model_record: own.model_record,
@@ -623,6 +622,14 @@ fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
 }
 
 /// Tekken Tag's blades not drawn with moveset `id` (0x34D108: scaled to nothing).
+/// The copying character's nodes hidden as the fighter of moveset `id`: its accessories (`bone_*`: the stick) but as
+/// the sword fighter, and the blades of the other movesets.
+pub fn copy_hidden(c: &Character, id: i64) -> Vec<usize> {
+    let mut hidden = if id == SWORD_MOVESET { Vec::new() } else { c.nodes.iter().enumerate().filter(|(_, n)| n.name.starts_with("bone_")).map(|(i, _)| i).collect() };
+    hidden.extend(blades_hidden(c, id));
+    hidden
+}
+
 fn blades_hidden(c: &Character, id: i64) -> Vec<usize> {
     c.blades.iter().filter(|b| b[1] as i64 != id).map(|b| b[0]).collect()
 }
