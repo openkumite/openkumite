@@ -1834,7 +1834,10 @@ impl Renderer {
             }
         }
         // the stage's added, multiplying and blended strips (Tekken Tag's), over the stage it lights, shades or fades
-        let strips: Vec<(usize, &StaticMesh)> = statics.iter().map(|m| (0, *m)).chain(sky.iter().map(|m| (3, *m))).filter(|(_, m)| m.blend > 0 && !m.late).collect();
+        // (the grass's blended texels after the floor's strips: the PS2 draws every cell's ground, its overlay and its
+        // painted shadow (ALPHA 0x89) before any cell's grass)
+        let statics_in_order = statics.iter().filter(|m| m.blend != 4).chain(statics.iter().filter(|m| m.blend == 4));
+        let strips: Vec<(usize, &StaticMesh)> = statics_in_order.map(|m| (0, *m)).chain(sky.iter().map(|m| (3, *m))).filter(|(_, m)| m.blend > 0 && !m.late).collect();
         // (then the late meshes: opaque with the stage's depth, then their own strips)
         let late = sky.iter().filter(|m| m.late);
         let late = late.clone().filter(|m| matches!(m.blend, 0 | 4)).map(|m| (usize::MAX, *m)).chain(late.filter(|m| matches!(m.blend, 1..=3)).map(|m| (3, *m)));

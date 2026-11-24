@@ -337,9 +337,14 @@ fn cell_shift(cell: vec4<f32>) -> vec2<f32> {
     return floor((g.floor_centre.xy - cell.xy) / span + 0.5) * span;
 }
 
+// Eddy's grass: the lattice's height x 10/3 - d / 3 (0x3418C4: gp-0x7D5C, -0x7D58), d the cell's distance (m) from
+// the window's centre: whole within 7 m, flat at 10
+fn grass_scale(d: f32) -> f32 {
+    return clamp(10.0 / 3.0 - d / 3.0, 0.0, 1.0);
+}
+
 // Eddy's grass (0x3D43A8, 0x3E13C8): a floor vertex's move, its cell's top corners' moves (bilinearly) x its
-// height in the lattice; the lattice's height x 10/3 - d / 3 (0x3418C4: gp-0x7D5C, -0x7D58), d the cell's distance (m)
-// from the window's centre: whole within 7 m, flat at 10
+// height in the lattice
 fn grass_move(p: vec3<f32>, y: f32, d: f32) -> vec3<f32> {
     let info = g.grass_info;
     if (info.w < 0.5 || y <= 0.0) { return vec3(0.0); }
@@ -349,7 +354,7 @@ fn grass_move(p: vec3<f32>, y: f32, d: f32) -> vec3<f32> {
     let row = u32(info.x);
     let k = c.y * row + c.x;
     let m = mix(mix(g.grass[k].xyz, g.grass[k + 1u].xyz, f.x), mix(g.grass[k + row].xyz, g.grass[k + row + 1u].xyz, f.x), f.y);
-    let h = clamp(10.0 / 3.0 - d / 3.0, 0.0, 1.0);
+    let h = grass_scale(d);
     return m * min(y * h / info.z, 1.0) - vec3(0.0, y * (1.0 - h), 0.0);
 }
 
@@ -380,7 +385,9 @@ fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32
     o.dropped = select(0.0, 1.0, (g.floor_cell.z > 0.5 && outside) || cut_near(o.clip.w, cell));
     o.uv = env_uv(uv, normal, p, g.eye.xyz);
     o.fog = fog_of(normal, o.clip.w);
-    o.color = color;
+    // (a grass cell's vertices (its levels past the ground) reach the GS as colour 128 and alpha 128 x the lattice's
+    // scale: GS dumps, the scale's constants written)
+    o.color = select(color, vec4(1.0, 1.0, 1.0, grass_scale(d)), on && g.grass_info.w > 0.5 && cell.z > 0.5);
     o.world = p;
     o.normal = vec3(0.0);
     return o;
@@ -429,20 +436,21 @@ fn fs_static(i: VsOut) -> @location(0) vec4<f32> {
 }
 
 // Tekken Tag's grass (ALPHA 0x44, TEST 0x5180B: As >= 0x80 passes, the rest AFAIL FB_ONLY): its texels of full alpha
-// with their depth (drawn with the stage), the others over the picture by their alpha, depth unwritten (with the
-// strips)
+// (times the vertex's) with their depth (drawn with the stage), the others over the picture by their alpha, depth
+// unwritten (with the strips)
 @fragment
 fn fs_static_z(i: VsOut) -> @location(0) vec4<f32> {
     let t = static_texel(i);
-    if (t.a < 254.5 / 255.0) { discard; }
+    if (t.a * i.color.a < 254.5 / 255.0) { discard; }
     return vec4(t.rgb, 1.0);
 }
 
 @fragment
 fn fs_static_fringe(i: VsOut) -> @location(0) vec4<f32> {
     let t = static_texel(i);
-    if (t.a >= 254.5 / 255.0) { discard; }
-    return t;
+    let a = t.a * i.color.a;
+    if (a >= 254.5 / 255.0) { discard; }
+    return vec4(t.rgb, a);
 }
 
 fn static_texel(i: VsOut) -> vec4<f32> {
