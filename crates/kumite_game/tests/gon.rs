@@ -71,3 +71,56 @@ fn gons_gas_strikes_close_by() {
     let far = gon(&a, "b+4,n*100", 2500.0);
     assert!(far.hits.is_empty() && far.objects >= 8, "{far:?}");
 }
+
+/// Gon's kicks strike from his feet: each kick's strike (Tekken 3's path, baked at his 45 %) ends on the drawn foot
+/// of its slot (14 foot_A, 17 foot_B) on its active frames, and lands on Paul in front of him.
+#[test]
+fn gons_kicks_strike_from_his_feet() {
+    let Some(a) = assets() else { return };
+    for (script, foot) in [("f+4,n*60", "foot_A"), ("3,n*60", "foot_B"), ("d+3,n*60", "foot_B")] {
+        let mut g = Game::load(&a, [GON, PAUL]).unwrap();
+        g.fight.fighters[1].position.x += 3000.0;
+        let mut ends = 0;
+        for pad in parse_script(script).unwrap() {
+            g.step([pad, Pad::default()]);
+            let Some(&(_, end)) = g.fight.fighters[0].attack_segments(&g.fight.data).last() else { continue };
+            let (pose, place) = g.pose(0);
+            let node = g.bodies[0].character.nodes.iter().position(|n| n.name == foot).unwrap();
+            let at = place.transform_point3(pose[node].w_axis.truncate()) * 1000.0;
+            assert!(end.distance(at) < 40.0, "{script}: strike end {end} vs {foot} {at}");
+            ends += 1;
+        }
+        assert!(ends > 0, "{script}: no strike");
+        let near = gon(&a, script, 900.0);
+        assert!(near.hits.len() == 1 && near.hits[0].1 > 0, "{script}: {near:?}");
+    }
+}
+
+/// His tail (d+4: the slam down, its strike ending at slot 21, the tail's tip, past his body) reaches past his kicks:
+/// it lands with 1.55 m between the two, where his hop kick (3) does not.
+#[test]
+fn gons_tail_reaches_past_his_kicks() {
+    let Some(a) = assets() else { return };
+    let tail = gon(&a, "d+4,n*60", 1550.0);
+    assert!(tail.hits.len() == 1 && tail.reactions[0] != tail.stance, "{tail:?}");
+    assert!(gon(&a, "3,n*60", 1550.0).hits.is_empty());
+}
+
+/// Walking into a normal-sized fighter, Gon's body stays off his: their roots no nearer than the push's floor
+/// (kumite_sim::PUSH_DISTANCE) and nearer than two normal fighters' bodies keep.
+#[test]
+fn gon_and_paul_push_apart() {
+    let Some(a) = assets() else { return };
+    let gap = |m: [usize; 2]| {
+        let mut g = Game::load(&a, m).unwrap();
+        for pad in parse_script("f*150").unwrap() {
+            g.step([pad, pad]);
+        }
+        let f = &g.fight.fighters;
+        let d = f[0].root() - f[1].root();
+        (d.x * d.x + d.z * d.z).sqrt()
+    };
+    let (gon, paul) = (gap([GON, PAUL]), gap([PAUL, 79]));
+    eprintln!("walked in: Gon and Paul {gon}, Paul and Law {paul}");
+    assert!(gon >= kumite_sim::PUSH_DISTANCE - 1.0 && gon < paul, "{gon} vs {paul}");
+}

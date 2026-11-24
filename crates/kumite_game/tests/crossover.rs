@@ -482,3 +482,27 @@ fn every_reaction_has_a_motion_on_a_soldier() {
     eprintln!("{} players, {} soldiers: {played} moves played", players.len(), soldiers.len());
     assert!(played > 1000 && missing.is_empty(), "{} without a motion: {:?}", missing.len(), &missing[..missing.len().min(40)]);
 }
+
+/// Walking into Paul (both forward), Gon's body stays off his in Tekken Tag's push (its spheres, 0x377338): their
+/// roots no nearer than Paul and Law's less a third.
+#[test]
+fn gon_and_paul_push_apart() {
+    let Some(a) = assets() else { return };
+    let gap = |m: [usize; 2]| {
+        let mut b = Bout::new(Game::load(&a, m).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+        while b.phase != Phase::Fight {
+            b.step([Pad::default(); 2]);
+        }
+        let mut least = f32::MAX;
+        for pad in parse_script("f*150").unwrap() {
+            b.step([pad, pad]);
+            let f = &b.game.fight.fighters;
+            let d = f[0].root() - f[1].root();
+            least = least.min((d.x * d.x + d.z * d.z).sqrt());
+        }
+        least
+    };
+    let (gon, paul) = (gap([GON, PAUL]), gap([PAUL, 348]));
+    eprintln!("walked in: Gon and Paul {gon}, Paul and Law {paul}");
+    assert!(gon > paul * 2.0 / 3.0, "{gon} vs {paul}");
+}
