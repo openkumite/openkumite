@@ -424,6 +424,28 @@ fn fs_unlit(i: VsOut) -> @location(0) vec4<f32> {
 // Stage meshes: unlit, cut to the floor patch when one is set.
 @fragment
 fn fs_static(i: VsOut) -> @location(0) vec4<f32> {
+    let t = static_texel(i);
+    return vec4(t.rgb, cut(t.a));
+}
+
+// Tekken Tag's grass (ALPHA 0x44, TEST 0x5180B: As >= 0x80 passes, the rest AFAIL FB_ONLY): its texels of full alpha
+// with their depth (drawn with the stage), the others over the picture by their alpha, depth unwritten (with the
+// strips)
+@fragment
+fn fs_static_z(i: VsOut) -> @location(0) vec4<f32> {
+    let t = static_texel(i);
+    if (t.a < 254.5 / 255.0) { discard; }
+    return vec4(t.rgb, 1.0);
+}
+
+@fragment
+fn fs_static_fringe(i: VsOut) -> @location(0) vec4<f32> {
+    let t = static_texel(i);
+    if (t.a >= 254.5 / 255.0) { discard; }
+    return t;
+}
+
+fn static_texel(i: VsOut) -> vec4<f32> {
     if (i.dropped > 0.0) { discard; }
     let c = g.floor_clip;
     if (c.x < c.y && (i.world.x < c.x || i.world.x > c.y || i.world.z < c.z || i.world.z > c.w)) { discard; }
@@ -438,8 +460,7 @@ fn fs_static(i: VsOut) -> @location(0) vec4<f32> {
     }
     if (g.near_cut.y > 0.5 && i.world.y > 0.05 && i.world.z > g.near_cut.x) { discard; }
     let t = texel(i.uv);
-    let a = cut(t.a);
-    return vec4(mix(t.rgb * i.color.rgb * floor_light(i.world), g.fog_colour.rgb, i.fog), a);
+    return vec4(mix(t.rgb * i.color.rgb * floor_light(i.world), g.fog_colour.rgb, i.fog), t.a);
 }
 
 fn in_tube(p: vec3<f32>, fighter: vec3<f32>, margin: f32) -> bool {
