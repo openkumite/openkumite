@@ -384,6 +384,34 @@ fn true_ogres_fire_burns() {
     assert!(at.is_some_and(|(m, k, d)| m == 3799 && (62..=66).contains(&k) && (1700.0..2200.0).contains(&d)), "{at:?}");
 }
 
+/// True Ogre's fire sets sparks off (task 0x3A4970: quad 0x80 at 0.2, 0.044 m) and fires on the floor (0x3A4C28:
+/// quad 0x400 at 0.2-0.5) at Hwoarang's feet and where the stream licks the floor; as in PCSX2 (the move audit's
+/// `trueogre_12`), some 10-25 sparks and 1-5 floor fires burn while he does.
+#[test]
+fn true_ogres_fire_sparks_and_sets_the_floor_alight() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [TRUE_OGRE, HWOARANG]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut v = kumite_game::vfx::Vfx::new(&a);
+    let (mut sparks, mut floor) = (0, 0);
+    for (k, pad) in parse_script("n*62,f*30,n*2,1+2*2,n*200").unwrap().into_iter().enumerate() {
+        b.step([pad, Pad::default()]);
+        v.step(&b.game);
+        let s = v.sprites();
+        let n = s.iter().filter(|x| (x.size - 0.0437).abs() < 0.001).count();
+        let f = s.iter().filter(|x| x.size > 0.34 && x.size < 0.88 && (x.pos.y - 0.366).abs() < 1e-4).count();
+        if std::env::var_os("EMBERS").is_some() {
+            println!("{} {} {} sparks {n} floor {f}", k as i64 - 62, b.game.fight.fighters[0].current.index, b.game.fight.fighters[0].frame);
+        }
+        (sparks, floor) = (sparks.max(n), floor.max(f));
+    }
+    assert!((8..=40).contains(&sparks) && (1..=8).contains(&floor), "sparks {sparks} floor {floor}");
+}
+
 /// The effects frame by frame (for a comparison with PCSX2's effect tasks): `OK_FX_MODEL` (Paul) vs Hwoarang,
 /// crouching, P1's script in `OK_FX_SCRIPT`; each frame P1's move and frame, then per kind (the character's burst, the atlas's
 /// bursts, the heavy hit's fireballs) the particles drawn, their mean and largest quad (metres), mean level.
