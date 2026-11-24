@@ -129,8 +129,11 @@ fn ttt_light(o: VsOut, look: vec4<f32>) -> vec3<f32> {
     let cap = vec3(255.0 / 128.0);
     if (mode > 3.5) { return min(g.key_color.rgb * s, cap); }
     let hit = g.hit_colour.rgb * max(0.0, dot(n, normalize(g.hit_pos.xyz - o.world + vec3(0.0, 0.0001, 0.0))));
+    // (light 2 the model's own when its last bone's y.w is set: an ending's actor, 0x353448)
+    var l2 = mat2x4<f32>(g.lights[2], g.lights[3]);
+    if (bones[159][1].w > 0.5) { l2 = mat2x4<f32>(bones[159][0], bones[159][1]); }
     let l = g.ambient.rgb + g.key_color.rgb * (max(0.0, dot(n, g.light_dir.xyz)) + s)
-        + g.lights[1].rgb * max(0.0, dot(n, g.lights[0].xyz)) + g.lights[3].rgb * max(0.0, dot(n, g.lights[2].xyz));
+        + g.lights[1].rgb * max(0.0, dot(n, g.lights[0].xyz)) + l2[1].rgb * max(0.0, dot(n, l2[0].xyz));
     return min(l, cap) + hit;
 }
 
@@ -616,5 +619,7 @@ fn fs_stage_blend(i: VsOut) -> @location(0) vec4<f32> {
 fn fs_stage_shade(i: VsOut) -> @location(0) vec4<f32> {
     if (i.dropped > 0.0) { discard; }
     let t = texel(i.uv);
-    return vec4(0.0, 0.0, 0.0, t.a * i.color.a);
+    // the frame times As (ALPHA 0x89), which reaches ~2: the blend adds the frame times the part past 1 (rgb)
+    let a = t.a * i.color.a;
+    return vec4(vec3(max(a - 1.0, 0.0)), min(a, 1.0));
 }

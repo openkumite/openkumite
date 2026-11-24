@@ -354,9 +354,13 @@ impl Weather {
         (!me.streams.is_empty() || !me.wisps.is_empty() || !me.beacons.is_empty() || me.flashes.task || !me.flashes.signs.is_empty() || !me.snow.is_empty()).then_some(me)
     }
 
-    /// The EMBU's screen (11) starts no lightning task (0x3A72A8): only its op 7 flashes.
+    /// The EMBU's screen (11) starts no lightning task (0x3A72A8) and arms none of its channels (PCSX2: records
+    /// 0x8C9D30 all 0): the sky's four bands (channels 0-3) stay as the arena loads them, on frame 0, their glow
+    /// brightening it upper-left; the flickers on their rest (PCSX2 shows no bolt).
     pub fn without_lightning(&mut self) {
         self.flashes.task = false;
+        let n = self.flashes.bolts.len().min(self.flashes.frames.len());
+        self.flashes.frames[..n].fill(Some(0));
     }
 
     /// Sign channel `channel` has `frames` frames (the stage's texture channel).
@@ -702,11 +706,11 @@ mod tests {
             "thunder": [0x1072, 0x1074, 0x1075], "roll": 0x1073, "near": [625.0, 312.5]}, "signs": [2]});
         let mut w = Weather::new(&v).unwrap();
         let looking = glam::camera::rh::proj::directx::perspective(1.0, 1.0, 0.1, 100.0);
-        // the EMBU: no task, the channels as the stage has them
+        // the EMBU: no task, the sky's bands as the arena loads them (frame 0), the flickers resting
         w.without_lightning();
         w.sign_frames(2, 3);
         w.flash(looking);
-        assert!(w.channel_frame(4).is_none() && !w.lit() && w.sounds.is_empty());
+        assert!(w.channel_frame(0) == Some(0) && w.channel_frame(4).is_none() && !w.lit() && w.sounds.is_empty());
         // a sign plays its 3 frames once, each 2 frames, back on 0
         let mut seen = vec![];
         for _ in 0..3000 {

@@ -3953,7 +3953,7 @@ dependencies = [
 [[package]]
 name = "ok_tekken3_converter"
 version = "0.3.0"
-source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#d9399776616b4ac4fb525f81ad65ed5c8f9f0b8b"
+source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#f11a7935804ff1d321e75e5b87b5f2bb49a518fa"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3970,7 +3970,7 @@ dependencies = [
 [[package]]
 name = "ok_tekken_tag_converter"
 version = "0.1.0"
-source = "git+https://github.com/openkumite/ok_tekken_tag_converter?branch=main#75177620e3e7dba410ac0895d121b5467e465718"
+source = "git+https://github.com/openkumite/ok_tekken_tag_converter?branch=main#4f225aeaa34a23c4e9c998f1ce852aea219ead53"
 dependencies = [
  "anyhow",
  "filmcraft-mpeg2v",

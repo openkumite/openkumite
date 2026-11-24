@@ -1044,12 +1044,16 @@ impl Tag {
                     _ => {}
                 }
             }
-            // the jump's take-off (move +0x19), the landing (+0x137: the arena's)
+            // the jump's take-off (move +0x19), the landing (+0x137: the arena's); a type 9 entry 0 mutes both for the
+            // frame (0x376578 sets gp-0x71A0[side], read at 0x376008)
+            // shortcut: type 9's entries 1-3 (a voice and the opponent's script stopped, the voice lock, one of three
+            // sounds) are not played, upgrade when a move is heard missing one
+            let muted = entries.iter().any(|e| e.kind == 9 && e.index == 0);
             let js = mv.bytes_18.jump_start;
-            if advanced && js != 0 && fighter.frame == js {
+            if advanced && js != 0 && fighter.frame == js && !muted {
                 out.extend(self.sound(self.moves.take_off, bank, arena, false));
             }
-            if fighter.landing != 0 {
+            if fighter.landing != 0 && !muted {
                 out.extend(self.sound(self.moves.landing, bank, arena, false));
             }
         }

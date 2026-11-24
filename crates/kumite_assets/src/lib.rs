@@ -822,6 +822,9 @@ impl Stage {
                 let env = extras["env"].as_f64().unwrap_or(0.0) as f32;
                 // (and its fogged strips: 16 more)
                 let w = env + if extras["fog"].as_f64().is_some_and(|f| f > 0.0) { 16.0 } else { 0.0 };
+                // (a shade whose picture's alpha is the GS's, 128 = 1 (extras `gs_alpha`): the blend's As up to ~2,
+                // arena 4's sky glow)
+                let gs_alpha = if extras["gs_alpha"].as_f64().is_some_and(|f| f > 0.0) { 255.0 / 128.0 } else { 1.0 };
                 let normals: Vec<[f32; 4]> = match r.read_normals().filter(|_| env > 0.0) {
                     Some(n) => n.map(|n| [n[0], n[1], n[2], w]).collect(),
                     None => vec![[0.0, 0.0, 0.0, w]; pos.len()],
@@ -835,7 +838,7 @@ impl Stage {
                     .zip(&col)
                     .zip(&cells)
                     .zip(&normals)
-                    .map(|((((&p, &uv), &color), &cell), &normal)| Vertex { pos: xf.transform_point3(Vec3::from(p)).to_array(), uv, color, cell, normal })
+                    .map(|((((&p, &uv), &[r, g, b, a]), &cell), &normal)| Vertex { pos: xf.transform_point3(Vec3::from(p)).to_array(), uv, color: [r, g, b, a * gs_alpha], cell, normal })
                     .collect();
                 let indices: Vec<u32> = r.read_indices().context("indices")?.into_u32().collect();
                 if indices.iter().any(|&i| i as usize >= pos.len()) {

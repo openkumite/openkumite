@@ -925,7 +925,7 @@ impl Renderer {
             let soft_add = make("particles soft add", &static_layout, "vs_static", "fs_particle_soft_add", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: add, alpha: keep }));
             // shadows: opaque, depth-tested against the stage (the original sorts them behind what stands nearer), never
             // written
-            let shade = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::SrcAlpha, operation: wgpu::BlendOperation::Add };
+            let shade = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Dst, dst_factor: wgpu::BlendFactor::SrcAlpha, operation: wgpu::BlendOperation::Add };
             // the strips lie on the faces they light or shade (Hwoarang's floor: its stone added over the same quads), so
             // they pass where the depth is equal
             let stage_blends = ["vs_static", "vs_sky"]
@@ -1425,9 +1425,16 @@ impl Renderer {
         self.blobs = vertices;
     }
 
-    /// Skinning matrices (joint world × inverse bind, including the fighter's placement), index = joint.
+    /// A Tekken Tag model's own light 2 (towards it, its colour, 128 = 1), or the camera's: kept in its last bone.
+    pub fn set_fill(&self, model: &SkinnedModel, fill: Option<(Vec3, Vec3)>) {
+        let m = fill.map_or(Mat4::ZERO, |(toward, colour)| Mat4::from_cols(toward.extend(0.0), colour.extend(1.0), glam::Vec4::ZERO, glam::Vec4::ZERO));
+        self.queue.write_buffer(&model.bones, ((MAX_BONES - 1) * 64) as u64, bytemuck::bytes_of(&m));
+    }
+
+    /// Skinning matrices (joint world × inverse bind, including the fighter's placement), index = joint (the last
+    /// bone kept for [`Self::set_fill`]).
     pub fn update_bones(&self, model: &SkinnedModel, bones: &[Mat4]) {
-        let n = bones.len().min(MAX_BONES);
+        let n = bones.len().min(MAX_BONES - 1);
         let (step, k) = self.motion;
         if let (true, Ok(mut m)) = (self.settings.smooth_motion, model.motion.lock()) {
             // smooth motion: between the last step's matrices and these, by the time since this step
