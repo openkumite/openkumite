@@ -701,6 +701,9 @@ pub struct Stage {
     /// Per texture (image): the glb asks for linear filtering (with mipmaps) and tiling both ways, as the
     /// extra levels do; the game's own stages ask for nearest and clamp.
     pub filtered: Vec<bool>,
+    /// Per texture (image): the glb asks for linear filtering without mipmaps, tiling both ways (Tekken Tag's
+    /// arenas: the PS2's TEX1 MXL 0).
+    pub smooth: Vec<bool>,
     /// Per texture (image): the glb asks for sharp texels tiling both ways (the arcade stages' tiles).
     pub tiled: Vec<bool>,
     /// The sky is the stage's own model (scene extras `drum: "model"`: the arcade stages), not a drum of panels:
@@ -849,6 +852,7 @@ impl Stage {
             placements: vec![],
             filtered: vec![false; images.len()],
             tiled: vec![false; images.len()],
+            smooth: vec![false; images.len()],
             sky_model: false,
             sky_cull: false,
             sky_floor_depth: false,
@@ -860,7 +864,8 @@ impl Stage {
         for t in doc.textures() {
             let s = t.sampler();
             if s.mag_filter() == Some(gltf::texture::MagFilter::Linear) {
-                if let Some(f) = st.filtered.get_mut(t.source().index()) {
+                let mipmaps = s.min_filter() != Some(gltf::texture::MinFilter::Linear);
+                if let Some(f) = if mipmaps { &mut st.filtered } else { &mut st.smooth }.get_mut(t.source().index()) {
                     *f = true;
                 }
             } else if s.wrap_t() == gltf::texture::WrappingMode::Repeat {
