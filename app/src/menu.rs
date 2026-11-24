@@ -1152,6 +1152,8 @@ pub enum Outcome {
     TttRoll(Box<crate::ttt::Page>),
     /// Tekken Tag's Theater: the EMBU with a cast, then the Theater at this cell again.
     TttEmbu(usize, [usize; 2]),
+    /// Tekken Tag's TAG BRAWL: Tekken 3's list of its modes (the menu opens it).
+    TagBrawl,
 }
 
 pub struct Menu {
@@ -1480,7 +1482,10 @@ impl Screen {
                     *self = options_back(roster, 2, k.difficulty);
                 }
             }
-            Screen::Ttt(f) => return f.key(player, key, roster, seed),
+            Screen::Ttt(f) => match f.key(player, key, roster, seed) {
+                Outcome::TagBrawl => *self = Screen::TagModes { frame: 0, cursor: 1, difficulty: difficulty() },
+                o => return o,
+            },
             Screen::Keyboard(k) => {
                 if let Some(o) = k.key(key) {
                     return o;
@@ -1565,6 +1570,9 @@ impl Screen {
                         *self = Screen::menu(d);
                         if let Screen::Menu(m) = self {
                             m.cursor = shown_items(roster).iter().position(|i| i.1 == Entry::Tag).unwrap_or(0);
+                        }
+                        if roster.ttt.is_some() {
+                            *self = Screen::Ttt(Box::new(crate::ttt::Front::menu_on(roster, crate::ttt::TAG_BRAWL)));
                         }
                     }
                     _ => {}
@@ -1735,6 +1743,8 @@ impl Screen {
             Screen::Online(o) => o.draw(&painter, &v, art),
             Screen::Room(r) => r.draw(&painter, &v, art),
             Screen::TagModes { frame, cursor, .. } => {
+                // (Tekken Tag: Tekken 3's list from its extras)
+                let art = roster.ttt.as_ref().and(art.t3.as_deref()).unwrap_or(art);
                 let names: Vec<String> = crate::tagrun::TagMode::ALL.iter().map(|m| m.name(&art.screens)).collect();
                 draw_list(&painter, &v, art, "TAG BRAWL", &names, *frame, *cursor);
             }

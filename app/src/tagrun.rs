@@ -2,7 +2,8 @@
 //! human (1P..4P: the keyboard's two layouts and up to four gamepads) or the CPU, in one of three ways: each for
 //! themselves, two on two, or two together through an arcade ladder of ten pairs (the last two: the extra fighters'
 //! bosses and the original's). Its setup screen picks each slot's character, costume and controller; a match is best of
-//! three.
+//! three. Tekken Tag Tournament's main menu has it too (TAG BRAWL): the same screens from Tekken 3's extras, its own
+//! fighters on its pair rules (kumite_sim::melee's `tag_pairs`), its fight HUD's pieces (`ttt::tag_brawl_hud`).
 
 use crate::art::{Art, Screen as View};
 use crate::hud::tag::{TagHud, TagInfo};
@@ -10,6 +11,7 @@ use crate::menu::{sfx, Key, Outcome, Roster};
 use egui::Color32;
 use kumite_game::bout::Announcement;
 use kumite_game::tag::TagGame;
+use kumite_sim::input::Pad;
 
 /// Each slot's panel centre (team 1 left, team 2 right).
 const COLUMNS: [f32; 4] = [46.0, 138.0, 230.0, 322.0];
@@ -126,6 +128,11 @@ pub struct TagSetup {
 }
 
 impl TagSetup {
+    /// Each slot's pad: its player's (1P..4P, `by_player`), none for a CPU's.
+    pub fn pads(&self, by_player: [Pad; 4]) -> [Pad; 4] {
+        self.slots.map(|s| s.player.and_then(|p| by_player.get(p).copied()).unwrap_or_default())
+    }
+
     /// The four of this match: the arcade's CPU pair in slots 3, 4.
     pub fn match_slots(&self) -> [SlotPick; 4] {
         let mut s = self.slots;
@@ -471,6 +478,13 @@ impl TagSelect {
     }
 
     pub fn draw(&self, painter: &egui::Painter, v: &View, art: &Art, roster: &Roster) {
+        // (Tekken Tag: Tekken 3's screen from its extras, the faces Tekken Tag's: its 40 x 42 in Tekken 3's 32 x 58 place)
+        let ttt = roster.ttt.as_deref().map(|d| (art, d));
+        let art = ttt.and(art.t3.as_deref()).unwrap_or(art);
+        let face = |id: usize, x: f32, y: f32, scale: f32| match ttt {
+            Some((a, d)) => crate::ttt::face_in(painter, v, a, d, Some(id), [x, y + 12.0 * scale, 32.0 * scale, 34.0 * scale]),
+            None => crate::modes::face_sized(painter, v, art, roster, id, x, y, 0, scale),
+        };
         // the two team halves, shaded in their colours
         let (blue, red) = (Color32::from_rgb(0x10, 0x20, 0x60), Color32::from_rgb(0x60, 0x10, 0x18));
         let centred = |font: usize, colour: u32, cx: f32, y: f32, t: &str| art.text(painter, v, font, colour, cx - art.text_w(font, t) / 2.0, y, t, Color32::WHITE);
@@ -515,10 +529,10 @@ impl TagSelect {
                 continue;
             }
             let c = &roster.characters[s.character];
-            crate::modes::face_sized(painter, v, art, roster, c.id, cx - 19.0, 56.0, 0, 1.2);
+            face(c.id, cx - 19.0, 56.0, 1.2);
             let model = c.costumes.get(s.costume).copied().unwrap_or(0);
             let cos = roster.costume_of.get(&model).copied().unwrap_or(0);
-            let name = roster.ui.selection_names.get(c.id * 4 + cos).cloned().unwrap_or_else(|| c.name.to_uppercase());
+            let name = roster.ui.selection_names.get(c.id * 4 + cos).filter(|_| roster.ttt.is_none()).cloned().unwrap_or_else(|| c.name.to_uppercase());
             centred(0, 6, cx, 132.0, &name);
             centred(0, 6, cx, 150.0, &format!("STYLE {}", s.costume + 1));
             let nobody = if self.mode == TagMode::Force { "-" } else { "CPU" };
@@ -534,7 +548,7 @@ impl TagSelect {
         // the faces
         for (f, &ch) in self.faces.iter().enumerate() {
             let (x, y, scale) = self.face_place(f);
-            crate::modes::face_sized(painter, v, art, roster, roster.characters[ch].id, x, y, 0, scale);
+            face(roster.characters[ch].id, x, y, scale);
             if self.cursor == Cursor::Face(f) {
                 frame(x - 2.0 * scale, y - 2.0 * scale, CELL_W * scale, CELL_H * scale, if blink { white(255) } else { Color32::from_rgb(0xF0, 0xC0, 0x20) });
             }
@@ -727,6 +741,15 @@ mod tests {
     fn roster() -> Option<Roster> {
         let gd = crate::test_assets().join("gamedata");
         gd.exists().then(|| Roster::load(&gd))
+    }
+
+    /// Each slot plays its player's pad, 3P's and 4P's too, wherever they sit; a CPU's slot none.
+    #[test]
+    fn slots_play_their_players_pads() {
+        let slot = |player| SlotPick { character: 0, costume: 0, player };
+        let setup = TagSetup { slots: [slot(Some(3)), slot(None), slot(Some(0)), slot(Some(2))], difficulty: 1, mode: TagMode::Teams, arcade: None };
+        let by_player: [Pad; 4] = std::array::from_fn(|p| Pad { buttons: 1 << p, ..Default::default() });
+        assert_eq!(setup.pads(by_player).map(|p| p.buttons), [8, 0, 1, 4]);
     }
 
     #[test]

@@ -1181,33 +1181,9 @@ impl Game {
 
     /// The fighters' sides under view `v`: their pelvis's horizontal place on the screen (scaled to whole units).
     fn project_sides(&mut self, v: &View) {
-        let (eye, forward, _) = view_camera(v);
-        let right = forward.cross(Vec3::Y).normalize_or_zero();
-        let axis = right.x.datan2(right.z);
-        for f in self.fight.fighters.iter_mut() {
-            f.screen_right = axis;
-        }
         for i in 0..2 {
             let (pose, place) = self.pose(i);
-            let Some(m) = pose.get(self.bodies[i].pelvis) else { continue };
-            let d = place.transform_point3(m.w_axis.truncate()) - eye;
-            let depth = d.dot(forward);
-            if depth > 1e-3 {
-                self.fight.fighters[i].side = (d.dot(right) / depth * 10000.0).round() as i32;
-            }
-            // off the screen (Tekken Tag's condition 0x5C, 0x369B98): the head's and both feet's x on its 512 pixels
-            // (0x34FD90: 256 + x * H / z, z at least 1000) all at 0x215 or more, or all below -0x14
-            let sx: Vec<f32> = [2, 14, 17]
-                .iter()
-                .filter_map(|&k| self.bodies[i].bones.get(k).and_then(|&n| pose.get(n)))
-                .map(|m| {
-                    let d = (place.transform_point3(m.w_axis.truncate()) - eye) * UNITS;
-                    256.0 + d.dot(right) * (v.h as f32 * 512.0 / 368.0) / d.dot(forward).max(1000.0)
-                })
-                .collect();
-            if sx.len() == 3 {
-                self.fight.fighters[i].off_screen = sx.iter().all(|&x| x >= 533.0) || sx.iter().all(|&x| x < -20.0);
-            }
+            project_side(&mut self.fight.fighters[i], &self.bodies[i], &pose, place, v);
         }
     }
 
@@ -1610,40 +1586,15 @@ impl Game {
         }
     }
 
-    /// Tekken Tag's fingers (hands.rs): this frame's cues and the move's hand ops.
+    /// Tekken Tag's fingers and faces of both fighters.
     fn step_hands(&mut self) {
         for i in 0..2 {
-            let Some(p) = &self.bodies[i].hands else { continue };
-            let f = &self.fight.fighters[i];
-            let m = f.current_move(&self.fight.data);
-            let arm = m.attack.as_ref().and_then(|a| a.bones.as_ref()).is_none_or(|b| b.end0 < 0xC);
-            let cues = hands::Cues {
-                started: f.started_with,
-                motion: &m.anim,
-                ko: f.health <= 0,
-                live: self.hand_live,
-                // (+0xCA: the hit's damage with the timed damage ops' added, as the boot routine adds them; none for a throw's grab)
-                damage: m.damage != 0 && m.damage_type != 1 || m.properties.iter().flatten().any(|q| q.op == 0x0B && q.arg != 0),
-                arm_end: arm && (m.active[0] as i64 - f.frame as i64) < 8,
-                thrown_10: f.thrown && f.frame == 10,
-            };
-            let ops = m.properties.iter().flatten().filter(|q| q.frame == f.frame).map(|q| (q.op, q.arg));
-            self.hands[i].step(p, cues, ops);
-        }
-        // the faces (0x362C28, after the hands' ops; the game's rand() as the blinks')
-        for i in 0..2 {
-            let Some(p) = &self.bodies[i].face else { continue };
-            let f = &self.fight.fighters[i];
-            let m = f.current_move(&self.fight.data);
-            // (Tekken Tag's flag 0x800 and bit 22 are bits 18 and 30 once loaded, kumite_sim::dialect)
-            let cues = tagface::Cues { moving: m.flags24.raw & 0x4_0000 != 0, hit: m.posture.raw & 4 != 0 && m.flags24.raw & 0x4000_0000 == 0 };
-            let ops = m.properties.iter().flatten().filter(|q| q.frame == f.frame).map(|q| (q.op, q.arg));
             let seed = &mut self.face_rand;
             let mut rand = || {
                 *seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
                 (*seed >> 16) & 0x7FFF
             };
-            self.tag_faces[i].step(p, cues, ops, &mut rand);
+            step_hands_face(&self.bodies[i], &self.fight.fighters[i], &self.fight.data, self.hand_live, &mut self.hands[i], &mut self.tag_faces[i], &mut rand);
         }
     }
 
@@ -1767,6 +1718,60 @@ impl Game {
             let (pose, place) = if self.bodies[i].bones.is_empty() { self.pose(i) } else { self.pose_animated(i) };
             volumes(&self.bodies[i], &pose, place)
         })
+    }
+}
+
+/// Fighter `f`'s side under view `v`, posed `pose` at `place`: the screen's right (its angle), its pelvis's
+/// horizontal place on the screen (scaled to whole units), whether it is off the screen.
+fn project_side(f: &mut kumite_sim::Fighter, body: &Body, pose: &[Mat4], place: Mat4, v: &View) {
+    let (eye, forward, _) = view_camera(v);
+    let right = forward.cross(Vec3::Y).normalize_or_zero();
+    f.screen_right = right.x.datan2(right.z);
+    let Some(m) = pose.get(body.pelvis) else { return };
+    let d = place.transform_point3(m.w_axis.truncate()) - eye;
+    let depth = d.dot(forward);
+    if depth > 1e-3 {
+        f.side = (d.dot(right) / depth * 10000.0).round() as i32;
+    }
+    // off the screen (Tekken Tag's condition 0x5C, 0x369B98): the head's and both feet's x on its 512 pixels
+    // (0x34FD90: 256 + x * H / z, z at least 1000) all at 0x215 or more, or all below -0x14
+    let sx: Vec<f32> = [2, 14, 17]
+        .iter()
+        .filter_map(|&k| body.bones.get(k).and_then(|&n| pose.get(n)))
+        .map(|m| {
+            let d = (place.transform_point3(m.w_axis.truncate()) - eye) * UNITS;
+            256.0 + d.dot(right) * (v.h as f32 * 512.0 / 368.0) / d.dot(forward).max(1000.0)
+        })
+        .collect();
+    if sx.len() == 3 {
+        f.off_screen = sx.iter().all(|&x| x >= 533.0) || sx.iter().all(|&x| x < -20.0);
+    }
+}
+
+/// Tekken Tag's fingers (hands.rs) of fighter `f` for this frame: its cues and the move's hand ops; then its face
+/// (0x362C28, after the hands' ops; the game's rand() as the blinks').
+pub(crate) fn step_hands_face(body: &Body, f: &kumite_sim::Fighter, gd: &kumite_sim::GameData, live: bool, hands: &mut hands::Hands, face: &mut tagface::Face, rand: &mut impl FnMut() -> u32) {
+    let m = f.current_move(gd);
+    if let Some(p) = &body.hands {
+        let arm = m.attack.as_ref().and_then(|a| a.bones.as_ref()).is_none_or(|b| b.end0 < 0xC);
+        let cues = hands::Cues {
+            started: f.started_with,
+            motion: &m.anim,
+            ko: f.health <= 0,
+            live,
+            // (+0xCA: the hit's damage with the timed damage ops' added, as the boot routine adds them; none for a throw's grab)
+            damage: m.damage != 0 && m.damage_type != 1 || m.properties.iter().flatten().any(|q| q.op == 0x0B && q.arg != 0),
+            arm_end: arm && (m.active[0] as i64 - f.frame as i64) < 8,
+            thrown_10: f.thrown && f.frame == 10,
+        };
+        let ops = m.properties.iter().flatten().filter(|q| q.frame == f.frame).map(|q| (q.op, q.arg));
+        hands.step(p, cues, ops);
+    }
+    if let Some(p) = &body.face {
+        // (Tekken Tag's flag 0x800 and bit 22 are bits 18 and 30 once loaded, kumite_sim::dialect)
+        let cues = tagface::Cues { moving: m.flags24.raw & 0x4_0000 != 0, hit: m.posture.raw & 4 != 0 && m.flags24.raw & 0x4000_0000 == 0 };
+        let ops = m.properties.iter().flatten().filter(|q| q.frame == f.frame).map(|q| (q.op, q.arg));
+        face.step(p, cues, ops, rand);
     }
 }
 

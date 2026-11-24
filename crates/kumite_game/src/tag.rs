@@ -15,7 +15,7 @@ use kumite_sim::melee::{Melee, MeleeState};
 use kumite_sim::{Animations, BodyVolumes, GameData};
 
 use crate::bout::{Announcement, CALL_FIRST, CALL_OTHER};
-use crate::{face, head, shown_pose, turn_head, volumes, Actor, Body, FighterAnims, Snapshot, UNITS};
+use crate::{face, hands, head, project_side, shown_pose, step_hands_face, tagface, turn_head, volumes, Actor, Body, FighterAnims, Snapshot, UNITS};
 
 /// The winners' poses last at most this long (frames).
 const POSE_FRAMES: u32 = 180;
@@ -58,6 +58,11 @@ pub struct TagGame {
     pub faces: Vec<face::Face>,
     pub face_data: Arc<face::FaceData>,
     face_rand: u32,
+    /// Tekken Tag's look (bodies with bone slots, instead of `heads`), fingers, faces and wings, as its fights'.
+    pub looks: Vec<head::TagLook>,
+    pub hands: Vec<hands::Hands>,
+    pub tag_faces: Vec<tagface::Face>,
+    pub wings: Vec<face::WingState>,
     /// Rounds won per team.
     pub wins: Vec<u32>,
     /// Each actor's team (two teams: 0, 0, 1, 1; each for themselves: 0, 1, 2, 3).
@@ -88,6 +93,7 @@ impl TagGame {
         let actors: Vec<Actor> = slots.iter().map(|s| Actor::load(assets, s.record)).collect::<Result<_>>()?;
         let sets: [Arc<kumite_sim::data::Moveset>; 4] = std::array::from_fn(|i| actors[i].moveset.clone());
         let camera_data = Arc::new(CameraData::load(&gd.join("camera.json"))?);
+        let ai_rng = ai_data.rng(0x2545_F491, 0);
         let mut g = Self {
             melee: Melee::with_teams(data, sets, teams.clone()),
             bodies: actors.iter().map(|a| a.body.clone()).collect(),
@@ -95,11 +101,15 @@ impl TagGame {
             camera: FightCamera::new(camera_data, false, 0, true),
             cpu: slots.iter().enumerate().map(|(i, s)| s.cpu.map(|(d, l)| Ai::new(d, l, usize::from(i >= 2)))).collect(),
             ai_data,
-            ai_rng: AiRng::new(0x2545_F491),
+            ai_rng,
             heads: vec![Default::default(); 4],
             faces: vec![Default::default(); 4],
             face_data: Arc::new(face::FaceData::load(&gd)),
             face_rand: 1,
+            looks: vec![Default::default(); 4],
+            hands: vec![Default::default(); 4],
+            tag_faces: vec![Default::default(); 4],
+            wings: vec![Default::default(); 4],
             wins: vec![0; teams.iter().max().map_or(1, |t| t + 1)],
             teams,
             rounds_to_win: rounds_to_win.max(1),
@@ -145,11 +155,19 @@ impl TagGame {
         let data = self.melee.fight.data.clone();
         let sets: [Arc<kumite_sim::data::Moveset>; 4] = std::array::from_fn(|i| self.melee.actors[i].moveset.clone());
         let screen_right = self.melee.fight.screen_right;
-        self.melee = Melee::with_teams(data, sets, self.teams.clone());
+        self.melee = Melee::with_teams(data.clone(), sets, self.teams.clone());
+        self.melee.tag_pairs = data.tag_moves;
         self.melee.fight.screen_right = screen_right;
         for (i, f) in self.melee.actors.iter_mut().enumerate() {
             f.character = self.characters[i];
             f.guard_input = self.cpu[i].is_none();
+            // (Tekken Tag's health by body)
+            f.max_health = data.max_health_of(f.character);
+            f.health = f.max_health * kumite_sim::ONE;
+        }
+        // (Tekken Tag: the round's first moves turn to their foes, as a fight's two do)
+        if self.melee.tag_pairs {
+            self.melee.see_targets();
         }
         self.intro_counter += 1;
         self.camera = FightCamera::new(self.camera.data().clone(), true, self.intro_counter % 10, self.round == 1);
@@ -160,7 +178,17 @@ impl TagGame {
             h.reset();
             h.local = None;
         }
+        self.looks = vec![Default::default(); 4];
         self.step_camera();
+    }
+
+    /// The fight's arena, for a game whose camera has a projection per arena (Tekken Tag; Tekken 3's is one).
+    /// Before the first step: the round's intro on it.
+    pub fn set_arena(&mut self, arena: usize) {
+        if let Some(d) = self.camera.data().for_arena(arena) {
+            self.camera = FightCamera::new(Arc::new(d), true, self.intro_counter % 10, self.round == 1);
+            self.step_camera();
+        }
     }
 
     /// The camera's framing axis: the direction everyone is spread along (the principal axis of the roots on the
@@ -230,9 +258,22 @@ impl TagGame {
         let s = self.samples();
         // the move camera scripts of the pair the camera frames most: the first of each team
         let mc = [0, 2].map(|i| self.melee.actors[i].current_move(&gd).flags24.camera_script as i64);
+        // (Tekken Tag's director frames its fighters' places: here the two framing points, nobody throwing)
+        if self.camera.data().director.is_some() {
+            self.camera.actors = s.map(|p| kumite_sim::camera::Actor { at: [p.x, 0, p.z], root: [p.x, 0, p.z], ..Default::default() });
+        }
         let v = self.camera.step(s, self.melee.fight.frame as i64, mc);
         let w = v.yaw as f32 * std::f32::consts::TAU / 4096.0;
         self.melee.fight.screen_right = Vec3::new(w.dcos(), 0.0, -w.dsin());
+        // (Tekken Tag's, as its fight's: the far background's turn, each one's side for the next frame, which its moves
+        // read)
+        if self.melee.tag_pairs {
+            self.camera.turn_world();
+            for i in 0..self.melee.actors.len() {
+                let (pose, place) = self.pose(i);
+                project_side(&mut self.melee.actors[i], &self.bodies[i], &pose, place, &v);
+            }
+        }
         v
     }
 
@@ -253,6 +294,19 @@ impl TagGame {
         let (mut pose, place) = self.pose_animated(i);
         if let Some(local) = self.heads[i].local {
             turn_head(&self.bodies[i], &mut pose, local);
+        }
+        let b = &self.bodies[i];
+        if let Some(p) = &b.face {
+            self.tag_faces[i].apply(p, &b.character, &mut pose);
+        }
+        if let Some(p) = &b.hands {
+            self.hands[i].apply(p, &b.character, &mut pose);
+        }
+        b.character.pose_wings(&mut pose, self.wings[i].frame);
+        if let Some(locals) = self.looks[i].locals {
+            for (n, rot) in head::TAG_LOOK_NODES.into_iter().zip(locals) {
+                head::set_local(&b.character.nodes, &mut pose, n, rot);
+            }
         }
         (pose, place)
     }
@@ -332,18 +386,20 @@ impl TagGame {
             TagPhase::Call => {
                 if self.phase_frame == 1 {
                     let gd = self.melee.fight.data.clone();
+                    // (the round's start moves, as a fight's: round 1 an intro by a coin flip, later rounds the other;
+                    // Tekken Tag's later ones from frame 1)
                     for i in 0..4 {
-                        let alias = if self.round > 1 {
-                            1
+                        let k = if self.round > 1 {
+                            2
                         } else if self.random(2) == 1 {
                             0
                         } else {
-                            2
+                            1
                         };
                         let f = &mut self.melee.actors[i];
-                        if f.play_alias(alias) {
+                        if f.play_alias(f.moveset.fixed.round_start[k]) {
                             let len = f.current_move(&gd).frames;
-                            f.frame = if len >= 151 { len - 149 } else { 1 };
+                            f.frame = if len >= 151 && !(self.melee.tag_pairs && k == 2) { len - 149 } else { 1 };
                         }
                     }
                 }
@@ -473,6 +529,12 @@ impl TagGame {
                 (*seed >> 16) & 0x7FFF
             };
             self.faces[i].blink(forced, &mut rand);
+            // (Tekken Tag's: fingers and faces; the wings open while airborne and not juggled)
+            let f = &self.melee.actors[i];
+            let live = matches!(self.phase, TagPhase::Fight | TagPhase::RoundOver { .. });
+            step_hands_face(&self.bodies[i], f, gd, live, &mut self.hands[i], &mut self.tag_faces[i], &mut rand);
+            self.wings[i].state = i32::from(f.airborne_flag(gd) && f.juggle == 0);
+            self.wings[i].step();
             if self.face_data.pupils_character.is_some_and(|c| self.characters[i] == Some(c)) {
                 let head = |k: usize| {
                     let (pose, place) = self.pose_animated(k);
@@ -501,8 +563,20 @@ impl TagGame {
                 let from = (m.active[1] as i32).max(m.bytes_18.frame_count_ram as i32 - 0x11);
                 on = f.frame as i32 >= from;
             }
-            let no_yaw = self.characters[i].is_some_and(|c| gd.characters.head_without_yaw.contains(&c));
             let o = self.melee.facing(i);
+            // (Tekken Tag's bodies: its look, 0x351E98)
+            if !self.bodies[i].bones.is_empty() {
+                let nodes = &self.bodies[i].character.nodes;
+                if head::TagLook::fits(|n| nodes.get(n)?.parent) {
+                    let (pose, place) = self.pose_animated(i);
+                    let w: Vec<Mat4> = pose.iter().map(|m| place * *m).collect();
+                    let (op, op_place) = self.pose_animated(o);
+                    let target = op_place.transform_point3(op[self.bodies[o].chest].w_axis.truncate());
+                    self.looks[i].step(on, &w, target);
+                }
+                continue;
+            }
+            let no_yaw = self.characters[i].is_some_and(|c| gd.characters.head_without_yaw.contains(&c));
             let world = |k: usize| {
                 let (pose, place) = self.pose_animated(k);
                 let b = &self.bodies[k];

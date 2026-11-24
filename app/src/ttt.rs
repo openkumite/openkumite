@@ -44,6 +44,8 @@ pub const BOWL: u32 = 8;
 pub const BALL: u32 = 0x100;
 /// Tekken Force (OpenKumite's: Tekken 3's mode, with the Tekken 3 slice's force.json): no mode of the game's.
 pub const FORCE: u32 = 0x101;
+/// TAG BRAWL (OpenKumite's own mode, Tekken 3's: its modes' list and setup): no mode of the game's.
+pub const TAG_BRAWL: u32 = 0x102;
 const OPTIONS: u32 = 11;
 /// Armor King's character id.
 const ARMOR_KING: usize = 26;
@@ -1220,6 +1222,12 @@ impl Front {
         Self { page: Page::Menu { cursor: 0, scroll: 0, idle: 0 }, frame: 0 }
     }
 
+    /// The main menu with its cursor on `mode`'s entry.
+    pub fn menu_on(roster: &Roster, mode: u32) -> Self {
+        let page = roster.ttt.as_deref().map_or(Page::Menu { cursor: 0, scroll: 0, idle: 0 }, |d| Self::menu_at(d, &progress(), mode));
+        Self { page, frame: 0 }
+    }
+
     /// OPTIONS on CONTROLLER SETUP (`controller`) or ADJUST DISPLAY: back from OpenKumite's screens standing for them.
     pub fn options(controller: bool) -> Self {
         Self { page: Page::Options { cursor: if controller { OPT_CONTROLLER } else { OPT_DISPLAY } }, frame: 0 }
@@ -1232,7 +1240,7 @@ impl Front {
 
     /// The main menu's entries: of the locked ones, THEATER once an ending was seen (0x3BFED8), TEKKEN BOWL once the
     /// unlock stage opens it (Gallery is not here yet); OpenKumite's TEKKEN BALL and TEKKEN FORCE before OPTIONS with the
-    /// Tekken 3 slice.
+    /// Tekken 3 slice, and its TAG BRAWL.
     fn items(d: &Data, p: &Progress) -> Vec<(u32, String)> {
         let open = |i: &&Value| {
             let mode = int(&i["mode"]) as u32;
@@ -1246,6 +1254,7 @@ impl Front {
         if d.force {
             items.insert(items.iter().position(|i| i.0 == OPTIONS).unwrap_or(items.len()), (FORCE, "TEKKEN FORCE".into()));
         }
+        items.insert(items.iter().position(|i| i.0 == OPTIONS).unwrap_or(items.len()), (TAG_BRAWL, "TAG BRAWL".into()));
         if cfg!(not(target_arch = "wasm32")) {
             items.push((u32::MAX, "EXIT".into()));
         }
@@ -1287,6 +1296,7 @@ impl Front {
                             Some(u32::MAX) => return Outcome::Exit,
                             Some(OPTIONS) => Some(Page::Options { cursor: 0 }),
                             Some(THEATER) => Some(Page::Theater { cursor: [0, 0] }),
+                            Some(TAG_BRAWL) => return Outcome::TagBrawl,
                             Some(m) => Some(Page::Select(Box::new(Select::new(m, &d, None)))),
                             None => None,
                         }
@@ -4725,21 +4735,8 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
                 }
             }
         }
-        // the timer (0x3C6738): seconds (t * 6 / 7 - 1) / 60, the tens 39 left of the ones; INFINITY untimed
-        let t = &h["timer"];
-        let y = num(&t["y"]);
-        if bout.game.round_frames > 100 * 70 {
-            sprite(painter, v, art, t["infinity"].as_str().unwrap_or_default(), num(&t["infinity_x"]), y, Color32::WHITE);
-        } else {
-            let (dw, secs) = (num(&t["digit_w"]), (fight.clock * 6 / 7).saturating_sub(1) / 60);
-            for (k, digit) in [secs.min(99) / 10, secs.min(99) % 10].into_iter().enumerate() {
-                if let Some((tex, [tw, _])) = art.pic(t["digits"].as_str().unwrap_or_default()) {
-                    let u = digit as f32 * dw / tw as f32;
-                    let [rx, ry, rw, rh] = sv([num(&t["x"]) + if k == 0 { num(&t["tens_dx"]) } else { 0.0 }, y, dw, 47.0]);
-                    painter.image(tex.id(), v.rect(rx, ry, rw, rh), Rect::from_min_max(Pos2::new(u, 0.0), Pos2::new(u + dw / tw as f32, 1.0)), Color32::WHITE);
-                }
-            }
-        }
+        // the timer (0x3C6738): seconds (t * 6 / 7 - 1) / 60; INFINITY untimed
+        timer(painter, v, art, h, (bout.game.round_frames <= 100 * 70).then(|| (fight.clock * 6 / 7).saturating_sub(1) / 60));
         // the ladder modes (0x3BC048): the player's STAGE (FINAL from the last fight, every 32 frames) and the run's
         // time; the other side INSERT COIN / CREDIT, or Time Attack's label
         let top = &h["top"];
@@ -4811,6 +4808,120 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
             // (two players: the winner's name, not done)
             Some(w) if info.humans[w] != info.humans[1 - w] => banner(painter, v, art, d, if info.humans[w] { "you_win" } else { "you_lose" }, 0),
             _ => {}
+        },
+        _ => {}
+    }
+}
+
+/// The timer's seconds (0x3C6738), the tens 39 left of the ones; None: INFINITY.
+fn timer(painter: &egui::Painter, v: &View, art: &Art, h: &Value, secs: Option<u32>) {
+    let t = &h["timer"];
+    let y = num(&t["y"]);
+    let Some(secs) = secs else {
+        sprite(painter, v, art, t["infinity"].as_str().unwrap_or_default(), num(&t["infinity_x"]), y, Color32::WHITE);
+        return;
+    };
+    let dw = num(&t["digit_w"]);
+    for (k, digit) in [secs.min(99) / 10, secs.min(99) % 10].into_iter().enumerate() {
+        if let Some((tex, [tw, _])) = art.pic(t["digits"].as_str().unwrap_or_default()) {
+            let u = digit as f32 * dw / tw as f32;
+            let [rx, ry, rw, rh] = sv([num(&t["x"]) + if k == 0 { num(&t["tens_dx"]) } else { 0.0 }, y, dw, 47.0]);
+            painter.image(tex.id(), v.rect(rx, ry, rw, rh), Rect::from_min_max(Pos2::new(u, 0.0), Pos2::new(u + dw / tw as f32, 1.0)), Color32::WHITE);
+        }
+    }
+}
+
+/// The width of the fight HUD's health bars (640 x 448 pixels).
+pub fn bar_w(d: &Data) -> i32 {
+    num(&d.raw["hud"]["bars"]["w"]) as i32
+}
+
+/// TAG BRAWL's HUD in Tekken Tag (OpenKumite's own mode; Tekken 3's is hud/tag.rs): in the fight HUD's pieces, a
+/// side's two bars stacked as a tag battle's pair (the second up and out, darker; each for themselves 1P and 2P left,
+/// 3P and 4P right), each one's health from its inner end and the trail of what it lost (`bars`: shown, trail, of
+/// [`bar_w`]), its name plate and who plays it; the round lamps of each team; the timer; the round's texts as the
+/// fight's, the result as Tekken 3's brawl says it.
+#[allow(clippy::too_many_arguments)]
+pub fn tag_brawl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, g: &kumite_game::tag::TagGame, info: &crate::hud::tag::TagInfo, bars: [[i32; 2]; 4], ko: Option<Announcement>) {
+    use kumite_game::tag::TagPhase;
+    let h = &d.raw["hud"];
+    let b = &h["bars"];
+    let (bx, by, bw, bh, cap, back) = ([num(&b["x"][0]), num(&b["x"][1])], num(&b["y"]), num(&b["w"]), num(&b["h"]), num(&b["cap_w"]), num(&b["back"]));
+    let strip = |k: usize| h["strips"][k].as_str().unwrap_or_default().to_string();
+    let place = |i: usize| if g.wins.len() == 2 { (g.melee.team[i], g.members(g.melee.team[i]).position(|m| m == i).unwrap_or(0)) } else { (i / 2, i % 2) };
+    // (the second row first: the first covers it)
+    for row in [1, 0] {
+        for i in (0..4).filter(|&i| place(i).1 == row) {
+            let side = place(i).0;
+            let off = back * row as f32;
+            let level = num(&b["levels"][1 - row]);
+            let (y, inner) = (by - off, if side == 0 { bx[0] + bw - off } else { bx[1] + off });
+            // the name plate (the first row's on its streak, added; the second's under it, darker), who plays it on
+            // its inner side
+            let body = g.melee.actors[i].character.unwrap_or(0).max(0) as usize;
+            let plate = &h["plates"][body];
+            let file = plate["picture"].as_str().unwrap_or_default();
+            let [pw, ph] = art.pic(file).map_or([0.0; 2], |p| p.1.map(|x| x as f32));
+            let (px, py) = (num(&h["plate_x"][side]), num(&h["plate_y"]) + 24.0 * row as f32);
+            if row == 0 {
+                let streak = h["streaks"][int(&plate["streak"])].as_str().unwrap_or_default();
+                image(painter, v, art, streak, [px, py, num(&h["streak_size"][0]), num(&h["streak_size"][1])], additive(Color32::WHITE));
+            }
+            sprite(painter, v, art, file, px, py, Color32::from_gray(if row == 0 { 255 } else { 170 }));
+            let label_x = if side == 0 { px + pw + 28.0 } else { px - 28.0 };
+            small(painter, v, art, d, &info.labels[i], label_x, py + (ph - 12.0) / 2.0, Color32::WHITE);
+            let [shown, trail] = bars[i].map(|x| x as f32);
+            let part = |s: usize, from: f32, to: f32| {
+                let (a, z) = (from.clamp(0.0, bw), to.clamp(0.0, bw));
+                if z > a {
+                    lit(painter, v, art, &strip(s), [if side == 0 { inner - z } else { inner + a }, y, z - a, bh], level);
+                }
+            };
+            let (left, right) = if side == 0 { (inner - bw, inner) } else { (inner, inner + bw) };
+            lit(painter, v, art, &strip(3), [left - cap, y, cap, bh], level);
+            lit(painter, v, art, &strip(4), [right, y, cap, bh], level);
+            part(2, shown, bw);
+            part(0, 0.0, shown);
+            part(1, shown, trail);
+        }
+    }
+    // the round lamps of each team (each for themselves: by each one's plate row)
+    let l = &h["lamps"];
+    if g.rounds_to_win >= 2 {
+        for (t, &wins) in g.wins.iter().enumerate() {
+            let (side, row) = if g.wins.len() == 2 { (t, 0) } else { place(t) };
+            let y = num(&l["y"]) + 24.0 * row as f32;
+            for k in 0..g.rounds_to_win {
+                let x = if side == 0 { num(&l["x"][0]) - num(&l["dx"]) * k as f32 } else { num(&l["x"][1]) + num(&l["dx"]) * k as f32 };
+                sprite(painter, v, art, l[if k < wins { "lit" } else { "unlit" }].as_str().unwrap_or_default(), x, y, Color32::WHITE);
+            }
+        }
+    }
+    timer(painter, v, art, h, Some(g.melee.clock.div_ceil(60)));
+    crate::debug::mark_under(painter);
+    // the round's texts at the fight's frames (rounds.json: the banner 5 after the call, READY! 44 before the fight)
+    let [round, _, fight] = if g.round == 1 { kumite_game::bout::CALL_FIRST } else { kumite_game::bout::CALL_OTHER };
+    let f = g.phase_frame;
+    match g.phase {
+        TagPhase::Call if f >= fight.saturating_sub(44) => banner(painter, v, art, d, "ready", 0),
+        TagPhase::Call if f >= round + 5 => banner(painter, v, art, d, "round", g.round),
+        TagPhase::RoundOver { .. } => {
+            let key = match ko {
+                Some(Announcement::TimeUp) => "time_up",
+                Some(Announcement::Perfect) => "perfect",
+                Some(Announcement::DoubleKo) => "double_ko",
+                _ => "ko",
+            };
+            banner(painter, v, art, d, key, 0);
+        }
+        TagPhase::Result { winner } | TagPhase::MatchOver { winner } => match winner {
+            None => banner(painter, v, art, d, "draw", 0),
+            // one team with players: YOU WIN / YOU LOSE; else who won
+            Some(w) if info.humans.iter().filter(|&&h| h).count() == 1 => banner(painter, v, art, d, if info.humans[w] { "you_win" } else { "you_lose" }, 0),
+            Some(w) => {
+                let name = if g.wins.len() == 2 { format!("TEAM {}", w + 1) } else { info.names[w].clone() };
+                font(painter, v, art, d, &format!("{name} WINS"), W / 2.0, 190.0, 0.6, Color32::WHITE);
+            }
         },
         _ => {}
     }
@@ -5656,9 +5767,9 @@ mod tests {
         let mut d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![], None, false, &Value::Null).unwrap();
         let modes = |d: &Data, stage| Front::items(d, &Progress { stage, ..Progress::default() }).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
         // open from the start by default; with --ttt-unlocks original at stage 10
-        assert_eq!(modes(&d, 0), vec![ARCADE, BOWL]);
+        assert_eq!(modes(&d, 0), vec![ARCADE, BOWL, TAG_BRAWL]);
         Arc::get_mut(&mut d).unwrap().original_unlocks = true;
-        assert_eq!((modes(&d, 9), modes(&d, 10)), (vec![ARCADE], vec![ARCADE, BOWL]));
+        assert_eq!((modes(&d, 9), modes(&d, 10)), (vec![ARCADE, TAG_BRAWL], vec![ARCADE, BOWL, TAG_BRAWL]));
         // its select: P1 picks two; 2P's START joins
         let mut s = Select::new(BOWL, &d, None);
         assert_eq!((s.sides[0].need, s.sides[1].player), (2, None));
@@ -5679,7 +5790,7 @@ mod tests {
                 .filter(|&m| m != u32::MAX)
                 .collect::<Vec<_>>()
         };
-        assert_eq!((modes(None), modes(Some(23))), (vec![ARCADE, OPTIONS], vec![ARCADE, BALL, OPTIONS]));
+        assert_eq!((modes(None), modes(Some(23))), (vec![ARCADE, TAG_BRAWL, OPTIONS], vec![ARCADE, BALL, TAG_BRAWL, OPTIONS]));
         let (d, roster, mut seed) = (data(), roster(), 1);
         let d = Arc::new(Data { ball: Some(23), ..Arc::try_unwrap(d).unwrap() });
         let run = Run::new(&d, &roster, &Progress::default(), BALL, [vec![(0, 0)], vec![]], &mut seed);
@@ -5733,14 +5844,17 @@ mod tests {
         }
     }
 
-    /// TEKKEN FORCE is on the menu (before OPTIONS) only with the Tekken 3 slice's force.json; one pick.
+    /// TEKKEN FORCE is on the menu (before OPTIONS) only with the Tekken 3 slice's force.json; one pick. TAG BRAWL
+    /// always, before OPTIONS: it opens Tekken 3's list of its modes.
     #[test]
     fn tekken_force_with_the_slice() {
         let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE"}, {"mode": 11, "label": "OPTIONS"}]}}});
         let d = |force| Data::load(&fe, &Value::Null, &serde_json::json!({}), None, vec![], None, force, &Value::Null).unwrap();
         let modes = |force| Front::items(&d(force), &Progress::default()).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
-        assert_eq!((modes(false), modes(true)), (vec![ARCADE, OPTIONS], vec![ARCADE, FORCE, OPTIONS]));
+        assert_eq!((modes(false), modes(true)), (vec![ARCADE, TAG_BRAWL, OPTIONS], vec![ARCADE, FORCE, TAG_BRAWL, OPTIONS]));
         assert_eq!(Select::new(FORCE, &d(true), None).sides[0].need, 1);
+        let roster = Roster { ttt: Some(d(true)), ..roster() };
+        assert!(matches!(Front::menu_on(&roster, TAG_BRAWL).key(0, Key::Start, &roster, &mut 1), Outcome::TagBrawl));
     }
 
     #[test]

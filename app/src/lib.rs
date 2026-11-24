@@ -1354,7 +1354,7 @@ impl App {
     fn replay_sim_step(&mut self) {
         if let Some(t) = self.tag.as_mut() {
             t.game.step([Pad::default(); 4]);
-            t.hud.step(&t.game, self.hud.data.bar_w());
+            t.hud.step(&t.game, self.roster.ttt.as_deref().map_or(self.hud.data.bar_w(), ttt::bar_w));
             return;
         }
         self.replay_quiet = true;
@@ -3754,7 +3754,7 @@ impl App {
 
     fn outcome(&mut self, o: Outcome) {
         match o {
-            Outcome::None | Outcome::Quit | Outcome::Exit => {}
+            Outcome::None | Outcome::Quit | Outcome::Exit | Outcome::TagBrawl => {}
             // online: both picked on the VS select; player 1 decides the match and sends it
             // online: the host's select decides (its match goes to every computer); the others wait for it
             Outcome::Fight(setup, _) if self.room.is_some() => {
@@ -4838,13 +4838,19 @@ impl App {
                 let home = &picks[2];
                 // (`--stage N` with `--screen tag`: a test's stage)
                 let stage = self.tag_stage.unwrap_or_else(|| roster.home_stage(roster.characters[home.character].id, home.costume));
+                // (Tekken Tag: the camera row of the arena, an arcade arena's stand-in's)
+                if roster.ttt.is_some() {
+                    game.set_arena(if self.ttt_arcade(stage).is_some() { ttt::ARCADE_STAND_IN } else { stage });
+                }
                 let mut scene = self.stage_scene(&r, stage);
                 scene.models = game.bodies.iter().map(|b| skinned_body(&r, b)).collect();
                 self.scene = Some(scene);
                 self.vfx = Some(kumite_game::vfx::Vfx::new(&self.assets));
                 if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
                     let c = &roster.characters[home.character];
-                    audio.music(roster.music_of(c.id, home.costume).and_then(|b| sound.music(b)).or_else(|| sound.music_for(&c.name)));
+                    // (Tekken Tag: the arena's)
+                    let arena = roster.ttt.as_ref().and_then(|_| sound.arena_music(stage));
+                    audio.music(arena.or_else(|| roster.music_of(c.id, home.costume).and_then(|b| sound.music(b))).or_else(|| sound.music_for(&c.name)));
                 }
                 // every brawl is recorded (its inputs on the game's tape), saved as a replay at its end; or a replay plays
                 self.replay_rec = None;
@@ -4852,7 +4858,9 @@ impl App {
                     game.tape = Some(Default::default());
                     self.replay_rec = Some(ReplayRec { game: replay::Match::Tag { setup: setup.clone(), stage }, online: self.net.is_some() || self.room.is_some() });
                 }
-                self.tag = Some(tagrun::TagRun::new(game, setup, &self.roster));
+                let mut run = tagrun::TagRun::new(game, setup, &self.roster);
+                run.sound.arena = stage;
+                self.tag = Some(run);
                 self.fight = None;
                 self.screen = None;
                 self.begin_replay();
@@ -4908,7 +4916,7 @@ impl App {
         if t.pause.is_some() {
             return;
         }
-        let pads = t.setup.slots.map(|s| s.player.map_or(Pad::default(), |p| by_player[p]));
+        let pads = t.setup.pads(by_player);
         if let (Some(net), Some(room)) = (self.net.as_mut(), self.room.as_mut()) {
             netplay_ready(net, room);
         }
@@ -4931,7 +4939,7 @@ impl App {
             }
             None => t.game.step(pads),
         }
-        t.hud.step(&t.game, self.hud.data.bar_w());
+        t.hud.step(&t.game, self.roster.ttt.as_deref().map_or(self.hud.data.bar_w(), ttt::bar_w));
         let g = &t.game;
         if let Some(v) = self.vfx.as_mut() {
             let (eye, _, _) = kumite_game::view_camera(&g.camera.view);
@@ -4945,10 +4953,9 @@ impl App {
             v.step_actors(&g.melee.hits, &models, &actors, eye, &at, &node);
         }
         if let Some(sound) = &self.sound {
-            let fighters: Vec<&kumite_sim::Fighter> = g.melee.actors.iter().collect();
-            let opponents: Vec<usize> = (0..4).map(|i| g.melee.facing(i)).collect();
             let banks: Vec<&str> = t.banks.iter().map(String::as_str).collect();
-            let mut sounds = sound.step_actors(&fighters, &opponents, &[0, 1, 2, 3], &g.melee.hits, &g.melee.fight.data, g.melee.fight.frame, &mut t.sound, &banks, &t.characters);
+            let models: Vec<usize> = g.bodies.iter().map(|b| b.model_record).collect();
+            let mut sounds = sound.step_melee(&g.melee, &models, &mut t.sound, &banks, &t.characters);
             sounds.extend(g.events.iter().filter_map(|&e| {
                 let (e, humans) = t.announcement(e);
                 sound.announce(e, humans)
@@ -5695,6 +5702,12 @@ impl App {
                 };
                 // the stage around what the camera frames (its two framing points, as a fight's two fighters)
                 stage_view(&mut cam, scene, game.framing_points().map(|p| p / kumite_game::UNITS), self.debug.free_cam.is_some());
+                // Tekken Tag: nothing of the arena's scenery before the nearest of the four (its z guard)
+                if scene.z_guard {
+                    let root = |i: usize| actors[i].root() / kumite_game::UNITS;
+                    let cut = |a: usize, b: usize| kumite_game::scenery_cut(cam.eye, cam.target - cam.eye, [root(a), root(b)]);
+                    cam.scenery_cut = cut(0, 1).min(cut(2, 3));
+                }
                 cam.hit_light = self.vfx.as_ref().and_then(|v| v.hit_light()).map(|(c, k, p)| (c.map(|x| x * k), p));
                 (cam, Vec::new())
             }
@@ -6129,8 +6142,15 @@ impl App {
                             _ => {}
                         }
                     } else if let Some(t) = tag {
-                        if replay_view.as_ref().is_none_or(|v| v.hud) {
-                            t.hud.draw(ctx, art, &hud.data, &t.game, &t.info, wide_hud);
+                        match (replay_view.as_ref().is_none_or(|v| v.hud), roster.ttt.as_deref()) {
+                            (false, _) => {}
+                            // (Tekken Tag's pieces)
+                            (true, Some(d)) => {
+                                let v = if wide_hud { art::Screen::fit_wide(ctx.content_rect()) } else { art::Screen::fit(ctx.content_rect()) };
+                                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("hud"))).with_clip_rect(v.clip());
+                                ttt::tag_brawl_hud(&painter, &v, art, d, &t.game, &t.info, std::array::from_fn(|i| t.hud.bar(i)), t.hud.ko());
+                            }
+                            (true, None) => t.hud.draw(ctx, art, &hud.data, &t.game, &t.info, wide_hud),
                         }
                         if let Some((c, player)) = t.pause {
                             draw_pause(ctx, art, &hud.data.pause_items, c, player, frames, false);

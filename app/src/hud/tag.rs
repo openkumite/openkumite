@@ -70,6 +70,16 @@ impl TagHud {
         }
     }
 
+    /// Actor `i`'s bar as shown: its health and the trail of what it lost (pixels of the bar's width).
+    pub fn bar(&self, i: usize) -> [i32; 2] {
+        [self.shown[i], self.trail[i]]
+    }
+
+    /// The round's end as announced.
+    pub fn ko(&self) -> Option<Announcement> {
+        self.ko
+    }
+
     pub fn draw(&self, ctx: &egui::Context, art: &Art, d: &super::HudData, g: &TagGame, info: &TagInfo, wide: bool) {
         let v = if wide { View::fit_wide(ctx.content_rect()) } else { View::fit(ctx.content_rect()) };
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("hud"))).with_clip_rect(v.clip());
