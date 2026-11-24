@@ -69,7 +69,7 @@ pub enum Kind {
     Gas,
 }
 
-/// One object: its owner (fighter 0 / 1), where it is and was a frame before (game units, world), its travel a frame,
+/// One object: its owner (fighter 0 / 1; a brawl's actor), where it is and was a frame before (game units, world), its travel a frame,
 /// its state (+0xE: the fire's 1 growing, 2 looped, 4 ending), frame counter (+0x48) and frames (+0x40, +0x44).
 #[derive(Clone, Debug)]
 pub struct Object {
@@ -93,9 +93,9 @@ pub struct Objects {
     pub list: Vec<Object>,
     seed: u32,
     /// Each fighter's move and frame an object last started on (a hit-stop holds the frame: one start a frame).
-    pub started: [Option<(usize, u32)>; 2],
+    pub started: Vec<Option<(usize, u32)>>,
     /// Tekken Tag: each fighter's opponent burns from its fire (+0xC04): its new flames do not strike.
-    pub burned: [bool; 2],
+    pub burned: Vec<bool>,
 }
 
 impl Objects {
@@ -109,7 +109,8 @@ impl Objects {
     pub fn start(&mut self, owner: usize, byte: u32, first: bool, slots: &[Mat4; 2]) {
         let (m, at, kind) = match byte {
             FIRE => (slots[0], FIRE_AT, Kind::Fire),
-            BREATH => (slots[0], BREATH_AT[owner.min(1)], Kind::Breath),
+            // (a brawl's actors by their index's parity)
+            BREATH => (slots[0], BREATH_AT[owner % 2], Kind::Breath),
             TAG_FIRE => (slots[0], TAG_FIRE_AT, Kind::TagFire),
             GAS if first => (slots[1], GAS_AT, Kind::GasSource { heading: [0.0, 1.0], next: 0 }),
             _ => return,
@@ -131,10 +132,11 @@ impl Objects {
 
     /// One frame (0x8006F5C0): `striking[k]` whether fighter k is still in its object's move past the active window's
     /// start (its descriptor byte), `struck[k]` whether fighter k's opponent was struck last frame.
-    pub fn step(&mut self, striking: [Option<u32>; 2], struck: [bool; 2]) {
+    pub fn step(&mut self, striking: &[Option<u32>], struck: &[bool]) {
         // (Tekken Tag: a fire's strike landed, the opponent burns; over with the move)
-        for k in 0..2 {
-            self.burned[k] = striking[k] == Some(TAG_FIRE) && (self.burned[k] || struck[k]);
+        self.burned.resize(striking.len(), false);
+        for (k, b) in self.burned.iter_mut().enumerate() {
+            *b = striking[k] == Some(TAG_FIRE) && (*b || struck.get(k).copied().unwrap_or(false));
         }
         let mut i = 0;
         // (puffs let out this frame move this frame too: the pool's list runs on to its end)
@@ -313,7 +315,7 @@ mod tests {
         let mut frames = 0;
         let mut floor = false;
         while !o.list.is_empty() && frames < 40 {
-            o.step([Some(FIRE), None], [false; 2]);
+            o.step(&[Some(FIRE), None], &[false; 2]);
             frames += 1;
             if let Some(f) = o.list.first() {
                 floor |= f.pos.y == FIRE_FLOOR;
@@ -323,7 +325,7 @@ mod tests {
         assert!(floor && (20..=26).contains(&frames), "{frames}");
         o.start(1, GAS, true, &[Mat4::IDENTITY, Mat4::from_translation(Vec3::new(0.0, 300.0, 0.0))]);
         for _ in 0..16 {
-            o.step([None, Some(GAS)], [false; 2]);
+            o.step(&[None, Some(GAS)], &[false; 2]);
         }
         let puffs: Vec<_> = o.list.iter().filter(|p| p.kind == Kind::Gas).collect();
         assert!(puffs.len() == 8 && puffs.iter().all(|p| p.strikes && p.pos.y > 300.0));
