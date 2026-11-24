@@ -1442,7 +1442,7 @@ impl App {
             bench: vec![],
             bench_active: [0; 2],
             bench_posing: None,
-            effects: effect_atlas(r, &self.assets.root.join("pictures/effects/atlas.png")),
+            effects: effect_atlas(r, &self.assets.root.join("pictures/effects/atlas.png"), false),
             faces_shown: Default::default(),
             walls: None,
             camera_walls: None,
@@ -5712,6 +5712,9 @@ impl App {
                 cam.sky_depth = scene.sky_model;
                 cam.background = Some(scene.background);
                 scene_lighting(&mut cam, scene);
+                // op 10's effect and op 16's beam light the actors too (0x3531F0 from 0x3A2BC0 / 0x3A8C50; PCSX2's
+                // ending 28: Jin red in his lightning)
+                cam.hit_light = self.vfx.as_ref().and_then(|v| v.hit_light()).map(|(c, k, p)| (c.map(|x| x * k), p));
                 (cam, Vec::new())
             }
             // the attract embu: its two slots on the scripted camera
@@ -5898,7 +5901,7 @@ impl App {
             for id in ids {
                 let Some((file, cols, rows)) = v.data.as_ref().and_then(|d| d.sheets.get(id.wrapping_sub(1))) else { continue };
                 let root = &self.assets.root;
-                let Some(t) = self.effect_sheets.entry(file.clone()).or_insert_with(|| effect_atlas(r, &root.join("pictures/effects").join(file))).clone() else { continue };
+                let Some(t) = self.effect_sheets.entry(file.clone()).or_insert_with(|| effect_atlas(r, &root.join("pictures/effects").join(file), true)).clone() else { continue };
                 let (mut a, mut b) = (Vec::new(), Vec::new());
                 let group: Vec<_> = others.iter().filter(|s| s.sheet == id).copied().collect();
                 effect_quads(&group, (*cols, *rows), &cam, &mut Vec::new(), &mut b, &mut a);
@@ -6985,15 +6988,17 @@ fn parse_play(s: &str) -> Result<Vec<(u64, usize, String)>> {
     Ok(out)
 }
 
-/// The effect atlas from the converted hit-spark sheets' index maps (EXE pictures 007 / 008).
-fn effect_atlas(r: &Renderer, file: &Path) -> Option<Arc<kumite_render::Texture>> {
+/// The effect atlas from the converted hit-spark sheets' index maps (EXE pictures 007 / 008); `smooth`: filtered, as
+/// the PS2 draws Tekken Tag's characters' sheets (PCSX2's Devil's eye flare shows no texel steps).
+fn effect_atlas(r: &Renderer, file: &Path, smooth: bool) -> Option<Arc<kumite_render::Texture>> {
     // the effect cells in the game's palettes (export_effects)
     let mut dec = png::Decoder::new(std::io::Cursor::new(kumite_fs::read(file).ok()?));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = dec.read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
-    (info.color_type == png::ColorType::Rgba).then(|| r.texture(info.width, info.height, &buf[..(info.width * info.height * 4) as usize]))
+    let rgba = &buf[..(info.width * info.height * 4) as usize];
+    (info.color_type == png::ColorType::Rgba).then(|| if smooth { r.texture_smooth(info.width, info.height, rgba) } else { r.texture(info.width, info.height, rgba) })
 }
 
 /// An arcade stage's sky for the camera (`SkyPicture`): the panorama scrolled by the yaw and moved by the pitch, the
