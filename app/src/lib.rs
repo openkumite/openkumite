@@ -848,10 +848,14 @@ impl Scene {
     }
 
     /// The background characters where their scripts have them, moved with the arena by `arena` (m, its drawn
-    /// place: the arena follows the fighters, and its people with it, as PCSX2 shows them far out).
-    fn place_people(&self, r: &Renderer, arena: glam::Vec3) {
+    /// place: the arena follows the fighters, and its people with it, as PCSX2 shows them far out). Those farther than
+    /// `hud`'s depth (eye, forward, metres) are drawn behind the HUD, the others over it.
+    fn place_people(&self, r: &Renderer, arena: glam::Vec3, hud: Option<(glam::Vec3, glam::Vec3, f32)>) {
         for p in &self.people {
             let (Some((motion, f, at, heading)), Some((_, ch, model, clips))) = (p.walker.now(), p.body()) else { continue };
+            // shortcut: a person is behind or before the HUD as a whole, by its root (the PS2 tests each pixel), upgrade
+            // with a depth-tested 2D
+            model.set_early(hud.is_none_or(|(eye, forward, d)| (at + arena - eye).dot(forward) > d));
             let Some(&clip) = clips.get(&motion) else { continue };
             let place = glam::Mat4::from_rotation_translation(glam::Quat::from_rotation_y(heading.to_radians()), at + arena);
             // (0x3D9AA8: the root's motion times the model's scale)
@@ -5801,11 +5805,17 @@ impl App {
         if self.roster.ttt.is_some() {
             cam.y_stretch = 480.0 / 448.0;
         }
+        // the HUD's depth: 1 m behind the farther fighter (0x3C0098)
+        let forward = (cam.target - cam.eye).normalize_or_zero();
+        let hud = self.fight.as_ref().map(|f| &f.bout.game).map(|g| {
+            let root = |i: usize| g.display.map_or(g.fight.fighters[i].root(), |d| d[i].root) / kumite_game::UNITS;
+            (cam.eye, forward, (root(0) - cam.eye).dot(forward).max((root(1) - cam.eye).dot(forward)) + 1.0)
+        });
         if let Some(s) = self.scene.as_mut() {
             s.arena = glam::Vec3::new(cam.sky.w_axis.x, 0.0, cam.sky.w_axis.z);
             s.eye = cam.eye - s.arena;
             s.view_proj = cam.projection(r.aspect()) * cam.view() * glam::Mat4::from_translation(s.arena);
-            s.place_people(r, s.arena);
+            s.place_people(r, s.arena, hud);
         }
         let (sky, statics, models): (Vec<_>, Vec<_>, Vec<_>) = match (&self.scene, &self.fight) {
             (None, None) => (vec![], vec![], self.posers.shown.iter().filter_map(|p| self.poser_models.get(&p.record)).collect()),

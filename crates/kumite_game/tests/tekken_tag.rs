@@ -1911,3 +1911,22 @@ fn arena_textures_are_smooth_without_mipmaps() {
     let hall = a.stage(kumite_game::bowl::ARENA).unwrap();
     assert!(hall.smooth.iter().all(|s| *s) && !hall.filtered.iter().any(|f| *f));
 }
+
+/// Unknown's wolf (0x34CC38): its root eases to 150 mm over and 800 mm behind hers (her root's parent's axes, the
+/// fighter's own) and stays there while she stands; her blades (0x34D108: Kunimitsu's, Yoshimitsu's) are not drawn.
+#[test]
+fn unknowns_wolf_stands_behind_her() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [UNKNOWN, JULIA]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    for _ in 0..120 {
+        b.step([Pad::default(); 2]);
+    }
+    let (pose, place) = b.game.pose(0);
+    let want = place.transform_point3(pose[0].w_axis.truncate() + glam::Vec3::new(0.0, 0.15, -0.8));
+    let wolf = place.transform_point3(pose[98].w_axis.truncate());
+    assert!(wolf.distance(want) < 0.05, "the wolf at {wolf}, her mark {want}");
+    assert_eq!(b.game.bodies[0].hidden, vec![116, 117, 118, 119]);
+}

@@ -163,6 +163,9 @@ pub struct EndingScene {
     /// The cast's bodies (with the ending's tracks as clips `ending_EE_K`) and their model records.
     pub characters: Vec<Arc<Character>>,
     pub records: Vec<usize>,
+    /// Each one's motion scale (the moveset index's `motion_scale`, player +0x500; 1 when none): its tracks' root
+    /// moves that much farther (PCSX2: Bryan at 1.0198 x his track's place in ending 20).
+    scales: Vec<f32>,
     script: Vec<[i32; 5]>,
     /// The camera paths (an ending's one, the EMBU's 22), per frame: eye, target (game units, y down), H.
     cameras: Vec<Vec<[f32; 7]>>,
@@ -227,7 +230,8 @@ impl EndingScene {
             kumite_fs::read(&assets.root.join("endings").join(name)).with_context(|| format!("endings/{name}"))
         };
         let tracks: Vec<Vec<u8>> = d.body.iter().map(|b| file(b)).collect::<Result<_>>()?;
-        let (mut characters, mut records) = (Vec::new(), Vec::new());
+        let (mut characters, mut records, mut scales) = (Vec::new(), Vec::new(), Vec::new());
+        let index = kumite_sim::data::load::<kumite_sim::data::MovesetIndex>(&assets.root.join("gamedata/movesets/index.json")).ok();
         for &[c, k] in &d.cast {
             let k = if k < 0 { costume } else { k as usize };
             let record = data.record(c.max(0) as usize, k).with_context(|| format!("no model of character {c} costume {k}"))?;
@@ -237,6 +241,8 @@ impl EndingScene {
             }
             characters.push(Arc::new(ch));
             records.push(record);
+            let entry = index.as_ref().and_then(|i| i.models.iter().find(|m| m.model_record == record));
+            scales.push(entry.and_then(|e| e.motion_scale).unwrap_or(4096) as f32 / 4096.0);
         }
         let cam = file(&d.camera)?;
         let u32_at = |o: usize| cam.get(o..o.checked_add(4)?).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
@@ -259,6 +265,7 @@ impl EndingScene {
             people: d.people.clone(),
             characters,
             records,
+            scales,
             script: d.script.clone(),
             cameras,
             path: 0,
@@ -510,6 +517,11 @@ impl EndingScene {
             }
         };
         let mut pose = ch.pose(clip, frame, false);
+        // (the root's place times the motion scale)
+        let shift = pose.first().map_or(Vec3::ZERO, |m| m.w_axis.truncate()) * (self.scales.get(m).copied().unwrap_or(1.0) - 1.0);
+        for n in &mut pose {
+            *n = Mat4::from_translation(shift) * *n;
+        }
         ch.pose_wings(&mut pose, self.wings.get(s).map_or(0, |w| w.frame));
         Some((m, pose, self.turn()))
     }
