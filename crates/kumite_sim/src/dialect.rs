@@ -246,8 +246,8 @@ pub fn load(gamedata: &Path, rules: &serde_json::Value) -> Result<GameData> {
     }
     let mut moves: Vec<data::Move> = serde_json::from_value(moves["moves"].take()).context("moves.json")?;
     let map_bits = |raw: u32| d.flag_bits.iter().filter(|b| raw >> b.0 & 1 != 0).fold(0, |a, b| a | 1 << b.1);
-    // (the hand ops, Tekken Tag's 0x0F + v with v & 31 below 10, as HAND_OPS + v: the game layer's)
-    let op = |o: u32| d.ops.iter().find(|p| p.0 == o).map(|p| p.1).or_else(|| o.checked_sub(0x0F).filter(|v| *v < 0x60 && v & 31 < 10).map(|v| HAND_OPS + v));
+    // (the hand and face ops, Tekken Tag's 0x0F + v (kinds v & 31 from 10 the face's), as HAND_OPS + v: the game layer's)
+    let op = |o: u32| d.ops.iter().find(|p| p.0 == o).map(|p| p.1).or_else(|| o.checked_sub(0x0F).filter(|v| *v < 0x60).map(|v| HAND_OPS + v));
     for m in &mut moves {
         m.flags24.tag = m.flags24.raw;
         m.flags24.raw = map_bits(m.flags24.raw);
