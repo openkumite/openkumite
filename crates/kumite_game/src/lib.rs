@@ -1927,7 +1927,7 @@ fn fixed(v: f32) -> i32 {
 }
 
 /// Tekken Tag's 18 joint slots as the game builds them (0x34EF20), in units in our world axes (its flips change
-/// signs only): the facing (+0x508) and each slot's turn as [`fixed`]; a slot's world turn its parent's times its own
+/// signs only): the facing (+0x508) from the sine table, each slot's turn as [`fixed`]; a slot's world turn its parent's times its own
 /// (0x39A670), its place the parent's plus the parent's turn times its joint place (0x39B310), each product's
 /// twelfth bits cut toward zero. Empty for a body without the game's joint places.
 fn fixed_slots(body: &Body, pose: &[Mat4], place: Mat4) -> Vec<[i32; 3]> {
@@ -1939,7 +1939,13 @@ fn fixed_slots(body: &Body, pose: &[Mat4], place: Mat4) -> Vec<[i32; 3]> {
         return Vec::new();
     }
     let root = place.transform_point3(pose.get(body.bones[0]).map_or(Vec3::ZERO, |m| m.w_axis.truncate())) * UNITS;
-    let mut out: Vec<(Fixed, [i32; 3])> = vec![(mul(&fix(Mat3::from_mat4(place)), &fix(rot(0))), root.round().to_array().map(|v| v as i32))];
+    // the facing from the game's sines at its s16 angle over 16 (0x398690: an angle a hair off a quarter turn keeps
+    // its 6 across)
+    let pi = std::f32::consts::PI;
+    let u = ((pi + place.x_axis.z.atan2(place.x_axis.x)) * 32768.0 / pi).round() as i32 as i16 as i32;
+    let (s, c) = (kumite_sim::ball::sin12(2048 - (u >> 4)), kumite_sim::ball::cos12(2048 - (u >> 4)));
+    let facing: Fixed = [[c, 0, s], [0, 4096, 0], [-s, 0, c]];
+    let mut out: Vec<(Fixed, [i32; 3])> = vec![(mul(&facing, &fix(rot(0))), root.round().to_array().map(|v| v as i32))];
     for (s, &(parent, at)) in body.joints.iter().enumerate().take(18).skip(1) {
         let Some(&(turn, p)) = out.get(parent) else { return Vec::new() };
         let at = (at * UNITS).round().to_array().map(|v| v as i64);

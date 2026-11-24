@@ -303,6 +303,31 @@ fn a_strike_lands_in_the_pose_before_the_push() {
     assert!(x.is_some_and(|x| (652.0..=660.0).contains(&x)), "{x:?}");
 }
 
+/// The push's spheres are placed by the facing the game builds from its sines at the s16 angle over 16 (0x398690),
+/// and the push turns its axes by that angle cut toward zero (0x377338): a facing a hair off a quarter turn (16383)
+/// keeps its 6 across. Ogre's d+4 after a dash at Hwoarang (both holding 1+2 through the intro) pushes him on the
+/// move's first frame to x 1053 as in PCSX2 (rounded off the table: no push there, 1037).
+#[test]
+fn the_push_spheres_turn_with_the_games_sines() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [528, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    let hold = Pad { buttons: 3, ..Pad::default() };
+    while b.phase != Phase::Fight {
+        b.step([hold; 2]);
+    }
+    let mut x = None;
+    for pad in parse_script("n*61,f*30,n*2,d+4*2,n*30").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        if f[0].alias == 410 && f[0].frame == 1 {
+            x = Some((f[0].root().x, f[1].root().x));
+        }
+    }
+    assert!(x.is_some_and(|(p, q)| (113.0..=117.0).contains(&p) && (1051.0..=1055.0).contains(&q)), "{x:?}");
+}
+
 /// Ogre's strike slot 0x13 is his slot 6 (0x34F2C0, body 14 only): his b+2 (alias 359, bones 0x13) reaches Lei from
 /// 1000 as in PCSX2.
 #[test]
