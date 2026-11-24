@@ -272,6 +272,9 @@ const MIN_HEIGHT: f32 = 0.25;
 /// A hit of this much damage adds the character spark, its light and the heavy-hit particles.
 const HEAVY: i32 = 21;
 const LIGHT_FRAMES: u32 = 48;
+/// Tekken Tag's heavy-hit fireball at first (0x3A6110): +0x54 0.4 of the quad 0x90 0x80 over the 0x48 of 400,
+/// metres through the hits' projection (0.6822 m at 0x90 / 0x48 x +0x54 of 1).
+const TAG_HEAVY: f32 = 0.4 * 128.0 / 400.0 * 0.6822;
 
 /// A sprite slot (system A).
 #[derive(Clone, Debug)]
@@ -310,6 +313,8 @@ pub struct Particle {
     pub life: u32,
     pub ramp: usize,
     pub size: f32,
+    /// Tekken Tag's (0x3A35C8 / 0x3A3928): mm a frame, its own easing, its frame and size by its age.
+    pub tag: bool,
 }
 
 /// A quad to draw: centre, size, atlas cell, colour (multiplies the texture), blend.
@@ -601,10 +606,37 @@ impl Vfx {
     fn heavy(&mut self, at: Vec3, strike: Vec3, ki: bool) {
         let d = strike.normalize_or_zero();
         let (yaw, pitch) = (d.x.datan2(d.z), d.y.datan2(glam::Vec2::new(d.x, d.z).length()));
-        let unit = std::f32::consts::TAU / 4096.0;
-        let ramp = usize::from(ki);
-        let size = if ki { 0.070 } else { 0.110 };
         let heading = |yaw: f32, pitch: f32| Vec3::new(pitch.dcos() * yaw.dsin(), pitch.dsin(), pitch.dcos() * yaw.dcos());
+        let ramp = usize::from(ki);
+        if self.data.as_ref().is_some_and(|d| !d.bursts.is_empty()) {
+            // Tekken Tag's (0x3A6110 kinds 0x81 / 0x80, the charged 0x8C / 0x8B: file 8's orange or blue frames): 10
+            // easing ones (0x3A35C8: turned by up to pi / 3, from r x 512 to r x 512 + 1664, 10-41 frames) and 18
+            // straight ones (0x3A3928: up to 127 mm aside, turned by up to pi / 32, r x 159 mm a frame, an eighth of
+            // it at once, 20-51 frames)
+            let unit = |v: &mut Self| v.rand() as f32 / 32768.0;
+            for _ in 0..10 {
+                let dp = (2.0 * unit(self) - 1.0) * std::f32::consts::FRAC_PI_3;
+                let dy = (2.0 * unit(self) - 1.0) * std::f32::consts::FRAC_PI_3;
+                let v0 = unit(self) * 512.0;
+                let v1 = unit(self) * 512.0 + 1664.0;
+                let life = (self.rand() & 31) + 10;
+                self.particles.push(Particle { pos: at, dir: heading(yaw + dy, pitch + dp), v0, v1, easing: true, age: 0, life, ramp, size: TAG_HEAVY, tag: true });
+            }
+            for _ in 0..18 {
+                let mut aside = || ((self.rand() & 0xFF) as f32 - 127.0) / UNITS;
+                let jitter = Vec3::new(aside(), aside(), aside());
+                let dp = (2.0 * unit(self) - 1.0) * std::f32::consts::PI / 32.0;
+                let dy = (2.0 * unit(self) - 1.0) * std::f32::consts::PI / 32.0;
+                let speed = unit(self) * 159.0;
+                let dir = heading(yaw + dy, pitch + dp);
+                let life = (self.rand() & 31) + 20;
+                let pos = at + jitter + dir * speed * 0.125 / UNITS;
+                self.particles.push(Particle { pos, dir, v0: speed, v1: speed, easing: false, age: 0, life, ramp, size: TAG_HEAVY, tag: true });
+            }
+            return;
+        }
+        let unit = std::f32::consts::TAU / 4096.0;
+        let size = if ki { 0.070 } else { 0.110 };
         for _ in 0..6 {
             let r = self.rand2();
             let dy = ((r & 0x7FF) as f32 - 0x3FF as f32) * 2.0 / 3.0 * unit;
@@ -613,7 +645,7 @@ impl Vfx {
             let v0 = ((r >> 6) & 0x1FF) as f32;
             let v1 = ((r >> 8) & 0x1FF) as f32 + 0x680 as f32;
             let life = ((r >> 4) & 31) + 10;
-            self.particles.push(Particle { pos: at, dir: heading(yaw + dy, pitch + dp), v0, v1, easing: true, age: 0, life, ramp, size });
+            self.particles.push(Particle { pos: at, dir: heading(yaw + dy, pitch + dp), v0, v1, easing: true, age: 0, life, ramp, size, tag: false });
         }
         for _ in 0..20 {
             let r = self.rand2();
@@ -627,7 +659,7 @@ impl Vfx {
             let dir = heading(yaw + dy, pitch + dp);
             // the first frame jumps about 8 frames of travel
             let pos = at + jitter + dir * speed / 16.0 / UNITS * 8.0;
-            self.particles.push(Particle { pos, dir, v0: speed, v1: speed, easing: false, age: 0, life, ramp, size });
+            self.particles.push(Particle { pos, dir, v0: speed, v1: speed, easing: false, age: 0, life, ramp, size, tag: false });
         }
         if self.particles.len() > 80 {
             let extra = self.particles.len() - 80;
@@ -987,10 +1019,16 @@ impl Vfx {
         for p in &mut self.particles {
             p.age += 1;
             let t = p.age as f32 / p.life.max(1) as f32;
-            let s = if p.easing { p.v0 + (p.v1 - p.v0) * (0.25 + 0.5 * (std::f32::consts::FRAC_PI_2 * t).dcos()) } else { p.v0 };
-            p.pos += p.dir * s / 16.0 / UNITS;
+            p.pos += match (p.tag, p.easing) {
+                // (0x3A35C8: its phase on by pi / life, (cos + 1) x 0.06247 + 0.5 of the way to v1, a 32nd in mm)
+                (true, true) => p.dir * (p.v0 + (p.v1 - p.v0) * (((std::f32::consts::PI * t).dcos() + 1.0) * 0.06247 + 0.5)) / 32.0 / UNITS,
+                (true, false) => p.dir * p.v0 / UNITS,
+                (false, true) => p.dir * (p.v0 + (p.v1 - p.v0) * (0.25 + 0.5 * (std::f32::consts::FRAC_PI_2 * t).dcos())) / 16.0 / UNITS,
+                (false, false) => p.dir * p.v0 / 16.0 / UNITS,
+            };
         }
-        self.particles.retain(|p| p.age < p.life && p.pos.y > 0.0);
+        // (Tekken Tag's go on below the floor)
+        self.particles.retain(|p| p.age < p.life && (p.tag || p.pos.y > 0.0));
         for b in &mut self.bursts {
             b.age += 1;
         }
@@ -1053,9 +1091,11 @@ impl Vfx {
             out.extend_from_slice(&self.auras);
             for p in &self.particles {
                 let ramp = &d.heavy[p.ramp];
-                let i = (p.age as usize * 16 / p.life.max(1) as usize).min(ramp.len().saturating_sub(1));
+                // (Tekken Tag's: its frame on by 10 / life a frame and its size down to half, 0x3A35C8's +0xE4, +0xE0)
+                let (frames, size) = if p.tag { (10, p.size * (1.0 - 0.5 * p.age as f32 / p.life.max(1) as f32)) } else { (16, p.size) };
+                let i = (p.age as usize * frames / p.life.max(1) as usize).min(ramp.len().saturating_sub(1));
                 if let Some(&cell) = ramp.get(i) {
-                    out.push(Sprite { pos: p.pos, size: p.size, cell, color: [1.0; 4], blend: Blend::Add, mirror: false, nearer: 0.0, sheet: 0 });
+                    out.push(Sprite { pos: p.pos, size, cell, color: [1.0; 4], blend: Blend::Add, mirror: false, nearer: 0.0, sheet: 0 });
                 }
             }
         }
@@ -1156,5 +1196,19 @@ mod tests {
             seen.push(s.cell);
         }
         assert_eq!(seen, [10, 11, 11, 12, 12, 10]);
+        // Tekken Tag's heavy hit (0x3A6110): 10 + 18 fireballs of 0.087 m, half that at their end, through 10 frames
+        v.data.as_mut().unwrap().heavy = [Arc::new((20..30).collect()), Arc::new((30..40).collect())];
+        v.heavy(Vec3::Y, Vec3::X, false);
+        assert_eq!(v.particles.len(), 28);
+        assert!(v.particles.iter().all(|p| p.tag && (10..=51).contains(&p.life)));
+        let (mut first, mut cells) = (None, vec![]);
+        while !v.particles.is_empty() {
+            v.advance();
+            let s: Vec<Sprite> = v.sprites().into_iter().filter(|s| s.cell >= 20).collect();
+            first.get_or_insert(s.iter().map(|s| s.size).fold(0.0, f32::max));
+            cells.extend(s.iter().map(|s| s.cell));
+            assert!(s.iter().all(|s| s.size >= TAG_HEAVY / 2.0 - 1e-6 && s.size <= TAG_HEAVY));
+        }
+        assert!(first.is_some_and(|m| m > 0.08) && cells.iter().all(|c| (20..30).contains(c)) && cells.contains(&29));
     }
 }
