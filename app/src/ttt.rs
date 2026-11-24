@@ -4760,6 +4760,10 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
             }
         }
     }
+    // the bars, plates, timer and top row are drawn at the depth 1 m behind the farther fighter (0x3C0098: gp-0x69C0,
+    // ZTST GEQUAL), so what is nearer, the fighters and their effects, covers them; the round's texts are in front
+    // shortcut: drawn behind all the fighters, the arena's people included (nearer or not); upgrade: a depth-tested 2D
+    crate::debug::mark_under(painter);
     // (Force: FIGHT! and K.O. only, OpenKumite's; its stage card instead of the round, STAGE CLEAR!! instead of the
     // result)
     if info.no_result {

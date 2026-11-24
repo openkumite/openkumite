@@ -56,6 +56,22 @@ pub struct CharSpark {
     pub special: Vec<Vec<u32>>,
     /// The strip's picture sheet (0 the atlas; the crossover's Tekken 3 fighters' under Tekken Tag: Tekken 3's atlas).
     pub sheet: usize,
+    /// Its aura's particles while it is drawn (Unknown's, 0x3A5FA0).
+    pub aura: Vec<Aura>,
+}
+
+/// An aura particle (effects.json `aura`): its special slot, the points it lies at the mean of ([node, metres along
+/// the node's x]), its size (metres), level (1 = as drawn), how much nearer the eye it is drawn (metres), its cell on
+/// by one each `every` frames round the slot, from a random one when `random`; added.
+#[derive(Clone, Debug, Default)]
+pub struct Aura {
+    pub slot: usize,
+    pub points: Vec<(usize, f32)>,
+    pub size: f32,
+    pub level: f32,
+    pub nearer: f32,
+    pub every: u32,
+    pub random: bool,
 }
 
 /// A burst's set (effects.json `bursts`): its atlas cell, its particles' size (metres at size 1) and brightness,
@@ -156,6 +172,25 @@ impl EffectsData {
                         burst: sheet.filter(|_| c["burst"].is_object()).map(|k| burst(&c["burst"], k)),
                         sheet: sheet.unwrap_or(0),
                         special: c["special"].as_array().into_iter().flatten().map(|s| cells(s).to_vec()).collect(),
+                        aura: c["aura"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|a| {
+                                let f = |x: &serde_json::Value| x.as_f64().unwrap_or(0.0) as f32;
+                                let points = a["points"].as_array().into_iter().flatten().map(|p| (p[0].as_u64().unwrap_or(0) as usize, f(&p[1]))).collect();
+                                let every = a["every"].as_u64().unwrap_or(1).max(1) as u32;
+                                Aura {
+                                    slot: a["slot"].as_u64().unwrap_or(0) as usize,
+                                    points,
+                                    size: f(&a["size"]),
+                                    level: f(&a["level"]),
+                                    nearer: f(&a["nearer"]),
+                                    every,
+                                    random: a["random"].as_bool().unwrap_or(false),
+                                }
+                            })
+                            .collect(),
                     },
                 ))
             })
@@ -322,6 +357,9 @@ pub struct Vfx {
     /// The effect objects' pictures this frame (Gon's fire and gas), and the fires on struck fighters.
     objects: Vec<Sprite>,
     burns: Vec<Burn>,
+    /// The auras' pictures this frame, and each actor's aura particles' frame counters (+0x16).
+    auras: Vec<Sprite>,
+    aura_frames: HashMap<usize, Vec<u32>>,
 }
 
 /// A fire on a fighter Gon's fire struck (effect object 0xB, 0x80072E74): on a bone slot of the victim for 60-75
@@ -395,6 +433,8 @@ impl Vfx {
             flares: Vec::new(),
             objects: Vec::new(),
             burns: Vec::new(),
+            auras: Vec::new(),
+            aura_frames: HashMap::new(),
         }
     }
 
@@ -437,6 +477,8 @@ impl Vfx {
         self.flares.clear();
         self.objects.clear();
         self.burns.clear();
+        self.auras.clear();
+        self.aura_frames.clear();
     }
 
     /// A hit-spark slot (the 4th overwrites the oldest). `dir`: the strike direction (moving sparks only).
@@ -612,6 +654,11 @@ impl Vfx {
             &|i, name| game.body_of(i)?.character.nodes.iter().position(|n| n.name == name),
         );
         self.objects(&fight.objects.list, &models);
+        self.auras.clear();
+        for &(_, i, _) in &actors {
+            let Some((pose, place)) = game.pose_actor(i) else { continue };
+            self.aura(i, models.get(i).copied().unwrap_or(0), &|node, x| Some(place.transform_point3(pose.get(node)?.transform_point3(Vec3::X * x))));
+        }
         // Devil's beam (0x378600): from the active window's start to 30 frames past its end, its width narrowing
         self.ribbons.clear();
         self.flares.clear();
@@ -672,6 +719,28 @@ impl Vfx {
         }
         if dust {
             self.burst_at(3, to, None, false, 0.0);
+        }
+    }
+
+    /// Actor `i`'s aura one frame (Unknown's, 0x3A5910 / 0x3A5B78 / 0x3A5D98 while drawn): each particle at the mean
+    /// of its points, `at(node, x)` the point x metres along a node's x axis (world, metres), its counter on by one
+    /// and its cell the counter / `every` round its slot.
+    /// shortcut: the wolf's root jitter (0x34CC38's noise) and the 2 frames before the particles first show are not done
+    fn aura(&mut self, i: usize, model: usize, at: &dyn Fn(usize, f32) -> Option<Vec3>) {
+        let Some(c) = self.data.as_ref().and_then(|d| d.characters.get(&model)).filter(|c| !c.aura.is_empty()).cloned() else { return };
+        let Some(sheet) = c.burst.as_ref().map(|b| b.sheet) else { return };
+        if !self.aura_frames.contains_key(&i) {
+            let starts = c.aura.iter().map(|a| if a.random { self.rand() % 24 } else { 0 }).collect();
+            self.aura_frames.insert(i, starts);
+        }
+        let Some(frames) = self.aura_frames.get_mut(&i) else { return };
+        for (a, n) in c.aura.iter().zip(frames.iter_mut()) {
+            *n += 1;
+            let points: Vec<Vec3> = a.points.iter().filter_map(|&(node, x)| at(node, x)).collect();
+            let cells = c.special.get(a.slot).map_or(&[][..], |s| s.as_slice());
+            let (Some(&cell), false) = (cells.get((*n / a.every) as usize % cells.len().max(1)), points.is_empty()) else { continue };
+            let pos = points.iter().sum::<Vec3>() / points.len() as f32;
+            self.auras.push(Sprite { pos, size: a.size, cell, color: [a.level, a.level, a.level, 1.0], blend: Blend::Add, mirror: false, nearer: a.nearer, sheet });
         }
     }
 
@@ -977,6 +1046,7 @@ impl Vfx {
         if let Some(d) = &self.data {
             out.extend_from_slice(&self.flares);
             out.extend_from_slice(&self.objects);
+            out.extend_from_slice(&self.auras);
             for p in &self.particles {
                 let ramp = &d.heavy[p.ramp];
                 let i = (p.age as usize * 16 / p.life.max(1) as usize).min(ramp.len().saturating_sub(1));
@@ -1019,6 +1089,8 @@ mod tests {
             flares: vec![],
             objects: vec![],
             burns: vec![],
+            auras: vec![],
+            aura_frames: HashMap::new(),
         };
         v.effect("block", &data.block, Vec3::new(1.0, 1.0, 0.0), None, Blend::Add, Vec3::ZERO);
         assert!(v.sprites().is_empty() && v.slots.iter().all(Option::is_none));
@@ -1066,5 +1138,19 @@ mod tests {
         v.data.as_mut().unwrap().characters.insert(247, CharSpark { strip, light: [0.0, 0.75, 1.0], light_frames: 48, sheet: 3, ..Default::default() });
         v.char_spark(247, Vec3::Y, None, Vec3::ZERO);
         assert_eq!(cells(&v), [(3, 1392)]);
+        // Unknown's aura: a particle between two points, its cell on by one every 2 frames round its slot
+        v.slots = [None, None, None];
+        let aura = vec![Aura { slot: 1, points: vec![(4, 0.0), (5, 1.0)], size: 0.7, level: 1.25, nearer: 0.1, every: 2, random: false }];
+        let special = vec![vec![], vec![10, 11, 12]];
+        v.data.as_mut().unwrap().characters.insert(693, CharSpark { burst: Some(BurstSet { sheet: 4, ..Default::default() }), special, aura, ..Default::default() });
+        let at = |node: usize, x: f32| Some(Vec3::new(node as f32 + x, 0.0, 0.0));
+        let mut seen = vec![];
+        for _ in 0..6 {
+            v.aura(0, 693, &at);
+            let s = v.auras.pop().unwrap();
+            assert!(v.auras.is_empty() && s.pos == Vec3::new(5.0, 0.0, 0.0) && s.sheet == 4 && s.color[0] == 1.25 && s.blend == Blend::Add);
+            seen.push(s.cell);
+        }
+        assert_eq!(seen, [10, 11, 11, 12, 12, 10]);
     }
 }
