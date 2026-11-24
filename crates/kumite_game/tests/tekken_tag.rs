@@ -2033,3 +2033,12 @@ fn unknowns_wolf_stands_behind_her() {
     assert!(wolf.distance(want) < 0.05, "the wolf at {wolf}, her mark {want}");
     assert_eq!(b.game.bodies[0].hidden, vec![116, 117, 118, 119]);
 }
+
+/// The arena's people are hidden nearer than the nearer fighter (0x3D9468), never nearer than 3 m.
+#[test]
+fn the_people_are_cut_at_the_nearer_fighter() {
+    use glam::Vec3;
+    let (eye, forward) = (Vec3::new(0.0, 1.0, 0.0), Vec3::NEG_Z);
+    assert_eq!(kumite_game::people_cut(eye, forward, [Vec3::new(-3.0, 0.0, -12.0), Vec3::new(3.0, 0.0, -9.0)]), 9.0);
+    assert_eq!(kumite_game::people_cut(eye, forward, [Vec3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 0.0, -2.0)]), 3.0);
+}
