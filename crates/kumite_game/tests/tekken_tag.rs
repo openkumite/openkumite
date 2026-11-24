@@ -311,6 +311,31 @@ fn the_tails_strike_slots_are_where_the_ps2_has_them() {
     }
 }
 
+/// True Ogre's fire (1+2, move 3799, a strike to slot 0x18): his flames (kumite_sim::objects, 0x3A4EE8) burn
+/// Hwoarang (alias 3572) 1.95 m away on frame 63-65 of it, as in PCSX2 (the move audit's `trueogre_12`, the
+/// fighters and partners picked on the select: Hwoarang burns on its frame 64); the strike to slot 0x18 had no
+/// segment.
+#[test]
+fn true_ogres_fire_burns() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [TRUE_OGRE, HWOARANG]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut at = None;
+    for pad in parse_script("n*62,f*30,n*2,1+2*2,n*90").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        if at.is_none() && f[1].alias == 3572 {
+            at = Some((f[0].current.index, f[0].frame, (f[1].root() - f[0].root()).length()));
+        }
+    }
+    eprintln!("burns at {at:?}");
+    assert!(at.is_some_and(|(m, k, d)| m == 3799 && (62..=66).contains(&k) && (1700.0..2200.0).contains(&d)), "{at:?}");
+}
+
 /// Devil's laser (0x378150: slot 0x18, from his head, 200 longer each active frame): his n+1+2 (move 4175) from
 /// -554 reaches Hwoarang at 944 and he falls (alias 3626) on frame 36 of it, as in PCSX2 (its 37th: audit
 /// 29_cmd00); the strike to slot 0x18 had no segment.
