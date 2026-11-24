@@ -231,6 +231,12 @@ openkumite --online ROOM [--signal ws://HOST:PORT] [--name NICK] [--locals 1|2] 
 
 Without `--signal`, a local `matchbox_server` on port 3536 is used.
 
+Tekken Tag Tournament has the same rooms: ONLINE on its main menu, after TAG BRAWL. Its room plays VS BATTLE (tag
+pairs, picked on its own select, on a random arena of its own) and TAG BRAWL's three modes. Online, the select is the
+same on every computer: everyone is unlocked, the options are the defaults, and the arcade pack's arenas are left out
+(the fingerprint does not cover them). Both computers need the same Tekken Tag data, extras included: the room checks
+the fingerprint.
+
 ## Saves
 
 Records, unlocks and settings are kept as JSON in the system's application data folder (macOS

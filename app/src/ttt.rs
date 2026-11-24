@@ -31,7 +31,7 @@ const W: f32 = 640.0;
 const H: f32 = 448.0;
 /// Main menu ids (= the game's mode numbers, FRONTEND.md 2).
 const ARCADE: u32 = 0;
-const VS: u32 = 1;
+pub const VS: u32 = 1;
 const TEAM: u32 = 2;
 const TIME_ATTACK: u32 = 3;
 const SURVIVAL: u32 = 4;
@@ -46,6 +46,8 @@ pub const BALL: u32 = 0x100;
 pub const FORCE: u32 = 0x101;
 /// TAG BRAWL (OpenKumite's own mode, Tekken 3's: its modes' list and setup): no mode of the game's.
 pub const TAG_BRAWL: u32 = 0x102;
+/// ONLINE (OpenKumite's own: Tekken 3's rooms, VS BATTLE and TAG BRAWL there): no mode of the game's.
+pub const ONLINE: u32 = 0x103;
 const OPTIONS: u32 = 11;
 /// Armor King's character id.
 const ARMOR_KING: usize = 26;
@@ -187,8 +189,6 @@ impl Data {
     }
 
     /// The arenas a fight is drawn on: Tekken Tag's, and the arcade pack's unless OPTIONS turned them off.
-    // shortcut: Tekken Tag has no online rooms; once it has, leave the arcade arenas out online (the arcade pack is
-    // outside the fingerprint: a peer may lack it)
     pub fn pool(&self, p: &Progress) -> Vec<usize> {
         self.arenas.iter().chain(self.arcade.iter().filter(|_| !p.arcade_off)).map(|a| a.0).collect()
     }
@@ -377,6 +377,12 @@ pub fn set_progress(p: Progress) {
 }
 
 impl Progress {
+    /// Online: every computer's select alike, whatever its save: all unlocked, the default options, no arcade arenas
+    /// (the arcade pack is outside the fingerprint: a peer may lack it).
+    pub fn online() -> Self {
+        Self { stage: LAST_STAGE, seen: u64::MAX, arcade_off: true, ..Self::default() }
+    }
+
     pub fn options(&self, d: &Data) -> [usize; 3] {
         self.options.unwrap_or_else(|| OPTION_ROWS.map(|r| d.option(r).0))
     }
@@ -970,6 +976,9 @@ pub struct Select {
     pub cont: Option<Box<Run>>,
     /// HOLD's memory ([`Progress::cursors`]) as the picks change it.
     memory: [[Option<usize>; 2]; 2],
+    /// Online (the room's seed): RANDOM's roll stands still at it (the keys come at other frames on each computer),
+    /// the room's clock in place of the select's timer, no stage select, nothing saved.
+    pub online: Option<u32>,
 }
 
 impl Select {
@@ -992,7 +1001,16 @@ impl Select {
         if mode == PRACTICE {
             sides[1] = side(Some(0), 1);
         }
-        Self { mode, sides, frame: 0, done: 0, tally, cont: None, memory }
+        Self { mode, sides, frame: 0, done: 0, tally, cont: None, memory, online: None }
+    }
+
+    /// Online VS BATTLE's select, the same on every computer (no save's cursors).
+    pub fn online(d: &Data, tally: [u32; 2], seed: u32) -> Self {
+        let mut s = Self { memory: [[None; 2]; 2], online: Some(seed), ..Self::new(VS, d, Some(tally)) };
+        for (k, side) in s.sides.iter_mut().enumerate() {
+            side.cursor = int(&d.raw["select"]["start_slots"][k]).min(d.slots.len().saturating_sub(1));
+        }
+        s
     }
 
     /// The side `player`'s keys move now.
@@ -1006,7 +1024,7 @@ impl Select {
         let taken: Vec<usize> = self.sides.get(side).map_or(vec![], |s| s.picks.iter().map(|p| p.0).collect());
         let mut free: Vec<usize> = roster.characters.iter().map(|c| c.id).filter(|&c| d.selectable(progress.stage, c) && roster.index_of(c).is_some_and(|i| !taken.contains(&i))).collect();
         free.sort_unstable();
-        let at = self.frame as usize / int(&d.raw["select"]["random_roll"]).max(1);
+        let at = self.online.map_or(self.frame as usize / int(&d.raw["select"]["random_roll"]).max(1), |s| s as usize);
         free.get(at % free.len().max(1)).copied()
     }
 
@@ -1159,26 +1177,31 @@ impl Select {
         Some(())
     }
 
+    /// The time is up: every side still picking takes its picks at once.
+    fn finish(&mut self, d: &Data, roster: &Roster, progress: &Progress, seed: &mut u32) {
+        let random = d.slots.iter().position(|s| s.character.is_none()).unwrap_or(0);
+        for k in 0..2 {
+            while self.sides[k].player.is_some() && !self.sides[k].done {
+                let button = pick(&[0x80, 0x10, 0x04, 0x40, 0x20], seed).unwrap_or(0x80) as u32;
+                if self.take(k, button, d, roster, progress).is_none() {
+                    self.sides[k].cursor = random;
+                    if self.take(k, button, d, roster, progress).is_none() {
+                        break;
+                    }
+                }
+                self.sides[k].done |= self.mode == TEAM;
+            }
+        }
+    }
+
     fn tick(&mut self, d: &Data, roster: &Roster, progress: &Progress, seed: &mut u32) -> Option<Run> {
         self.frame += 1;
         // the timer out (`select.timer`, 0x3C9888): each side still picking takes what its cursor is on, else RANDOM's
         // character (shortcut: what the original does then is not decoded), in a costume of a button drawn at random
         // (0x3CA070: rand() % 5 of square, triangle, a tag button, cross, circle); all its picks on that frame, as the
         // PS2 does
-        if d.raw["select"]["timer"]["frames"].as_u64().is_some_and(|t| u64::from(self.frame) >= t) {
-            let random = d.slots.iter().position(|s| s.character.is_none()).unwrap_or(0);
-            for k in 0..2 {
-                while self.sides[k].player.is_some() && !self.sides[k].done {
-                    let button = pick(&[0x80, 0x10, 0x04, 0x40, 0x20], seed).unwrap_or(0x80) as u32;
-                    if self.take(k, button, d, roster, progress).is_none() {
-                        self.sides[k].cursor = random;
-                        if self.take(k, button, d, roster, progress).is_none() {
-                            break;
-                        }
-                    }
-                    self.sides[k].done |= self.mode == TEAM;
-                }
-            }
+        if self.online.is_none() && d.raw["select"]["timer"]["frames"].as_u64().is_some_and(|t| u64::from(self.frame) >= t) {
+            self.finish(d, roster, progress, seed);
         }
         let ready = self.sides.iter().all(|s| s.player.is_none() || s.done);
         if !ready {
@@ -1202,6 +1225,11 @@ impl Select {
     }
 }
 
+/// The select's timer (`select.timer`, frames), when it has one: online, the room's clock.
+pub fn select_frames(d: &Data) -> Option<u32> {
+    d.raw["select"]["timer"]["frames"].as_u64().map(|t| t as u32)
+}
+
 /// A grid slot not shown: Mokujin's and Unknown's (FRONTEND.md 3), until their character can be picked.
 // shortcut: the original shows them by settings +8 (QUICK SELECT, [M]); here once unlocked
 fn hidden(d: &Data, roster: &Roster, p: &Progress, slot: usize) -> bool {
@@ -1209,6 +1237,22 @@ fn hidden(d: &Data, roster: &Roster, p: &Progress, slot: usize) -> bool {
 }
 
 impl Front {
+    /// The save's progress, or online's ([`Progress::online`]) on an online select.
+    fn progress(&self) -> Progress {
+        match &self.page {
+            Page::Select(s) if s.online.is_some() => Progress::online(),
+            _ => progress(),
+        }
+    }
+
+    /// Online, the room's time is up: the select's picks taken at once, alike on every computer (the room's seed).
+    pub fn finish(&mut self, roster: &Roster) {
+        if let (Page::Select(s), Some(d)) = (&mut self.page, roster.ttt.as_deref()) {
+            let mut seed = s.online.unwrap_or(1);
+            s.finish(d, roster, &Progress::online(), &mut seed);
+        }
+    }
+
     pub fn title() -> Self {
         Self { page: Page::Title, frame: 0 }
     }
@@ -1240,7 +1284,7 @@ impl Front {
 
     /// The main menu's entries: of the locked ones, THEATER once an ending was seen (0x3BFED8), TEKKEN BOWL once the
     /// unlock stage opens it (Gallery is not here yet); OpenKumite's TEKKEN BALL and TEKKEN FORCE before OPTIONS with the
-    /// Tekken 3 slice, and its TAG BRAWL.
+    /// Tekken 3 slice, and its TAG BRAWL and ONLINE.
     fn items(d: &Data, p: &Progress) -> Vec<(u32, String)> {
         let open = |i: &&Value| {
             let mode = int(&i["mode"]) as u32;
@@ -1255,6 +1299,7 @@ impl Front {
             items.insert(items.iter().position(|i| i.0 == OPTIONS).unwrap_or(items.len()), (FORCE, "TEKKEN FORCE".into()));
         }
         items.insert(items.iter().position(|i| i.0 == OPTIONS).unwrap_or(items.len()), (TAG_BRAWL, "TAG BRAWL".into()));
+        items.insert(items.iter().position(|i| i.0 == OPTIONS).unwrap_or(items.len()), (ONLINE, "ONLINE".into()));
         if cfg!(not(target_arch = "wasm32")) {
             items.push((u32::MAX, "EXIT".into()));
         }
@@ -1262,7 +1307,7 @@ impl Front {
     }
 
     pub fn key(&mut self, player: usize, key: Key, roster: &Roster, seed: &mut u32) -> Outcome {
-        let mut progress = progress();
+        let mut progress = self.progress();
         let progress = &mut progress;
         let Some(d) = roster.ttt.clone() else { return Outcome::None };
         let next = match &mut self.page {
@@ -1297,6 +1342,7 @@ impl Front {
                             Some(OPTIONS) => Some(Page::Options { cursor: 0 }),
                             Some(THEATER) => Some(Page::Theater { cursor: [0, 0] }),
                             Some(TAG_BRAWL) => return Outcome::TagBrawl,
+                            Some(ONLINE) => return Outcome::TttOnline,
                             Some(m) => Some(Page::Select(Box::new(Select::new(m, &d, None)))),
                             None => None,
                         }
@@ -1412,6 +1458,11 @@ impl Front {
                     _ => None,
                 }
             }
+            // (online: back from the select is back to the room)
+            Page::Select(s) if s.online.is_some() => match s.key(player, key, &d, roster, progress) {
+                Some(_) => return Outcome::Quit,
+                None => None,
+            },
             Page::Select(s) => s.key(player, key, &d, roster, progress),
             Page::Stage { run, cursor } => {
                 let n = stage_list(&d).len().max(1);
@@ -1613,7 +1664,7 @@ impl Front {
     }
 
     pub fn tick(&mut self, roster: &Roster, seed: &mut u32) -> Outcome {
-        let progress = &progress();
+        let progress = &self.progress();
         self.frame += 1;
         let Some(d) = roster.ttt.clone() else { return Outcome::None };
         match &mut self.page {
@@ -1625,6 +1676,12 @@ impl Front {
                 if *idle >= int(&d.raw["menu"]["idle"]).max(1) as u32 {
                     self.page = Page::Title;
                     self.frame = 0;
+                }
+            }
+            // (online: the host's run goes to the room, on a RANDOM arena)
+            Page::Select(s) if s.online.is_some() => {
+                if let Some(run) = s.tick(&d, roster, progress, seed) {
+                    return Outcome::TttFight(Box::new(run));
                 }
             }
             Page::Select(s) => {
@@ -1732,7 +1789,7 @@ impl Front {
     }
 
     pub fn draw(&self, painter: &egui::Painter, v: &View, art: &Art, roster: &Roster) {
-        let progress = &progress();
+        let progress = &self.progress();
         let Some(d) = roster.ttt.as_deref() else { return };
         match &self.page {
             // (0x3BCC88: the logo out of white, then the line blinking by the frame's `blink_mask` bits, the namco logo
@@ -2954,7 +3011,7 @@ impl Posers {
     /// One frame of the select `s`: who stands where (a new one, or one just picked, from its first frame), then a frame
     /// on.
     pub fn step(&mut self, assets: &kumite_assets::Assets, d: &Data, roster: &Roster, s: &Select) {
-        let progress = &progress();
+        let progress = &if s.online.is_some() { Progress::online() } else { progress() };
         let wanted = if d.raw["select"]["models"].is_object() && !quick_select(d, progress) { s.posers(d, roster, progress) } else { vec![] };
         let before = self.shown.len();
         self.shown.retain(|m| wanted.iter().any(|w| w.0 == m.slot && w.1 == m.record));
@@ -5645,6 +5702,44 @@ mod tests {
         r
     }
 
+    /// Online VS BATTLE: the select is the same on every computer whatever its save (all unlocked, the start slots,
+    /// RANDOM standing still); it goes back to the room, the room's time up takes the picks, the run goes to the room
+    /// (no stage select) on one of Tekken Tag's arenas; a guest takes only such a run.
+    #[test]
+    fn the_online_select_is_alike_everywhere_and_its_run_is_checked() {
+        let (d, mut seed) = (data(), 1);
+        let tag = Roster { ttt: Some(d.clone()), ..roster() };
+        let online = || Front { page: Page::Select(Box::new(Select::online(&d, [1, 2], 7))), frame: 0 };
+        // (character 2 is locked with this save's original unlocks; online it is not)
+        let mut f = online();
+        for k in [Key::Right, Key::Right, Key::Button(0)] {
+            f.key(0, k, &tag, &mut seed);
+        }
+        let Page::Select(s) = &f.page else { panic!() };
+        assert_eq!((s.sides[0].picks.clone(), s.sides[1].cursor, s.tally), (vec![(2, 0)], 3, Some([1, 2])));
+        assert!(matches!(online().key(0, Key::Back, &tag, &mut seed), Outcome::Quit));
+        // the time up: both sides' picks at once, then the run after the select's `done` frames
+        f.finish(&tag);
+        let run = (0..200).find_map(|_| match f.tick(&tag, &mut seed) {
+            Outcome::TttFight(r) => Some(r),
+            _ => None,
+        });
+        let run = run.expect("the run");
+        assert!(run.teams.iter().all(|t| t.len() == 2) && run.stage < 20);
+        let ok = crate::room::MatchSetup::Ttt(run.clone());
+        assert!(ok.valid(&tag));
+        let bad = [
+            Run { stage: 150, ..*run.clone() },
+            Run { health: [Some(1), None], ..*run.clone() },
+            Run { teams: [vec![(0, 0)], run.teams[1].clone()], ..*run.clone() },
+            Run { mode: ARCADE, ..*run.clone() },
+        ];
+        for r in bad {
+            assert!(!crate::room::MatchSetup::Ttt(Box::new(r)).valid(&tag));
+        }
+        assert!(!ok.valid(&roster()), "Tekken 3's roster takes no Tekken Tag run");
+    }
+
     #[test]
     fn unlocks_advance_on_a_new_clear_and_points() {
         let d = data();
@@ -5767,9 +5862,9 @@ mod tests {
         let mut d = Data::load(&fe, &Value::from(vec![0]), &serde_json::json!({}), None, vec![], None, false, &Value::Null).unwrap();
         let modes = |d: &Data, stage| Front::items(d, &Progress { stage, ..Progress::default() }).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
         // open from the start by default; with --ttt-unlocks original at stage 10
-        assert_eq!(modes(&d, 0), vec![ARCADE, BOWL, TAG_BRAWL]);
+        assert_eq!(modes(&d, 0), vec![ARCADE, BOWL, TAG_BRAWL, ONLINE]);
         Arc::get_mut(&mut d).unwrap().original_unlocks = true;
-        assert_eq!((modes(&d, 9), modes(&d, 10)), (vec![ARCADE, TAG_BRAWL], vec![ARCADE, BOWL, TAG_BRAWL]));
+        assert_eq!((modes(&d, 9), modes(&d, 10)), (vec![ARCADE, TAG_BRAWL, ONLINE], vec![ARCADE, BOWL, TAG_BRAWL, ONLINE]));
         // its select: P1 picks two; 2P's START joins
         let mut s = Select::new(BOWL, &d, None);
         assert_eq!((s.sides[0].need, s.sides[1].player), (2, None));
@@ -5790,7 +5885,7 @@ mod tests {
                 .filter(|&m| m != u32::MAX)
                 .collect::<Vec<_>>()
         };
-        assert_eq!((modes(None), modes(Some(23))), (vec![ARCADE, TAG_BRAWL, OPTIONS], vec![ARCADE, BALL, TAG_BRAWL, OPTIONS]));
+        assert_eq!((modes(None), modes(Some(23))), (vec![ARCADE, TAG_BRAWL, ONLINE, OPTIONS], vec![ARCADE, BALL, TAG_BRAWL, ONLINE, OPTIONS]));
         let (d, roster, mut seed) = (data(), roster(), 1);
         let d = Arc::new(Data { ball: Some(23), ..Arc::try_unwrap(d).unwrap() });
         let run = Run::new(&d, &roster, &Progress::default(), BALL, [vec![(0, 0)], vec![]], &mut seed);
@@ -5845,16 +5940,17 @@ mod tests {
     }
 
     /// TEKKEN FORCE is on the menu (before OPTIONS) only with the Tekken 3 slice's force.json; one pick. TAG BRAWL
-    /// always, before OPTIONS: it opens Tekken 3's list of its modes.
+    /// always, before OPTIONS: it opens Tekken 3's list of its modes; ONLINE after it, Tekken 3's ONLINE screen.
     #[test]
     fn tekken_force_with_the_slice() {
         let fe = serde_json::json!({"front_end": {"menu": {"items": [{"mode": 0, "label": "ARCADE"}, {"mode": 11, "label": "OPTIONS"}]}}});
         let d = |force| Data::load(&fe, &Value::Null, &serde_json::json!({}), None, vec![], None, force, &Value::Null).unwrap();
         let modes = |force| Front::items(&d(force), &Progress::default()).iter().map(|i| i.0).filter(|&m| m != u32::MAX).collect::<Vec<_>>();
-        assert_eq!((modes(false), modes(true)), (vec![ARCADE, TAG_BRAWL, OPTIONS], vec![ARCADE, FORCE, TAG_BRAWL, OPTIONS]));
+        assert_eq!((modes(false), modes(true)), (vec![ARCADE, TAG_BRAWL, ONLINE, OPTIONS], vec![ARCADE, FORCE, TAG_BRAWL, ONLINE, OPTIONS]));
         assert_eq!(Select::new(FORCE, &d(true), None).sides[0].need, 1);
         let roster = Roster { ttt: Some(d(true)), ..roster() };
         assert!(matches!(Front::menu_on(&roster, TAG_BRAWL).key(0, Key::Start, &roster, &mut 1), Outcome::TagBrawl));
+        assert!(matches!(Front::menu_on(&roster, ONLINE).key(0, Key::Start, &roster, &mut 1), Outcome::TttOnline));
     }
 
     #[test]
