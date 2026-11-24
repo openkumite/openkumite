@@ -288,7 +288,10 @@ fn env_uv(uv: vec2<f32>, normal: vec4<f32>, p: vec3<f32>, eye: vec3<f32>) -> vec
     if (n.w > 4.0) {
         let e = eye - p;
         let v = normalize(vec3(e.x, 3.0 * e.y, e.z));
-        let r = 2.0 * n.xyz * dot(v, n.xyz) - v;
+        // (about the normal mirrored in x: the Bowl's ST in a PCSX2 GS dump, a sawtooth across each board as its
+        // bevels turn, match only so; unmirrored the tilts cancel the view's and each board shows one texel column)
+        let m = vec3(-n.x, n.y, n.z);
+        let r = 2.0 * m * dot(v, m) - v;
         return (r.xz + 1.0) * 0.5;
     }
     let s = 0.25 * vec2(dot(n.xyz, g.view_x.xyz), -dot(n.xyz, g.view_y.xyz));

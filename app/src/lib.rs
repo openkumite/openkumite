@@ -1489,6 +1489,8 @@ impl App {
                         }
                         if st.filtered.get(i).copied().unwrap_or(false) {
                             r.texture_filtered(t.width, t.height, &t.rgba)
+                        } else if st.smooth.get(i).copied().unwrap_or(false) {
+                            r.texture_smooth_tiled(t.width, t.height, &t.rgba)
                         } else if st.tiled.get(i).copied().unwrap_or(false) {
                             r.texture_tiled(t.width, t.height, &t.rgba)
                         } else {
