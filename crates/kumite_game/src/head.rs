@@ -227,9 +227,15 @@ impl TagLook {
 
 /// Set node `n`'s local rotation to `rot` (its offset kept), carrying everything hanging from it along.
 pub fn set_local(nodes: &[kumite_assets::Node], pose: &mut [Mat4], n: usize, rot: Mat3) {
-    let Some(parent) = nodes.get(n).and_then(|x| x.parent).filter(|&p| p < pose.len()) else { return };
-    let old = pose[n];
-    let new = pose[parent] * Mat4::from_mat3_translation(rot, (pose[parent].inverse() * old).w_axis.truncate());
+    let Some(&old) = pose.get(n) else { return };
+    let parent = match nodes.get(n).and_then(|x| x.parent) {
+        Some(p) => match pose.get(p) {
+            Some(&m) => m,
+            None => return,
+        },
+        None => Mat4::IDENTITY,
+    };
+    let new = parent * Mat4::from_mat3_translation(rot, (parent.inverse() * old).w_axis.truncate());
     let delta = new * old.inverse();
     for (i, m) in pose.iter_mut().enumerate() {
         let mut at = Some(i);

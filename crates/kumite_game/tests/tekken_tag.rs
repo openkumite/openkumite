@@ -395,8 +395,8 @@ fn jack2s_walk_pushes_and_his_grab_misses_as_on_the_ps2() {
 }
 
 /// The joint slots in the game's integers (0x34EF20): Kazuya and Paul against Hwoarang (model 426) and Paul, as the
-/// move audit picks them in PCSX2. In the stance his 18 slots are PCSX2's within 2 units (the turns come from the
-/// converted motions, not the game's angles), and his walk's push leaves him where PCSX2 does to the unit (`$W/moves10`,
+/// move audit picks them in PCSX2. In the stance his 18 slots are PCSX2's to the unit (the turns from the motion's
+/// angles, as the game's), and his walk's push leaves him where PCSX2 does to the unit (`$W/moves10`,
 /// kazuya_1: 3 and 26 at his walk's frames 9 and 10; the float skeleton's spheres left 2 and 25).
 #[test]
 fn kazuyas_slots_and_walk_push_as_on_the_ps2() {
@@ -436,7 +436,7 @@ fn kazuyas_slots_and_walk_push_as_on_the_ps2() {
             stance = true;
             for (s, (p, q)) in b.game.spheres()[0].bones.iter().zip(slots).enumerate() {
                 let p = [p.x as i32, -p.y as i32, -p.z as i32];
-                assert!((0..3).all(|k| (p[k] - q[k]).abs() <= 2), "slot {s}: {p:?}, PCSX2 {q:?}");
+                assert_eq!(p, q, "slot {s}");
             }
         }
         if f[0].current.index == 101 && (9..=10).contains(&f[0].frame) {
@@ -1431,7 +1431,8 @@ fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: imp
 /// alone) still 240, 237, 201 and 312, holding back 140), here a cell's eight matches each; a seed replays the same.
 /// (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands. Neither CPU holds a direction
 /// in its own recoveries' END windows: 0 of 72 frames on the PS2, 0 of 70 here.) Stage 4's eight matches swing by
-/// about 50 a minute with any change of the fights (412 without the moves' pose ease, 316 with it).
+/// about 50 a minute with any change of the fights (412 without the moves' pose ease, 316 with it, 383 with the joints
+/// turned by the motions' angles).
 #[test]
 fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     let Some(a) = assets() else { return };
@@ -1442,7 +1443,7 @@ fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     });
     let dmg: Vec<(u32, u32)> = cells.iter().map(|c| (c.0, c.1)).collect();
     eprintln!("damage a minute, still / holding back: {dmg:?}");
-    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 380), (110, 190)), ((200, 315), (110, 180))].into_iter().enumerate() {
+    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 400), (110, 190)), ((200, 315), (110, 180))].into_iter().enumerate() {
         assert!((still.0..=still.1).contains(&dmg[k].0) && (back.0..=back.1).contains(&dmg[k].1), "cell {k}: {:?}", dmg[k]);
         assert!(dmg[k].1 < dmg[k].0, "holding back takes less");
     }
