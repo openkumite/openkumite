@@ -2890,8 +2890,9 @@ fn digits(painter: &egui::Painter, v: &View, art: &Art, t: &Value, n: u32, x: f3
 }
 
 /// One 3D character standing on the select (`select.models`, FRONTEND.md 9): its slot (side + 2 * member), model
-/// record, whether it is a pick, its body with the clips of its aliases 0 and 3, how far it is lifted, and the frames
-/// since it came or was picked.
+/// record, whether it is a pick, its body with the clips of its aliases 0 and 3, how far it is lifted, its height (the
+/// select's by character), the room its mesh takes in both clips, how far it stands off its place to keep clear of the
+/// others, and the frames since it came or was picked.
 pub struct Poser {
     pub slot: usize,
     pub record: usize,
@@ -2899,15 +2900,24 @@ pub struct Poser {
     pub character: Arc<kumite_assets::Character>,
     clips: [usize; 2],
     lift: f32,
+    height: Option<f32>,
+    room: Arc<Vec<glam::Vec3>>,
+    shift: glam::Vec3,
     frame: u32,
 }
 
-/// The select's 3D characters, and the bodies loaded so far (a model record's, with its two clips and lift).
+/// A loaded body: its model record, character, select clips, lift, height and room.
+type Body = (usize, Arc<kumite_assets::Character>, [usize; 2], f32, Option<f32>, Arc<Vec<glam::Vec3>>);
+
+/// The select's 3D characters, and the bodies loaded so far.
 #[derive(Default)]
 pub struct Posers {
     pub shown: Vec<Poser>,
-    loaded: Vec<(usize, Arc<kumite_assets::Character>, [usize; 2], f32)>,
+    loaded: Vec<Body>,
 }
+
+/// The cells (metres) a body's room is counted in.
+const ROOM_CELL: f32 = 0.1;
 
 impl Posers {
     /// One frame of the select `s`: who stands where (a new one, or one just picked, from its first frame), then a frame
@@ -2915,7 +2925,9 @@ impl Posers {
     pub fn step(&mut self, assets: &kumite_assets::Assets, d: &Data, roster: &Roster, s: &Select) {
         let progress = &progress();
         let wanted = if d.raw["select"]["models"].is_object() && !quick_select(d, progress) { s.posers(d, roster, progress) } else { vec![] };
+        let before = self.shown.len();
         self.shown.retain(|m| wanted.iter().any(|w| w.0 == m.slot && w.1 == m.record));
+        let mut moved = self.shown.len() != before;
         for (slot, record, picked) in wanted {
             match self.shown.iter_mut().find(|m| m.slot == slot) {
                 Some(m) if m.picked != picked => (m.picked, m.frame) = (picked, 0),
@@ -2923,21 +2935,52 @@ impl Posers {
                 None => {
                     let id = roster.characters.iter().find(|c| c.costumes.contains(&record)).map_or(0, |c| c.id);
                     match self.load(assets, d, record, id) {
-                        Ok((character, clips, lift)) => self.shown.push(Poser { slot, record, picked, character, clips, lift, frame: 0 }),
+                        Ok((_, character, clips, lift, height, room)) => {
+                            self.shown.push(Poser { slot, record, picked, character, clips, lift, height, room, shift: glam::Vec3::ZERO, frame: 0 });
+                            moved = true;
+                        }
                         Err(e) => log::warn!("select model {record}: {e:#}"),
                     }
                 }
             }
+        }
+        if moved {
+            self.keep_apart(d, s.mode);
         }
         for m in &mut self.shown {
             m.frame += 1;
         }
     }
 
-    /// Model `record` (character `id`) with its select clips (`select.models.motions[id]`) and lift, loaded once.
-    fn load(&mut self, assets: &kumite_assets::Assets, d: &Data, record: usize, id: usize) -> anyhow::Result<(Arc<kumite_assets::Character>, [usize; 2], f32)> {
+    /// OpenKumite's: the PS2 stands each one at its slot's place whatever its size, so two big ones (or a pick's
+    /// swing) go into each other. From the camera out, each whose room meets a nearer one's steps back along its line
+    /// of sight (the same place in the picture, smaller) just as far as keeps them clear.
+    fn keep_apart(&mut self, d: &Data, mode: u32) {
+        let eye = select_camera(d).0;
+        let sight = |p: &Poser| (place(d, mode, p.slot, p.lift, p.height).w_axis.truncate() - eye) * glam::Vec3::new(1.0, 0.0, 1.0);
+        self.shown.sort_by(|a, b| sight(a).length().total_cmp(&sight(b).length()).then(a.slot.cmp(&b.slot)));
+        let mut rooms: Vec<Vec<glam::Vec3>> = vec![];
+        for p in &mut self.shown {
+            let (at, way) = (place(d, mode, p.slot, p.lift, p.height), sight(p).normalize_or_zero());
+            let mut shift = glam::Vec3::ZERO;
+            // (a step back from one may go into another: again until clear of all, a few times at most)
+            for _ in 0..8 {
+                let room: Vec<glam::Vec3> = p.room.iter().map(|&c| at.transform_point3(c) + shift).collect();
+                let need = rooms.iter().map(|r| clearance(r, &room, way, ROOM_REACH)).fold(0.0, f32::max);
+                if need == 0.0 {
+                    break;
+                }
+                shift += way * need;
+            }
+            p.shift = shift;
+            rooms.push(p.room.iter().map(|&c| at.transform_point3(c) + shift).collect());
+        }
+    }
+
+    /// Model `record` (character `id`) with its select clips (`select.models.motions[id]`), lift and room, loaded once.
+    fn load(&mut self, assets: &kumite_assets::Assets, d: &Data, record: usize, id: usize) -> anyhow::Result<Body> {
         if let Some(l) = self.loaded.iter().find(|l| l.0 == record) {
-            return Ok((l.1.clone(), l.2, l.3));
+            return Ok(l.clone());
         }
         let names = &d.raw["select"]["models"]["motions"][id];
         let mut ch = assets.character(record)?;
@@ -2959,30 +3002,114 @@ impl Posers {
             let top = (0..frames).flat_map(|f| ch.pose(clips[0], f, false)).map(|m| m.w_axis.y * 1000.0).fold(0.0, f32::max);
             (h as f32 - top).max(0.0)
         });
-        let ch = Arc::new(ch);
-        self.loaded.push((record, ch.clone(), clips, lift));
-        Ok((ch, clips, lift))
+        let room = Arc::new(room(&ch, clips));
+        // (the body's height on the select by character, 0x437DE8)
+        let height = d.raw["select"]["models"]["heights"][id].as_f64().map(|h| h as f32);
+        let body = (record, Arc::new(ch), clips, lift, height, room);
+        self.loaded.push(body.clone());
+        Ok(body)
     }
 
     /// Each one's node matrices and placement (metres): a pick's pose (alias 3) once, then alias 0 over and over, at
-    /// its slot's place (`select.models.places`, 1 ON 1's in its mode).
+    /// its slot's place (`select.models.places`, 1 ON 1's in its mode), stepped off it as `keep_apart` says.
     pub fn poses(&self, d: &Data, mode: u32) -> Vec<(Vec<glam::Mat4>, glam::Mat4)> {
-        let m = &d.raw["select"]["models"];
-        let places = if mode == int(&m["one_on_one_mode"]) as u32 { &m["places_one_on_one"] } else { &m["places"] };
         self.shown
             .iter()
             .map(|p| {
                 let n = |c: usize| p.character.clips.get(c).map_or(1, |c| c.frames.max(1)) as u32;
                 let f = p.frame.saturating_sub(1);
                 let (clip, f) = if p.picked && f < n(p.clips[1]) { (p.clips[1], f) } else { (p.clips[0], (f - if p.picked { n(p.clips[1]) } else { 0 }) % n(p.clips[0])) };
-                let at = &places[p.slot];
-                // (the game's x, z as the picture's x, -z, on the floor (the game sets y from the pose: the table's is not
-                // kept) or its lift above; its 65536ths of a turn, the picture facing -z)
-                let place = kumite_game::placement(glam::Vec3::new(num(&at[0]), p.lift, -num(&at[2])), std::f32::consts::PI - num(&at[3]) * std::f32::consts::TAU / 65536.0);
-                (p.character.pose(clip, f as usize, false), place)
+                (select_pose(&p.character, clip, f as usize), glam::Mat4::from_translation(p.shift) * place(d, mode, p.slot, p.lift, p.height))
             })
             .collect()
     }
+}
+
+/// A select clip's frame: the wings (True Ogre's, Devil's) at their track's first frame, folded, as the PS2 shows them.
+fn select_pose(ch: &kumite_assets::Character, clip: usize, frame: usize) -> Vec<glam::Mat4> {
+    let mut pose = ch.pose(clip, frame, false);
+    ch.pose_wings(&mut pose, 0);
+    pose
+}
+
+/// Slot `slot`'s place (metres) on the select in `mode`: the game's x, y, z as the picture's x, -y, -z, its y less the
+/// body's `height` (0x3AEF88; without one, an older pack's or the crossover's, on the floor), `lift` above; its 65536ths
+/// of a turn, the picture facing -z.
+fn place(d: &Data, mode: u32, slot: usize, lift: f32, height: Option<f32>) -> glam::Mat4 {
+    let m = &d.raw["select"]["models"];
+    let at = &m[if mode == int(&m["one_on_one_mode"]) as u32 { "places_one_on_one" } else { "places" }][slot];
+    let y = lift + height.map_or(0.0, |h| h - num(&at[1]));
+    kumite_game::placement(glam::Vec3::new(num(&at[0]), y, -num(&at[2])), std::f32::consts::PI - num(&at[3]) * std::f32::consts::TAU / 65536.0)
+}
+
+/// The room a body takes on the select: the middles of the cells its skinned mesh (corners and triangles' middles)
+/// reaches in any frame of the clips, in its own space.
+fn room(ch: &kumite_assets::Character, clips: [usize; 2]) -> Vec<glam::Vec3> {
+    // (a block of 128 x 64 x 128 cells about the feet, 16 cells of it under the floor; a point out of it counts at its
+    // edge)
+    let size = glam::IVec3::new(128, 64, 128);
+    let low = glam::Vec3::new(-64.0, -16.0, -64.0);
+    let mut cells = vec![false; (size.x * size.y * size.z) as usize];
+    for c in clips {
+        for f in 0..ch.clips.get(c).map_or(0, |c| c.frames) {
+            let skin = ch.skin_matrices(&select_pose(ch, c, f), glam::Mat4::IDENTITY);
+            let at: Vec<glam::Vec3> = ch.vertices.iter().map(|v| (0..4).filter_map(|k| Some(skin.get(v.joints[k] as usize)?.transform_point3(v.pos.into()) * v.weights[k])).sum()).collect();
+            let middles = ch.indices.as_chunks::<3>().0.iter().filter_map(|&[a, b, c]| Some((*at.get(a as usize)? + *at.get(b as usize)? + *at.get(c as usize)?) / 3.0));
+            for p in at.iter().copied().chain(middles).filter(|p| p.is_finite()) {
+                let k = ((p / ROOM_CELL).floor() - low).as_ivec3().clamp(glam::IVec3::ZERO, size - 1);
+                if let Some(cell) = cells.get_mut(((k.z * size.y + k.y) * size.x + k.x) as usize) {
+                    *cell = true;
+                }
+            }
+        }
+    }
+    let at = |i: usize| glam::IVec3::new(i as i32 % size.x, i as i32 / size.x % size.y, i as i32 / (size.x * size.y));
+    cells.iter().enumerate().filter(|c| *c.1).map(|(i, _)| (at(i).as_vec3() + low + 0.5) * ROOM_CELL).collect()
+}
+
+/// Cells as balls about their middles: they touch closer than a cell's diagonal.
+const ROOM_REACH: f32 = ROOM_CELL * 1.732_050_8;
+
+/// The least way cells `b` must move along `way` (level, a unit) to keep `reach` from every one of cells `a` (0:
+/// clear).
+fn clearance(a: &[glam::Vec3], b: &[glam::Vec3], way: glam::Vec3, reach: f32) -> f32 {
+    // (a's cells by where they are across `way`, so each of b's is weighed against its neighbours there only)
+    let side = way.cross(glam::Vec3::Y);
+    let key = |p: glam::Vec3| ((p.dot(side) / reach).floor() as i32, (p.y / reach).floor() as i32);
+    let mut near: std::collections::BTreeMap<(i32, i32), Vec<glam::Vec3>> = Default::default();
+    for &p in a {
+        near.entry(key(p)).or_default().push(p);
+    }
+    // (each two near across bar the steps along `way` that would bring them closer than `reach`: counted at every
+    // 5 mm, to 10 m)
+    const STEP: f32 = 0.005;
+    let mut barred = vec![0i32; 2002];
+    for &q in b {
+        let (i, j) = key(q);
+        for p in (-1..=1).flat_map(|di| (-1..=1).map(move |dj| (i + di, j + dj))).filter_map(|k| near.get(&k)).flatten() {
+            let v = q - *p;
+            let along = v.dot(way);
+            let across = v.length_squared() - along * along;
+            if across < reach * reach {
+                let half = (reach * reach - across).sqrt();
+                if half - along > 0.0 {
+                    let [from, to] = [(-along - half) / STEP, (-along + half) / STEP];
+                    let [from, to] = [from.ceil(), to.floor()].map(|x| (x.max(0.0) as usize).min(2000));
+                    *barred.get_mut(from).unwrap_or(&mut 0) += 1;
+                    *barred.get_mut(to + 1).unwrap_or(&mut 0) -= 1;
+                }
+            }
+        }
+    }
+    // (the first step free)
+    let mut depth = 0;
+    barred
+        .iter()
+        .position(|&n| {
+            depth += n;
+            depth == 0
+        })
+        .map_or(10.0, |k| k as f32 * STEP)
 }
 
 /// The select's camera (`select.models.camera`, 0x3AE6E0): eye, look direction and field of view, as a fight view's;
@@ -5964,5 +6091,74 @@ mod tests {
             .collect();
         assert_eq!(scrolls, [22, 18, 14, 10, 6, 2, 0, 0]);
         assert!(matches!(f.page, Page::Menu { cursor: 1, .. }));
+    }
+
+    /// The select's 3D characters keep clear of each other: every two characters (each in its costume of the most
+    /// room) at every two slots standing together (both sides, leader and partner, 1 ON 1's places), and the biggest
+    /// four together, come no closer than a cell's reach in any frames of their stances and picks. Needs
+    /// `OK_TTT_ASSETS`.
+    #[test]
+    fn select_models_keep_clear() {
+        let Some(root) = std::env::var_os("OK_TTT_ASSETS").map(std::path::PathBuf::from) else { return };
+        let assets = kumite_assets::Assets::new(&root).unwrap();
+        let roster = crate::menu::Roster::load(&root.join("gamedata"));
+        let d = roster.ttt.clone().unwrap();
+        // (the bodies' rooms; their meshes all at once would not fit in memory: one stands in for each)
+        let (mut bodies, mut stand_in) = (vec![], None);
+        for c in &roster.characters {
+            let costumes = c.costumes.iter().filter_map(|&record| Some((record, Posers::default().load(&assets, &d, record, c.id).ok()?)));
+            if let Some((record, (_, ch, clips, lift, height, room))) = costumes.max_by_key(|b| b.1 .5.len()) {
+                bodies.push((format!("{} {record}", c.name), stand_in.get_or_insert(ch).clone(), clips, lift, height, room));
+            }
+        }
+        // (Tekken Tag's 34 and the Tekken 3 crossover's: needs a pack with it installed)
+        assert!(bodies.len() >= 34);
+        let t = std::time::Instant::now();
+        let stand = |mode: u32, who: &[(usize, usize)]| {
+            let shown = who
+                .iter()
+                .map(|&(slot, b)| {
+                    let (_, character, clips, lift, height, room) = bodies[b].clone();
+                    Poser { slot, record: b, picked: false, character, clips, lift, height, room, shift: glam::Vec3::ZERO, frame: 0 }
+                })
+                .collect();
+            let mut p = Posers { shown, loaded: vec![] };
+            p.keep_apart(&d, mode);
+            let at: Vec<Vec<glam::Vec3>> = p.shown.iter().map(|m| m.room.iter().map(|&c| m.shift + place(&d, mode, m.slot, m.lift, m.height).transform_point3(c)).collect()).collect();
+            for i in 0..at.len() {
+                for j in i + 1..at.len() {
+                    // (a millimetre for the rounding)
+                    let need = clearance(&at[i], &at[j], glam::Vec3::X, ROOM_REACH - 1e-3);
+                    assert!(
+                        need == 0.0,
+                        "{} at {} / {} at {}: {need} {:?}",
+                        bodies[p.shown[i].record].0,
+                        p.shown[i].slot,
+                        bodies[p.shown[j].record].0,
+                        p.shown[j].slot,
+                        p.shown.iter().map(|m| m.shift).collect::<Vec<_>>()
+                    );
+                }
+            }
+            p.shown.iter().map(|m| m.shift.length()).fold(0.0, f32::max)
+        };
+        let mut most = (0.0, String::new());
+        for (mode, pairs) in [(0, &[(0, 1), (0, 2), (1, 3), (2, 3), (0, 3), (1, 2)][..]), (int(&d.raw["select"]["models"]["one_on_one_mode"]) as u32, &[(0, 1)][..])] {
+            for &(s, t) in pairs {
+                for a in 0..bodies.len() {
+                    for b in 0..bodies.len() {
+                        let shift = stand(mode, &[(s, a), (t, b)]);
+                        if shift > most.0 {
+                            most = (shift, format!("{} at {s} / {} at {t}", bodies[a].0, bodies[b].0));
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("the farthest step off a place: {:.2} m ({}); {} bodies, {:?}", most.0, most.1, bodies.len(), t.elapsed());
+        // (the four biggest rooms together)
+        let mut big: Vec<usize> = (0..bodies.len()).collect();
+        big.sort_by_key(|&b| std::cmp::Reverse(bodies[b].5.len()));
+        stand(0, &[(0, big[0]), (1, big[1]), (2, big[2]), (3, big[3])]);
     }
 }
