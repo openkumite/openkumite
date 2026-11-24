@@ -1538,14 +1538,15 @@ fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: imp
 }
 
 /// The arcade's CPU against a fighter who stands still or holds back, damage a fight minute as measured on the PS2
-/// (PCSX2, the default NORMAL, matches against Xiaoyu: stage 1 level 0 about 190 still, 30-50 holding back; stage 4
-/// level 3 (Michelle, King) still 240, 337, 270, 246 and 377 a minute, holding back 140-160; stage 8 level 7 (Unknown
-/// alone) still 240, 237, 201 and 312, holding back 140), here a cell's eight matches each; a seed replays the same.
+/// (PCSX2, the default NORMAL, matches against Xiaoyu: stage 1 level 0 about 190 still, 30-50 holding back), here a
+/// cell's eight matches each; a seed replays the same. Stages 4 and 8 are the PS2's arcade with this test's teams
+/// (Michelle and King written into ladder 0x440A00, the earlier fights won), from one save state with rand() reseeded
+/// a match, 4600 frames each; a match's damage a minute over eight matches (sixteen at stage 8 holding back):
+/// stage 4 still 248-580 (mean 402, sd 121), holding back 125-235 (179, 36); stage 8 still 162-396 (328, 86),
+/// holding back 48-256 (164, 67). Here (40 seeds): 138-563 (391, 84), 81-290 (161, 47), 194-420 (283, 48),
+/// 97-286 (185, 51), each mean within 1.1 of the PS2's standard errors. The bounds are the PS2's matches' range.
 /// (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands. Neither CPU holds a direction
-/// in its own recoveries' END windows: 0 of 72 frames on the PS2, 0 of 70 here.) One match here ranges widely (40
-/// seeds: stage 4 still 137-562 a minute, mean 373; stage 8 still 194-420, mean 276, holding back 97-285, mean 184),
-/// so eight matches' mean swings by about 40 with any change of the fights; the bounds are the PS2's matches' range
-/// that much wider (stage 4 still 394 and stage 8 holding back 217 with the push along the basis).
+/// in its own recoveries' END windows: 0 of 72 frames on the PS2, 0 of 70 here.)
 #[test]
 fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     let Some(a) = assets() else { return };
@@ -1556,7 +1557,7 @@ fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     });
     let dmg: Vec<(u32, u32)> = cells.iter().map(|c| (c.0, c.1)).collect();
     eprintln!("damage a minute, still / holding back: {dmg:?}");
-    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 420), (110, 190)), ((200, 315), (110, 230))].into_iter().enumerate() {
+    for (k, (still, back)) in [((120, 240), (40, 130)), ((248, 580), (125, 235)), ((162, 396), (48, 256))].into_iter().enumerate() {
         assert!((still.0..=still.1).contains(&dmg[k].0) && (back.0..=back.1).contains(&dmg[k].1), "cell {k}: {:?}", dmg[k]);
         assert!(dmg[k].1 < dmg[k].0, "holding back takes less");
     }
