@@ -788,6 +788,7 @@ impl Stage {
         let (doc, buffers, images) = import_glb(bytes)?;
         let get = |b: gltf::Buffer| Some(&buffers.get(b.index())?.0[..]);
         let textures = images.iter().map(to_image).collect::<Result<Vec<_>>>()?;
+        let see_through: Vec<bool> = textures.iter().map(translucent).collect();
         let mesh_data = |m: gltf::Mesh, xf: Mat4| -> Result<Vec<Mesh>> {
             let mut out = Vec::new();
             for prim in m.primitives() {
@@ -869,6 +870,11 @@ impl Stage {
                     // Tekken Tag's ordinary blend (ALPHA 0x44, unnamed) faded by its vertices' alpha: the hall's
                     // floor's dark edge, a mist
                     None if prim.material().alpha_mode() == gltf::material::AlphaMode::Blend && col.iter().any(|c| c[3] < 1.0) => 3,
+                    // ... or by its picture's own: scenery mostly see-through (King's waterfall, Eddy's clouds) is
+                    // blended, as the GS blends every 0x44 strip; a cut-out at half would leave its shape solid
+                    // shortcut: not the floor's cells (Eddy's grass), which drawn blended without depth fall out of order;
+                    // upgrade: blended strips that write depth, in the game's order
+                    None if prim.material().alpha_mode() == gltf::material::AlphaMode::Blend && see_through.get(texture) == Some(&true) && cells.iter().all(|c| c[3] == 0.0) => 3,
                     _ => 0,
                 };
                 out.push(Mesh { texture, vertices, indices, motion, blend });
@@ -1226,6 +1232,13 @@ fn png_size(b: &[u8]) -> Option<(u32, u32)> {
 /// [`import_glb`] are what keep it from one.
 fn unpanic<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| bail!("a bad glb"))
+}
+
+/// A picture most of whose seen texels (alpha over 16) are partly see-through (alpha under 240).
+fn translucent(t: &Image) -> bool {
+    let seen = t.rgba.as_chunks::<4>().0.iter().filter(|p| p[3] > 16);
+    let (all, part) = seen.fold((0usize, 0usize), |(n, k), p| (n + 1, k + usize::from(p[3] < 240)));
+    part * 2 > all
 }
 
 fn to_image(d: &gltf::image::Data) -> Result<Image> {

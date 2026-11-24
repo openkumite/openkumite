@@ -1896,8 +1896,16 @@ fn heads_and_eyes_follow_the_opponent() {
 fn bowl_hall_floor_edge_is_blended() {
     let Some(a) = assets() else { return };
     let hall = a.stage(kumite_game::bowl::ARENA).unwrap();
-    assert!(hall.sky.iter().any(|m| m.blend == 3));
-    assert!(hall.sky.iter().filter(|m| m.blend == 3).all(|m| m.vertices.iter().any(|v| v.color[3] < 1.0)));
+    assert!(hall.sky.iter().any(|m| m.blend == 3 && m.vertices.iter().any(|v| v.color[3] < 1.0)));
+}
+
+/// King's waterfall (arena 11), a mostly see-through picture on opaque vertices, is blended as the GS blends it, not
+/// cut out solid white.
+#[test]
+fn a_see_through_picture_is_blended() {
+    let Some(a) = assets() else { return };
+    let king = a.stage(11).unwrap();
+    assert!(king.sky.iter().any(|m| m.blend == 3 && m.vertices.iter().all(|v| v.color[3] >= 1.0)));
 }
 
 /// Op 16 in ending 35: Devil's type-2 beams run along his head's heading, 204 along and 220 down a frame; their ends

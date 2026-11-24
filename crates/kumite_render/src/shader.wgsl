@@ -338,8 +338,9 @@ fn cell_shift(cell: vec4<f32>) -> vec2<f32> {
 }
 
 // Eddy's grass (0x3D43A8, 0x3E13C8): a floor vertex's move, its cell's top corners' moves (bilinearly) x its
-// height in the lattice
-fn grass_move(p: vec3<f32>, y: f32) -> vec3<f32> {
+// height in the lattice; the lattice's height x 10/3 - d / 3 (0x3418C4: gp-0x7D5C, -0x7D58), d the cell's distance (m)
+// from the window's centre: whole within 7 m, flat at 10
+fn grass_move(p: vec3<f32>, y: f32, d: f32) -> vec3<f32> {
     let info = g.grass_info;
     if (info.w < 0.5 || y <= 0.0) { return vec3(0.0); }
     let u = clamp((p.xz - g.grass_grid.xy) / g.grass_grid.zw, vec2(0.0), info.xy - vec2(1.001));
@@ -348,7 +349,8 @@ fn grass_move(p: vec3<f32>, y: f32) -> vec3<f32> {
     let row = u32(info.x);
     let k = c.y * row + c.x;
     let m = mix(mix(g.grass[k].xyz, g.grass[k + 1u].xyz, f.x), mix(g.grass[k + row].xyz, g.grass[k + row + 1u].xyz, f.x), f.y);
-    return m * min(y / info.z, 1.0);
+    let h = clamp(10.0 / 3.0 - d / 3.0, 0.0, 1.0);
+    return m * min(y * h / info.z, 1.0) - vec3(0.0, y * (1.0 - h), 0.0);
 }
 
 // Tekken Tag's arena scenery's z guard (Camera::scenery_cut): a corner nearer than the cut drops its triangle
@@ -363,9 +365,10 @@ fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32
     let on = g.floor_cell.z > 0.5 && cell.w > 0.5;
     let shift = select(vec2(0.0), cell_shift(cell), on);
     var p = (g.floor * vec4(pos.x + shift.x, pos.y, pos.z + shift.y, 1.0)).xyz;
-    if (on) { p += grass_move(p, pos.y); }
+    let d = distance(cell.xy + shift, g.floor_centre.xy);
+    if (on) { p += grass_move(p, pos.y, d); }
     o.clip = g.view_proj * vec4(p, 1.0);
-    let away = distance(cell.xy + shift, g.floor_centre.xy) > g.floor_cell.w;
+    let away = d > g.floor_cell.w;
     if (on && (away || (cell.z > 0.5 && cell.z != cell_level(cell, shift)))) {
         o.clip = vec4(0.0, 0.0, 2.0, 1.0);
     }

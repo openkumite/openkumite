@@ -953,7 +953,8 @@ impl App {
             let id = self.roster.characters[s.players[1].0].id;
             id as i64 == kumite_game::COPIER && s.stage == self.roster.home_stage(id, s.players[1].1)
         });
-        let mut scene = self.stage_scene_with(r, stage, hidden, &|p| p);
+        let practice = self.roster.ttt.is_some() && setup.as_ref().is_some_and(|s| s.mode == Mode::Practice);
+        let mut scene = self.stage_scene_with(r, stage, hidden, practice, &|p| p);
         game.fight.walls = scene.walls.clone();
         scene.models = skinned_models(r, &game);
         scene.bench = game.tag_bench.iter().flatten().map(|a| skinned_body(r, &a.body)).collect();
@@ -1472,14 +1473,14 @@ impl App {
 
     /// A stage's meshes and the effect atlas (no fighters yet).
     fn stage_scene(&self, r: &Renderer, stage: usize) -> Scene {
-        self.stage_scene_with(r, stage, false, &|p| p)
+        self.stage_scene_with(r, stage, false, false, &|p| p)
     }
 
     /// The stage's scene, its points placed by `place` (metres; Force's extra stages lay a level along their
     /// route).
     /// `hidden`: the arcade pack's hidden arena drawn in the stage's place (where the pack has it and the arcade
-    /// stages are asked for).
-    fn stage_scene_with(&self, r: &Renderer, stage: usize, hidden: bool, place: &dyn Fn(glam::Vec3) -> glam::Vec3) -> Scene {
+    /// stages are asked for). `practice`: Tekken Tag's practice, whose arena 8 shows its paintings blank.
+    fn stage_scene_with(&self, r: &Renderer, stage: usize, hidden: bool, practice: bool, place: &dyn Fn(glam::Vec3) -> glam::Vec3) -> Scene {
         let mut scene = Scene {
             sky: vec![],
             moving: vec![],
@@ -1566,7 +1567,12 @@ impl App {
                 let conv = |m: &kumite_assets::Mesh| -> Vec<StaticVertex> {
                     m.vertices.iter().map(|v| StaticVertex { pos: place(glam::Vec3::from(v.pos)).to_array(), uv: v.uv, color: v.color, cell: v.cell, normal: v.normal }).collect()
                 };
-                scene.sky = st.sky.iter().map(|m| r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone()).blended(m.blend)).collect();
+                // Tekken Tag's arena 8 in practice: its paintings (the 1024 x 256 added and shading strips) blank, as
+                // PCSX2 shows them there (painted in a fight)
+                // shortcut: picked by the pictures' size, the cause (practice's uploads over their texels) not traced;
+                // upgrade: the converter marks what practice's uploads overwrite
+                let blank = |m: &kumite_assets::Mesh| practice && stage == 8 && m.blend > 0 && st.textures.get(m.texture).is_some_and(|t| (t.width, t.height) == (1024, 256));
+                scene.sky = (st.sky.iter()).map(|m| r.sorted_mesh(&conv(m), if blank(m) { &[0, 0, 0] } else { &m.indices }, tex[m.texture].clone()).blended(m.blend)).collect();
                 let moving = |(mesh, m): (usize, &kumite_assets::Mesh)| {
                     let kind = match m.motion.clone()? {
                         kumite_assets::Motion::Spin { pivot, axis, rate, period } => {
@@ -4640,7 +4646,7 @@ impl App {
         // off); walls between the camera and the fighters cut away
         let mut scene = match &route {
             Some(route) => {
-                let mut scene = self.stage_scene_with(r, setup.stage, false, &|p| route.local(p));
+                let mut scene = self.stage_scene_with(r, setup.stage, false, false, &|p| route.local(p));
                 (scene.walls, scene.camera_walls, scene.cutaway) = (None, None, true);
                 // the walls on the camera's side of the route: gone, so they never stand before the fight
                 scene.near_cut = Some(route.half_width + 0.5);
