@@ -998,8 +998,6 @@ pub struct Select {
     pub online: Option<u32>,
     /// Online, the room's time ran out: TEKKEN BALL goes on with the first ball, no ball type's page.
     pub timed_out: bool,
-    /// TEKKEN FORCE's co-op (OpenKumite's own): 3P and 4P joined with START.
-    pub more: [bool; 2],
 }
 
 impl Select {
@@ -1022,7 +1020,7 @@ impl Select {
         if mode == PRACTICE {
             sides[1] = side(Some(0), 1);
         }
-        Self { mode, sides, frame: 0, done: 0, tally, cont: None, memory, online: None, timed_out: false, more: [false; 2] }
+        Self { mode, sides, frame: 0, done: 0, tally, cont: None, memory, online: None, timed_out: false }
     }
 
     /// Online VS BATTLE's or TEKKEN BALL's (`mode`) select, the same on every computer (no save's cursors; 2P in).
@@ -1033,14 +1031,6 @@ impl Select {
             side.player = Some(k);
         }
         s
-    }
-
-    /// TEKKEN FORCE's co-op: 3P or 4P (`player` 2, 3) joins with START.
-    pub fn join_more(&mut self, player: usize, d: &Data) {
-        if self.mode == FORCE && self.done == 0 && (2..4).contains(&player) && !self.more[player - 2] {
-            sfx::play(sound(d, "start"));
-            self.more[player - 2] = true;
-        }
     }
 
     /// The side `player`'s keys move now.
@@ -1761,7 +1751,7 @@ impl Front {
                     }
                     set_progress(p);
                     if run.mode == FORCE {
-                        return Outcome::StartForce(run.teams[0].first().copied().unwrap_or((0, 0)), run.options[0].min(2), run.teams[1].first().copied().filter(|_| run.humans[1]), s.more);
+                        return Outcome::StartForce(run.teams[0].first().copied().unwrap_or((0, 0)), run.options[0].min(2), run.teams[1].first().copied().filter(|_| run.humans[1]));
                     }
                     // VS BATTLE, 1 ON 1 VS, TEAM BATTLE: the arena chosen first (OpenKumite's stage select)
                     if matches!(run.mode, VS | ONE_VS | TEAM) {
@@ -2993,10 +2983,6 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
         if side.player.is_some() && s.mode == TEAM {
             small(painter, v, art, d, &format!("{}P  {} / 8", k + 1, side.picks.len()), if k == 0 { 120.0 } else { 520.0 }, 286.0, Color32::WHITE);
         }
-    }
-    // TEKKEN FORCE's co-op: 3P and 4P in (OpenKumite's own)
-    for j in (0..2).filter(|&j| s.more[j]) {
-        small(painter, v, art, d, &format!("{}P IN", j + 3), 520.0, 286.0 + 16.0 * j as f32, Color32::WHITE);
     }
     if let Some(t) = s.tally {
         font(painter, v, art, d, &format!("{} - {}", t[0], t[1]), W / 2.0, 300.0, 0.5, Color32::WHITE);

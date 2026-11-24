@@ -1113,8 +1113,8 @@ pub enum Outcome {
     /// A mode's run begins (Team Battle, Time Attack, Survival): its first fight.
     Run(Box<crate::modes::Run>),
     /// Force begins with this player (roster index, costume) at this difficulty; co-op (OpenKumite's own): 2P's
-    /// pick, and whether 3P and 4P joined.
-    StartForce((usize, usize), usize, Option<(usize, usize)>, [bool; 2]),
+    /// pick (3P and 4P pick on TAG BRAWL's setup: [`Outcome::StartTag`] in its Force mode).
+    StartForce((usize, usize), usize, Option<(usize, usize)>),
     /// THEATER MODE from the main menu.
     OpenTheater,
     /// REPLAYS from the main menu.
@@ -1296,8 +1296,6 @@ pub struct Select {
     pub label: String,
     /// The page of faces shown (two rows a page; the extra fighters' is 1): the last moved cursor's.
     pub page: usize,
-    /// Force's co-op (OpenKumite's own): 3P and 4P joined with START.
-    pub more: [bool; 2],
 }
 
 impl Screen {
@@ -1505,6 +1503,8 @@ impl Screen {
                 Outcome::Quit if t.mode == crate::tagrun::TagMode::Ball => {
                     *self = Screen::BallModes { frame: 0, cursor: 1, difficulty: t.difficulty };
                 }
+                // (Force's setup for more than two: back to the main menu)
+                Outcome::Quit if t.mode == crate::tagrun::TagMode::Force => *self = Screen::menu(t.difficulty),
                 Outcome::Quit => {
                     let (d, mode) = (t.difficulty, t.mode);
                     let cursor = crate::tagrun::TagMode::ALL.iter().position(|&m| m == mode).unwrap_or(0);
@@ -2184,7 +2184,6 @@ impl Select {
             stage: None,
             label: String::new(),
             page: 0,
-            more: [false; 2],
         };
         for k in 0..2 {
             s.sides[k].slot = s.valid_slot(roster, s.sides[k].slot);
@@ -2361,7 +2360,7 @@ impl Select {
         match self.mode {
             Mode::TimeAttack => return Outcome::Run(Box::new(crate::modes::Run::time_attack(roster, p1, seed))),
             Mode::Survival => return Outcome::Run(Box::new(crate::modes::Run::survival(p1))),
-            Mode::Force => return Outcome::StartForce(p1, self.difficulty, (self.sides[1].state == SideState::Chosen).then(|| pick(1)), self.more),
+            Mode::Force => return Outcome::StartForce(p1, self.difficulty, (self.sides[1].state == SideState::Chosen).then(|| pick(1))),
             _ => {}
         }
         let p2 = pick(1);
@@ -2578,19 +2577,6 @@ impl Select {
                     art.sprite(painter, v, src, t, *w, *h, *x, *y, *tint);
                 }
             }
-        }
-        // Force's co-op: 3P and 4P in (OpenKumite's own)
-        for j in (0..2).filter(|&j| self.more[j]) {
-            let text = format!("{}P IN", j + 3);
-            art.text(painter, v, 0, 5, crate::art::CENTRE - art.text_w(0, &text) / 2.0, 250.0 + 14.0 * j as f32, &text, Color32::WHITE);
-        }
-    }
-
-    /// Force's co-op (OpenKumite's own): 3P or 4P (`player` 2, 3) joins with START.
-    pub fn join_more(&mut self, player: usize) {
-        if self.mode == Mode::Force && self.done == 0 && (2..4).contains(&player) && !self.more[player - 2] {
-            sfx::play(sfx::start());
-            self.more[player - 2] = true;
         }
     }
 
