@@ -362,6 +362,7 @@ pub struct Vfx {
     /// The effect objects' pictures this frame (Gon's fire and gas), and the fires on struck fighters.
     objects: Vec<Sprite>,
     burns: Vec<Burn>,
+    embers: Vec<Ember>,
     /// The auras' pictures this frame, and each actor's aura particles' frame counters (+0x16).
     auras: Vec<Sprite>,
     aura_frames: HashMap<usize, Vec<u32>>,
@@ -384,6 +385,23 @@ pub struct Burn {
     pub tag: bool,
 }
 
+/// Tekken Tag's burn's sparks (task 0x3A4970) and the fire at the struck one's feet (`ground`, task 0x3A4C28), in
+/// metres (a frame), y up: `frame` its picture of the 30 of the attacker's special part 0 (sparks) or 1 (the fire,
+/// its 0x15), `size` its quad, `fade` the fire's last 32 frames' (+0x58), `out` the fire's stage (+0x1A).
+#[derive(Clone, Debug)]
+pub struct Ember {
+    pub attacker: usize,
+    pub pos: Vec3,
+    pub vel: Vec3,
+    pub age: i32,
+    pub life: i32,
+    pub frame: i32,
+    pub size: f32,
+    pub fade: f32,
+    pub ground: bool,
+    pub out: bool,
+}
+
 /// The bone slots a struck fighter burns on (0x80025180).
 const BURN_SLOTS: [usize; 10] = [1, 2, 4, 8, 5, 9, 12, 13, 15, 16];
 /// The drawn nodes a fighter True Ogre's fire struck burns on (0x3A54D8's table 0x5198A0).
@@ -391,8 +409,9 @@ const TAG_BURN_NODES: [usize; 10] = [1, 31, 37, 56, 62, 79, 81, 86, 90, 95];
 /// The pictures' sizes (their corners: 0x80025584 ±432, 0x800256A0 ±345, 0x80025770 ±250 units) and the fires'
 /// light (0x8002517C, 48 frames).
 const FIRE_SIZE: f32 = 0.864;
-/// Tekken Tag's True Ogre's flame at its full size (metres; as PCSX2 shows it at 0.6, a stream as thick as his foe).
-const TAG_FIRE_SIZE: f32 = 2.8;
+/// Tekken Tag's flames' quad 0x400 at +0x54 1 (0x3A44F8, 0x3A50B8, 0x3A4C28; metres over +0x48's 400 through the
+/// hits' projection, as [`TAG_HEAVY`]).
+const TAG_FIRE_SIZE: f32 = 1024.0 / 400.0 * 0.6822;
 const BURN_SIZE: f32 = 0.690;
 const GAS_SIZE: f32 = 0.5;
 const FIRE_LIGHT: [f32; 3] = [1.0, 128.0 / 255.0, 0.0];
@@ -443,6 +462,7 @@ impl Vfx {
             flares: Vec::new(),
             objects: Vec::new(),
             burns: Vec::new(),
+            embers: Vec::new(),
             auras: Vec::new(),
             aura_frames: HashMap::new(),
         }
@@ -457,6 +477,38 @@ impl Vfx {
     fn rand(&mut self) -> u32 {
         self.seed = self.seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
         (self.seed >> 16) & 0x7FFF
+    }
+
+    /// A rand() over 0..1 (Tekken Tag's 0x3A94B0).
+    fn unit(&mut self) -> f32 {
+        self.rand() as f32 / 32768.0
+    }
+
+    /// A spark of a fire (task 0x3A4970) from `at` (m): 128 mm about it, along `pitch` / `yaw` (its spawner's +0x70 /
+    /// +0x74: a burn's straight up) turned by up to pi/32, 32-111 mm a frame, 16-47 frames; quad 0x80 at +0x54 0.2.
+    fn spark(&mut self, attacker: usize, at: Vec3, pitch: f32, yaw: f32) {
+        let mut off = [0.0; 3];
+        for v in &mut off {
+            *v = (self.unit() * 2.0 - 1.0) * 128.0 / UNITS;
+        }
+        let life = 16 + (self.rand() & 31) as i32;
+        let speed = (self.unit() * 63.0 * 1.25 + 32.0) / UNITS;
+        let pitch = pitch + (self.unit() * 2.0 - 1.0) * std::f32::consts::PI / 32.0;
+        let yaw = yaw + (self.unit() * 2.0 - 1.0) * std::f32::consts::PI / 32.0;
+        let vel = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()) * speed;
+        let frame = (self.rand() % 30) as i32;
+        let size = TAG_FIRE_SIZE / 8.0 * 0.2;
+        self.embers.push(Ember { attacker, pos: at + Vec3::from(off), vel, age: 0, life, frame, size, fade: 0.0, ground: false, out: false });
+    }
+
+    /// A fire on the floor under `at` (task 0x3A4C28: 366 mm up, 60-91 frames, then fading over 32; quad 0x400 at +0x54
+    /// 0.2-0.5).
+    fn floor_fire(&mut self, attacker: usize, at: Vec3) {
+        let life = 60 + (self.rand() & 31) as i32;
+        let frame = (self.rand() % 30) as i32;
+        let size = TAG_FIRE_SIZE * (self.unit() * 0.3 + 0.2);
+        let pos = Vec3::new(at.x, 366.0 / UNITS, at.z);
+        self.embers.push(Ember { attacker, pos, vel: Vec3::ZERO, age: 0, life, frame, size, fade: 0.0, ground: true, out: false });
     }
 
     /// Two rand()s as one 30-bit value (R = r1 | r2 << 16).
@@ -487,6 +539,7 @@ impl Vfx {
         self.flares.clear();
         self.objects.clear();
         self.burns.clear();
+        self.embers.clear();
         self.auras.clear();
         self.aura_frames.clear();
     }
@@ -820,11 +873,15 @@ impl Vfx {
                 if h.limb == 0x18 && !data.bursts.is_empty() {
                     // Tekken Tag's: a move of descriptor byte 0x18 burns the struck one instead of its sparks (0x35C0E0
                     // -> 0x3A54D8): ten flames on his nodes, each 60-75 frames at its own phase of the 30 cells
-                    // shortcut: the smoke (0x3A4970, one in 32 frames) and the embers (0x3A4C28) are not drawn; port them
                     for slot in TAG_BURN_NODES {
                         let count = (self.rand() % 30) as i32;
                         let left = 60 + (self.rand() & 15) as i32;
                         self.burns.push(Burn { victim: h.victim, attacker: h.attacker, slot, pos, state: 1, count, left, rise: 0.0, mirror: false, tag: true });
+                    }
+                    // and a fire on the floor at the struck one's feet
+                    // shortcut: at its root, the game's player +0x590 / +0x598; upgrade if PCSX2 shows it off his feet
+                    if let Some(&(f, ..)) = actors.iter().find(|a| a.1 == h.victim) {
+                        self.floor_fire(h.attacker, f.root() / UNITS);
                     }
                 } else if matches!(h.limb, 0x18 | 0x1A) {
                     for slot in BURN_SLOTS {
@@ -884,6 +941,10 @@ impl Vfx {
                     if self.rand() >> 8 & 15 == 0 {
                         self.light = Some((FIRE_LIGHT, LIGHT_FRAMES, b.pos, LIGHT_FRAMES));
                     }
+                    // (Tekken Tag's: a spark one frame in 32, 0x3A5454)
+                    if b.tag && self.rand() & 31 == 0 {
+                        self.spark(b.attacker, b.pos, std::f32::consts::FRAC_PI_2, 0.0);
+                    }
                     b.left -= 1;
                     if b.left < 0 && b.tag {
                         b.state = 2;
@@ -905,6 +966,33 @@ impl Vfx {
         }
         burns.retain(|b| b.state < 3 || b.count < 5 && !b.tag);
         self.burns = burns;
+        // the sparks rise 1.5 mm a frame faster, gone under the floor or at their end; the fire at the feet burns its
+        // life, then fades over 32 frames, a spark off it one frame in 32
+        let mut embers = std::mem::take(&mut self.embers);
+        embers.retain_mut(|e| {
+            if e.ground {
+                if !e.out && e.age >= e.life {
+                    (e.out, e.age, e.life) = (true, 0, 32);
+                } else if e.out {
+                    e.fade += 1.0 / e.life as f32;
+                    if e.age >= e.life {
+                        return false;
+                    }
+                }
+            } else {
+                e.vel.y += 1.5 / UNITS;
+                e.pos += e.vel;
+            }
+            e.frame = (e.frame + 1) % 30;
+            e.age += 1;
+            e.ground || (e.pos.y >= 0.0 && e.age < e.life)
+        });
+        for e in embers.clone().iter().filter(|e| e.ground) {
+            if self.rand() & 31 == 0 {
+                self.spark(e.attacker, e.pos, std::f32::consts::FRAC_PI_2, 0.0);
+            }
+        }
+        self.embers.append(&mut embers);
     }
 
     /// The effect objects' pictures (drawn after their move, 0x8006FC84): the fire's growing, looped and ending
@@ -920,6 +1008,15 @@ impl Vfx {
         };
         for o in list {
             let pos = o.pos / UNITS;
+            // (Tekken Tag's flame: a spark along it one frame in 64, a fire where it is at the floor one in 63, 0x3A4810)
+            if o.kind == Kind::TagFire && o.state >= 1 {
+                if self.rand() & 63 == 0 {
+                    self.spark(o.owner, pos, o.vel.y.atan2(glam::Vec2::new(o.vel.x, o.vel.z).length()), o.vel.x.atan2(o.vel.z));
+                }
+                if o.pos.y <= 216.0 && self.rand().is_multiple_of(63) {
+                    self.floor_fire(o.owner, pos);
+                }
+            }
             let s = match (o.kind, o.state) {
                 (Kind::Fire, 1) => sprite(&d.fire, o.count >> 1, pos, FIRE_SIZE, Blend::Add, o.mirror),
                 (Kind::Fire, 2) => sprite(&d.fire, 4 + ((o.count & 6) >> 1), pos, FIRE_SIZE, Blend::Add, o.mirror),
@@ -981,6 +1078,22 @@ impl Vfx {
                 _ => sprite(&d.fire_end, b.count >> 1, b.pos, BURN_SIZE, Blend::Add, b.mirror),
             };
             self.objects.extend(s);
+        }
+        // (sparks added at FIX 192, the fire at the feet at 128 as it fades: the attacker's special parts 0 and 1)
+        for e in &self.embers {
+            let c = models.get(e.attacker).and_then(|m| d.characters.get(m));
+            let cell = c.and_then(|c| c.special.get(usize::from(e.ground))).and_then(|s| s.get(e.frame as usize)).copied();
+            let k = if e.ground { 1.0 - e.fade } else { 1.5 };
+            self.objects.extend(c.and_then(|c| c.burst.as_ref()).zip(cell).map(|(set, cell)| Sprite {
+                pos: e.pos,
+                size: e.size,
+                cell,
+                color: [k, k, k, 1.0],
+                blend: Blend::Add,
+                mirror: false,
+                nearer: 0.0,
+                sheet: set.sheet,
+            }));
         }
     }
 
@@ -1134,6 +1247,7 @@ mod tests {
             flares: vec![],
             objects: vec![],
             burns: vec![],
+            embers: vec![],
             auras: vec![],
             aura_frames: HashMap::new(),
         };
