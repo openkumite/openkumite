@@ -602,7 +602,7 @@ pub struct Mesh {
     pub motion: Option<Motion>,
     /// 1 added to what is behind it, 2 multiplying it (its material named `additive` or `shade`: Tekken Tag's
     /// lights and gloss, its painted shadows), 3 blended over it by the texel's and the vertex's alpha; 0 drawn over
-    /// it.
+    /// it; 4 its texels of full alpha drawn over it, the others blended (Tekken Tag's floor cells).
     pub blend: u8,
 }
 
@@ -872,9 +872,11 @@ impl Stage {
                     None if prim.material().alpha_mode() == gltf::material::AlphaMode::Blend && col.iter().any(|c| c[3] < 1.0) => 3,
                     // ... or by its picture's own: scenery mostly see-through (King's waterfall, Eddy's clouds) is
                     // blended, as the GS blends every 0x44 strip; a cut-out at half would leave its shape solid
-                    // shortcut: not the floor's cells (Eddy's grass), which drawn blended without depth fall out of order;
-                    // upgrade: blended strips that write depth, in the game's order
+                    // shortcut: the rest of the scenery is cut at half; upgrade: as the floor's cells below
                     None if prim.material().alpha_mode() == gltf::material::AlphaMode::Blend && see_through.get(texture) == Some(&true) && cells.iter().all(|c| c[3] == 0.0) => 3,
+                    // ... a floor cell's (Eddy's grass): its texels of full alpha drawn with their depth, the others
+                    // blended over them (TEST 0x5180B: AFAIL FB_ONLY)
+                    None if prim.material().alpha_mode() == gltf::material::AlphaMode::Blend && cells.iter().any(|c| c[3] > 0.0) => 4,
                     _ => 0,
                 };
                 out.push(Mesh { texture, vertices, indices, motion, blend });

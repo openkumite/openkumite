@@ -339,6 +339,8 @@ struct Pipes {
     /// Force's blob shadows: the floor darkened (the original hardware's subtraction).
     blob_pipeline: wgpu::RenderPipeline,
     static_pipeline: wgpu::RenderPipeline,
+    static_z_pipeline: wgpu::RenderPipeline,
+    static_fringe_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     /// The drum with depth (`Camera::sky_depth`).
     sky_depth_pipeline: wgpu::RenderPipeline,
@@ -467,7 +469,8 @@ pub struct StaticMesh {
     /// drum): its positions and triangles.
     sorted: Option<(Vec<Vec3>, Vec<[u32; 3]>)>,
     /// 0 drawn over what is behind it; 1 added to it, 2 multiplying it, 3 blended over it (Tekken Tag's lights and
-    /// gloss, its painted shadows, its fades: drawn after the stage, depth-tested, never written).
+    /// gloss, its painted shadows, its fades: drawn after the stage, depth-tested, never written); 4 its texels of full
+    /// alpha drawn with the stage, the others blended with the strips (Tekken Tag's grass).
     blend: u8,
     /// A sky mesh drawn after the stage's strips, as the PS2 draws an arena's objects after the arena (0x3D10D0
     /// after 0x3DE6C0): its painted shadows do not darken them.
@@ -909,6 +912,10 @@ impl Renderer {
                 make("skinned blend", &skinned_layout, "vs_skinned", "fs_lit_blend", &skin_vb, false, LessEqual, tri, Some(blend)),
             ];
             let static_pipeline = make("static", &static_layout, "vs_static", "fs_static", &static_vb, true, Less, tri, None);
+            // Tekken Tag's grass: its full texels with depth, then the rest blended over them (`blend` 4)
+            let static_z_pipeline = make("static z", &static_layout, "vs_static", "fs_static_z", &static_vb, true, Less, tri, None);
+            let static_fringe_pipeline =
+                make("static fringe", &static_layout, "vs_static", "fs_static_fringe", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: blend.color, alpha: keep_alpha }));
             let sky_pipeline = make("sky", &static_layout, "vs_sky", "fs_unlit", &static_vb, false, Always, tri, None);
             let sky_depth_pipeline = make("sky depth", &static_layout, "vs_sky", "fs_unlit", &static_vb, true, Less, tri, None);
             // (what is drawn kept as it is: the blends' alpha)
@@ -966,6 +973,8 @@ impl Renderer {
                 floor_shadow_pipeline,
                 blob_pipeline,
                 static_pipeline,
+                static_z_pipeline,
+                static_fringe_pipeline,
                 sky_pipeline,
                 sky_depth_pipeline,
                 stage_blends,
@@ -1809,14 +1818,18 @@ impl Renderer {
             let drum = if sky_depth { &pipes.sky_depth_pipeline } else { &pipes.sky_pipeline };
             let order = if cam.sky_first { [(drum, sky), (&pipes.static_pipeline, statics)] } else { [(&pipes.static_pipeline, statics), (drum, sky)] };
             for (pipeline, meshes) in order {
-                pass.set_pipeline(pipeline);
-                for m in meshes.iter().filter(|m| m.blend == 0 && !m.late) {
-                    pass.set_bind_group(1, m.texture.group(smooth), &[]);
-                    pass.set_vertex_buffer(0, m.vbuf.slice(..));
-                    pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..m.count, 0, 0..1);
-                    stats.draw_calls += 1;
-                    stats.triangles += m.count / 3;
+                // (the grass's full texels: a sky mesh's cut as the drum's)
+                let full = if std::ptr::eq(pipeline, &pipes.static_pipeline) { &pipes.static_z_pipeline } else { pipeline };
+                for (blend, pipeline) in [(0, pipeline), (4, full)] {
+                    pass.set_pipeline(pipeline);
+                    for m in meshes.iter().filter(|m| m.blend == blend && !m.late) {
+                        pass.set_bind_group(1, m.texture.group(smooth), &[]);
+                        pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                        pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..m.count, 0, 0..1);
+                        stats.draw_calls += 1;
+                        stats.triangles += m.count / 3;
+                    }
                 }
             }
         }
@@ -1824,14 +1837,20 @@ impl Renderer {
         let strips: Vec<(usize, &StaticMesh)> = statics.iter().map(|m| (0, *m)).chain(sky.iter().map(|m| (3, *m))).filter(|(_, m)| m.blend > 0 && !m.late).collect();
         // (then the late meshes: opaque with the stage's depth, then their own strips)
         let late = sky.iter().filter(|m| m.late);
-        let late = late.clone().filter(|m| m.blend == 0).map(|m| (usize::MAX, *m)).chain(late.filter(|m| m.blend > 0).map(|m| (3, *m)));
+        let late = late.clone().filter(|m| matches!(m.blend, 0 | 4)).map(|m| (usize::MAX, *m)).chain(late.filter(|m| matches!(m.blend, 1..=3)).map(|m| (3, *m)));
         let strips: Vec<(usize, &StaticMesh)> = strips.into_iter().chain(late).collect();
         if !strips.is_empty() {
             let mut pass = begin(&mut enc, ("stage strips", wgpu::LoadOp::Load, wgpu::LoadOp::Load));
             pass.set_bind_group(0, &self.globals_group, &[]);
             for (base, m) in strips {
                 let opaque = if sky_depth { &pipes.sky_depth_pipeline } else { &pipes.sky_pipeline };
-                let pipeline = if base == usize::MAX { Some(opaque) } else { pipes.stage_blends.get(base + usize::from(m.blend) - 1) };
+                let pipeline = match (base, m.blend) {
+                    (usize::MAX, _) => Some(opaque),
+                    // the grass's other texels (a sky mesh's were cut with the drum)
+                    (0, 4) => Some(&pipes.static_fringe_pipeline),
+                    (_, 4) => None,
+                    _ => pipes.stage_blends.get(base + usize::from(m.blend) - 1),
+                };
                 let Some(pipeline) = pipeline else { continue };
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, m.texture.group(smooth), &[]);
@@ -2015,7 +2034,7 @@ impl Renderer {
                 let mut pass = target(&mut enc, "glow depth", &gl.views[0], Some(wgpu::LoadOp::Clear(1.0)), black);
                 pass.set_bind_group(0, &self.globals_group, &[]);
                 pass.set_pipeline(&gp.static_pipeline);
-                for m in statics.iter().filter(|m| m.blend == 0) {
+                for m in statics.iter().filter(|m| matches!(m.blend, 0 | 4)) {
                     pass.set_bind_group(1, m.texture.group(smooth), &[]);
                     pass.set_vertex_buffer(0, m.vbuf.slice(..));
                     pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);

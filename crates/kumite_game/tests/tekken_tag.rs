@@ -1960,6 +1960,16 @@ fn a_see_through_picture_is_blended() {
     assert!(king.sky.iter().any(|m| m.blend == 3 && m.vertices.iter().all(|v| v.color[3] >= 1.0)));
 }
 
+/// Eddy's grass (arena 10's floor cells) is drawn as the GS's alpha test leaves it: full texels with depth, the rest
+/// blended (blend 4); the scenery's cut-outs stay cut.
+#[test]
+fn grass_is_cut_and_blended() {
+    let Some(a) = assets() else { return };
+    let eddy = a.stage(10).unwrap();
+    assert!(eddy.meshes.iter().any(|m| m.blend == 4 && m.vertices.iter().all(|v| v.cell[3] > 0.0)));
+    assert!(eddy.meshes.iter().chain(&eddy.sky).filter(|m| m.blend == 4).all(|m| m.vertices.iter().any(|v| v.cell[3] > 0.0)));
+}
+
 /// Op 16 in ending 35: Devil's type-2 beams run along his head's heading, 204 along and 220 down a frame; their ends
 /// on the 13th frame where PCSX2 has them (the beam record 0x8A7AD0 + 0x50 read over PINE; mm, our axes).
 #[test]
