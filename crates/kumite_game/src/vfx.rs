@@ -897,18 +897,18 @@ impl Vfx {
                 (Kind::Breath, 2) => sprite(&d.fire, 4 + ((o.count & 6) >> 1), pos, FIRE_SIZE, Blend::Add, o.mirror),
                 (Kind::Breath, _) => sprite(&d.fire_end, o.count >> 1, pos, FIRE_SIZE, Blend::Add, o.count & 1 != 0),
                 // (Tekken Tag's True Ogre's flame: its special part's first slot, frame by frame of 30, growing from
-                // 0.2 to 0.6 its first 8 frames, fading its last 7 (+0x54, +0x58), added)
-                // shortcut: its quad's size (0x345A00's for +0x44 192) is not read, it is matched by eye to PCSX2's
+                // 0.2 to 0.6 its first 8 frames, fading its last 7 (+0x54, +0x58), added at FIX +0x44 192 x (1 -
+                // fade) over 128 (0x345E2C)
                 (Kind::TagFire, 1..) => {
                     let c = models.get(o.owner).and_then(|m| d.characters.get(m));
                     let cell = c.and_then(|c| c.special.first()).and_then(|s| s.get(usize::try_from(o.frames).ok()?)).copied();
                     let scale = if o.state == 1 { 0.2 + 0.05 * o.count as f32 } else { 0.6 };
-                    let fade = if o.state == 4 { o.count as f32 / 14.0 } else { 0.0 };
+                    let k = 1.5 * (1.0 - if o.state == 4 { o.count as f32 / 14.0 } else { 0.0 });
                     c.and_then(|c| c.burst.as_ref()).zip(cell).map(|(set, cell)| Sprite {
                         pos,
                         size: TAG_FIRE_SIZE * scale,
                         cell,
-                        color: [1.0, 1.0, 1.0, 1.0 - fade],
+                        color: [k, k, k, 1.0],
                         blend: Blend::Add,
                         mirror: false,
                         nearer: 0.0,
@@ -925,16 +925,16 @@ impl Vfx {
         }
         for b in &self.burns {
             if b.tag {
-                // (the attacker's flame cells at +0x54 0.4 of its quad +0x44 128, the flame's 192 at 0.6 being
-                // TAG_FIRE_SIZE; added, fading as it rises)
+                // (the attacker's flame cells, the flame's quad 0x400 at +0x54 0.4 (0x345C10); added at FIX +0x44
+                // 128, fading as it rises)
                 let c = models.get(1 - b.victim.min(1)).and_then(|m| d.characters.get(m));
                 let cell = c.and_then(|c| c.special.first()).and_then(|s| s.get(b.count.rem_euclid(30) as usize)).copied();
-                let fade = if b.state == 2 { (-b.left) as f32 / 16.0 } else { 0.0 };
+                let k = 1.0 - if b.state == 2 { (-b.left) as f32 / 16.0 } else { 0.0 };
                 self.objects.extend(c.and_then(|c| c.burst.as_ref()).zip(cell).map(|(set, cell)| Sprite {
                     pos: b.pos,
-                    size: TAG_FIRE_SIZE * 0.4 * 128.0 / 192.0,
+                    size: TAG_FIRE_SIZE * 0.4,
                     cell,
-                    color: [1.0, 1.0, 1.0, 1.0 - fade],
+                    color: [k, k, k, 1.0],
                     blend: Blend::Add,
                     mirror: false,
                     nearer: 0.0,

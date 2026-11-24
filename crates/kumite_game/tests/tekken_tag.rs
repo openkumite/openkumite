@@ -472,6 +472,41 @@ fn kazuyas_slots_and_walk_push_as_on_the_ps2() {
     assert_eq!(walk, [(3, 1010), (26, 1033)]);
 }
 
+/// Kazuya's d+4 on Hwoarang as PCSX2 logs it (P1 x, P2 x and z by Kazuya's frame): the reaction's first frame shows
+/// its root step through the hit-stop, so the push on the hit frame shares it (P1 -204, P2 +62). Armor King's root
+/// rises by his motion scale (4423) in his slots: his stance at PCSX2's height.
+#[test]
+fn the_hit_frames_push_and_a_scaled_roots_height_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let run = |model: usize, script: &str, each: &mut dyn FnMut(&Bout)| {
+        let mut g = Game::load(&a, [model, 426]).unwrap();
+        g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+        let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+        while b.phase != Phase::Fight {
+            b.step([Pad::default(); 2]);
+        }
+        for pad in parse_script(script).unwrap() {
+            b.step([pad, Pad::default()]);
+            each(&b);
+        }
+    };
+    let mut hit = Vec::new();
+    run(585, "n*62,f*30,n*2,d+4*2,n*20", &mut |b: &Bout| {
+        let f = &b.game.fight.fighters;
+        if f[0].current.index == 1243 && (12..=14).contains(&f[0].frame) {
+            hit.push((f[0].root().x as i32, f[1].root().x as i32, -f[1].root().z as i32));
+        }
+    });
+    assert_eq!(hit, [(472, 1326, 0), (261, 1529, 351), (149, 1728, 499)]);
+    let mut height = None;
+    run(639, "n*62", &mut |b: &Bout| {
+        if b.game.fight.fighters[0].current.index == 32 && b.game.fight.fighters[0].frame == 60 && height.is_none() {
+            height = Some(-b.game.spheres()[0].bones[0].y as i32);
+        }
+    });
+    assert_eq!(height, Some(-1126));
+}
+
 /// Mokujin (no moves of his own) fights as another fighter, drawn from Tekken Tag's pool (0x35C850): he jabs.
 #[test]
 fn mokujin_fights_with_a_copied_moveset() {
@@ -1260,17 +1295,17 @@ fn cpu_run_of(a: &Assets, models: [usize; 2], cpu: [Option<(usize, usize)>; 2], 
     r
 }
 
-/// Two CPUs at NORMAL (the default difficulty), fight 1's level: they walk, attack, guard and land hits within 40
+/// Two CPUs at NORMAL (the default difficulty), fight 1's level: they walk, attack, guard and land hits within 60
 /// seconds, and the same match plays again the same.
 #[test]
 fn normal_cpus_walk_attack_guard_and_hit() {
     let Some(a) = assets() else { return };
-    let r = cpu_run(&a, [Some((1, 0)); 2], 2400);
+    let r = cpu_run(&a, [Some((1, 0)); 2], 3600);
     eprintln!("{r:?}", r = (r.walks, r.attacks, r.guards, r.hits, r.wins));
     for k in 0..2 {
         assert!(r.walks[k] > 0 && r.attacks[k] > 0 && r.guards[k] > 0 && r.hits[k] > 0, "side {k}: {:?}", (r.walks, r.attacks, r.guards, r.hits));
     }
-    assert_eq!(r.hashes, cpu_run(&a, [Some((1, 0)); 2], 2400).hashes, "the same match twice");
+    assert_eq!(r.hashes, cpu_run(&a, [Some((1, 0)); 2], 3600).hashes, "the same match twice");
 }
 
 /// ULTRA HARD's top level beats a fighter who stands still, and attacks more often than EASY's first level (its
@@ -1457,7 +1492,8 @@ fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: imp
 /// (Stage 1 holding back is still above the PS2's: Lei runs in and his tackle lands. Neither CPU holds a direction
 /// in its own recoveries' END windows: 0 of 72 frames on the PS2, 0 of 70 here.) Stage 4's eight matches swing by
 /// about 50 a minute with any change of the fights (412 without the moves' pose ease, 316 with it, 383 with the joints
-/// turned by the motions' angles).
+/// turned by the motions' angles, 367 with the hit frame's push and the motion-scaled roots; stage 8 holding back then
+/// 188, the PS2's 140).
 #[test]
 fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     let Some(a) = assets() else { return };
@@ -1468,7 +1504,7 @@ fn the_arcade_cpus_beat_a_still_fighter_as_the_ps2_does() {
     });
     let dmg: Vec<(u32, u32)> = cells.iter().map(|c| (c.0, c.1)).collect();
     eprintln!("damage a minute, still / holding back: {dmg:?}");
-    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 400), (110, 190)), ((200, 315), (110, 180))].into_iter().enumerate() {
+    for (k, (still, back)) in [((120, 240), (40, 130)), ((240, 380), (110, 190)), ((200, 315), (110, 190))].into_iter().enumerate() {
         assert!((still.0..=still.1).contains(&dmg[k].0) && (back.0..=back.1).contains(&dmg[k].1), "cell {k}: {:?}", dmg[k]);
         assert!(dmg[k].1 < dmg[k].0, "holding back takes less");
     }

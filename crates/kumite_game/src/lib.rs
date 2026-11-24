@@ -1778,6 +1778,14 @@ pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Ma
         Some((clip, frame)) => body.character.pose(clip, frame, true),
         None => body.character.pose(0, 0, true),
     };
+    // (Tekken Tag: the root's height at the motion's scale, as the sim's root (0x363AB8))
+    let scale = if shown.partner { other.motion_scale } else { body.motion_scale };
+    if let Some(y) = pose.get(body.root).map(|m| m.w_axis.y).filter(|_| scale != 4096) {
+        let lift = ((y * UNITS).round() as i32 * scale / 4096) as f32 / UNITS - y;
+        for m in &mut pose {
+            *m = Mat4::from_translation(Vec3::Y * lift) * *m;
+        }
+    }
     // (Tekken Tag: the 18 slots at the game's turns of the motion's angles)
     let owner = if shown.partner { &other.character } else { &body.character };
     if let Some(turns) = shown.clip.and_then(|(clip, frame)| angle_turns(owner.clips.get(clip)?, frame)) {
