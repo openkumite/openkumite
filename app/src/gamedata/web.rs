@@ -109,7 +109,12 @@ impl WebHost {
         }
         let parts = Part::ALL.map(|p| {
             let x = &v["parts"][p.kind()];
-            PartView { converted: x["converted"].as_bool().unwrap_or(false), size: x["size"].as_u64().unwrap_or(0), note: super::missing_note(&x["manifest"]) }
+            PartView {
+                converted: x["converted"].as_bool().unwrap_or(false),
+                size: x["size"].as_u64().unwrap_or(0),
+                note: super::missing_note(&x["manifest"]),
+                outdated: x["outdated"].as_bool().unwrap_or(false),
+            }
         });
         let job = v["job"].as_object().map(|_| {
             let j = &v["job"];

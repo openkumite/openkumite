@@ -35,6 +35,8 @@ pub struct PartView {
     pub size: u64,
     /// What its copy did not hold (`kumite_packs::missing_note`).
     pub note: Option<String>,
+    /// Converted by an older version (`kumite_packs::Part::outdated`): it plays, without what the new one adds.
+    pub outdated: bool,
 }
 
 /// A job running.
@@ -224,6 +226,9 @@ pub fn missing_note(manifest: &serde_json::Value) -> Option<String> {
     let what = if rest.is_empty() { last.to_string() } else { format!("{} and {last}", rest.join(", ")) };
     Some(format!("Without {what}: the disc image did not hold them. Convert again from a full image (.cue with its .bin files, .chd, ...) to add them."))
 }
+
+/// A part converted by an older version, as the screen says it.
+pub const OUTDATED: &str = "Converted by an older OpenKumite: it plays as before, without what this version adds until it is converted again (CONVERT AGAIN).";
 
 /// Tekken Tag Tournament the main game, converted, but not playable (a pack without its assets/): what the game says.
 pub const NOT_YET: &str = "Tekken Tag Tournament is converted; it is not playable in this version yet";
@@ -707,7 +712,11 @@ impl Screen {
                     .map(|p| {
                         let pv = &status.parts[part_index(p)];
                         let right = if pv.converted {
-                            (if pv.note.is_some() { format!("{} · PARTLY", gb(pv.size)) } else { gb(pv.size) }, if pv.note.is_some() { ORANGE } else { GREEN })
+                            match (pv.outdated, pv.note.is_some()) {
+                                (true, _) => (format!("{} · OUT OF DATE", gb(pv.size)), ORANGE),
+                                (_, true) => (format!("{} · PARTLY", gb(pv.size)), ORANGE),
+                                _ => (gb(pv.size), GREEN),
+                            }
                         } else if p == status.main {
                             ("NEEDED".into(), ORANGE)
                         } else {
@@ -879,6 +888,9 @@ impl Screen {
                     say(&painter, &mut y, part_about(p), small, GREY);
                     if pv.converted {
                         say(&painter, &mut y, &format!("Converted: {} on this device.", gb(pv.size)), small, GREEN);
+                        if pv.outdated {
+                            say(&painter, &mut y, OUTDATED, small, ORANGE);
+                        }
                         if let Some(n) = &pv.note {
                             say(&painter, &mut y, n, small, ORANGE);
                         }
@@ -1306,8 +1318,9 @@ mod tests {
             converted: true,
             size: 1_400_000_000,
             note: Some("Without movies and XA music: the disc image did not hold them. Convert again from a full image (.cue with its .bin files, .chd, ...) to add them.".into()),
+            outdated: false,
         };
-        st.parts[1] = PartView { converted: true, size: 1_700_000_000, note: None };
+        st.parts[1] = PartView { converted: true, size: 1_700_000_000, note: None, outdated: false };
         st.playable = true;
         let mut done = st.clone();
         done.outcome = Some(Outcome { kind: Kind::Convert(Part::T2), ok: true, cancelled: false, message: "Tekken 2 is converted: its fighters are in the roster.".into(), log: t3_log.clone() });
@@ -1324,10 +1337,14 @@ mod tests {
         shots.push(("8-home-converted", st.clone(), vec![], true));
         shots.push(("9-remove", st.clone(), vec![Nav::Down, Nav::Go, Nav::Down, Nav::Go], false));
         let mut ttt = st.clone();
-        ttt.parts[4] = PartView { converted: true, size: 1_700_000_000, note: None };
+        ttt.parts[4] = PartView { converted: true, size: 1_700_000_000, note: None, outdated: false };
         ttt.main = Part::Ttt;
         ttt.playable = false;
         shots.push(("10-main-game", ttt, vec![], false));
+        let mut old = st.clone();
+        old.parts[0].outdated = true;
+        shots.push(("11-outdated", old.clone(), vec![], false));
+        shots.push(("12-outdated-page", old, vec![Nav::Go], false));
         for (w, h, tag) in [(1280u32, 720u32, ""), (800, 360, "-phone")] {
             let mut r = kumite_render::Renderer::headless(w, h).unwrap();
             for (name, st, navs, hover) in &shots {

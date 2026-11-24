@@ -77,11 +77,12 @@ pub fn free_space(path: &Path) -> Option<u64> {
 
 impl Jobs {
     /// The game data in `root`; packs found uninstalled (their Tekken 3 pack changed, or a game before this one) are
-    /// installed at once.
+    /// installed at once, Tekken Tag Tournament's extras too (made on the games' data as it was before: web/index.html's
+    /// refresh alike).
     pub fn new(root: &Path) -> Self {
         let mut j = Self { root: root.to_path_buf(), state: State::default(), sizes: [0; 5], running: None, outcome: None, pending: None, message: None };
         j.refresh();
-        if j.state.get(Part::T3).is_some() && !j.state.installed {
+        if (j.state.get(Part::T3).is_some() && !j.state.installed) || (j.state.ttt_assets && !j.state.ttt_installed) {
             j.start(Job::Install, None);
         }
         j
@@ -214,7 +215,7 @@ impl Jobs {
         let parts = Part::ALL.map(|p| {
             let m = self.state.get(p);
             let k = Part::ALL.iter().position(|q| *q == p).unwrap_or(0);
-            PartView { converted: m.is_some(), size: self.sizes[k], note: m.and_then(crate::gamedata::missing_note) }
+            PartView { converted: m.is_some(), size: self.sizes[k], note: m.and_then(crate::gamedata::missing_note), outdated: m.is_some_and(|m| p.outdated(m)) }
         });
         let job = self.running.as_ref().map(|r| JobView {
             kind: kind(&r.job),

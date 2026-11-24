@@ -43,7 +43,7 @@ fn android_main(android: AndroidApp) {
     let _ = std::fs::remove_dir_all(files.join("assets.part"));
     let _ = std::fs::remove_dir_all(files.join("import.part"));
     let mut root = Root { now: Now::Data(Box::new(Data::new(&files, None, None))), android: android.clone(), files };
-    if crate::packs::activate(&root.files.join("assets")).playable() {
+    if crate::packs::activate(&root.files.join("assets")).ready() {
         match game(&root.files) {
             Ok(app) => root.now = Now::Game(app),
             Err(e) => root.data_message(format!("{e:#}")),

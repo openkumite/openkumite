@@ -182,8 +182,8 @@ pub fn run(options: &str) -> Result<String, String> {
 }
 
 /// The game data's state, JSON: `{"t3": manifest | null, "t2": ..., "cs": ..., "t3arcade": ..., "ttt": ..., "installed": bool,
-/// "ttt_installed": bool (Tekken Tag Tournament's extras), "fingerprint": the game's (the extras' when installed, else the
-/// base's)}`.
+/// "ttt_installed": bool (Tekken Tag Tournament's extras), "outdated": the kinds of the parts converted by an older
+/// version, "fingerprint": the game's (the extras' when installed, else the base's)}`.
 #[wasm_bindgen]
 pub fn state() -> Result<String, String> {
     state_json().map(|v| v.to_string()).map_err(|e| format!("{e:#}"))
@@ -201,7 +201,8 @@ fn state_json() -> Result<Value> {
     let manifest: Option<Value> = if m.has_packs() && installed { serde_json::from_slice(&extras.read("manifest.json")?).ok() } else { m.t3.clone() };
     let ttt = pack(Some(Part::Ttt))?;
     let ttt_installed = kumite_packs::ttt_installed(&Sub { inner: &ttt, prefix: "assets".into() }, &pack(Some(Part::T3))?, &Sub { inner: &ttt, prefix: "extras".into() });
-    Ok(json!({"t3": m.t3, "t2": m.t2, "cs": m.cs, "t3arcade": m.arcade, "ttt": m.ttt, "installed": installed, "ttt_installed": ttt_installed,
+    let outdated: Vec<&str> = Part::ALL.into_iter().filter(|p| m.get(*p).is_some_and(|v| p.outdated(v))).map(Part::kind).collect();
+    Ok(json!({"t3": m.t3, "t2": m.t2, "cs": m.cs, "t3arcade": m.arcade, "ttt": m.ttt, "installed": installed, "ttt_installed": ttt_installed, "outdated": outdated,
               "fingerprint": manifest.as_ref().and_then(|v| v["fingerprint"].as_str())}))
 }
 

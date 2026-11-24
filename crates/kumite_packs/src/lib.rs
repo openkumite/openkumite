@@ -56,19 +56,29 @@ impl Part {
         }
     }
 
-    /// A pack's manifest, checked (the Tekken 3 pack's: of its converter's format, so an older one is converted
-    /// again: format 9 brought Gon's fire and gas pictures).
+    /// A pack's manifest: of this part (the Tekken 3 pack's has no "pack"), of any format. An older conversion plays
+    /// as it is, marked ([`Part::outdated`]: the Game data screen asks to convert it again), so a converter's new
+    /// format never hides a game or its modes.
     pub fn manifest(self, pack: &dyn Vfs) -> Option<Value> {
+        let m: Value = serde_json::from_slice(&pack.read("manifest.json").ok()?).ok()?;
+        (m["format"].is_i64() && (self == Part::T3 || m["pack"] == self.kind())).then_some(m)
+    }
+
+    /// The format its converter writes now.
+    pub fn format(self) -> i64 {
         match self {
-            Part::T3 => {
-                let m: Value = serde_json::from_slice(&pack.read("manifest.json").ok()?).ok()?;
-                (m["format"].as_i64()? >= ok_tekken3_converter::convert_all::FORMAT).then_some(m)
-            }
-            Part::T2 => ok_tekken2_converter::pack::manifest(pack).ok(),
-            Part::Cs => ok_hl_cs_converter::pack::manifest(pack).ok(),
-            Part::Arcade => ok_tekken3_arcade_converter::pack::manifest(pack).ok(),
-            Part::Ttt => ok_tekken_tag_converter::pack::manifest(pack).ok(),
+            Part::T3 => ok_tekken3_converter::convert_all::FORMAT,
+            Part::T2 => ok_tekken2_converter::pack::FORMAT,
+            Part::Cs => ok_hl_cs_converter::pack::FORMAT,
+            Part::Arcade => ok_tekken3_arcade_converter::pack::FORMAT,
+            Part::Ttt => ok_tekken_tag_converter::pack::FORMAT,
         }
+    }
+
+    /// A manifest of an older conversion than its converter's now (Tekken 3's format 9 brought Gon's fire and gas
+    /// pictures): what the new one adds is missing until it is converted again.
+    pub fn outdated(self, manifest: &Value) -> bool {
+        manifest["format"].as_i64().is_some_and(|f| f < self.format())
     }
 }
 
@@ -166,6 +176,12 @@ pub fn install(base: &dyn Vfs, packs: &[(Part, &dyn Vfs)], extras: &dyn Vfs, log
     let mut installed = serde_json::Map::new();
     for part in Part::PACKS {
         let (Some(p), Some(man)) = (pack(part), m.get(part)) else { continue };
+        // (its converter installs its own format only: an older pack waits, as the Game data screen says, for
+        // converting again)
+        if man["format"] != part.format() {
+            log(&format!("[install] {}: another version's conversion, left out until it is converted again", part.name()));
+            continue;
+        }
         log(&format!("[install] {}", part.name()));
         match part {
             Part::Cs => {
@@ -222,4 +238,62 @@ pub fn install_ttt(game: &dyn Vfs, base: &dyn Vfs, extras: &dyn Vfs, log: &(dyn 
     manifest.insert("installed".into(), ttt_stamp(game, base));
     extras.write("manifest.json", serde_json::to_string_pretty(&Value::Object(manifest))?.as_bytes())?;
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // tests: a failure stops them
+mod tests {
+    use super::*;
+    use ok_converter_common::io::StdFs;
+
+    /// A pack of an older format is found and marked out of date; another part's, or a manifest without a format, is
+    /// none.
+    #[test]
+    fn an_older_pack_is_found_and_out_of_date() {
+        let dir = std::env::temp_dir().join(format!("ok_packs_older_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fs = StdFs(dir.clone());
+        let found = |part: Part, m: Value| {
+            std::fs::write(dir.join("manifest.json"), m.to_string()).unwrap();
+            part.manifest(&fs).map(|m| part.outdated(&m))
+        };
+        assert_eq!(found(Part::T3, json!({"format": Part::T3.format() - 1})), Some(true));
+        assert_eq!(found(Part::T3, json!({"format": Part::T3.format()})), Some(false));
+        assert_eq!(found(Part::T3, json!({})), None);
+        for part in [Part::T2, Part::Cs, Part::Arcade, Part::Ttt] {
+            assert_eq!(found(part, json!({"pack": part.kind(), "format": part.format() - 1})), Some(true), "{part:?}");
+            assert_eq!(found(part, json!({"pack": part.kind(), "format": part.format()})), Some(false), "{part:?}");
+            assert_eq!(found(part, json!({"pack": "other", "format": part.format()})), None, "{part:?}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Tekken 3's pack of the format before (#177 took it for none) still brings Gon, Doctor B., Tekken Force and
+    /// Tekken Ball to Tekken Tag, as a fresh one does: with OPENKUMITE_ASSETS (a fresh Tekken 3 pack) and
+    /// OK_TTT_ASSETS (Tekken Tag's game root).
+    #[test]
+    fn an_older_tekken_3_pack_still_installs_into_tekken_tag() {
+        let (Some(t3), Some(ttt)) = (std::env::var_os("OPENKUMITE_ASSETS"), std::env::var_os("OK_TTT_ASSETS")) else {
+            eprintln!("skipped: OPENKUMITE_ASSETS or OK_TTT_ASSETS unset");
+            return;
+        };
+        let (t3, game) = (StdFs(t3.into()), StdFs(ttt.into()));
+        let mut m: Value = serde_json::from_slice(&t3.read("manifest.json").unwrap()).unwrap();
+        assert!(!Part::T3.outdated(&m), "OPENKUMITE_ASSETS is no fresh Tekken 3 pack");
+        let dir = std::env::temp_dir().join(format!("ok_packs_older_t3_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let old = StdFs(dir.join("old"));
+        m["format"] = json!(Part::T3.format() - 1);
+        old.write("manifest.json", m.to_string().as_bytes()).unwrap();
+        for (name, base) in [("older", Layered { top: &old, below: vec![&t3] }), ("fresh", Layered { top: &t3, below: vec![] })] {
+            assert_eq!(Part::T3.manifest(&base).map(|m| Part::T3.outdated(&m)), Some(name == "older"));
+            let extras = StdFs(dir.join(name));
+            install_ttt(&game, &base, &extras, &|_| {}).unwrap();
+            assert!(ttt_installed(&game, &base, &extras), "{name}");
+            let roster = String::from_utf8(extras.read("gamedata/roster.json").unwrap()).unwrap();
+            assert!(roster.contains("Gon") && roster.contains("Doctor B"), "{name}: no Gon or Doctor B.");
+            assert!(extras.exists("gamedata/force.json"), "{name}: no Tekken Force");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
