@@ -411,7 +411,8 @@ impl ArenaMotion {
         let first = [centre[0] - cell[0] * nx as f32 / 2.0, centre[1] - cell[1] * nz as f32 / 2.0];
         let corners = (0..=nz).flat_map(|i| (0..=nx).map(move |j| (i, j))).map(|(i, j)| {
             let (x, z) = (first[0] + (j as f32 - 0.5) * cell[0], first[1] + (i as f32 + 0.5) * cell[1]);
-            let mut p = w.at(Vec3::new(x, 0.0, -z));
+            // (the wind in mm, as the PS2 adds its impulses to it: wave 0's strength 2.01 at 0x447FE0 + 0x30, read in PCSX2)
+            let mut p = w.at(Vec3::new(x, 0.0, -z)) * 1000.0;
             for &(at, strength, frames) in self.impulses.iter().flatten() {
                 let d = Vec3::new(x - at.x, 0.0, at.z - z);
                 let len = d.length() * 1000.0;
@@ -427,7 +428,8 @@ impl ArenaMotion {
     }
 
     /// Law-A's lanterns' shear (0x3D7AB0): each one's lattice (x, z +-s, y 0..s) has its top moved by the wind at it
-    /// (sampled at x, y, -z) times the gain, turned into its axes: a vertex moves that times its y / s.
+    /// (sampled at x, y, -z) times the gain (mm), turned into its axes: a vertex moves that times its y / s (both mm;
+    /// the shear returned is per metre of y, in m).
     pub fn shears(&self) -> Vec<(String, Vec3)> {
         let Some(w) = self.wind.as_ref() else { return vec![] };
         let gain = self.gain;
@@ -435,7 +437,7 @@ impl ArenaMotion {
             .map(|(name, s, heading, at)| {
                 let p = w.at(Vec3::new(at.x, at.y, -at.z)) * gain;
                 let (sin, cos) = heading.sin_cos();
-                (name.clone(), Vec3::new(cos * p.x - sin * p.z, 0.0, sin * p.x + cos * p.z) / (s / 1000.0))
+                (name.clone(), Vec3::new(cos * p.x - sin * p.z, 0.0, sin * p.x + cos * p.z) / s)
             })
             .collect()
     }

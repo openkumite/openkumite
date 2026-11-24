@@ -1974,6 +1974,12 @@ pub fn scenery_cut(eye: Vec3, forward: Vec3, roots: [Vec3; 2]) -> f32 {
     3.0 * d / (4.0 - d / 196.608)
 }
 
+/// Tekken Tag's fight's cut for the arena's people (0x3D9468, gp-0x6128): the nearer fighter's depth (+0x620, m along
+/// `forward`, a unit vector, from `eye`), at least 3 m (gp-0x7B00).
+pub fn people_cut(eye: Vec3, forward: Vec3, roots: [Vec3; 2]) -> f32 {
+    roots.map(|r| (r - eye).dot(forward)).into_iter().fold(f32::MAX, f32::min).max(3.0)
+}
+
 /// The CPU AI tables (gamedata/ai.json; a game without them, a Tekken Tag pack before format 7, gets none).
 pub fn ai_data(assets: &Assets) -> Result<Arc<kumite_sim::ai::AiData>> {
     let path = assets.root.join("gamedata/ai.json");

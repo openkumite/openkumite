@@ -258,16 +258,18 @@ impl Flare {
 
 /// An arena's background character: its model, where it stands, the clips it plays in turn from frame `start`.
 struct Person {
-    /// Each model it may show (its own and its script's steps'): the model's number, character, GPU model and clip of
-    /// each motion it may play.
-    bodies: Vec<(usize, Arc<kumite_assets::Character>, SkinnedModel, HashMap<usize, usize>)>,
+    /// Each model it may show (its own and its script's steps'): the model's number, character, GPU model, clip of
+    /// each motion it may play and box (its vertices' least and most corner, m).
+    bodies: Vec<(usize, Arc<kumite_assets::Character>, SkinnedModel, HashMap<usize, usize>, [glam::Vec3; 2])>,
     /// Its script as it runs.
     walker: kumite_game::crowd::Walker,
+    /// Not drawn this frame: its box wholly nearer than the fighters (`place_people`).
+    hidden: std::cell::Cell<bool>,
 }
 
 impl Person {
     /// The body it shows now.
-    fn body(&self) -> Option<&(usize, Arc<kumite_assets::Character>, SkinnedModel, HashMap<usize, usize>)> {
+    fn body(&self) -> Option<&(usize, Arc<kumite_assets::Character>, SkinnedModel, HashMap<usize, usize>, [glam::Vec3; 2])> {
         let m = self.walker.model();
         self.bodies.iter().find(|b| b.0 == m)
     }
@@ -849,15 +851,19 @@ impl Scene {
 
     /// The background characters where their scripts have them, moved with the arena by `arena` (m, its drawn
     /// place: the arena follows the fighters, and its people with it, as PCSX2 shows them far out). Those farther than
-    /// `hud`'s depth (eye, forward, metres) are drawn behind the HUD, the others over it.
-    fn place_people(&self, r: &Renderer, arena: glam::Vec3, hud: Option<(glam::Vec3, glam::Vec3, f32)>) {
+    /// `hud`'s depth (eye, forward, metres) are drawn behind the HUD, the others over it. In a fight (`cut`: the eye,
+    /// the way it looks and [`kumite_game::people_cut`]) one whose box's corners are all nearer than the cut is hidden
+    /// (0x34B3F8 on its eight corners from 0x3D9BE8).
+    fn place_people(&self, r: &Renderer, arena: glam::Vec3, hud: Option<(glam::Vec3, glam::Vec3, f32)>, cut: Option<(glam::Vec3, glam::Vec3, f32)>) {
         for p in &self.people {
-            let (Some((motion, f, at, heading)), Some((_, ch, model, clips))) = (p.walker.now(), p.body()) else { continue };
+            let (Some((motion, f, at, heading)), Some((_, ch, model, clips, [lo, hi]))) = (p.walker.now(), p.body()) else { continue };
             // shortcut: a person is behind or before the HUD as a whole, by its root (the PS2 tests each pixel), upgrade
             // with a depth-tested 2D
             model.set_early(hud.is_none_or(|(eye, forward, d)| (at + arena - eye).dot(forward) > d));
             let Some(&clip) = clips.get(&motion) else { continue };
             let place = glam::Mat4::from_rotation_translation(glam::Quat::from_rotation_y(heading.to_radians()), at + arena);
+            let corners = (0..8).map(|k| glam::Vec3::select(glam::BVec3::new(k & 1 != 0, k & 2 != 0, k & 4 != 0), *hi, *lo));
+            p.hidden.set(cut.is_some_and(|(eye, forward, d)| corners.map(|c| place.transform_point3(c)).all(|c| (c - eye).dot(forward) < d)));
             // (0x3D9AA8: the root's motion times the model's scale)
             let mut pose = ch.pose(clip, f, false);
             let root = ch.nodes.iter().position(|n| n.parent.is_none()).and_then(|k| pose.get(k)).map_or(glam::Vec3::ZERO, |m| m.w_axis.truncate());
@@ -1612,14 +1618,16 @@ impl App {
                 }
                 let verts: Vec<SkinVertex> = ch.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal, look: v.look }).collect();
                 let model = r.skinned(&verts, &ch.indices, ch.blend_from, ch.layers, r.texture(ch.texture.width, ch.texture.height, &ch.texture.rgba));
-                bodies.push((k as usize, ch, model, clips));
+                let corner = |f: fn(glam::Vec3, glam::Vec3) -> glam::Vec3| ch.vertices.iter().map(|v| glam::Vec3::from(v.pos)).reduce(f).unwrap_or_default();
+                let bounds = [corner(glam::Vec3::min), corner(glam::Vec3::max)];
+                bodies.push((k as usize, ch, model, clips, bounds));
             }
             if bodies.is_empty() {
                 continue;
             }
             // (each its own random numbers, the same each time the arena loads)
             let walker = kumite_game::crowd::Walker::new(p, &json["walk"], &json["scales"], out.len() as u32 + 1);
-            out.push(Person { bodies, walker });
+            out.push(Person { bodies, walker, hidden: Default::default() });
         }
         out
     }
@@ -1803,7 +1811,7 @@ impl App {
             }
             for p in &mut s.people {
                 let shown = p.walker.model();
-                let Some((_, ch, _, clips)) = p.bodies.iter().find(|b| b.0 == shown) else { continue };
+                let Some((_, ch, _, clips, _)) = p.bodies.iter().find(|b| b.0 == shown) else { continue };
                 let len = |m: usize| clips.get(&m).and_then(|&c| ch.clips.get(c)).map_or(1, |c| c.frames.max(1) as i32);
                 p.walker.step(len);
             }
@@ -5601,6 +5609,8 @@ impl App {
         for p in &self.posers.shown {
             self.poser_models.entry(p.record).or_insert_with(|| skinned_character(r, &p.character, p.record));
         }
+        // (the depth nearer than which the arena's people are hidden, in a fight)
+        let mut people_cut = None;
         let (cam, lines) = match (self.fight.as_ref(), self.scene.as_ref()) {
             // Tekken Tag's select: its characters on its camera
             (None, None) if !self.posers.shown.is_empty() => {
@@ -5699,6 +5709,11 @@ impl App {
                 // Tekken Tag's fight: nothing of the arena's scenery stands before the fighters (its z guard)
                 if scene.z_guard && cutscene.is_none() {
                     cam.scenery_cut = kumite_game::scenery_cut(cam.eye, cam.target - cam.eye, [shown(0), shown(1)].map(|p| p / kumite_game::UNITS));
+                }
+                // ... nor of its people (gp-0x6128: every arena)
+                if cutscene.is_none() {
+                    let forward = (cam.target - cam.eye).normalize_or_zero();
+                    people_cut = Some((cam.eye, forward, kumite_game::people_cut(cam.eye, forward, [shown(0), shown(1)].map(|p| p / kumite_game::UNITS))));
                 }
                 // the hit light on the fighters (the scene has none)
                 if cutscene.is_none() {
@@ -5858,7 +5873,7 @@ impl App {
             s.arena = glam::Vec3::new(cam.sky.w_axis.x, 0.0, cam.sky.w_axis.z);
             s.eye = cam.eye - s.arena;
             s.view_proj = cam.projection(r.aspect()) * cam.view() * glam::Mat4::from_translation(s.arena);
-            s.place_people(r, s.arena, hud);
+            s.place_people(r, s.arena, hud, people_cut);
         }
         let (sky, statics, models): (Vec<_>, Vec<_>, Vec<_>) = match (&self.scene, &self.fight) {
             (None, None) => (vec![], vec![], self.posers.shown.iter().filter_map(|p| self.poser_models.get(&p.record)).collect()),
@@ -5896,7 +5911,7 @@ impl App {
         // the arena's background characters wherever it is drawn
         let mut models = models;
         if let (Some(s), false) = (self.scene.as_ref(), statics.is_empty()) {
-            models.extend(s.people.iter().filter(|p| p.walker.now().is_some()).filter_map(|p| p.body().map(|b| &b.2)));
+            models.extend(s.people.iter().filter(|p| p.walker.now().is_some() && !p.hidden.get()).filter_map(|p| p.body().map(|b| &b.2)));
         }
         // ... and its lens flare, dimmed by the fighters before the sun
         // (player +0x590 and +0x11A0: the world places of its skeleton's nodes 0 and 5, the root and the head, measured
