@@ -3916,13 +3916,15 @@ impl Fight {
                 }
                 if let Some(&alias) = entry.and_then(|e| e.victims.get(slot)) {
                     if let Some(to) = self.fighters[v].resolve(alias) {
+                        // (Force's soldier hitting is not always the one the facing pass faced: its basis is not on him)
+                        let pair = self.extra.is_none();
                         let fv = &mut self.fighters[v];
                         fv.start_reaction(to, alias);
                         // blocks and counter hits (0x800309E4, 0x80030C8C): the root basis on the attacker, and the
                         // body turning to it while it reels (mode 7); Tekken Tag's basis is the facing pass's target
                         // +0x44 (0x36B8FC), not one from the roots now
                         if blocked || counter {
-                            fv.root_yaw = fv.basis.unwrap_or_else(|| fv.geometry().2);
+                            fv.root_yaw = fv.basis.filter(|_| pair).unwrap_or_else(|| fv.geometry().2);
                             fv.mode = 7;
                         }
                         if !blocked && !lying && !counter && quadrant != 0 {
