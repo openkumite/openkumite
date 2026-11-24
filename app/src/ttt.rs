@@ -558,7 +558,20 @@ impl Run {
             let n = if mode == TEAM { run.teams[0].len() } else { 1 + usize::from(tag(mode) || mode == BALL) };
             run.teams[1] = cpu_team(d, roster, progress.stage, &run.teams[0], n, false, seed);
         }
+        run.apart(roster);
         run
+    }
+
+    /// No model twice on screen (Tekken 3's [`crate::menu::free_costume`]): a fighter of side 1 or the ladder in a
+    /// player's character and costume takes the next free costume (the boss; the ladder after CONTINUE's new picks).
+    /// shortcut: a one-costume character keeps its costume, every Tekken Tag character has two or more.
+    fn apart(&mut self, roster: &Roster) {
+        let mine = self.teams[0].clone();
+        for p in self.ladder.iter_mut().map(|f| &mut f.0).chain([&mut self.teams[1]]).flatten() {
+            let (i, want) = *p;
+            let n = roster.characters.get(i).map_or(1, |c| c.costumes.len());
+            p.1 = crate::menu::free_costume(n, want, |c| mine.contains(&(i, c))).unwrap_or(want);
+        }
     }
 
     /// The fight's setup now.
@@ -1229,6 +1242,7 @@ impl Select {
         }
         if let Some(mut run) = self.cont.take() {
             run.teams[0] = self.sides[0].picks.clone();
+            run.apart(roster);
             return Some(*run);
         }
         let teams = [self.sides[0].picks.clone(), if self.sides[1].player.is_some() { self.sides[1].picks.clone() } else { vec![] }];
@@ -5806,6 +5820,21 @@ mod tests {
         assert_eq!(Progress::default().options(&d), [1, 1, 2]);
     }
 
+    /// No fighter wears a player's character in the player's costume: the boss (character 3) in either of its
+    /// costumes, and the ladder after CONTINUE's new picks (its CPU teams' characters).
+    #[test]
+    fn cpu_never_wears_a_players_costume() {
+        let (d, r) = (data(), roster());
+        for costume in 0..2 {
+            let mut seed = 7;
+            let mut run = Run::new(&d, &r, &Progress::default(), ARCADE, [vec![(3, costume), (0, 0)], vec![]], &mut seed);
+            assert_eq!(run.ladder[7].0, vec![(3, 1 - costume)]);
+            run.teams[0] = run.ladder.iter().flat_map(|f| f.0.clone()).take(2).collect();
+            run.apart(&r);
+            assert!(run.ladder.iter().flat_map(|f| &f.0).all(|p| !run.teams[0].contains(p)));
+        }
+    }
+
     #[test]
     fn arcade_ladder_rival_then_the_boss_alone() {
         let (d, r) = (data(), roster());
@@ -6218,6 +6247,14 @@ mod tests {
         s.key(0, Key::Button(0), &d, &r, &p);
         s.key(1, Key::Button(0), &d, &r, &p);
         assert_eq!((s.sides[0].picks[0], s.sides[1].picks[0]), ((0, 0), (0, 2)));
+        // tag pairs: both sides take characters 0 and 1 in square's costume; the four wear four models
+        let mut s = Select::new(VS, &d, None);
+        for (k, slot) in [(0, 0), (1, 1), (0, 1), (1, 0)] {
+            s.sides[k].cursor = slot;
+            s.key(k, Key::Button(0), &d, &r, &p);
+        }
+        let four: Vec<_> = s.sides.iter().flat_map(|x| x.picks.clone()).collect();
+        assert!(four.len() == 4 && (0..4).all(|i| !four[i + 1..].contains(&four[i])), "{four:?}");
     }
 
     /// The pause menu: the cursor goes round its five entries; RESET opens RESET? on NO, left takes YES, a button

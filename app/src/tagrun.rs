@@ -783,6 +783,19 @@ mod tests {
         assert!(matches!(s.key(0, Key::Back, &roster), Outcome::Quit));
     }
 
+    /// TAG BRAWL: the same face picked for every slot gives each its own costume while one is left.
+    #[test]
+    fn one_face_four_times_four_models() {
+        let Some(roster) = roster() else { return };
+        let mut s = TagSelect::new(&roster, 1, 3, TagMode::Teams);
+        s.cursor = Cursor::Face(0);
+        for _ in 0..4 {
+            s.key(0, Key::Button(0), &roster);
+        }
+        let p: Vec<_> = s.slots.iter().map(|x| (x.character, x.costume)).collect();
+        assert!((0..4).all(|i| !p[i + 1..].contains(&p[i])), "{p:?}");
+    }
+
     #[test]
     fn the_tag_arcade_is_ten_pairs_ending_with_the_bosses() {
         let Some(roster) = roster() else { return };
