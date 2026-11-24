@@ -123,43 +123,49 @@ const JIN: usize = 465;
 const LEI: usize = 372;
 const HWOARANG: usize = 420;
 
-/// A tag battle, `team` against Paul and Jin, the tag button on frame 1: each frame P1's alias, its team's active
-/// member, its model, the state hash; and how many frames a fighter had no motion on.
-fn tag_out(a: &Assets, team: [usize; 2]) -> (Vec<(usize, usize, usize, u64)>, usize) {
+/// A tag battle, `team` against Paul and Jin, the tag button on fight frame `at` (`lying`: □ held for the round
+/// start, Doctor B.'s falling one): each frame P1's alias, its team's active member, its model, the state hash, the
+/// fighters' distance (game units); and how many frames a fighter had no motion on.
+fn tag_out(a: &Assets, team: [usize; 2], lying: bool, at: usize) -> (Vec<(usize, usize, usize, u64, f32)>, usize) {
     let mut g = Game::load(a, [team[0], PAUL]).unwrap();
     g.start_tag([kumite_game::Actor::load(a, team[1]).unwrap(), kumite_game::Actor::load(a, JIN).unwrap()]);
     let mut b = Bout::new(g, kumite_game::ai_data(a).unwrap(), 2, false);
+    let start = parse_script(if lying { "1" } else { "n" }).unwrap()[0];
     while b.phase != Phase::Fight {
-        b.step([Pad::default(); 2]);
+        b.step([start, Pad::default()]);
     }
     let tag = parse_script("5").unwrap()[0];
     let mut missing = 0;
-    let r = (0..200)
+    let r = (0..at + 200)
         .map(|k| {
-            b.step([if k == 1 { tag } else { Pad::default() }, Pad::default()]);
+            b.step([if k == at { tag } else { Pad::default() }, Pad::default()]);
             missing += (0..2).filter(|&i| b.game.clip(i).is_none()).count();
             let t = &b.game.fight.teams.as_ref().unwrap()[0];
-            (b.game.fight.fighters[0].alias, t.active, b.game.bodies[0].model_record, b.game.state_hash())
+            let f = &b.game.fight.fighters;
+            (f[0].alias, t.active, b.game.bodies[0].model_record, b.game.state_hash(), f[0].position.distance(f[1].position))
         })
         .collect();
     (r, missing)
 }
 
-/// The made-up tag moves: Gon's tag button starts his run off (alias 5394: his backdash) and Doctor B. comes in on
-/// his entrance (5397: his round intro); Paul tagging out brings Gon in on his. Every frame on a motion; the same
-/// twice.
+/// The made-up tag moves: the tag button starts the run off where Tekken Tag tags (Gon's stance: alias 5394, his
+/// backdash; Doctor B.'s crouched guard too; lying face down, Tekken Tag's roll off 5438), the partner comes in on
+/// the entrance (5397: Tekken Tag's run in, from off the screen to the opponent), then its stance (Doctor B.: his
+/// guard, 80). Every frame on a motion; the same twice.
 #[test]
 fn tag_out_and_in() {
     let Some(a) = assets() else { return };
-    for team in [[GON, DOCTOR_B], [PAUL, GON]] {
-        let (r, missing) = tag_out(&a, team);
+    for (team, lying, at, run) in [([GON, DOCTOR_B], false, 1, 5394), ([PAUL, GON], false, 1, 5394), ([DOCTOR_B, PAUL], false, 1, 5394), ([DOCTOR_B, GON], true, 60, 5438)] {
+        let (r, missing) = tag_out(&a, team, lying, at);
         let alias: Vec<usize> = r.iter().map(|x| x.0).collect();
-        assert!(alias.contains(&5394), "the tag button starts the run off: {alias:?}");
+        assert!(alias[at..at + 3].contains(&run), "model {}: the tag button starts the run off: {alias:?}", team[0]);
         let swap = r.iter().position(|x| x.1 == 1).unwrap_or_else(|| panic!("the swap: {alias:?}"));
         assert_eq!((r[swap].0, r[swap].2), (5397, team[1]), "the partner's entrance");
-        assert!(r[swap..].iter().all(|x| x.1 == 1) && alias[swap..].contains(&58), "one swap, then the stance: {alias:?}");
+        assert!(r[swap..].iter().all(|x| x.1 == 1) && alias[swap..].iter().any(|a| [58, 80].contains(a)), "one swap, then the stance: {alias:?}");
+        let ended = swap + alias[swap..].iter().position(|&a| a != 5397).unwrap();
+        assert!(r[ended].4 < 2500.0, "model {}: in at {} from the opponent", team[1], r[ended].4);
         assert_eq!(missing, 0);
-        assert_eq!(r.iter().map(|x| x.3).collect::<Vec<_>>(), tag_out(&a, team).0.iter().map(|x| x.3).collect::<Vec<_>>());
+        assert_eq!(r.iter().map(|x| x.3).collect::<Vec<_>>(), tag_out(&a, team, lying, at).0.iter().map(|x| x.3).collect::<Vec<_>>());
     }
 }
 
@@ -245,6 +251,33 @@ fn hits_and_voices_sound() {
     b.game.fight.fighters[0].health = kumite_sim::ONE;
     let ko = hit(&mut b, &mut st, ["f", "d+3,n*30"], 1).expect("the K.O.");
     assert!(ko.iter().any(|f| f.starts_with(&own)), "Gon's K.O.: {ko:?}");
+}
+
+/// Doctor B.'s timed sound scripts (Tekken 3's, renumbered): his backflip (motion_040, script 154) plays his voice
+/// on frame 2 (his own bank) and Tekken 3's take-off and landing on frames 24 and 39 (his scripts' bank, past his
+/// voices').
+#[test]
+fn doctor_bs_scripts_sound() {
+    let Some(a) = assets() else { return };
+    let s = SoundData::load(&a).unwrap();
+    let sound: serde_json::Value = a.gamedata("sound.json").unwrap();
+    let own = sound["voice_banks"]["characters"].as_array().unwrap().iter().find(|v| v["model_record"] == DOCTOR_B).unwrap()["bank"].as_u64().unwrap();
+    let mut b = Bout::new(Game::load(&a, [DOCTOR_B, PAUL]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut st = SoundState::default();
+    heard(&a, &s, &b, &mut st);
+    let f = &b.game.fight.fighters[0];
+    let flip = f.moveset.aliases.as_ref().unwrap().iter().position(|r| r.index.is_some_and(|i| f.moveset.moves[i].anim == "motion_040")).expect("the backflip");
+    b.game.fight.fighters[0].play_alias(flip);
+    let mut files = Vec::new();
+    for _ in 0..40 {
+        b.step([Pad::default(); 2]);
+        files.extend(heard(&a, &s, &b, &mut st));
+    }
+    let bank = |f: &String| f.split('/').next().and_then(|k| k.parse::<u64>().ok()).unwrap_or(0);
+    assert!(files.iter().any(|f| bank(f) == own) && files.iter().filter(|f| bank(f) > own).count() >= 2, "{files:?}");
 }
 
 /// Xiaoyu's first model.

@@ -54,6 +54,8 @@ pub struct CharSpark {
     pub burst: Option<BurstSet>,
     /// Its special part's slots' cells (Devil's: the beam's eye flare, strip and end, 0x3A8D08).
     pub special: Vec<Vec<u32>>,
+    /// The strip's picture sheet (0 the atlas; the crossover's Tekken 3 fighters' under Tekken Tag: Tekken 3's atlas).
+    pub sheet: usize,
 }
 
 /// A burst's set (effects.json `bursts`): its atlas cell, its particles' size (metres at size 1) and brightness,
@@ -151,7 +153,8 @@ impl EffectsData {
                         strip: Strip { cells: cells(&c["cells"]), life: c["life"].as_u64().unwrap_or(30) as u32 },
                         light: [rgb(0), rgb(1), rgb(2)],
                         light_frames: c["light_frames"].as_u64().map_or(LIGHT_FRAMES, |n| n.max(1) as u32),
-                        burst: sheet.map(|k| burst(&c["burst"], k)),
+                        burst: sheet.filter(|_| c["burst"].is_object()).map(|k| burst(&c["burst"], k)),
+                        sheet: sheet.unwrap_or(0),
                         special: c["special"].as_array().into_iter().flatten().map(|s| cells(s).to_vec()).collect(),
                     },
                 ))
@@ -247,6 +250,8 @@ pub struct SpriteFx {
     /// Dims over the last 10 frames (additive kinds).
     pub fade: bool,
     pub mirror: bool,
+    /// Its picture sheet ([`CharSpark::sheet`]).
+    pub sheet: usize,
 }
 
 /// A ground impact: 6 puffs, puff k appearing on its 2k-th update.
@@ -429,7 +434,7 @@ impl Vfx {
     }
 
     /// A hit-spark slot (the 4th overwrites the oldest). `dir`: the strike direction (moving sparks only).
-    fn sprite(&mut self, strip: &Strip, pos: Vec3, dir: Option<Vec3>, blend: Blend, eye: Vec3) {
+    fn sprite(&mut self, strip: &Strip, sheet: usize, pos: Vec3, dir: Option<Vec3>, blend: Blend, eye: Vec3) {
         if strip.cells.is_empty() {
             return;
         }
@@ -438,7 +443,7 @@ impl Vfx {
         let d = dir.unwrap_or(Vec3::ZERO);
         let mirror = d.x * (pos.z - eye.z) - d.z * (pos.x - eye.x) < 0.0;
         let pos = Vec3::new(pos.x, pos.y.max(MIN_HEIGHT), pos.z);
-        self.slots[self.next] = Some(SpriteFx { pos, vel, age: 1, strip: strip.clone(), blend, fade: blend == Blend::Add, mirror });
+        self.slots[self.next] = Some(SpriteFx { pos, vel, age: 1, strip: strip.clone(), blend, fade: blend == Blend::Add, mirror, sheet });
         self.next = (self.next + 1) % self.slots.len();
     }
 
@@ -446,7 +451,7 @@ impl Vfx {
     /// strip's sprite.
     fn effect(&mut self, name: &str, strip: &Strip, pos: Vec3, dir: Option<Vec3>, blend: Blend, eye: Vec3) {
         let Some(mut set) = self.data.as_ref().and_then(|d| d.bursts.get(name)).cloned() else {
-            return self.sprite(strip, pos, dir, blend, eye);
+            return self.sprite(strip, 0, pos, dir, blend, eye);
         };
         let blend = if blend == Blend::Half { Blend::Alpha } else { blend };
         let (n, mut count, mut colour) = (set.paths.len(), set.paths.len(), [1.0; 3]);
@@ -477,7 +482,7 @@ impl Vfx {
         }
         let pos = Vec3::new(root.x, MIN_HEIGHT, root.z);
         let Some(d) = &self.data else { return };
-        let first = SpriteFx { pos: pos + d.ground.first().copied().unwrap_or_default(), vel: Vec3::ZERO, age: 1, strip: d.dust.clone(), blend: Blend::Half, fade: false, mirror: false };
+        let first = SpriteFx { pos: pos + d.ground.first().copied().unwrap_or_default(), vel: Vec3::ZERO, age: 1, strip: d.dust.clone(), blend: Blend::Half, fade: false, mirror: false, sheet: 0 };
         self.grounds[self.next_ground] = Some(Ground { pos, age: 0, puffs: vec![first] });
         self.next_ground = (self.next_ground + 1) % self.grounds.len();
     }
@@ -488,7 +493,7 @@ impl Vfx {
         let Some(c) = self.data.as_ref().and_then(|d| d.characters.get(&model)).cloned() else { return };
         match c.burst {
             Some(set) => self.burst(set, pos, dir, Blend::Add, [1.0; 3]),
-            None => self.sprite(&c.strip, pos, None, Blend::Add, eye),
+            None => self.sprite(&c.strip, c.sheet, pos, None, Blend::Add, eye),
         }
         self.light = Some((c.light, c.light_frames, pos, c.light_frames));
     }
@@ -835,7 +840,7 @@ impl Vfx {
             if let Some((strip, offsets)) = &dust {
                 let k = g.age as usize / 2;
                 if g.age % 2 == 0 && k < offsets.len() {
-                    g.puffs.push(SpriteFx { pos: g.pos + offsets[k], vel: Vec3::ZERO, age: 1, strip: strip.clone(), blend: Blend::Half, fade: false, mirror: false });
+                    g.puffs.push(SpriteFx { pos: g.pos + offsets[k], vel: Vec3::ZERO, age: 1, strip: strip.clone(), blend: Blend::Half, fade: false, mirror: false, sheet: 0 });
                 }
             }
         }
@@ -883,7 +888,7 @@ impl Vfx {
             let k = fx.age as i32 - fx.strip.life as i32 + 10;
             let level = if fx.fade && k > 0 { (128.0 - (k as f32 * 9.6).floor()) / 128.0 } else { 1.0 };
             let alpha = if fx.blend == Blend::Half { 0.5 } else { 1.0 };
-            Sprite { pos: fx.pos, size: SPRITE, cell, color: [level, level, level, alpha], blend: fx.blend, mirror: fx.mirror, nearer: SORT_NEARER, sheet: 0 }
+            Sprite { pos: fx.pos, size: SPRITE, cell, color: [level, level, level, alpha], blend: fx.blend, mirror: fx.mirror, nearer: SORT_NEARER, sheet: fx.sheet }
         };
         out.extend(self.slots.iter().flatten().map(sprite));
         for g in self.grounds.iter().flatten() {
@@ -993,5 +998,11 @@ mod tests {
         assert_eq!(cells(&v), [(2, 5)]);
         v.advance();
         assert_eq!(cells(&v), [(2, 6)]);
+        // a crossover fighter's (Tekken 3's): its strip on Tekken 3's sheet, no burst
+        v.bursts.clear();
+        let strip = Strip { cells: Arc::new(vec![1392, 1393]), life: 22 };
+        v.data.as_mut().unwrap().characters.insert(247, CharSpark { strip, light: [0.0, 0.75, 1.0], light_frames: 48, sheet: 3, ..Default::default() });
+        v.char_spark(247, Vec3::Y, None, Vec3::ZERO);
+        assert_eq!(cells(&v), [(3, 1392)]);
     }
 }
