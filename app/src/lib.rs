@@ -3096,7 +3096,7 @@ impl App {
                     s.player = here(s.player);
                 }
                 if setup.mode == tagrun::TagMode::Force {
-                    self.start_room_force(&setup);
+                    self.start_force_setup(&setup);
                 } else {
                     self.start_tag(setup);
                 }
@@ -3106,20 +3106,20 @@ impl App {
         self.open_room_session();
     }
 
-    /// Online: a Force run for the room's players: 1P's fighter plays the player, 2P's the partner, 3P's and
-    /// 4P's beside them (all from the first stage).
-    fn start_room_force(&mut self, setup: &tagrun::TagSetup) {
-        let players = self.room.as_ref().map_or(1, |r| r.players());
+    /// A Force run from TAG BRAWL's setup in its Force mode (online's, or offline once 3P or 4P joined): 1P's
+    /// fighter plays the player, 2P's the partner, 3P's and 4P's beside them (all from the first stage); a player in
+    /// no slot stays out.
+    fn start_force_setup(&mut self, setup: &tagrun::TagSetup) {
         let pick = |p: usize| setup.slots.iter().find(|s| s.player == Some(p)).map(|s| (s.character, s.costume));
         let p1 = pick(0).unwrap_or((setup.slots[0].character, setup.slots[0].costume));
-        self.new_force_run(p1, 1);
+        self.new_force_run(p1, setup.difficulty);
         let costume_num = |p: (usize, usize)| {
             let c = &self.roster.characters[p.0];
             let model = c.costumes[p.1.min(c.costumes.len() - 1)];
             self.roster.costume_of.get(&model).copied().unwrap_or(0)
         };
-        let partner = (players > 1).then(|| pick(1)).flatten();
-        let more: [Option<(usize, usize, usize)>; 2] = std::array::from_fn(|j| (players > 2 + j).then(|| pick(2 + j)).flatten().map(|p| (p.0, p.1, costume_num(p))));
+        let partner = pick(1);
+        let more: [Option<(usize, usize, usize)>; 2] = std::array::from_fn(|j| pick(2 + j).map(|p| (p.0, p.1, costume_num(p))));
         if let Some(run) = self.force.as_mut() {
             run.partner = partner;
             run.more_players = more;
@@ -3931,6 +3931,7 @@ impl App {
                 self.records.ttt = ttt::progress();
                 self.records.save();
             }
+            Outcome::StartTag(setup) if setup.mode == tagrun::TagMode::Force => self.start_force_setup(&setup),
             Outcome::StartTag(setup) => self.start_tag(setup),
             Outcome::StartOnline(setup) => self.start_online(*setup),
             Outcome::CancelOnline => {
@@ -3939,16 +3940,11 @@ impl App {
                     r.leave();
                 }
             }
-            Outcome::StartForce(player, difficulty, partner, more) => {
+            Outcome::StartForce(player, difficulty, partner) => {
                 self.new_force_run(player, difficulty);
-                // (co-op: 2P's pick; 3P and 4P in at the select come in as the first stage begins)
-                let n = self.roster.characters.len();
+                // (co-op: 2P's pick)
                 if let Some(run) = self.force.as_mut() {
                     run.partner = partner;
-                    for p in (2..4).filter(|&p| more[p - 2]) {
-                        let (c, k) = run.other_pick(p, n);
-                        run.more_players[p - 2] = Some((c, k, 0));
-                    }
                 }
                 self.start_force_stage();
             }
@@ -4743,6 +4739,13 @@ impl App {
         Ok(())
     }
 
+    /// Force for more than two (OpenKumite's own): TAG BRAWL's setup in its Force mode, `player` (3P, 4P) seated.
+    fn force_setup(&mut self, difficulty: usize, player: usize) {
+        let mut t = tagrun::TagSelect::new(&self.roster, difficulty, self.seed, tagrun::TagMode::Force);
+        t.key(player, Key::Start, &self.roster);
+        self.screen = Some(Screen::Tag(Box::new(t)));
+    }
+
     /// A player joining a Force stage being recorded (1 the co-op partner, 2 and 3 for 3P and 4P): noted with the
     /// step it comes before.
     fn note_force_join(&mut self, who: u8) {
@@ -5300,11 +5303,18 @@ impl App {
                 Some(Screen::Tag(t)) => {
                     t.key(player, key, &self.roster);
                 }
-                // Force's select: START joins the run
-                Some(Screen::Select(s)) if key == Key::Start => s.join_more(player),
+                // Force's select: 3P's or 4P's START goes on to TAG BRAWL's setup in its Force mode, where each
+                // player picks a fighter (1P's slot first, 3P or 4P seated)
+                Some(Screen::Select(s)) if key == Key::Start && s.mode == Mode::Force => {
+                    let d = s.difficulty;
+                    self.force_setup(d, player);
+                }
                 Some(Screen::Ttt(f)) if key == Key::Start => {
-                    if let (ttt::Page::Select(s), Some(d)) = (&mut f.page, self.roster.ttt.as_deref()) {
-                        s.join_more(player, d);
+                    if let (ttt::Page::Select(s), Some(d)) = (&f.page, self.roster.ttt.as_deref()) {
+                        if s.mode == ttt::FORCE && s.online.is_none() {
+                            let difficulty = ttt::progress().options(d)[0].min(2);
+                            self.force_setup(difficulty, player);
+                        }
                     }
                 }
                 _ => {}
@@ -8128,7 +8138,7 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
         Some("force") => {
             let index = std::env::args().skip_while(|a| a != "--variant").nth(1).and_then(|v| v.parse().ok()).unwrap_or(0usize);
             let player = (previewed, 0);
-            app.outcome(Outcome::StartForce(player, 1, None, [false; 2]));
+            app.outcome(Outcome::StartForce(player, 1, None));
             let mut stage = 0;
             if let Some(run) = app.force.as_mut() {
                 let last = run.data.final_index();
@@ -8237,7 +8247,7 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
         // Force's stage card (--variant N: the stage, then the final one, then the extra stages)
         Some("force-card") => {
             let index = std::env::args().skip_while(|a| a != "--variant").nth(1).and_then(|v| v.parse().ok()).unwrap_or(0usize);
-            app.outcome(Outcome::StartForce((previewed, 0), 1, None, [false; 2]));
+            app.outcome(Outcome::StartForce((previewed, 0), 1, None));
             if let Some(run) = app.force.as_mut() {
                 let last = run.data.final_index();
                 (run.index, run.extra) = if index > last { (last.saturating_sub(1), Some(index - last - 1)) } else { (index, None) };

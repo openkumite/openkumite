@@ -783,6 +783,27 @@ mod tests {
         assert!(matches!(s.key(0, Key::Back, &roster), Outcome::Quit));
     }
 
+    /// Force's setup for more than two: 3P and 4P join with START and each picks its own fighter with its cursor;
+    /// the slots nobody plays stay out ("-", no CPU).
+    #[test]
+    fn force_3p_and_4p_pick_their_own_fighters() {
+        let Some(roster) = roster() else { return };
+        let mut s = TagSelect::new(&roster, 1, 3, TagMode::Force);
+        let mut picked = Vec::new();
+        for p in [2, 3] {
+            s.key(p, Key::Start, &roster);
+            for _ in 0..p {
+                s.key(p, Key::Right, &roster);
+            }
+            let Some(Cursor::Face(f)) = s.guests[p] else { panic!("{}P on the grid", p + 1) };
+            picked.push(s.faces[f]);
+            s.key(p, Key::Button(0), &roster);
+        }
+        let Outcome::StartTag(t) = s.key(0, Key::Start, &roster) else { panic!("the run starts") };
+        let of = |p: usize| t.slots.iter().find(|x| x.player == Some(p)).map(|x| x.character);
+        assert_eq!((t.mode, of(2), of(3), of(1)), (TagMode::Force, Some(picked[0]), Some(picked[1]), None));
+    }
+
     /// TAG BRAWL: the same face picked for every slot gives each its own costume while one is left.
     #[test]
     fn one_face_four_times_four_models() {
