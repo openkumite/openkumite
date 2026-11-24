@@ -165,6 +165,8 @@ pub struct EndingScene {
     /// The cast's bodies (with the ending's tracks as clips `ending_EE_K`) and their model records.
     pub characters: Vec<Arc<Character>>,
     pub records: Vec<usize>,
+    /// Their characters (the game's numbers, player +0x2A).
+    cast: Vec<usize>,
     /// Each one's motion scale (the moveset index's `motion_scale`, player +0x500; 1 when none): its tracks' root
     /// moves that much farther (PCSX2: Bryan at 1.0198 x his track's place in ending 20).
     scales: Vec<f32>,
@@ -265,6 +267,7 @@ impl EndingScene {
             people: d.people.clone(),
             characters,
             records,
+            cast: d.cast.iter().map(|c| c[0].max(0) as usize).collect(),
             scales,
             script: d.script.clone(),
             cameras,
@@ -541,6 +544,13 @@ impl EndingScene {
         Some(place * *pose.get(n)?)
     }
 
+    /// Actor slot `s`'s light 2 this frame (direction, colour 128 = 1), the scene's `light2` turned towards the
+    /// actor's face near the eye ([`fill_light`]); `toward0`: towards light 0; `greys`: each character's grey.
+    pub fn fill(&self, s: usize, toward0: Vec3, light2: (Vec3, Vec3), greys: &[f32]) -> Option<(Vec3, Vec3)> {
+        let grey = *greys.get(*self.cast.get(self.slots.get(s)?.0?)?)?;
+        Some(fill_light(self.head(s)?, self.camera().0, toward0, light2, grey / 128.0))
+    }
+
     fn node_at(&self, s: usize, n: i32) -> Option<Vec3> {
         let (_, pose, place) = self.pose(s)?;
         Some(place.transform_point3(pose.get(usize::try_from(n).ok()?)?.w_axis.truncate()))
@@ -561,5 +571,36 @@ impl EndingScene {
         let h = (f[6] * 368.0 / 512.0) as i64;
         let turn = self.turn();
         (turn.transform_point3(to_m(f[0], f[1], f[2])), turn.transform_point3(to_m(f[3], f[4], f[5])), crate::view_camera(&crate::View { h: h.max(1), ..Default::default() }).2)
+    }
+}
+
+/// Light 2 of an actor whose head is at `head` (0x353448, each frame): the scene's light 2 (`light2`: towards it, its
+/// colour) blended towards the head node's x axis (0x34A7A8 of (1, 0, 0) by player +0x1230: PCSX2's row 0 of it is
+/// ours) and a grey (0x4550C0 by character) by w = max(0, 1 - the eye's distance / 6000 mm) (0x352F50 with
+/// 0x4550B0 / 0x4550B4), times 1 - (d - pi/4) / (1 - pi/4) where that axis meets light 0 at d = cos above pi/4
+/// (gp-0x79FC, gp-0x79F8). The direction is not normalised again.
+// shortcut: the facing's -0.03 rad tilt (gp-0x7A00 by 0x34ACB8) is left out, upgrade if a close-up's fill differs
+pub fn fill_light(head: Mat4, eye: Vec3, toward0: Vec3, (toward2, colour2): (Vec3, Vec3), grey: f32) -> (Vec3, Vec3) {
+    let facing = head.x_axis.truncate().normalize_or_zero();
+    let near = (1.0 - (eye - head.w_axis.truncate()).length() * UNITS / 6000.0).max(0.0);
+    let d = facing.dot(toward0);
+    let k = std::f32::consts::FRAC_PI_4;
+    let w = near * if d < k { 1.0 } else { 1.0 - (d - k) / (1.0 - k) };
+    (facing * w + toward2 * (1.0 - w), Vec3::splat(grey) * w + colour2 * (1.0 - w))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn light_2_turns_to_the_face_near_the_eye() {
+        // facing +z (its x axis), 3 m from the eye: halfway; 6 m: the scene's; light 0 along the facing: the scene's
+        let head = Mat4::from_cols(Vec3::Z.extend(0.0), Vec3::Y.extend(0.0), Vec3::X.extend(0.0), Vec3::ZERO.extend(1.0));
+        let l2 = (Vec3::X, Vec3::new(0.2, 0.7, 0.6));
+        let (dir, c) = fill_light(head, Vec3::new(0.0, 0.0, 3000.0 / UNITS), Vec3::Y, l2, 0.5);
+        assert!((dir - Vec3::new(0.5, 0.0, 0.5)).length() < 1e-5 && (c - Vec3::new(0.35, 0.6, 0.55)).length() < 1e-5, "{dir} {c}");
+        assert_eq!(fill_light(head, Vec3::new(0.0, 0.0, 7000.0 / UNITS), Vec3::Y, l2, 0.5), l2);
+        assert!((fill_light(head, Vec3::ZERO, Vec3::Z, l2, 0.5).0 - Vec3::X).length() < 1e-5);
     }
 }

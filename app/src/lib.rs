@@ -702,6 +702,8 @@ struct App {
     hash_every: Option<u64>,
     /// Each stage's light for the fighters (stages.json `light`: the original's table 0x80096C78).
     stage_lights: std::collections::HashMap<usize, (Option<kumite_render::StageLight>, Option<kumite_render::Shadow>, Option<[u8; 3]>)>,
+    /// Tekken Tag's scenes' lights by arena and the characters' greys ([`scene_lights`]).
+    scene_lights: (std::collections::HashMap<usize, kumite_render::StageLight>, Vec<f32>),
     /// Testing: the round's clock (seconds) and the rounds to win, for every fight.
     round_time: Option<u32>,
     rounds: Option<u32>,
@@ -4190,6 +4192,10 @@ impl App {
         if let (None, Some(w)) = (s.ending, stage.weather.as_mut()) {
             w.without_lightning();
         }
+        // (an ending's actors lit by the scenes' table, 0x353E60)
+        if let (Some(_), Some(l)) = (s.ending, self.scene_lights.0.get(&s.arena)) {
+            stage.light = Some(*l);
+        }
         // (the people the scene shows instead of the arena's, 0x3D85D8)
         stage.people = s.people.as_ref().map_or_else(Vec::new, |p| self.people(&r, s.arena, Some(p)));
         let models = s.characters.iter().zip(&s.records).map(|(c, &record)| skinned_character(&r, c, record)).collect();
@@ -5893,6 +5899,9 @@ impl App {
                     if let Some((m, pose, place)) = s.pose(k) {
                         if let (Some(model), Some(ch)) = (run.models.get(m), s.characters.get(m)) {
                             r.update_bones(model, &ch.skin_matrices(&pose, place));
+                            // (light 2 turned to the face near the eye, 0x353448)
+                            let more = scene.light.and_then(|l| Some((l.toward, l.more?[1])));
+                            r.set_fill(model, more.and_then(|(t, (c2, t2))| s.fill(k, t, (t2, c2), &self.scene_lights.1)));
                             // (op 12: the slot's texture channel frame, Jin's mark: below)
                             if let (Some([x, y, w, h, sx, sy]), Some(shown)) = (ch.mark, run.marks.get_mut(m)) {
                                 if *shown != s.marks[k] {
@@ -6966,13 +6975,7 @@ fn stage_lights(gd: &Path) -> std::collections::HashMap<usize, (Option<kumite_re
                 let toward = glam::Vec3::new(f(&t[0]), f(&t[1]), f(&t[2])).normalize_or_zero();
                 // (Tekken Tag's: the floor darkened by its `alpha`)
                 let alpha = sh["alpha"].as_f64().map(|a| a.clamp(0.0, 1.0) as f32);
-                // (Tekken Tag's `lights`: towards each of three, their colours and the ambient, 128 = 1)
-                let ls = &s["lights"];
-                let v = |a: &serde_json::Value| glam::Vec3::new(f(&a[0]), f(&a[1]), f(&a[2]));
-                let lit = |k: usize| (v(&ls["colour"][k]) / 128.0, v(&ls["toward"][k]));
-                let light =
-                    ls.is_object().then(|| kumite_render::StageLight { ambient: v(&ls["ambient"]) / 128.0, key: lit(0).0, toward: lit(0).1, material: glam::Vec3::ONE, more: Some([lit(1), lit(2)]) });
-                return Some((id, (light, Some(kumite_render::Shadow { toward, floor: 0.0, colour: rgb(&sh["colour"]), alpha }), None)));
+                return Some((id, (ttt_light(&s["lights"]), Some(kumite_render::Shadow { toward, floor: 0.0, colour: rgb(&sh["colour"]), alpha }), None)));
             };
             let amb = (l["ambient"].as_u64()? >> 4) as f32 / 256.0;
             let key = &l["key_color_rgb"];
@@ -6995,6 +6998,21 @@ fn stage_lights(gd: &Path) -> std::collections::HashMap<usize, (Option<kumite_re
             Some((id, (Some(light), Some(shadow), Some(blob))))
         })
         .collect()
+}
+
+/// Tekken Tag's `lights` (stages.json): towards each of three, their colours and the ambient, 128 = 1.
+fn ttt_light(ls: &serde_json::Value) -> Option<kumite_render::StageLight> {
+    let v = |a: &serde_json::Value| glam::Vec3::new(art::num(&a[0]), art::num(&a[1]), art::num(&a[2]));
+    let lit = |k: usize| (v(&ls["colour"][k]) / 128.0, v(&ls["toward"][k]));
+    ls.is_object().then(|| kumite_render::StageLight { ambient: v(&ls["ambient"]) / 128.0, key: lit(0).0, toward: lit(0).1, material: glam::Vec3::ONE, more: Some([lit(1), lit(2)]) })
+}
+
+/// Tekken Tag's scenes' lights by arena (stages.json `scene_lights`, 0x455170: an ending's actors are lit with
+/// them, 0x353E60) and each character's grey for light 2 (`fill`, 0x4550C0); none in an older pack.
+fn scene_lights(gd: &Path) -> (std::collections::HashMap<usize, kumite_render::StageLight>, Vec<f32>) {
+    let json: serde_json::Value = kumite_fs::read(&gd.join("stages.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let lights = json["stages"].as_array().into_iter().flatten().filter_map(|s| Some((s["id"].as_u64()? as usize, ttt_light(&s["scene_lights"])?))).collect();
+    (lights, json["fill"].as_array().into_iter().flatten().map(art::num).collect())
 }
 
 /// Tekken Tag's message page (back to its main menu).
@@ -8989,6 +9007,7 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         round_time: None,
         ai_seats: [None; 4],
         stage_lights: stage_lights(&gd),
+        scene_lights: scene_lights(&gd),
         rounds: None,
         hash_steps: 0,
         hash_detail: false,

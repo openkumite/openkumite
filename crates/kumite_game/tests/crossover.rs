@@ -285,6 +285,39 @@ fn doctor_bs_scripts_sound() {
     assert!(files.iter().any(|f| bank(f) == own) && files.iter().filter(|f| bank(f) > own).count() >= 2, "{files:?}");
 }
 
+/// Doctor B.'s jumps that Tekken 3's type 9 entry 0 mutes play no take-off under Tekken Tag either (0x376578): the
+/// same move without the entry plays one more sound.
+#[test]
+fn doctor_bs_type_9_mutes_his_jumps() {
+    let Some(a) = assets() else { return };
+    let s = SoundData::load(&a).unwrap();
+    let play = |strip: bool| {
+        let mut b = Bout::new(Game::load(&a, [DOCTOR_B, PAUL]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+        while b.phase != Phase::Fight {
+            b.step([Pad::default(); 2]);
+        }
+        let mut st = SoundState::default();
+        heard(&a, &s, &b, &mut st);
+        let f = &mut b.game.fight.fighters[0];
+        let muted = |m: &kumite_sim::data::Move| m.sounds.iter().flatten().any(|e| e.kind == 9 && e.index == 0);
+        let aliases = f.moveset.aliases.clone().unwrap();
+        let alias = aliases.iter().position(|r| r.index.is_some_and(|i| f.moveset.moves[i].bytes_18.jump_start > 1 && muted(&f.moveset.moves[i]))).expect("a muted jump");
+        let k = aliases[alias].index.unwrap();
+        if strip {
+            std::sync::Arc::make_mut(&mut f.moveset).moves[k].sounds.iter_mut().for_each(|l| l.retain(|e| e.kind != 9));
+        }
+        f.play_alias(alias);
+        let mut files = Vec::new();
+        for _ in 0..f.moveset.moves[k].bytes_18.jump_start + 4 {
+            b.step([Pad::default(); 2]);
+            files.extend(heard(&a, &s, &b, &mut st));
+        }
+        files
+    };
+    let (muted, plain) = (play(false), play(true));
+    assert_eq!(plain.len(), muted.len() + 1, "{muted:?} {plain:?}");
+}
+
 /// Xiaoyu's first model.
 const XIAOYU: usize = 432;
 
