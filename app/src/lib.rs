@@ -6054,8 +6054,8 @@ impl App {
                 let wide_hud = self.graphics.enhance.wide_hud;
                 let mut frame = egui.run(self.window.as_deref(), size, |ctx| {
                     if !flare.is_empty() {
-                        // the lens flare's discs, added over the picture under everything 2D
-                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("flare")));
+                        // the lens flare's discs, added over the picture and the fighters, under the menus
+                        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("flare")));
                         let w = ctx.content_rect();
                         let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
                         for &(pic, [x, y, hw, hh], level) in &flare {
