@@ -397,7 +397,11 @@ impl Vfx {
         let camera = read("camera.json");
         let scripts =
             camera["shake"]["scripts"].as_array().into_iter().flatten().map(|s| s["pitch_offsets"].as_array().into_iter().flatten().map(|v| v.as_i64().unwrap_or(0) as i32).collect()).collect();
-        let slots_joints = read("rules.json")["bone_slots"]["joints"].as_array().into_iter().flatten().map(|v| v.as_str().unwrap_or("").to_string()).collect();
+        let mut slots_joints: Vec<String> = read("rules.json")["bone_slots"]["joints"].as_array().into_iter().flatten().map(|v| v.as_str().unwrap_or("").to_string()).collect();
+        // (Tekken Tag's rules name none: its converter names the slots' nodes so; its ops 6-0xA at a slot, 0x372C40)
+        if slots_joints.is_empty() {
+            slots_joints = crate::BONE_SLOTS.map(String::from).to_vec();
+        }
         let dusts = read("stages.json")["stages"]
             .as_array()
             .into_iter()

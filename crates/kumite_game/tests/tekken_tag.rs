@@ -336,6 +336,31 @@ fn true_ogres_fire_burns() {
     assert!(at.is_some_and(|(m, k, d)| m == 3799 && (62..=66).contains(&k) && (1700.0..2200.0).contains(&d)), "{at:?}");
 }
 
+/// Paul's b+1+2 (move 1068) flames at his slots 4, 5 and 6 on its frames 7, 22 and 37 (its op 6, 0x372C40 ->
+/// 0x3A2BC0), as PCSX2 draws it while he winds up; Tekken Tag's rules name no slots, so the ops were dropped.
+#[test]
+fn pauls_burning_fist_flames_as_it_charges() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [PAUL, HWOARANG]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, JIN).unwrap(), kumite_game::Actor::load(&a, KING).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut v = kumite_game::vfx::Vfx::new(&a);
+    let (mut seen, mut flames) = (0, vec![]);
+    for pad in parse_script("n*4,b+1+2*2,n*60").unwrap() {
+        b.step([pad, Pad::default()]);
+        v.step(&b.game);
+        let n = v.bursts.iter().filter(|x| x.set.sheet > 0).count();
+        if n > seen && b.game.fight.fighters[0].current.index == 1068 {
+            flames.push(b.game.fight.fighters[0].frame);
+        }
+        seen = n;
+    }
+    assert_eq!(flames, [7, 22, 37]);
+}
+
 /// Devil's laser (0x378150: slot 0x18, from his head, 200 longer each active frame): his n+1+2 (move 4175) from
 /// -554 reaches Hwoarang at 944 and he falls (alias 3626) on frame 36 of it, as in PCSX2 (its 37th: audit
 /// 29_cmd00); the strike to slot 0x18 had no segment.
