@@ -554,12 +554,11 @@ mod tests {
         same_everywhere(&sums, rollbacks, 1500);
     }
 
-    /// TEKKEN FORCE online in Tekken Tag (the slice's force.json, stage 1): Lei with the fight and the stage in the
-    /// rollback, as the app's Force online; 1P's computer plays him, the other's pad the partner's.
-    #[test]
-    fn a_tekken_tag_force_stage_online_is_the_same_on_both_computers() {
+    /// Force online, stage 1 of `a`'s force.json: 1P (`models[0]`, selections `stride` a character) with the fight
+    /// and the stage in the rollback, as the app's Force online; the co-op players (`models[1..]`: 2P, 3P, 4P) each
+    /// on a computer of their own, every computer's pad the partner's (or 3P's, 4P's).
+    fn force_online(a: &kumite_assets::Assets, models: &[usize], stride: usize, computers: usize) {
         use kumite_game::force::{ForceData, ForceEvent, ForceStage};
-        let Some(a) = ttt_slice_assets() else { return };
         let data: std::sync::Arc<ForceData> = std::sync::Arc::new(a.gamedata("force.json").unwrap());
         let roster: serde_json::Value = a.gamedata("roster.json").unwrap();
         let soldier = |k: usize| {
@@ -567,19 +566,36 @@ mod tests {
             let e = roster["selections"]["entries"].as_array().unwrap().iter().find(|e| e["selection"] == sel).unwrap();
             e["model_record"].as_u64().unwrap() as usize
         };
-        let soldiers = [0, 1].map(|k| kumite_game::Actor::load(&a, soldier(k)).unwrap());
-        let mut g = kumite_game::Game::load(&a, [TTT_MODELS[1], soldier(0)]).unwrap();
+        let soldiers = [0, 1].map(|k| kumite_game::Actor::load(a, soldier(k)).unwrap());
+        let mut g = kumite_game::Game::load(a, [models[0], soldier(0)]).unwrap();
         g.round_frames = kumite_game::force::CLOCK;
         (g.ko_collapse, g.fight.ko_collapse) = (false, false);
-        let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 1, false);
+        let mut b = Bout::new(g, kumite_game::ai_data(a).unwrap(), 1, false);
         b.force = true;
         b.set_cpu(1, Some((1, data.ai_level(0))));
         b.extra_cpu = Some(kumite_sim::ai::Ai::new(1, data.ai_level(0), 1));
         let body = b.game.fight.fighters[0].character.unwrap_or(0).max(0) as usize;
-        let mut st = ForceStage::new(data.clone(), 0, soldiers, body * 8, body, 0, 0, 0, 0);
+        let mut st = ForceStage::new(data.clone(), 0, soldiers, body * stride, body, 0, 0, 0, 0);
         st.setup(&mut b.game);
-        let (sums, rollbacks) = play(ForceState(b, st), 2, 1500, &|s, p| {
+        // (the players join as the app's do: 2P, the soldiers' places widened, then 3P and 4P)
+        if let Some(&m) = models.get(1) {
+            b.game.join_partner(&kumite_game::Actor::load(a, m).unwrap());
+            st.widen(&mut b.game);
+            let n = b.game.fight.more.len();
+            b.more_cpu = (4..4 + n).map(|k| (!kumite_sim::Fight::is_player(k)).then(|| kumite_sim::ai::Ai::new(1, data.ai_level(0), 1))).collect();
+            b.more_human = vec![None; n];
+        }
+        for (p, &m) in models.iter().enumerate().skip(2) {
+            b.game.join_player(p, &kumite_game::Actor::load(a, m).unwrap());
+        }
+        assert_eq!(b.game.players().len(), models.len());
+        let (sums, rollbacks) = play(ForceState(b, st), computers, 1500, &|s, p| {
             s.0.partner_pad = p[1];
+            for k in 0..2 {
+                if let (Some(slot), Some(&pad)) = (s.0.more_human.get_mut(k), p.get(2 + k)) {
+                    *slot = Some(pad);
+                }
+            }
             s.0.step([p[0], Pad::default()]);
             let fighting = s.0.phase == kumite_game::bout::Phase::Fight;
             let won = matches!(s.0.phase, kumite_game::bout::Phase::RoundOver { winner: Some(0) } | kumite_game::bout::Phase::MatchOver { winner: Some(0) });
@@ -590,6 +606,33 @@ mod tests {
             }
         });
         same_everywhere(&sums, rollbacks, 1500);
+    }
+
+    /// TEKKEN FORCE online in Tekken Tag (the slice's force.json, stage 1): Lei with the fight and the stage in the
+    /// rollback, as the app's Force online; 1P's computer plays him, the other's pad the partner's.
+    #[test]
+    fn a_tekken_tag_force_stage_online_is_the_same_on_both_computers() {
+        let Some(a) = ttt_slice_assets() else { return };
+        force_online(&a, &[TTT_MODELS[1]], 8, 2);
+    }
+
+    /// TEKKEN FORCE's co-op of four in Tekken Tag: Lei, Paul, Xiaoyu and Jin on four computers.
+    #[test]
+    fn a_tekken_tag_force_co_op_of_four_online_is_the_same_on_every_computer() {
+        let Some(a) = ttt_slice_assets() else { return };
+        let [p, l, x, j] = TTT_MODELS;
+        force_online(&a, &[l, p, x, j], 8, 4);
+    }
+
+    /// Tekken Force's co-op of four in Tekken 3: Paul, Law, King and Xiaoyu on four computers.
+    #[test]
+    fn a_tekken_3_force_co_op_of_four_online_is_the_same_on_every_computer() {
+        let root = crate::test_assets();
+        let Ok(a) = kumite_assets::Assets::new(&root) else {
+            eprintln!("skipped: no Tekken 3 assets");
+            return;
+        };
+        force_online(&a, &[71, 79, 95, 127], 4, 4);
     }
 
     /// TAG BRAWL online in Tekken Tag: four fighters, four computers, two on two.

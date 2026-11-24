@@ -3818,6 +3818,10 @@ impl App {
                 if spec.force_coop {
                     let n = self.roster.characters[p1.0].costumes.len().max(1);
                     run.partner = Some(if spec.given[1] { p2 } else { (p1.0, (p1.1 + 1) % n) });
+                    // (--fighters' third and fourth: 3P and 4P)
+                    for j in 0..2 {
+                        run.more_players[j] = spec.given[2 + j].then_some((spec.players[2 + j].0, spec.players[2 + j].1, 0));
+                    }
                 }
                 let setup = FightSetup {
                     mode: Mode::Force,
@@ -3929,8 +3933,17 @@ impl App {
                     r.leave();
                 }
             }
-            Outcome::StartForce(player, difficulty) => {
+            Outcome::StartForce(player, difficulty, partner, more) => {
                 self.new_force_run(player, difficulty);
+                // (co-op: 2P's pick; 3P and 4P in at the select come in as the first stage begins)
+                let n = self.roster.characters.len();
+                if let Some(run) = self.force.as_mut() {
+                    run.partner = partner;
+                    for p in (2..4).filter(|&p| more[p - 2]) {
+                        let (c, k) = run.other_pick(p, n);
+                        run.more_players[p - 2] = Some((c, k, 0));
+                    }
+                }
                 self.start_force_stage();
             }
             Outcome::Run(run) => {
@@ -4618,6 +4631,7 @@ impl App {
         }
         bout.partner_cpu = seats[1].map(|a| a.ai(0));
         let mut st = kumite_game::force::ForceStage::new(data.clone(), i, soldiers, run.selection, run.player_char, run.keys, run.score, run.hiscore, run.kills);
+        st.player_scores = run.player_scores;
         if let Some(e) = run.extra {
             st = st.extra_stage(e);
         }
@@ -4732,15 +4746,18 @@ impl App {
         }
     }
 
-    /// Force for more than two: the soldiers' places and their CPUs for every player (two a player).
+    /// Force for more than two: the soldiers' places and their CPUs for every player (two a player); 3P's and
+    /// 4P's AI seats (`--ai 3,4`, a replay's).
     fn widen_force(&mut self) {
+        let seats = self.ai_seats();
         let (Some(run), Some(fight)) = (self.force.as_mut(), self.fight.as_mut()) else { return };
         let Some(st) = run.stage.as_mut() else { return };
         st.widen(&mut fight.bout.game);
         let n = fight.bout.game.fight.more.len();
         let (d, l) = (run.difficulty, run.data.ai_level(run.index));
         if fight.bout.more_cpu.len() < n {
-            fight.bout.more_cpu = (4..4 + n).map(|k| (!kumite_sim::Fight::is_player(k)).then(|| kumite_sim::ai::Ai::new(d, l, 1))).collect();
+            let cpu = |k: usize| if kumite_sim::Fight::is_player(k) { seats[k - 2].map(|a| a.ai(0)) } else { Some(kumite_sim::ai::Ai::new(d, l, 1)) };
+            fight.bout.more_cpu = (4..4 + n).map(cpu).collect();
             fight.bout.more_human = vec![None; n];
         }
     }
@@ -4751,13 +4768,16 @@ impl App {
         self.note_force_join(p as u8);
         self.widen_force();
         let (Some(run), Some(fight)) = (self.force.as_mut(), self.fight.as_mut()) else { return };
-        let n = self.roster.characters.len().max(1);
-        let (ch, cos) = run.more_players[p - 2].map(|(c, k, _)| (c, k)).unwrap_or(((run.player.0 + 3 * p + 1) % n, 0));
+        let (ch, cos) = run.more_players[p - 2].map_or_else(|| run.other_pick(p, self.roster.characters.len()), |(c, k, _)| (c, k));
         let c = &self.roster.characters[ch];
         let model = c.costumes[cos.min(c.costumes.len() - 1)];
         match kumite_game::Actor::load(&self.assets, model) {
             Ok(actor) => {
                 fight.bout.game.join_player(p, &actor);
+                // (an AI 3P / 4P guards with guard moves, as a CPU does)
+                if let (Some(Some(_)), Some(f)) = (fight.bout.more_cpu.get(p - 2), fight.bout.game.fight.actor_mut(2 + p)) {
+                    f.guard_input = false;
+                }
                 run.more_players[p - 2] = Some((ch, cos, self.roster.costume_of.get(&model).copied().unwrap_or(0)));
                 if !self.replay_quiet {
                     menu::sfx::play(menu::sfx::start());
@@ -4792,15 +4812,6 @@ impl App {
                 if let (Some(_), Some(p)) = (fight.bout.partner_cpu.as_ref(), fight.bout.game.fight.partner.as_mut()) {
                     p.guard_input = false;
                 }
-                if let Some(st) = run.stage.as_mut() {
-                    st.widen(&mut fight.bout.game);
-                }
-                let n = fight.bout.game.fight.more.len();
-                let (d, l) = (run.difficulty, run.data.ai_level(run.index));
-                if fight.bout.more_cpu.len() < n {
-                    fight.bout.more_cpu = (4..4 + n).map(|k| (!kumite_sim::Fight::is_player(k)).then(|| kumite_sim::ai::Ai::new(d, l, 1))).collect();
-                    fight.bout.more_human = vec![None; n];
-                }
                 run.partner = Some((ch, cos));
                 run.partner_costume = self.roster.costume_of.get(&model).copied().unwrap_or(0);
                 fight.partner = Some((format!("m{model:03}"), self.roster.voice_of.get(&model).copied().unwrap_or(c.id)));
@@ -4808,6 +4819,7 @@ impl App {
                     menu::sfx::play(menu::sfx::start());
                 }
                 log::info!("Force: 2P joins as {} ({model})", c.name);
+                self.widen_force();
             }
             Err(e) => log::warn!("the co-op partner {model}: {e:#}"),
         }
@@ -4883,11 +4895,12 @@ impl App {
                     frame: 0,
                     fade: 0,
                     leaving: false,
+                    players: run.shares(run.player_scores),
                 };
                 self.force = None;
-                // (Tekken Tag without Tekken 3's HUD in its extras: its message page, the run's score)
+                // (Tekken Tag without Tekken 3's HUD in its extras: its message page, the run's score, the players')
                 self.screen = Some(match (&self.roster.ttt, self.art.as_ref().is_some_and(|a| a.t3.is_some())) {
-                    (Some(_), false) => ttt_message(vec!["TEKKEN FORCE".into(), format!("SCORE {}", r.score)]),
+                    (Some(_), false) => force_message("TEKKEN FORCE", r.score, &r.players),
                     _ => Screen::ForceResults(Box::new(r)),
                 });
             }
@@ -4895,12 +4908,13 @@ impl App {
         }
         // lost: the hi-score is kept, GAME OVER
         let (score, player) = (run.stage.as_ref().map_or(run.score, |s| s.score), run.player_char);
+        let players = run.shares(run.stage.as_ref().map_or(run.player_scores, |s| s.player_scores));
         self.keep_force(0, score, Some(player));
         self.force = None;
         self.fight = None;
         self.scene = None;
         self.screen = Some(match self.roster.ttt {
-            Some(_) => ttt_message(vec!["GAME OVER".into(), format!("SCORE {score}")]),
+            Some(_) => force_message("GAME OVER", score, &players),
             None => Screen::GameOver { frames: 0 },
         });
     }
@@ -5276,12 +5290,24 @@ impl App {
             if self.room.is_some() {
                 return true;
             }
-            if let Some(Screen::Tag(t)) = self.screen.as_mut() {
-                t.key(player, key, &self.roster);
-            } else if key == Key::Start && self.screen.is_none() && self.force_fight() && self.net.is_none() {
+            match self.screen.as_mut() {
+                Some(Screen::Tag(t)) => {
+                    t.key(player, key, &self.roster);
+                }
+                // Force's select: START joins the run
+                Some(Screen::Select(s)) if key == Key::Start => s.join_more(player),
+                Some(Screen::Ttt(f)) if key == Key::Start => {
+                    if let (ttt::Page::Select(s), Some(d)) = (&mut f.page, self.roster.ttt.as_deref()) {
+                        s.join_more(player, d);
+                    }
+                }
+                _ => {}
+            }
+            // a Force stage: START drops in (one life a stage: a player down stays down until the next)
+            if key == Key::Start && self.screen.is_none() && self.force_fight() && self.net.is_none() {
                 let Some(fight) = self.fight.as_ref() else { return true };
-                let down = fight.bout.game.fight.actor(2 + player.min(3)).is_none_or(|p| p.health <= 0 || p.inactive);
-                if down && fight.pause.is_none() && fight.bout.phase == Phase::Fight {
+                let out = !fight.bout.game.players().contains(&(2 + player.min(3)));
+                if out && fight.pause.is_none() && fight.bout.phase == Phase::Fight {
                     self.join_force_player(player.min(3));
                 }
             }
@@ -5550,13 +5576,13 @@ impl App {
             }
             return true;
         }
-        // Force: the second player's START joins the run (or, down, gets up again)
+        // Force: the second player's START joins the run (one life a stage: down, 2P stays down until the next)
         if player == 1 && key == Key::Start && fight.pause.is_none() && fight.setup.as_ref().is_some_and(|s| s.mode == Mode::Force) {
             if online {
                 return true;
             }
-            let down = fight.bout.game.fight.partner.as_ref().is_none_or(|p| p.health <= 0 || p.inactive);
-            if down && fight.bout.phase == Phase::Fight {
+            let out = !fight.bout.game.players().contains(&3);
+            if out && fight.bout.phase == Phase::Fight {
                 self.join_force_partner();
             }
             return true;
@@ -7020,6 +7046,11 @@ fn ttt_message(lines: Vec<String>) -> Screen {
     Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, title: false }, frame: 0 }))
 }
 
+/// Tekken Force's end on Tekken Tag's message page: `head`, the run's score, each co-op player's.
+fn force_message(head: &str, score: u32, players: &[(usize, u32)]) -> Screen {
+    ttt_message([head.to_string(), format!("SCORE {score}")].into_iter().chain(players.iter().map(|(n, p)| format!("{n}P {p}"))).collect())
+}
+
 /// The stage's light and the fighters' shadows on a camera.
 fn scene_lighting(cam: &mut Camera, scene: &Scene) {
     cam.light = scene.light;
@@ -8091,7 +8122,7 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
         Some("force") => {
             let index = std::env::args().skip_while(|a| a != "--variant").nth(1).and_then(|v| v.parse().ok()).unwrap_or(0usize);
             let player = (previewed, 0);
-            app.outcome(Outcome::StartForce(player, 1));
+            app.outcome(Outcome::StartForce(player, 1, None, [false; 2]));
             let mut stage = 0;
             if let Some(run) = app.force.as_mut() {
                 let last = run.data.final_index();
@@ -8132,7 +8163,8 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             let flags = std::env::args().skip_while(|a| a != "--variant").nth(1).and_then(|v| v.parse().ok()).unwrap_or(7u32);
             let stages = app.force_data.as_ref().map_or(0, |d| d.final_index());
             let bosses = (0..stages).map(|k| pv["force_bosses"].get(k).map(|b| (id(&b[0]), id(&b[1])))).collect();
-            let r = forcerun::ForceResults { score: 123_450, hiscore: 123_450, new_hiscore: true, flags, bosses, kills: 99, t: 0, frame: 0, fade: 0, leaving: false };
+            let players = if std::env::args().any(|a| a == "--coop") { vec![(1, 43_210), (2, 30_000), (3, 25_120), (4, 25_120)] } else { Vec::new() };
+            let r = forcerun::ForceResults { score: 123_450, hiscore: 123_450, new_hiscore: true, flags, bosses, kills: 99, t: 0, frame: 0, fade: 0, leaving: false, players };
             app.screen = Some(Screen::ForceResults(Box::new(r)));
         }
         // the records screen: --variant 0 / 1 / 2 the page; records-entry: a new Time Attack record's name entry (the
@@ -8199,7 +8231,7 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
         // Force's stage card (--variant N: the stage, then the final one, then the extra stages)
         Some("force-card") => {
             let index = std::env::args().skip_while(|a| a != "--variant").nth(1).and_then(|v| v.parse().ok()).unwrap_or(0usize);
-            app.outcome(Outcome::StartForce((previewed, 0), 1));
+            app.outcome(Outcome::StartForce((previewed, 0), 1, None, [false; 2]));
             if let Some(run) = app.force.as_mut() {
                 let last = run.data.final_index();
                 (run.index, run.extra) = if index > last { (last.saturating_sub(1), Some(index - last - 1)) } else { (index, None) };
@@ -8243,10 +8275,11 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             });
             app.screen = results.map(Screen::Results);
         }
-        Some(m @ ("select" | "vs" | "practice")) => {
+        Some(m @ ("select" | "vs" | "practice" | "force-select")) => {
             let mode = match m {
                 "vs" => Mode::Versus,
                 "practice" => Mode::Practice,
+                "force-select" => Mode::Force,
                 _ => Mode::Arcade,
             };
             app.screen = Some(Screen::Select(Box::new(menu::Select::new(mode, 1, &app.roster, app.seed))));
@@ -8701,10 +8734,10 @@ Straight into a mode (debugging; past the menus):
   --p2-cpu, --p2-human         VS and Tag Arcade: P2 the CPU (default human); Ball, the tag brawl: P2 human
   --force-stage N|final        Force's stage (1..; past the game's own, the extra stages)
   --boss                       ... straight to the boss
-  --coop                       ... with 2P (--opponent, or the player's next costume)
+  --coop                       ... with 2P (--opponent, or the player's next costume); --fighters' 3rd, 4th: 3P, 4P
   --force-keys N               ... the keys held (all of them at the last stage earn the final stage)
   --ai SEATS                   the AI plays these seats (1,2; 1..4 in the tag brawl and Ball 2 ON 2; Force: 1,
-                               2 with --coop); offline only; the save is not written
+                               1..4 with --coop); offline only; the save is not written
   --ai-style S | 1:S,2:S       classic, rushdown, defensive, counter, thrower, evasive, juggler, mixed, or random
   --ai-difficulty D            easy|medium|hard (default hard)
   --ai-level N                 0..9 (default 9)
@@ -8753,7 +8786,7 @@ Headless (no window; the save is not written):
   --frames N                   ... after N frames
   --screen NAME                ... of a screen: title, main-menu, options, keyconfig, keyboard, select, vs,
                                practice, versus, hud, tag, grid, force (--tally), force-results, presents, ending,
-                               staff-roll, movie, embu, ttt-ending, ttt-theater, ...
+                               staff-roll, movie, embu, ttt-ending, ttt-theater, force-select, ...
   --ui                         ... with the debug panel
   --size WxH                   ... of this size (default 960x720)
   --variant N, --coop, --chicken, --boss

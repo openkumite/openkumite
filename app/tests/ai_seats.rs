@@ -70,6 +70,14 @@ fn a_force_co_op_of_two_ais_replays_as_recorded() {
     an_ai_match_replays_as_recorded(&mode, "30000", r#""ai":[{"style":"Thrower","difficulty":2,"level":9},{"style":"Rushdown","difficulty":2,"level":9},null,null]"#, "force");
 }
 
+/// Force's co-op of four AIs (3P and 4P --fighters' third and fourth): the stage's replay, joins and all, ends as
+/// recorded.
+#[test]
+fn a_force_co_op_of_four_ais_replays_as_recorded() {
+    let mode = ["--mode", "force", "--fighters", "paul,law,king,xiaoyu", "--ai", "1,2,3,4", "--coop"];
+    an_ai_match_replays_as_recorded(&mode, "9000", r#"{"style":"Classic","difficulty":2,"level":9},{"style":"Classic","difficulty":2,"level":9}]"#, "force4");
+}
+
 /// The game's log of one headless run (its own save folder), or None without a GPU / the game data.
 fn log_of(name: &str, args: &[&str]) -> Option<String> {
     let assets = assets()?;

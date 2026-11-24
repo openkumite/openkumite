@@ -438,6 +438,7 @@ mod tests {
             partner: Some((1, 0)),
             partner_costume: 0,
             more_players: [Some((2, 0, 0)), None],
+            player_scores: [0; 4],
         };
         good.game = Match::Force { setup, start, joins: vec![(10, 1), (20, 2)] };
         assert!(good.sane(&roster));

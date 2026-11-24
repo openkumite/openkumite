@@ -27,6 +27,8 @@ pub struct ForceRun {
     pub extra: Option<usize>,
     pending_final: bool,
     pub score: u32,
+    /// Co-op: each player's points (1P..4P; `score` the total).
+    pub player_scores: [u32; 4],
     pub hiscore: u32,
     pub new_hiscore: bool,
     pub keys: u32,
@@ -70,6 +72,8 @@ pub struct ForceStart {
     pub partner: Option<(usize, usize)>,
     pub partner_costume: usize,
     pub more_players: [Option<(usize, usize, usize)>; 2],
+    #[serde(default)]
+    pub player_scores: [u32; 4],
 }
 
 impl ForceRun {
@@ -93,6 +97,7 @@ impl ForceRun {
             partner: self.partner,
             partner_costume: self.partner_costume,
             more_players: self.more_players,
+            player_scores: self.player_scores,
         }
     }
 
@@ -101,7 +106,7 @@ impl ForceRun {
         let mut run = Self::new(data, s.player, s.selection, s.player_char, s.difficulty, s.keys, s.hiscore, false);
         (run.player_costume, run.index, run.extra, run.pending_final, run.score, run.flags, run.kills, run.clock) =
             (s.player_costume, s.index, s.extra, s.pending_final, s.score, s.flags, s.kills, s.clock);
-        (run.partner, run.partner_costume, run.more_players) = (s.partner, s.partner_costume, s.more_players);
+        (run.partner, run.partner_costume, run.more_players, run.player_scores) = (s.partner, s.partner_costume, s.more_players, s.player_scores);
         run
     }
 
@@ -119,6 +124,7 @@ impl ForceRun {
             extra: None,
             pending_final: false,
             score: 0,
+            player_scores: [0; 4],
             hiscore,
             new_hiscore: false,
             keys,
@@ -136,6 +142,18 @@ impl ForceRun {
         .with_unlock(drb_unlocked)
     }
 
+    /// 3P's or 4P's (`p` 2, 3) character when they join without a pick: another of the `n` than the player's.
+    pub fn other_pick(&self, p: usize, n: usize) -> (usize, usize) {
+        ((self.player.0 + 3 * p + 1) % n.max(1), 0)
+    }
+
+    /// Co-op: each player in the run (1..4) and their points (`scores`: 1P's..4P's); none alone.
+    pub fn shares(&self, scores: [u32; 4]) -> Vec<(usize, u32)> {
+        let joined = [true, self.partner.is_some(), self.more_players[0].is_some(), self.more_players[1].is_some()];
+        let n = joined.iter().filter(|&&j| j).count();
+        (0..4).filter(|&k| joined[k] && n > 1).map(|k| (k + 1, scores[k])).collect()
+    }
+
     /// The final character already unlocked: the results show the bosses and the soldiers beaten (flag 0x10).
     fn with_unlock(mut self, drb: bool) -> Self {
         if drb {
@@ -149,7 +167,7 @@ impl ForceRun {
     pub fn next(&mut self) -> bool {
         let Some(st) = self.stage.take() else { return false };
         let last = self.data.final_index();
-        self.score = st.score;
+        (self.score, self.player_scores) = (st.score, st.player_scores);
         self.keys = st.keys;
         self.kills = st.kills_total;
         if let (Some(b), None) = (st.boss, self.extra) {
@@ -323,17 +341,13 @@ impl ForceRun {
         let ([px, py], [sx, sy], [_, sy1]) = (plate(0), plate(1), plate(2));
         let pdy = sy1 - sy;
         crate::hud::name_plate(hd, painter, v, art, game.bodies[0].model_record, self.player_costume, px, py, false);
-        // the co-op partner under the player (OpenKumite's own), or the invitation to join; a partner who is down
-        // can come back with START
+        // the co-op partner under the player (OpenKumite's own), or the invitation to join
         let blink = game.fight.frame & 0x30 != 0;
         let push_p2 = hd.push.get(1).map_or("", String::as_str);
         match (game.partner_body.as_ref(), game.fight.partner.as_deref()) {
-            (Some(b), Some(p)) => {
+            (Some(b), Some(_)) => {
                 crate::hud::name_plate(hd, painter, v, art, b.model_record, self.partner_costume, px, py + pdy, false);
                 art.text(painter, v, 0, 5, 150.0 - 18.0, 116.0, "2P", Color32::WHITE);
-                if p.health <= 0 && blink {
-                    art.text(painter, v, 0, 5, 19.0, 140.0, push_p2, Color32::WHITE);
-                }
             }
             _ if st.state < 7 && blink => art.text(painter, v, 0, 5, 19.0, 92.0, push_p2, Color32::WHITE),
             _ => {}
@@ -344,6 +358,14 @@ impl ForceRun {
                 let y = py + pdy * (2 + j) as f32;
                 crate::hud::name_plate(hd, painter, v, art, b.model_record, *cos, px, y, false);
                 art.text(painter, v, 0, 5, 150.0 - 18.0, y + 2.0, &format!("{}P", j + 3), Color32::WHITE);
+            }
+        }
+        // co-op: each player's points after the tag (1P's tag too)
+        let players = game.players();
+        if players.len() > 1 {
+            art.text(painter, v, 0, 5, 150.0 - 18.0, py + 2.0, "1P", Color32::WHITE);
+            for (j, _) in [0, 3, 4, 5].into_iter().enumerate().filter(|(_, k)| players.contains(k)) {
+                art.text(painter, v, 0, 5, 150.0 - 14.0 + art.text_w(0, "2P"), py + pdy * j as f32 + 2.0, &st.player_scores[j].to_string(), Color32::WHITE);
             }
         }
         for k in 0..st.slots.len().min(4) {
@@ -523,6 +545,8 @@ pub struct ForceResults {
     pub frame: u32,
     pub fade: i32,
     pub leaving: bool,
+    /// Co-op (OpenKumite's own): each player's number (1..4) and points; none alone.
+    pub players: Vec<(usize, u32)>,
 }
 
 impl ForceResults {
@@ -574,6 +598,10 @@ impl ForceResults {
         if t >= 30 {
             place(&l["your_score"], s(&texts["your_score"]), None);
             place(&l["score"], &crate::art::printf(s(&l["score"]["text"]), &[self.score]), None);
+            // (co-op: each player's share down the empty left of the screen)
+            for (k, (n, p)) in self.players.iter().enumerate() {
+                art.text(painter, v, 0, 5, 16.0, 124.0 + 24.0 * k as f32, &format!("{n}P {p}"), Color32::WHITE);
+            }
         }
         if t >= 60 {
             place(&l["high_score"], s(&texts["high_score"]), None);
