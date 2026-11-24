@@ -142,6 +142,9 @@ pub struct Clip {
     pub translations: Vec<Option<Vec<Vec3>>>,
     /// Per node: scale per frame (Tekken Tag's scenes' face nodes), else none.
     pub scales: Vec<Option<Vec<Vec3>>>,
+    /// Tekken Tag: each frame's 57 channels as the game keeps them (animation extras `angles`: the root's heading,
+    /// height and distance, then the 18 joint slots' x, y, z, 65536 a turn); empty when the file has none.
+    pub angles: Vec<[u16; 57]>,
 }
 
 /// gamedata/shadows.json (export_shadows): the fighters' shadow meshes, each with the model records it serves.
@@ -316,7 +319,16 @@ impl Character {
         let mut clips = Vec::new();
         for a in doc.animations() {
             let mut clip =
-                Clip { name: a.name().unwrap_or_default().to_string(), frames: 0, rotations: vec![None; nodes.len()], translations: vec![None; nodes.len()], scales: vec![None; nodes.len()] };
+                Clip { name: a.name().unwrap_or_default().to_string(), rotations: vec![None; nodes.len()], translations: vec![None; nodes.len()], scales: vec![None; nodes.len()], ..Clip::default() };
+            let extras = a.extras().as_ref().and_then(|x| serde_json::from_str::<serde_json::Value>(x.get()).ok()).unwrap_or_default();
+            if let Some(acc) = extras["angles"]
+                .as_u64()
+                .and_then(|i| doc.accessors().nth(i as usize))
+                .filter(|a| a.data_type() == gltf::accessor::DataType::U16 && a.dimensions() == gltf::accessor::Dimensions::Scalar)
+            {
+                let v: Vec<u16> = gltf::accessor::Iter::<u16>::new(acc, get).map(Iterator::collect).unwrap_or_default();
+                clip.angles = v.as_chunks::<57>().0.to_vec();
+            }
             for ch in a.channels() {
                 let r = ch.reader(get);
                 let node = ch.target().node().index();
@@ -523,6 +535,7 @@ impl Character {
                     .map(|(n, j)| Some(c.translations.get((*j)?)?.as_ref()?.iter().map(|t| if n.parent.is_none() { *t * size } else { *t }).collect()))
                     .collect(),
                 scales: from.iter().map(|j| j.and_then(|j| c.scales.get(j)?.clone())).collect(),
+                angles: c.angles.clone(),
             })
             .collect()
     }

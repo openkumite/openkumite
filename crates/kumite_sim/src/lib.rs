@@ -2614,7 +2614,7 @@ pub fn turn_apply(m: &Turn, v: [i32; 3]) -> [i32; 3] {
 }
 
 /// 0x39BAE8: Rz x Ry x Rx of 12-bit angles (the 4096 sine table 0x4FCE88).
-fn euler(a: [i32; 3]) -> Turn {
+pub fn euler(a: [i32; 3]) -> Turn {
     let sc = |a: i32| (ball::sin12(a), ball::cos12(a));
     let ((sx, cx), (sy, cy), (sz, cz)) = (sc(a[0]), sc(a[1]), sc(a[2]));
     let rx = [[4096, 0, 0], [0, cx, -sx], [0, sx, cx]];
@@ -3570,8 +3570,8 @@ impl Fight {
                 }
             }
         }
-        // (the drawn roots, +0x51C..+0x524: their height in, so a stance's bob counts as a step)
-        let drawn = |f: &Fighter| f.root() + Vec3::Y * f.anim_root_y;
+        // (the drawn roots, +0x51C..+0x524: their height in, as eased, so a stance's bob counts as a step)
+        let drawn = |f: &Fighter| f.root() + Vec3::Y * f.eased().map_or(f.anim_root_y, |e| f.anim_root_y + e.1);
         let roots = [drawn(&self.fighters[0]), drawn(&self.fighters[1])].map(point);
         let angle = |f: &Fighter| (f.yaw * 4096.0 / std::f32::consts::TAU).round() as i32;
         let cut = |v: i32| v / 4096;

@@ -132,6 +132,9 @@ impl Animations for FighterAnims<'_> {
     fn turns(&self, anim: &str, frame: u32, partner: bool) -> Option<Turns> {
         let src = if partner { self.other } else { self.own };
         let (nodes, clip) = (&self.own.character.nodes, src.character.clips.get(src.character.clip(anim)?)?);
+        if let Some(t) = angle_turns(clip, frame as usize) {
+            return (self.own.bones.len() >= 18).then_some(t);
+        }
         let mut turns = [[0; 9]; 18];
         for (t, &n) in turns.iter_mut().zip(&self.own.bones) {
             let node = nodes.get(n)?;
@@ -1759,11 +1762,17 @@ pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Ma
         Some((clip, frame)) => body.character.pose(clip, frame, true),
         None => body.character.pose(0, 0, true),
     };
+    // (Tekken Tag: the 18 slots at the game's turns of the motion's angles)
+    let owner = if shown.partner { &other.character } else { &body.character };
+    if let Some(turns) = shown.clip.and_then(|(clip, frame)| angle_turns(owner.clips.get(clip)?, frame)) {
+        for (t, &n) in turns.iter().zip(&body.bones) {
+            head::set_local(&body.character.nodes, &mut pose, n, turn_mat(t));
+        }
+    }
     if let Some((turns, lift)) = shown.ease {
         // (the slots past the hips take the eased turns, rows of 4096; the body rises by the eased height)
         for (t, &n) in turns.iter().zip(&body.bones).skip(1) {
-            let c = |k: usize| Vec3::new(t[k].into(), t[k + 3].into(), t[k + 6].into()) / 4096.0;
-            head::set_local(&body.character.nodes, &mut pose, n, Mat3::from_cols(c(0), c(1), c(2)));
+            head::set_local(&body.character.nodes, &mut pose, n, turn_mat(t));
         }
         for m in &mut pose {
             *m = Mat4::from_translation(Vec3::Y * lift / UNITS) * *m;
@@ -1776,6 +1785,24 @@ pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Ma
         }
     }
     (pose, place)
+}
+
+/// A slot's turn (rows, 4096 = 1) as a matrix.
+fn turn_mat(t: &[i16; 9]) -> Mat3 {
+    let c = |k: usize| Vec3::new(t[k].into(), t[k + 3].into(), t[k + 6].into()) / 4096.0;
+    Mat3::from_cols(c(0), c(1), c(2))
+}
+
+/// Tekken Tag: the 18 joint slots' turns at `frame` of `clip` as the game builds them from the motion's angles (0x34ED90
+/// -> 0x3986D8: x and y negated (the arcade's mirror), each angle's top 12 bits, Rz x Ry x Rx on its sine table,
+/// 0x39BAE8; PCSX2's +0x634 to the unit); None for a clip without them.
+fn angle_turns(clip: &kumite_assets::Clip, frame: usize) -> Option<Turns> {
+    let a = clip.angles.get(frame.min(clip.angles.len().checked_sub(1)?))?;
+    Some(std::array::from_fn(|s| {
+        let at = |k: usize| i32::from(a.get(3 + 3 * s + k).map_or(0, |&v| v as i16));
+        let g = kumite_sim::euler([-at(0) >> 4, -at(1) >> 4, at(2) >> 4]);
+        std::array::from_fn(|k| g[k / 3][k % 3] as i16)
+    }))
 }
 
 /// Turn the head (and everything hanging from it: the second head section, hair) to `local`, its rotation in
@@ -1888,7 +1915,8 @@ fn fixed_slots(body: &Body, pose: &[Mat4], place: Mat4) -> Vec<[i32; 3]> {
         let Some(&(turn, p)) = out.get(parent) else { return Vec::new() };
         let at = (at * UNITS).round().to_array().map(|v| v as i64);
         let to: [i32; 3] = std::array::from_fn(|r| p[r] + (0..3).map(|k| turn[r][k] as i64 * at[k] / 4096).sum::<i64>() as i32);
-        out.push((mul(&turn, &fix(rot(parent).transpose() * rot(s))), to));
+        // (the parent's inverse, not its transpose: the game's integer turns are a hair off orthonormal)
+        out.push((mul(&turn, &fix(rot(parent).inverse() * rot(s))), to));
     }
     out.into_iter().map(|(_, p)| p).collect()
 }
