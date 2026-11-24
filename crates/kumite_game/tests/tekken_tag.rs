@@ -1609,29 +1609,18 @@ fn the_embus_camera_is_the_ps2s() {
     assert_eq!(kumite_game::ending::EndingScene::embu(&a, &d, 1).unwrap().people.expect("the EMBU's people: a pack before converter format 40, convert the game again")["set"], 30);
 }
 
-/// Arena 4's lightning: the EMBU's op 7 flashes channel 4 (list 0) at its frame 120 and channel 0 (a bolt's list) at
-/// 122; the arena's stage plays its still channels 0-6 (the bolts' resting on their cleared frame 1) and its
-/// weather has the lightning; arena 12's the signs.
+/// Arena 4's lightning: the arena's stage plays its still channels 0-6 (the bolts' resting on their cleared
+/// frame 1) and its weather has the lightning; arena 12's the signs. (The EMBU's op 7 flashes nothing: PCSX2's
+/// channel records stay at zero on its screen.)
 #[test]
-fn arena_4s_lightning_flashes_in_the_embu() {
+fn arena_4s_lightning() {
     let Some(a) = assets() else { return };
-    let d = kumite_game::ending::EndingData::load(&a.root.join("gamedata")).unwrap();
-    let mut s = kumite_game::ending::EndingScene::embu(&a, &d, 0).unwrap();
-    let mut flashes = vec![];
-    while s.frame() < 130 {
-        s.step();
-        flashes.extend(s.flashes.iter().map(|&f| (s.frame(), f)));
-    }
-    assert_eq!(flashes, [(120, (4, 0)), (122, (0, 6))]);
     let st = a.stage(4).unwrap();
     let still: Vec<(Option<usize>, u32, usize)> = st.channels.iter().map(|c| (c.channel, c.start, c.frames)).collect();
     assert!((0..7).all(|k| still.iter().any(|&(c, _, _)| c == Some(k))), "arena 4's channels (convert the game again): {still:?}");
     assert!(still.iter().all(|&(c, start, n)| c.is_none_or(|k| (start, n) == if k < 4 { (1, 2) } else { (3, 4) })), "{still:?}");
     let stages: serde_json::Value = serde_json::from_slice(&std::fs::read(a.root.join("gamedata/stages.json")).unwrap()).unwrap();
-    let mut w = kumite_game::weather::Weather::new(&stages["stages"][4]["weather"]).unwrap();
-    w.flash_op(0, 6);
-    w.flash(glam::Mat4::IDENTITY);
-    assert_eq!(w.channel_frame(0), Some(0));
+    assert!(kumite_game::weather::Weather::new(&stages["stages"][4]["weather"]).is_some());
     assert!(kumite_game::weather::Weather::new(&stages["stages"][12]["weather"]).is_some());
 }
 

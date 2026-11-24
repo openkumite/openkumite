@@ -4125,11 +4125,6 @@ impl App {
             }
             (_, Some(s)) if !s.done && !skip => {
                 s.step();
-                if let Some(w) = self.scene.as_mut().and_then(|st| st.weather.as_mut()) {
-                    for &(c, l) in &s.flashes {
-                        w.flash_op(c, l);
-                    }
-                }
                 if let Some(v) = self.vfx.as_mut() {
                     v.tick();
                     for b in &s.bursts {

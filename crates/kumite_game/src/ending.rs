@@ -8,8 +8,10 @@
 //! The EMBU (scene 1, 0x3A97B0: Theater's EMBU and EMBU2) is the same scene in a dialect of its own (0x3A9E48,
 //! table 0x519B50): a cast of six, ops 0 / 1 / 14 put a member in a slot, 2 / 3 play track a from its frame b to c
 //! (the slot is not drawn before or after), 4 takes camera path a of 22 from frame b, 5 / 6 fade from / to white,
-//! 12 Jin's mark, 13 starts its music, 7 flashes arena 4's lightning ([`EndingScene::flashes`]); it ends at op -1
-//! alone.
+//! 12 Jin's mark, 13 starts its music; it ends at op -1 alone. Its op 7 (0x3A7FA8) flashes nothing: the lightning's
+//! channels (0x8C9D30) are armed only by a fight's arena 4 (0x3A7198), never on the EMBU's screen (PCSX2: all 0
+//! after a boot, no bolt at its frames 120-122).
+//! shortcut: an EMBU after an arena-4 fight on the PS2 finds them armed and flashes; play op 7 then, with that state
 //!
 //! The hand tracks come in the body clips (the converter's format 26: the finger nodes' turns).
 //!
@@ -191,8 +193,6 @@ pub struct EndingScene {
     pub music: Option<usize>,
     /// The bursts thrown this frame.
     pub bursts: Vec<Burst>,
-    /// The EMBU's op 7 this frame (0x3A7FA8, arena 4 only): (channel, list) for the arena's lightning.
-    pub flashes: Vec<(i32, i32)>,
     /// Ops 21-24's objects: (scene frame started, op, a, b, c).
     objects: Vec<(i32, i32, i32, i32, i32)>,
     /// Op 25's props: (scene frame started, actor a, object b, frames c).
@@ -280,7 +280,6 @@ impl EndingScene {
             beams: Vec::new(),
             music: None,
             bursts: Vec::new(),
-            flashes: Vec::new(),
             objects: Vec::new(),
             props: Vec::new(),
             cut_until: 0,
@@ -307,7 +306,6 @@ impl EndingScene {
         }
         self.c += 1;
         self.bursts.clear();
-        self.flashes.clear();
         let c = self.c;
         while let Some(&[frame, op, a, b, last]) = self.script.get(self.next) {
             if frame > c {
@@ -407,7 +405,6 @@ impl EndingScene {
             // slot a & 1's Jin: the mark off (b = 0, 0x3A88A0) or on (0x3A8890)
             12 => self.marks[(a & 1) as usize] = b != 0,
             13 => self.music = Some(1),
-            7 if self.arena == 4 => self.flashes.push((a, b)),
             -1 => self.done = true,
             _ => {}
         }
