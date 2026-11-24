@@ -1959,6 +1959,11 @@ impl Fighter {
             if !self.opponent.moveset_id.is_some_and(|m| gd.characters.hitstop_still.contains(&m)) {
                 self.fly();
             }
+            // Tekken Tag draws the root of the held frame all the same (0x34E748 after the move logic): a new
+            // reaction's frame 1 shows its root step before the body push
+            if self.tag_rules(gd) {
+                self.root_motion(gd, anims);
+            }
             return;
         }
         // knockdown stun (0x800403C0): the reaction timer runs down; in its last 30 frames the pool drains, faster
