@@ -1799,3 +1799,11 @@ fn paul_hwoarang(a: &Assets) -> Bout {
     }
     b
 }
+
+/// An arena's textures are bilinear without mipmaps (TEX1 MXL 0; converter format 72).
+#[test]
+fn arena_textures_are_smooth_without_mipmaps() {
+    let Some(a) = assets() else { return };
+    let hall = a.stage(kumite_game::bowl::ARENA).unwrap();
+    assert!(hall.smooth.iter().all(|s| *s) && !hall.filtered.iter().any(|f| *f));
+}
