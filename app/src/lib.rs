@@ -2760,11 +2760,13 @@ impl App {
         let Some(room) = self.room.as_mut() else { return };
         let mut events = room.poll();
         // the setup's clock: nobody keeps the others waiting (the host's running out finishes the setup everywhere)
-        let on_setup = matches!(self.screen, Some(Screen::Grid(_) | Screen::Tag(_))) && self.fight.is_none() && self.tag.is_none();
+        let on_setup = matches!(self.screen, Some(Screen::Grid(_) | Screen::Tag(_) | Screen::Ttt(_))) && self.fight.is_none() && self.tag.is_none();
         if !on_setup {
             self.setup_clock = None;
         } else {
-            let left = self.setup_clock.get_or_insert(room::SETUP_SECONDS * 60);
+            // (Tekken Tag: its select's own timer, which it shows)
+            let full = self.roster.ttt.as_deref().and_then(ttt::select_frames).filter(|_| matches!(self.screen, Some(Screen::Ttt(_))));
+            let left = self.setup_clock.get_or_insert(full.unwrap_or(room::SETUP_SECONDS * 60));
             *left = left.saturating_sub(1);
             if *left == 0 && room.host() {
                 self.setup_clock = Some(u32::MAX);
@@ -2796,6 +2798,7 @@ impl App {
                         // the two-player select: player k is side k
                         Some(Screen::Grid(g)) if player < 2 => Some(g.key(player, key, &self.roster)),
                         Some(Screen::Tag(t)) => Some(t.key(player, key, &self.roster)),
+                        Some(Screen::Ttt(f)) if player < 2 => Some(f.key(player, key, &self.roster, &mut self.seed)),
                         _ => None,
                     };
                     match outcome {
@@ -2810,6 +2813,10 @@ impl App {
                             None
                         }
                         Some(Screen::Tag(t)) => Some(t.finish(&self.roster)),
+                        Some(Screen::Ttt(f)) => {
+                            f.finish(&self.roster);
+                            None
+                        }
                         _ => None,
                     };
                     queue.extend(self.host_start(outcome));
@@ -2868,6 +2875,7 @@ impl App {
         self.waiting = None;
         self.fight = None;
         self.tag = None;
+        self.ttt_run = None;
         self.scene = None;
         self.online_mode = None;
         if let Some(a) = self.audio.as_mut() {
@@ -2883,7 +2891,7 @@ impl App {
         if room.host() {
             room.back();
         }
-        let mut rs = room::RoomScreen { note, ..Default::default() };
+        let mut rs = room::RoomScreen { note, ttt: self.roster.ttt.is_some(), ..Default::default() };
         rs.update(room);
         self.screen = Some(Screen::Room(Box::new(rs)));
     }
@@ -2917,6 +2925,7 @@ impl App {
         let setup = match outcome {
             Some(Outcome::Fight(f, _)) => room::MatchSetup::Fight(f),
             Some(Outcome::StartTag(t)) => room::MatchSetup::Tag(t),
+            Some(Outcome::TttFight(r)) => room::MatchSetup::Ttt(r),
             _ => return Vec::new(),
         };
         let mut out = Vec::new();
@@ -2964,6 +2973,14 @@ impl App {
                     }
                 }
                 self.load_fight(setup, Vec::new());
+            }
+            // (Tekken Tag's VS BATTLE: its run's pairs and rules, as a run's fight loads)
+            room::MatchSetup::Ttt(run) => {
+                if let Some(d) = self.roster.ttt.clone() {
+                    let setup = run.setup(&d);
+                    self.ttt_run = Some(*run);
+                    self.load_fight(setup, Vec::new());
+                }
             }
             room::MatchSetup::Tag(mut setup) => {
                 for s in &mut setup.slots {
@@ -3040,6 +3057,7 @@ impl App {
         self.waiting = None;
         self.fight = None;
         self.tag = None;
+        self.ttt_run = None;
         self.scene = None;
         self.online_mode = None;
         if let Some(a) = self.audio.as_mut() {
@@ -3155,6 +3173,7 @@ impl App {
             let setup = self.fight.as_ref().and_then(|f| f.setup.clone());
             self.fight = None;
             self.scene = None;
+            self.ttt_run = None;
             match (self.online_mode, setup) {
                 // BALL 2 ON 2: its four-slot setup again, the same seats
                 (Some(room::OnlineMode::Ball2), Some(s)) => self.screen = Some(Screen::Tag(Box::new(tagrun::TagSelect::ball_again(&self.roster, &s)))),
@@ -3754,7 +3773,7 @@ impl App {
 
     fn outcome(&mut self, o: Outcome) {
         match o {
-            Outcome::None | Outcome::Quit | Outcome::Exit | Outcome::TagBrawl => {}
+            Outcome::None | Outcome::Quit | Outcome::Exit | Outcome::TagBrawl | Outcome::TttOnline => {}
             // online: both picked on the VS select; player 1 decides the match and sends it
             // online: the host's select decides (its match goes to every computer); the others wait for it
             Outcome::Fight(setup, _) if self.room.is_some() => {
@@ -3768,6 +3787,13 @@ impl App {
                 let mut out = Vec::new();
                 if let Some(room) = self.room.as_mut().filter(|r| r.host() && self.tag.is_none() && self.net.is_none()) {
                     room.start(room::MatchSetup::Tag(setup), &self.roster, &mut out);
+                }
+                self.room_events(out);
+            }
+            Outcome::TttFight(run) if self.room.is_some() => {
+                let mut out = Vec::new();
+                if let Some(room) = self.room.as_mut().filter(|r| r.host() && self.fight.is_none() && self.net.is_none()) {
+                    room.start(room::MatchSetup::Ttt(run), &self.roster, &mut out);
                 }
                 self.room_events(out);
             }
@@ -6021,10 +6047,13 @@ impl App {
                 // online on the VS select: who is who
                 // a fight's files still arriving (a browser): NOW LOADING and how much
                 let loading = self.waiting.is_some().then(kumite_fs::progress);
-                let names_line = self.room.as_ref().filter(|r| r.players() >= 2 && matches!(self.screen, Some(Screen::Grid(_)))).map(|r| format!("{}  VS  {}", r.name_of(0), r.name_of(1)));
-                // online: the setup's seconds left
-                let setup_secs = self.setup_clock.filter(|&f| f != u32::MAX && self.room.is_some()).map(|f| f.div_ceil(60));
+                let names_line =
+                    self.room.as_ref().filter(|r| r.players() >= 2 && matches!(self.screen, Some(Screen::Grid(_) | Screen::Ttt(_)))).map(|r| format!("{}  VS  {}", r.name_of(0), r.name_of(1)));
+                // online: the setup's seconds left (Tekken Tag's select shows its own)
+                let setup_secs = self.setup_clock.filter(|&f| f != u32::MAX && self.room.is_some() && !matches!(self.screen, Some(Screen::Ttt(_)))).map(|f| f.div_ceil(60));
                 let Some(art) = self.art.as_ref() else { return };
+                // (Tekken Tag: the online lines in Tekken 3's font, from its extras)
+                let net_art = roster.ttt.as_ref().and(art.t3.as_deref()).unwrap_or(art);
                 let (screen, fight) = (self.screen.as_ref(), self.fight.as_ref());
                 let (mut replays, mut replay_view) = (self.replays.as_mut(), self.replay_view.as_deref_mut().filter(|_| self.screen.is_none()));
                 #[cfg(not(target_arch = "wasm32"))]
@@ -6274,14 +6303,24 @@ impl App {
                         let view = art::Screen::fit(ctx.content_rect());
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("net_names")));
                         Art::shade(&painter, &view, [0.0, 452.0, art::SCREEN_W, 22.0], [egui::Color32::from_black_alpha(170); 4]);
-                        art.text(&painter, &view, 0, 6, crate::art::CENTRE - art.text_w(0, t) / 2.0, 456.0, t, egui::Color32::WHITE);
+                        net_art.text(&painter, &view, 0, 6, crate::art::CENTRE - net_art.text_w(0, t) / 2.0, 456.0, t, egui::Color32::WHITE);
                     }
                     if let Some(t) = &net_status {
                         let view = art::Screen::fit(ctx.content_rect());
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("net_status")));
                         // small, over the timer (its digits start at y 22)
                         let scale = 0.75;
-                        art.text_scaled(&painter, &view, 0, if t.starts_with("PING") { 6 } else { 1 }, crate::art::CENTRE - art.text_w(0, t) * scale / 2.0, 7.0, scale, t, egui::Color32::WHITE);
+                        net_art.text_scaled(
+                            &painter,
+                            &view,
+                            0,
+                            if t.starts_with("PING") { 6 } else { 1 },
+                            crate::art::CENTRE - net_art.text_w(0, t) * scale / 2.0,
+                            7.0,
+                            scale,
+                            t,
+                            egui::Color32::WHITE,
+                        );
                     }
                     debug.toasts(ctx);
                     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -8320,6 +8359,10 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
         // (a replay's seeks: at once, as each drawn frame does)
         app.replay_requests();
         app.step();
+        // (online: at the 60 Hz the other computers run at)
+        if app.room.is_some() {
+            std::thread::sleep(Duration::from_micros(16_667));
+        }
     }
     // egui lays windows out on the first frame and fades them in over a few more
     for _ in 0..13 {
@@ -8529,6 +8572,7 @@ Debug and testing:
                                online VS over UDP (two windows: ports 7000/7001, players 0/1; same --mode args)
   --online ROOM                online: into the room of that code (WebRTC; --signal ws://HOST:PORT, default a
                                local matchbox_server; --host-room: this one creates it), then the room's screen
+                               (Tekken Tag's data: its VS BATTLE and TAG BRAWL there)
   --host [PORT]                online by IP, no server: host a room on a UDP port (default 7000; over the internet
                                it must be forwarded to this computer)
   --join HOST[:PORT]           ... join a host's room

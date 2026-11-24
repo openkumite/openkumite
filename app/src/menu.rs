@@ -1154,6 +1154,8 @@ pub enum Outcome {
     TttEmbu(usize, [usize; 2]),
     /// Tekken Tag's TAG BRAWL: Tekken 3's list of its modes (the menu opens it).
     TagBrawl,
+    /// Tekken Tag's ONLINE: Tekken 3's ONLINE screen (the menu opens it).
+    TttOnline,
 }
 
 pub struct Menu {
@@ -1484,6 +1486,7 @@ impl Screen {
             }
             Screen::Ttt(f) => match f.key(player, key, roster, seed) {
                 Outcome::TagBrawl => *self = Screen::TagModes { frame: 0, cursor: 1, difficulty: difficulty() },
+                Outcome::TttOnline => *self = Screen::Online(Box::new(crate::onlinemenu::OnlineMenu::new(*seed, difficulty()))),
                 o => return o,
             },
             Screen::Keyboard(k) => {
@@ -1512,6 +1515,9 @@ impl Screen {
                     *self = Screen::menu(d);
                     if let Screen::Menu(m) = self {
                         m.cursor = shown_items(roster).iter().position(|i| i.1 == Entry::Online).unwrap_or(0);
+                    }
+                    if roster.ttt.is_some() {
+                        *self = Screen::Ttt(Box::new(crate::ttt::Front::menu_on(roster, crate::ttt::ONLINE)));
                     }
                 }
                 o => return o,
@@ -1740,8 +1746,9 @@ impl Screen {
                 let names: Vec<String> = roster.extra_levels.iter().map(|(_, n)| level_title(n)).collect();
                 draw_list(&painter, &v, art, &roster.extra_levels_title, &names, *frame, *cursor);
             }
-            Screen::Online(o) => o.draw(&painter, &v, art),
-            Screen::Room(r) => r.draw(&painter, &v, art),
+            // (Tekken Tag: Tekken 3's screens from its extras)
+            Screen::Online(o) => o.draw(&painter, &v, roster.ttt.as_ref().and(art.t3.as_deref()).unwrap_or(art)),
+            Screen::Room(r) => r.draw(&painter, &v, roster.ttt.as_ref().and(art.t3.as_deref()).unwrap_or(art)),
             Screen::TagModes { frame, cursor, .. } => {
                 // (Tekken Tag: Tekken 3's list from its extras)
                 let art = roster.ttt.as_ref().and(art.t3.as_deref()).unwrap_or(art);

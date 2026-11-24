@@ -405,3 +405,131 @@ pub fn apply<G: NetGame>(net: &mut NetPlay, game: &mut G, requests: Requests, st
     }
     (advanced, fresh)
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests: a failure stops them
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    /// Every computer's packets on the way: when each arrives (a tick), from whom, to whom.
+    type Wire = Rc<RefCell<Vec<(u32, u8, u8, ggrs::Message)>>>;
+
+    /// An in-process socket: each packet takes 2 to 7 ticks (jittered: they overtake each other).
+    struct Pipe {
+        me: u8,
+        wire: Wire,
+        now: Rc<Cell<u32>>,
+        rng: u32,
+    }
+
+    impl ggrs::NonBlockingSocket<NetAddr> for Pipe {
+        fn send_to(&mut self, msg: &ggrs::Message, addr: &NetAddr) {
+            if let NetAddr::Seat(to) = *addr {
+                self.rng = self.rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                self.wire.borrow_mut().push((self.now.get() + 2 + (self.rng >> 24) % 6, self.me, to, msg.clone()));
+            }
+        }
+        fn receive_all_messages(&mut self) -> Vec<(NetAddr, ggrs::Message)> {
+            let (me, now) = (self.me, self.now.get());
+            let mut wire = self.wire.borrow_mut();
+            let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut *wire).into_iter().partition(|m| m.2 == me && m.0 <= now);
+            *wire = later;
+            due.into_iter().map(|m| (NetAddr::Seat(m.1), m.3)).collect()
+        }
+    }
+
+    /// A player's pad at a tick: a new random one every 7 ticks (the others' predictions miss: rollbacks).
+    fn pad(player: usize, tick: u32) -> Pad {
+        let mut x = (tick / 7).wrapping_mul(0x9E37_79B9) ^ (player as u32 + 1).wrapping_mul(0x85EB_CA6B);
+        x ^= x >> 15;
+        x = x.wrapping_mul(0x2C1B_3C6D);
+        x ^= x >> 13;
+        let b = |k: u32| x >> k & 1 != 0;
+        Pad { up: b(3) && b(4), down: b(5) && b(6), left: b(7), right: b(8) && !b(7), buttons: (x >> 9) as u8 & 0x1F, start: false }
+    }
+
+    /// `game` played over `n` computers (one player each) on the in-process sockets: each computer's checksum of
+    /// every frame (as last simulated, after its rollbacks) up to `frames`, and the rollbacks made.
+    fn play<G: NetGame>(game: G, n: usize, frames: usize, step: &dyn Fn(&mut G, &[Pad])) -> (Vec<Vec<u64>>, usize) {
+        let (wire, now): (Wire, Rc<Cell<u32>>) = Default::default();
+        let mut peers: Vec<(NetPlay, G, Vec<u64>)> = (0..n)
+            .map(|me| {
+                let players: Vec<Option<NetAddr>> = (0..n).map(|p| (p != me).then_some(NetAddr::Seat(p as u8))).collect();
+                let pipe = Pipe { me: me as u8, wire: wire.clone(), now: now.clone(), rng: me as u32 + 1 };
+                let mut net = NetPlay::p2p(pipe, &players).unwrap();
+                net.peers_loading = false;
+                (net, game.clone(), Vec::new())
+            })
+            .collect();
+        let mut rollbacks = 0;
+        for tick in 0..frames as u32 * 4 {
+            now.set(tick);
+            for (me, (net, g, sums)) in peers.iter_mut().enumerate() {
+                for r in net.tick(&[pad(me, tick)]) {
+                    let advance = matches!(r, GgrsRequest::AdvanceFrame { .. });
+                    rollbacks += usize::from(matches!(r, GgrsRequest::LoadGameState { .. }));
+                    apply(net, g, vec![r], &mut |g, pads| step(g, pads));
+                    if advance {
+                        let f = net.frame as usize;
+                        sums.resize(sums.len().max(f), 0);
+                        sums[f - 1] = g.checksum();
+                    }
+                }
+                assert!(net.gone.is_none() && !net.status.starts_with("DESYNC"), "computer {me}: {}", net.status);
+            }
+            if peers.iter().all(|p| p.2.len() >= frames + MAX_PREDICTION + INPUT_DELAY) {
+                break;
+            }
+        }
+        (peers.into_iter().map(|p| p.2).collect(), rollbacks)
+    }
+
+    /// Every computer saw the same match: the checksums of its first `frames` frames alike, after the rollbacks.
+    fn same_everywhere(sums: &[Vec<u64>], rollbacks: usize, frames: usize) {
+        assert!(sums.iter().all(|s| s.len() >= frames), "frames played: {:?}", sums.iter().map(Vec::len).collect::<Vec<_>>());
+        assert!(rollbacks > 100, "rollbacks: {rollbacks}");
+        for (k, s) in sums.iter().enumerate().skip(1) {
+            if let Some(f) = (0..frames).find(|&f| s[f] != sums[0][f]) {
+                panic!("computer {k} differs from the first at frame {f}");
+            }
+        }
+        println!("{frames} frames alike on {} computers, {rollbacks} rollbacks", sums.len());
+    }
+
+    fn ttt_assets() -> Option<kumite_assets::Assets> {
+        let Some(root) = std::env::var_os("OK_TTT_ASSETS") else {
+            eprintln!("skipped: OK_TTT_ASSETS (a Tekken Tag assets/ folder) is not set");
+            return None;
+        };
+        Some(kumite_assets::Assets::new(std::path::Path::new(&root)).unwrap())
+    }
+
+    /// Paul's, Lei's, Xiaoyu's and Jin's first models.
+    const TTT_MODELS: [usize; 4] = [345, 372, 432, 351];
+
+    /// Tekken Tag's VS BATTLE online: two pairs, two computers, a jittered latency: the same match on both, frame
+    /// by frame, through the rollbacks.
+    #[test]
+    fn a_tekken_tag_battle_online_is_the_same_on_both_computers() {
+        let Some(a) = ttt_assets() else { return };
+        let [p1, p2, b1, b2] = TTT_MODELS;
+        let mut g = kumite_game::Game::load(&a, [p1, p2]).unwrap();
+        g.start_tag([kumite_game::Actor::load(&a, b1).unwrap(), kumite_game::Actor::load(&a, b2).unwrap()]);
+        let bout = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, true);
+        let (sums, rollbacks) = play(bout, 2, 1500, &|b, p| b.step([p[0], p[1]]));
+        same_everywhere(&sums, rollbacks, 1500);
+    }
+
+    /// TAG BRAWL online in Tekken Tag: four fighters, four computers, two on two.
+    #[test]
+    fn a_tekken_tag_brawl_online_is_the_same_on_every_computer() {
+        let Some(a) = ttt_assets() else { return };
+        let slots = TTT_MODELS.map(|record| kumite_game::tag::Slot { record, cpu: None });
+        let mut g = kumite_game::tag::TagGame::load(&a, slots, vec![0, 0, 1, 1], kumite_game::ai_data(&a).unwrap(), 2).unwrap();
+        g.set_arena(1);
+        let (sums, rollbacks) = play(g, 4, 1200, &|g, p| g.step(std::array::from_fn(|k| p[k])));
+        same_everywhere(&sums, rollbacks, 1200);
+    }
+}
