@@ -1689,3 +1689,113 @@ fn devils_beams_in_ending_35_run_as_on_the_ps2() {
         assert!(p.distance(glam::Vec3::from(wp)) < 150.0 && q.distance(glam::Vec3::from(wq)) < 150.0, "{p} {q}");
     }
 }
+
+/// The pair can part no farther than the PS2 lets it (0x371458): both walking back, they stop about 7.4 m apart and
+/// stay there, each frame of the walk's cycle where PCSX2 has it (Paul and Hwoarang, `$W/distance`).
+#[test]
+fn the_pair_parts_no_farther_than_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let mut b = paul_hwoarang(&a);
+    let (back, away) = (parse_script("b").unwrap()[0], parse_script("f").unwrap()[0]);
+    // P1's walk frame: P1's and P2's root x, as PCSX2 shows them past the 240th frame
+    let ps2 = [
+        (1, -3594, 3830),
+        (2, -3594, 3833),
+        (3, -3602, 3841),
+        (4, -3602, 3837),
+        (5, -3602, 3845),
+        (7, -3606, 3849),
+        (10, -3606, 3849),
+        (11, -3610, 3853),
+        (13, -3610, 3849),
+        (17, -3606, 3845),
+        (19, -3602, 3837),
+        (20, -3598, 3841),
+        (21, -3598, 3833),
+        (22, -3596, 3832),
+    ];
+    let mut seen = 0;
+    for k in 0..600 {
+        b.step([back, away]);
+        let f = &b.game.fight.fighters;
+        if k >= 240 {
+            if let Some(&(_, x1, x2)) = ps2.iter().find(|p| p.0 == f[0].frame) {
+                assert_eq!((f[0].root().x as i32, f[1].root().x as i32), (x1, x2), "step {k}, frame {}", f[0].frame);
+                seen += 1;
+            }
+        }
+    }
+    assert!(seen > 200, "{seen}");
+}
+
+/// No arena's scenery stands between the fight camera and the fighters: the camera at the start distance and with the
+/// pair at its limit, turned all the way round them (the arena follows the fighters without turning), every scenery
+/// triangle that a line from the eye to either fighter crosses has a corner the fight's z guard cuts (`scenery_cut`;
+/// arena 12 has none). Lights and painted shadows are not in the way.
+#[test]
+fn no_scenery_stands_before_the_fighters() {
+    let Some(a) = assets() else { return };
+    let mut b = paul_hwoarang(&a);
+    let shot = |b: &Bout| {
+        let f = &b.game.fight.fighters;
+        let (eye, forward, _) = kumite_game::view_camera(&b.game.camera.view);
+        (eye, forward, [f[0].root(), f[1].root()].map(|r| r / kumite_game::UNITS))
+    };
+    let mut shots = vec![shot(&b)];
+    let (back, away) = (parse_script("b").unwrap()[0], parse_script("f").unwrap()[0]);
+    for _ in 0..600 {
+        b.step([back, away]);
+    }
+    shots.push(shot(&b));
+    // (Möller-Trumbore: whether the segment from o along d meets the triangle short of its end)
+    let meets = |o: glam::Vec3, d: glam::Vec3, t: [glam::Vec3; 3]| {
+        let (e1, e2) = (t[1] - t[0], t[2] - t[0]);
+        let p = d.cross(e2);
+        let det = e1.dot(p);
+        if det.abs() < 1e-9 {
+            return false;
+        }
+        let s = o - t[0];
+        let (u, q) = (s.dot(p) / det, s.cross(e1));
+        let (v, k) = (d.dot(q) / det, e2.dot(q) / det);
+        u >= 0.0 && v >= 0.0 && u + v <= 1.0 && (0.0..0.97).contains(&k)
+    };
+    for arena in (0..23).filter(|&n| n != 12 && n != kumite_game::bowl::ARENA) {
+        let st = kumite_assets::Stage::load(&a.root.join(format!("stages/stage_{arena:02}.glb"))).unwrap();
+        // (what is near the fight and below the eye; shortcut: the objects the arena's code moves are left out, their
+        // vertices are in their own axes)
+        let tris: Vec<[glam::Vec3; 3]> = (st.sky.iter().filter(|m| m.blend == 0 && m.motion.is_none()))
+            .flat_map(|m| m.indices.as_chunks::<3>().0.iter().map(move |t| t.map(|i| glam::Vec3::from(m.vertices[i as usize].pos))))
+            .filter(|t| t.iter().any(|p| p.y < 2.5 && glam::Vec2::new(p.x, p.z).length() < 14.0))
+            .collect();
+        for &(eye, forward, roots) in &shots {
+            let mid = (roots[0] + roots[1]) / 2.0;
+            let floor = glam::Vec3::new(mid.x, 0.0, mid.z);
+            for k in 0..120 {
+                let turn = glam::Quat::from_rotation_y(k as f32 * std::f32::consts::TAU / 120.0);
+                let at = |p: glam::Vec3| mid + turn * (p - mid);
+                let (eye, forward, roots) = (at(eye), turn * forward, roots.map(at));
+                let cut = kumite_game::scenery_cut(eye, forward, roots);
+                let drawn = |t: &[glam::Vec3; 3]| t.iter().all(|p| (*p + floor - eye).dot(forward) >= cut);
+                for r in roots {
+                    for h in [0.4, 0.8, 1.2, 1.6] {
+                        let to = glam::Vec3::new(r.x, h, r.z);
+                        let hit = tris.iter().find(|t| drawn(t) && meets(eye - floor, to - eye, **t));
+                        assert!(hit.is_none(), "arena {arena}, turned {}°, {:.1} m apart: {hit:?} before {to}", k * 3, roots[0].distance(roots[1]));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Paul and Law against Hwoarang and Paul at the fight's first frame (the PCSX2 runs' picks).
+fn paul_hwoarang(a: &Assets) -> Bout {
+    let mut g = Game::load(a, [PAUL, HWOARANG]).unwrap();
+    g.start_tag([kumite_game::Actor::load(a, LAW).unwrap(), kumite_game::Actor::load(a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    b
+}
