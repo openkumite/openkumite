@@ -1356,8 +1356,8 @@ impl Fighter {
     }
 
     /// Jumps and hops drift (0x8003F3A8): from the frame before the jump window to its end, the move's +0x16
-    /// moves the fighter along its facing by drift · (sin, cos) / 2048 a frame (Tekken Tag's / 256, 0x36FDE0;
-    /// negative: forward), the fractions carried over in 1/256 units.
+    /// moves the fighter along its facing by drift · (sin, cos) / 2048 a frame (Tekken Tag's / 256 along the basis
+    /// +0x1A, 0x36FDE0; negative: forward), the fractions carried over in 1/256 units.
     fn drift(&mut self, gd: &GameData) {
         let mv = self.current_move(gd);
         let (j0, j1, v) = (mv.bytes_18.jump_start, mv.bytes_18.jump_end, mv.air_drift);
@@ -1366,7 +1366,7 @@ impl Fighter {
         }
         // Tekken Tag's sine is its 4096 table times 8 (0x357F18) over 0x7FFF (0x36FE00), Tekken 3's 4096 over 32768
         let (t, div) = if self.tag_rules(gd) {
-            (tag_sin_cos(self.yaw).map(i64::from), 32767)
+            (tag_sin_cos(self.root_yaw).map(i64::from), 32767)
         } else {
             let (s, c) = self.yaw.dsin_cos();
             ([s, c].map(|x| (x * 4096.0).round() as i64), 32768)

@@ -255,6 +255,30 @@ fn a_jumps_drift_as_on_the_ps2() {
     assert!((380.0..540.0).contains(&went), "{went}");
 }
 
+/// A jump drifts along its basis +0x1A, not the turning facing +0x3C (0x36FDE0): Yoshimitsu's u/f+4 from a walk,
+/// blocked by Hwoarang (both holding 1+2 through the intro, as the recording), has its root at z -123 on its frame
+/// 25 as in PCSX2 (along the facing: -101).
+#[test]
+fn a_jump_drifts_along_its_basis() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [YOSHIMITSU, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    let hold = Pad { buttons: 3, ..Pad::default() };
+    while b.phase != Phase::Fight {
+        b.step([hold; 2]);
+    }
+    let mut z = None;
+    for pad in parse_script("n*62,f*30,n*2,u/f+4*2,n*30").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        if f.alias == 4692 && f.frame == 25 {
+            z = Some(-f.root().z);
+        }
+    }
+    assert!(z.is_some_and(|z| (-127.0..=-119.0).contains(&z)), "{z:?}");
+}
+
 /// Ogre's strike slot 0x13 is his slot 6 (0x34F2C0, body 14 only): his b+2 (alias 359, bones 0x13) reaches Lei from
 /// 1000 as in PCSX2.
 #[test]
