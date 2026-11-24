@@ -2891,8 +2891,9 @@ fn digits(painter: &egui::Painter, v: &View, art: &Art, t: &Value, n: u32, x: f3
 
 /// One 3D character standing on the select (`select.models`, FRONTEND.md 9): its slot (side + 2 * member), model
 /// record, whether it is a pick, its body with the clips of its aliases 0 and 3, how far it is lifted, its height (the
-/// select's by character), the room its mesh takes in both clips, how far it stands off its place to keep clear of the
-/// others, and the frames since it came or was picked.
+/// select's by character), its size (see `select_pose`), the room its mesh takes in both clips, its fingers (their
+/// poses and both clips' timed ops) and hands, how far it stands off its place to keep clear of the others, and the
+/// frames since it came or was picked.
 pub struct Poser {
     pub slot: usize,
     pub record: usize,
@@ -2901,13 +2902,32 @@ pub struct Poser {
     clips: [usize; 2],
     lift: f32,
     height: Option<f32>,
+    size: [f32; 2],
     room: Arc<Vec<glam::Vec3>>,
+    fingers: Option<Fingers>,
+    hands: kumite_game::hands::Hands,
     shift: glam::Vec3,
     frame: u32,
 }
 
-/// A loaded body: its model record, character, select clips, lift, height and room.
-type Body = (usize, Arc<kumite_assets::Character>, [usize; 2], f32, Option<f32>, Arc<Vec<glam::Vec3>>);
+impl Poser {
+    /// The clip shown (0 the stance, 1 the pick's) and its frame: a pick's once, then the stance over and over.
+    fn at(&self) -> (usize, u32) {
+        let n = |k: usize| self.character.clips.get(self.clips[k]).map_or(1, |c| c.frames.max(1)) as u32;
+        let f = self.frame.saturating_sub(1);
+        if self.picked && f < n(1) {
+            (1, f)
+        } else {
+            (0, (f - if self.picked { n(1) } else { 0 }) % n(0))
+        }
+    }
+}
+
+/// A body's hand poses and its two clips' timed ops [frame, op, arg] (`select.models.ops`).
+type Fingers = (Arc<kumite_game::hands::Poses>, Arc<[Vec<[u32; 3]>; 2]>);
+
+/// A loaded body: its model record, character, select clips, lift, height, size, room and fingers.
+type Body = (usize, Arc<kumite_assets::Character>, [usize; 2], f32, Option<f32>, [f32; 2], Arc<Vec<glam::Vec3>>, Option<Fingers>);
 
 /// The select's 3D characters, and the bodies loaded so far.
 #[derive(Default)]
@@ -2935,8 +2955,9 @@ impl Posers {
                 None => {
                     let id = roster.characters.iter().find(|c| c.costumes.contains(&record)).map_or(0, |c| c.id);
                     match self.load(assets, d, record, id) {
-                        Ok((_, character, clips, lift, height, room)) => {
-                            self.shown.push(Poser { slot, record, picked, character, clips, lift, height, room, shift: glam::Vec3::ZERO, frame: 0 });
+                        Ok((_, character, clips, lift, height, size, room, fingers)) => {
+                            let hands = Default::default();
+                            self.shown.push(Poser { slot, record, picked, character, clips, lift, height, size, room, fingers, hands, shift: glam::Vec3::ZERO, frame: 0 });
                             moved = true;
                         }
                         Err(e) => log::warn!("select model {record}: {e:#}"),
@@ -2949,6 +2970,13 @@ impl Posers {
         }
         for m in &mut self.shown {
             m.frame += 1;
+            // (the hands as a fight moves them, 0x3AEA40 -> 0x372BD0: the load's ease, then the clip's ops at its frame)
+            let (k, f) = m.at();
+            if let Some((poses, ops)) = &m.fingers {
+                // (Tekken Tag's 0x0F + v as the game layer's HAND_OPS + v, kumite_sim::dialect)
+                let now = ops[k].iter().filter(|o| o[0] == f + 1).filter_map(|o| Some((kumite_sim::dialect::HAND_OPS + o[1].checked_sub(0x0F)?, o[2])));
+                m.hands.step(poses, Default::default(), now);
+            }
         }
     }
 
@@ -3002,10 +3030,23 @@ impl Posers {
             let top = (0..frames).flat_map(|f| ch.pose(clips[0], f, false)).map(|m| m.w_axis.y * 1000.0).fold(0.0, f32::max);
             (h as f32 - top).max(0.0)
         });
-        let room = Arc::new(room(&ch, clips));
         // (the body's height on the select by character, 0x437DE8)
         let height = d.raw["select"]["models"]["heights"][id].as_f64().map(|h| h as f32);
-        let body = (record, Arc::new(ch), clips, lift, height, room);
+        // (its model's motion scale, player +0x500, and the select's scale by character, 0x437DA0; an older pack's: 1)
+        let index = kumite_sim::data::load::<kumite_sim::data::MovesetIndex>(&assets.root.join("gamedata/movesets/index.json")).ok();
+        let entry = index.and_then(|i| i.models.into_iter().find(|m| m.model_record == record));
+        let motion = entry.as_ref().and_then(|e| e.motion_scale).unwrap_or(4096);
+        let size = [motion as f32 / 4096.0, d.raw["select"]["models"]["scales"][id].as_f64().map_or(1.0, |s| s as f32 / 4096.0)];
+        let room = Arc::new(room(&ch, clips, size));
+        // (the hands' poses and the clips' timed ops; an older pack's: the fingers as bound)
+        let ops = &d.raw["select"]["models"]["ops"][id];
+        let ops: [Vec<[u32; 3]>; 2] = std::array::from_fn(|k| serde_json::from_value(ops[k].clone()).unwrap_or_default());
+        let fingers = entry.and_then(|e| {
+            let h = e.hands.as_ref()?;
+            ch.add_motions(&kumite_fs::read(&assets.root.join("characters").join(&h.file)).ok()?).ok()?;
+            Some((Arc::new(kumite_game::hands::Poses::new(&ch, h)?), Arc::new(ops)))
+        });
+        let body = (record, Arc::new(ch), clips, lift, height, size, room, fingers);
         self.loaded.push(body.clone());
         Ok(body)
     }
@@ -3016,19 +3057,29 @@ impl Posers {
         self.shown
             .iter()
             .map(|p| {
-                let n = |c: usize| p.character.clips.get(c).map_or(1, |c| c.frames.max(1)) as u32;
-                let f = p.frame.saturating_sub(1);
-                let (clip, f) = if p.picked && f < n(p.clips[1]) { (p.clips[1], f) } else { (p.clips[0], (f - if p.picked { n(p.clips[1]) } else { 0 }) % n(p.clips[0])) };
-                (select_pose(&p.character, clip, f as usize), glam::Mat4::from_translation(p.shift) * place(d, mode, p.slot, p.lift, p.height))
+                let (k, f) = p.at();
+                let mut pose = select_pose(&p.character, p.clips[k], f as usize, p.size);
+                if let Some((poses, _)) = &p.fingers {
+                    p.hands.apply(poses, &p.character, &mut pose);
+                }
+                (pose, glam::Mat4::from_translation(p.shift) * place(d, mode, p.slot, p.lift, p.height))
             })
             .collect()
     }
 }
 
-/// A select clip's frame: the wings (True Ogre's, Devil's) at their track's first frame, folded, as the PS2 shows them.
-fn select_pose(ch: &kumite_assets::Character, clip: usize, frame: usize) -> Vec<glam::Mat4> {
+/// A select clip's frame: the wings (True Ogre's, Devil's) at their track's first frame, folded, as the PS2 shows them;
+/// the root's offset times the model's motion scale (`size[0]`, 0x3DDB40), the body scaled about it by the select's
+/// scale of the character (`size[1]`: 0x34EF20 scales the root matrix +0x508 on screen 5).
+fn select_pose(ch: &kumite_assets::Character, clip: usize, frame: usize, size: [f32; 2]) -> Vec<glam::Mat4> {
     let mut pose = ch.pose(clip, frame, false);
     ch.pose_wings(&mut pose, 0);
+    if let Some(root) = ch.nodes.iter().position(|n| n.parent.is_none()).and_then(|r| pose.get(r)).map(|m| m.w_axis.truncate()) {
+        let to = glam::Mat4::from_translation(root * size[0]) * glam::Mat4::from_scale(glam::Vec3::splat(size[1])) * glam::Mat4::from_translation(-root);
+        for m in &mut pose {
+            *m = to * *m;
+        }
+    }
     pose
 }
 
@@ -3044,7 +3095,7 @@ fn place(d: &Data, mode: u32, slot: usize, lift: f32, height: Option<f32>) -> gl
 
 /// The room a body takes on the select: the middles of the cells its skinned mesh (corners and triangles' middles)
 /// reaches in any frame of the clips, in its own space.
-fn room(ch: &kumite_assets::Character, clips: [usize; 2]) -> Vec<glam::Vec3> {
+fn room(ch: &kumite_assets::Character, clips: [usize; 2], scale: [f32; 2]) -> Vec<glam::Vec3> {
     // (a block of 128 x 64 x 128 cells about the feet, 16 cells of it under the floor; a point out of it counts at its
     // edge)
     let size = glam::IVec3::new(128, 64, 128);
@@ -3052,7 +3103,7 @@ fn room(ch: &kumite_assets::Character, clips: [usize; 2]) -> Vec<glam::Vec3> {
     let mut cells = vec![false; (size.x * size.y * size.z) as usize];
     for c in clips {
         for f in 0..ch.clips.get(c).map_or(0, |c| c.frames) {
-            let skin = ch.skin_matrices(&select_pose(ch, c, f), glam::Mat4::IDENTITY);
+            let skin = ch.skin_matrices(&select_pose(ch, c, f, scale), glam::Mat4::IDENTITY);
             let at: Vec<glam::Vec3> = ch.vertices.iter().map(|v| (0..4).filter_map(|k| Some(skin.get(v.joints[k] as usize)?.transform_point3(v.pos.into()) * v.weights[k])).sum()).collect();
             let middles = ch.indices.as_chunks::<3>().0.iter().filter_map(|&[a, b, c]| Some((*at.get(a as usize)? + *at.get(b as usize)? + *at.get(c as usize)?) / 3.0));
             for p in at.iter().copied().chain(middles).filter(|p| p.is_finite()) {
@@ -6093,6 +6144,45 @@ mod tests {
         assert!(matches!(f.page, Page::Menu { cursor: 1, .. }));
     }
 
+    /// The select's 3D characters play the moves the PS2 plays (read in PCSX2 at the select's fighter +0xC0: [character,
+    /// stance, pick]) and stand at its size: Kuma's body 2992 / 4096 of its own about the root, Paul's 4352; their hands
+    /// close to pose 17 in a frame of the stance (op 0x11 1). Needs `OK_TTT_ASSETS`.
+    #[test]
+    fn select_models_play_the_ps2_moves_at_its_size() {
+        let Some(root) = std::env::var_os("OK_TTT_ASSETS").map(std::path::PathBuf::from) else { return };
+        let assets = kumite_assets::Assets::new(&root).unwrap();
+        let roster = crate::menu::Roster::load(&root.join("gamedata"));
+        let d = roster.ttt.clone().unwrap();
+        let moves: serde_json::Value = kumite_sim::data::load(&root.join("gamedata/moves.json")).unwrap();
+        let m = &d.raw["select"]["models"];
+        for [id, stance, pick] in [[0, 6452, 6483], [1, 6453, 6484], [7, 6459, 6490], [11, 6463, 6494], [20, 6466, 6497], [21, 6470, 6501], [22, 6471, 6502], [27, 6476, 6507]] {
+            assert_eq!(m["motions"][id], serde_json::json!([moves["moves"][stance]["anim"], moves["moves"][pick]["anim"]]), "character {id}");
+            assert_eq!(m["ops"][id][0], serde_json::json!(moves["moves"][stance]["properties"].as_array().into_iter().flatten().map(|p| [&p["frame"], &p["op"], &p["arg"]]).collect::<Vec<_>>()));
+        }
+        assert_eq!((int(&m["scales"][0]), int(&m["scales"][11])), (4352, 2992));
+        // (Kuma, model 492: the head as far from the root as unscaled times 2992 / 4096; the root at its motion's
+        // height times the model's 3686 / 4096)
+        let (_, ch, clips, _, _, size, _, fingers) = Posers::default().load(&assets, &d, 492, 11).unwrap();
+        assert_eq!(size.map(|s| (s * 4096.0).round()), [3686.0, 2992.0]);
+        let head = ch.nodes.iter().position(|n| n.name == "head").unwrap();
+        let root = ch.nodes.iter().position(|n| n.parent.is_none()).unwrap();
+        let (plain, scaled) = (select_pose(&ch, clips[0], 0, [1.0, 1.0]), select_pose(&ch, clips[0], 0, size));
+        let reach = |p: &[glam::Mat4]| p[head].w_axis.distance(p[root].w_axis);
+        assert!((reach(&scaled) / reach(&plain) - 2992.0 / 4096.0).abs() < 1e-4);
+        assert!((scaled[root].w_axis.y / plain[root].w_axis.y - 3686.0 / 4096.0).abs() < 1e-4);
+        // (Paul, model 345: both hands at pose 17 two frames in)
+        let (.., fingers345) = Posers::default().load(&assets, &d, 345, 0).unwrap();
+        let (poses, ops) = fingers345.unwrap();
+        assert_eq!(ops[0], [[1, 0x11, 1]]);
+        let mut h = kumite_game::hands::Hands::default();
+        for f in 1..=3u32 {
+            h.step(&poses, Default::default(), ops[0].iter().filter(|o| o[0] == f).map(|o| (kumite_sim::dialect::HAND_OPS + o[1] - 0x0F, o[2])));
+        }
+        let turns = h.turns.unwrap();
+        assert!((0..2).all(|k| turns[k].iter().zip(&poses.poses[17][k]).all(|(a, b)| a.angle_between(*b) < 1e-3)), "Paul's hands not at pose 17");
+        assert!(fingers.is_some());
+    }
+
     /// The select's 3D characters keep clear of each other: every two characters (each in its costume of the most
     /// room) at every two slots standing together (both sides, leader and partner, 1 ON 1's places), and the biggest
     /// four together, come no closer than a cell's reach in any frames of their stances and picks. Needs
@@ -6107,8 +6197,8 @@ mod tests {
         let (mut bodies, mut stand_in) = (vec![], None);
         for c in &roster.characters {
             let costumes = c.costumes.iter().filter_map(|&record| Some((record, Posers::default().load(&assets, &d, record, c.id).ok()?)));
-            if let Some((record, (_, ch, clips, lift, height, room))) = costumes.max_by_key(|b| b.1 .5.len()) {
-                bodies.push((format!("{} {record}", c.name), stand_in.get_or_insert(ch).clone(), clips, lift, height, room));
+            if let Some((record, (_, ch, clips, lift, height, size, room, _))) = costumes.max_by_key(|b| b.1 .6.len()) {
+                bodies.push((format!("{} {record}", c.name), stand_in.get_or_insert(ch).clone(), clips, lift, height, size, room));
             }
         }
         // (Tekken Tag's 34 and the Tekken 3 crossover's: needs a pack with it installed)
@@ -6118,8 +6208,8 @@ mod tests {
             let shown = who
                 .iter()
                 .map(|&(slot, b)| {
-                    let (_, character, clips, lift, height, room) = bodies[b].clone();
-                    Poser { slot, record: b, picked: false, character, clips, lift, height, room, shift: glam::Vec3::ZERO, frame: 0 }
+                    let (_, character, clips, lift, height, size, room) = bodies[b].clone();
+                    Poser { slot, record: b, picked: false, character, clips, lift, height, size, room, fingers: None, hands: Default::default(), shift: glam::Vec3::ZERO, frame: 0 }
                 })
                 .collect();
             let mut p = Posers { shown, loaded: vec![] };
