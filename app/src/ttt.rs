@@ -998,6 +998,8 @@ pub struct Select {
     pub online: Option<u32>,
     /// Online, the room's time ran out: TEKKEN BALL goes on with the first ball, no ball type's page.
     pub timed_out: bool,
+    /// TEKKEN FORCE's co-op (OpenKumite's own): 3P and 4P joined with START.
+    pub more: [bool; 2],
 }
 
 impl Select {
@@ -1020,7 +1022,7 @@ impl Select {
         if mode == PRACTICE {
             sides[1] = side(Some(0), 1);
         }
-        Self { mode, sides, frame: 0, done: 0, tally, cont: None, memory, online: None, timed_out: false }
+        Self { mode, sides, frame: 0, done: 0, tally, cont: None, memory, online: None, timed_out: false, more: [false; 2] }
     }
 
     /// Online VS BATTLE's or TEKKEN BALL's (`mode`) select, the same on every computer (no save's cursors; 2P in).
@@ -1031,6 +1033,14 @@ impl Select {
             side.player = Some(k);
         }
         s
+    }
+
+    /// TEKKEN FORCE's co-op: 3P or 4P (`player` 2, 3) joins with START.
+    pub fn join_more(&mut self, player: usize, d: &Data) {
+        if self.mode == FORCE && self.done == 0 && (2..4).contains(&player) && !self.more[player - 2] {
+            sfx::play(sound(d, "start"));
+            self.more[player - 2] = true;
+        }
     }
 
     /// The side `player`'s keys move now.
@@ -1086,8 +1096,8 @@ impl Select {
         if let Some(n) = self.online.as_mut() {
             *n = n.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
         }
-        // Team Battle, Tekken Bowl, Tekken Ball: 2P's START joins
-        if matches!(self.mode, TEAM | BOWL | BALL) && player == 1 && key == Key::Start && self.sides[1].player.is_none() {
+        // Team Battle, Tekken Bowl, Tekken Ball, TEKKEN FORCE's co-op (OpenKumite's own): 2P's START joins
+        if matches!(self.mode, TEAM | BOWL | BALL | FORCE) && player == 1 && key == Key::Start && self.sides[1].player.is_none() {
             sfx::play(sound(d, "start"));
             self.sides[1].player = Some(1);
             return None;
@@ -1751,7 +1761,7 @@ impl Front {
                     }
                     set_progress(p);
                     if run.mode == FORCE {
-                        return Outcome::StartForce(run.teams[0].first().copied().unwrap_or((0, 0)), run.options[0].min(2));
+                        return Outcome::StartForce(run.teams[0].first().copied().unwrap_or((0, 0)), run.options[0].min(2), run.teams[1].first().copied().filter(|_| run.humans[1]), s.more);
                     }
                     // VS BATTLE, 1 ON 1 VS, TEAM BATTLE: the arena chosen first (OpenKumite's stage select)
                     if matches!(run.mode, VS | ONE_VS | TEAM) {
@@ -2983,6 +2993,10 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
         if side.player.is_some() && s.mode == TEAM {
             small(painter, v, art, d, &format!("{}P  {} / 8", k + 1, side.picks.len()), if k == 0 { 120.0 } else { 520.0 }, 286.0, Color32::WHITE);
         }
+    }
+    // TEKKEN FORCE's co-op: 3P and 4P in (OpenKumite's own)
+    for j in (0..2).filter(|&j| s.more[j]) {
+        small(painter, v, art, d, &format!("{}P IN", j + 3), 520.0, 286.0 + 16.0 * j as f32, Color32::WHITE);
     }
     if let Some(t) = s.tally {
         font(painter, v, art, d, &format!("{} - {}", t[0], t[1]), W / 2.0, 300.0, 0.5, Color32::WHITE);
@@ -5043,18 +5057,24 @@ pub fn force_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, run: &c
     let (bx, by, bw) = ([num(&h["bars"]["x"][0]), num(&h["bars"]["x"][1])], num(&h["bars"]["y"]), num(&h["bars"]["w"]));
     let full = run.bar(0).2.max(1) as f32;
     let slot_in = |k: usize| st.slots.get(k).is_some_and(|s| (4..=7).contains(&s.state));
-    // the player, the two soldiers, the partner: bar, side, row
-    for (k, side, row, show) in [(0, 0, 0, true), (1, 1, 0, slot_in(0)), (2, 1, 1, slot_in(1)), (3, 0, 1, game.fight.partner.is_some())] {
+    // the player, the two soldiers, the partner, 3P and 4P: bar, side, row
+    let joined = |k: usize| game.players().contains(&k);
+    for (k, side, row, show) in [(0, 0, 0, true), (1, 1, 0, slot_in(0)), (2, 1, 1, slot_in(1)), (3, 0, 1, joined(3)), (4, 0, 2, joined(4)), (5, 0, 3, joined(5))] {
         if !show || matches!(bout.phase, Phase::Replay { .. }) {
             continue;
         }
         let (shown, trail, w) = run.bar(k);
-        let (w, y, hh) = (bw * w as f32 / full, by + 26.0 * row as f32, if row == 0 { 16.0 } else { 10.0 });
+        // (3P's and 4P's under the score)
+        let (w, y, hh) = (bw * w as f32 / full, by + 26.0 * row as f32 + if row > 1 { 20.0 } else { 0.0 }, if row == 0 { 16.0 } else { 10.0 });
         let x = if side == 0 { bx[0] + bw - w } else { bx[1] };
         image(painter, v, art, strip(2), [x, y, w, hh], Color32::WHITE);
         for (s, part) in [(4, trail), (1, shown)] {
             let pw = bw * part.max(0) as f32 / full;
             image(painter, v, art, strip(s), [if side == 0 { x + w - pw } else { x }, y, pw, hh], Color32::WHITE);
+        }
+        // co-op: each player's points on the bar
+        if let Some(j) = [0, 3, 4, 5].iter().position(|&p| p == k).filter(|_| game.players().len() > 1) {
+            small(painter, v, art, d, &format!("{}P {}", j + 1, st.player_scores[j]), bx[0] + bw / 2.0, y + hh / 2.0 - 6.0, Color32::WHITE);
         }
     }
     let texts = &run.data.hud;

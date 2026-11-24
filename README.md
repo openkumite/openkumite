@@ -106,7 +106,8 @@ cargo run --release -- --help     # the full command line
 The game starts at the title screen. Modes include Arcade, VS, Team Battle, Time Attack, Survival, Force,
 Practice and Watch CPU, plus OpenKumite's own Tag Brawl and Online. Tag Brawl (four fighters on the stage at once,
 two on two, each for themselves or a tag arcade; up to four players, the CPU in the empty seats) is on Tekken Tag
-Tournament's main menu too, with its fighters, arenas, HUD and sounds.
+Tournament's main menu too, with its fighters, arenas, HUD and sounds. Force (in both games) is co-op for up to
+four players: 2P, 3P and 4P join with START on the select or during a stage, each with a life a stage and a score.
 
 ### Nix (Linux)
 

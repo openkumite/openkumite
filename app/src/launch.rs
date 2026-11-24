@@ -84,7 +84,7 @@ impl LaunchMode {
     fn ai_seats(self, doubles: bool, coop: bool) -> usize {
         match self {
             LaunchMode::Practice => 0,
-            LaunchMode::Force => 1 + usize::from(coop),
+            LaunchMode::Force => 1 + 3 * usize::from(coop),
             LaunchMode::TagFree | LaunchMode::TagTeams | LaunchMode::TagArcade => 4,
             LaunchMode::Ball if doubles => 4,
             _ => 2,

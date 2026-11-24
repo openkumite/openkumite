@@ -342,6 +342,8 @@ pub struct ForceStage {
     /// Target switching cooldown.
     target_cd: i32,
     pub score: u32,
+    /// Co-op (OpenKumite's own): each player's own points (1P, 2P, 3P, 4P: actors 0, 3, 4, 5); `score` is the total.
+    pub player_scores: [u32; 4],
     pub hiscore: u32,
     pub kills_total: u32,
     pub events: Vec<ForceEvent>,
@@ -392,6 +394,7 @@ impl ForceStage {
             arena: (0, 0),
             target_cd: 0,
             score,
+            player_scores: [0; 4],
             hiscore,
             kills_total: kills,
             events: Vec::new(),
@@ -514,7 +517,11 @@ impl ForceStage {
         // partner's count too)
         for h in &game.fight.hits {
             if kumite_sim::Fight::is_player(h.attacker) && !kumite_sim::Fight::is_player(h.victim) && !h.blocked {
-                self.score += (if h.mask == 0 { 20 } else { 10 }) * h.damage.max(0) as u32;
+                let points = (if h.mask == 0 { 20 } else { 10 }) * h.damage.max(0) as u32;
+                self.score += points;
+                if let Some(p) = [0, 3, 4, 5].iter().position(|&a| a == h.attacker).and_then(|p| self.player_scores.get_mut(p)) {
+                    *p = (*p + points).min(99_999_990);
+                }
             }
         }
         // with no soldier about, the player faces the way on (the stage runs to +x, the soldiers come in from
