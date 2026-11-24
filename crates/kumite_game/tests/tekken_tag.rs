@@ -336,6 +336,47 @@ fn true_ogres_fire_burns() {
     assert!(at.is_some_and(|(m, k, d)| m == 3799 && (62..=66).contains(&k) && (1700.0..2200.0).contains(&d)), "{at:?}");
 }
 
+/// The effects frame by frame (for a comparison with PCSX2's effect tasks): `OK_FX_MODEL` (Paul) vs Hwoarang,
+/// crouching, P1's script in `OK_FX_SCRIPT`; each frame P1's move and frame, then per kind (the character's burst, the atlas's
+/// bursts, the heavy hit's fireballs) the particles drawn, their mean and largest quad (metres), mean level.
+#[test]
+#[ignore]
+fn effects_log() {
+    let Some(a) = assets() else { return };
+    let model = std::env::var("OK_FX_MODEL").ok().and_then(|m| m.parse().ok()).unwrap_or(PAUL);
+    let mut g = Game::load(&a, [model, HWOARANG]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, KING).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut v = kumite_game::vfx::Vfx::new(&a);
+    let script = std::env::var("OK_FX_SCRIPT").unwrap_or_else(|_| "f*60,n*6,b+1+2*2,n*120".into());
+    let p2 = parse_script("d*400").unwrap();
+    for (k, pad) in parse_script(&script).unwrap().into_iter().enumerate() {
+        b.step([pad, p2.get(k).copied().unwrap_or_default()]);
+        v.step(&b.game);
+        let s = v.sprites();
+        let heavy: std::collections::HashSet<u32> = v.data.as_ref().map(|d| d.heavy.iter().flat_map(|h| h.iter().copied()).collect()).unwrap_or_default();
+        let dust = |x: &&kumite_game::vfx::Sprite| x.blend == kumite_game::vfx::Blend::Alpha;
+        let kinds: [(&str, Vec<&kumite_game::vfx::Sprite>); 4] = [
+            ("char", s.iter().filter(|x| x.sheet > 0).collect()),
+            ("burst", s.iter().filter(|x| x.sheet == 0 && !heavy.contains(&x.cell) && !dust(x)).collect()),
+            ("heavy", s.iter().filter(|x| x.sheet == 0 && heavy.contains(&x.cell)).collect()),
+            ("dust", s.iter().filter(|x| x.sheet == 0 && dust(x)).collect()),
+        ];
+        let f = &b.game.fight.fighters[0];
+        let mut line = format!("{k} {} {}", f.current.index, f.frame);
+        for (name, x) in kinds.iter().filter(|x| !x.1.is_empty()) {
+            let n = x.len() as f32;
+            let level = x.iter().map(|s| s.color[0].max(s.color[1]).max(s.color[2]) * s.color[3]).sum::<f32>() / n;
+            let max = x.iter().map(|s| s.size).fold(0.0, f32::max);
+            line += &format!("  {name} n{} sz{:.3}/{max:.3} lv{level:.2}", x.len(), x.iter().map(|s| s.size).sum::<f32>() / n);
+        }
+        println!("{line}");
+    }
+}
+
 /// Paul's b+1+2 (move 1068) flames at his slots 4, 5 and 6 on its frames 7, 22 and 37 (its op 6, 0x372C40 ->
 /// 0x3A2BC0), as PCSX2 draws it while he winds up; Tekken Tag's rules name no slots, so the ops were dropped.
 #[test]
