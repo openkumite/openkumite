@@ -522,6 +522,76 @@ mod tests {
         same_everywhere(&sums, rollbacks, 1500);
     }
 
+    /// Tekken Tag's game root with the Tekken 3 slice (its extras: Ball, Force) installed from both games' data, as
+    /// `kumite_game`'s crossover tests do; needs OPENKUMITE_ASSETS too.
+    fn ttt_slice_assets() -> Option<kumite_assets::Assets> {
+        let (Some(t3), Some(ttt)) = (std::env::var_os("OPENKUMITE_ASSETS"), std::env::var_os("OK_TTT_ASSETS")) else {
+            eprintln!("skipped: OPENKUMITE_ASSETS or OK_TTT_ASSETS unset");
+            return None;
+        };
+        use ok_converter_common::io::StdFs;
+        static EXTRAS: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        let extras = EXTRAS.get_or_init(|| {
+            let dir = std::env::temp_dir().join("openkumite_netplay_extras");
+            kumite_packs::install_ttt(&StdFs(ttt.clone().into()), &StdFs(t3.into()), &StdFs(dir.clone()), &|l| eprintln!("{l}")).unwrap();
+            dir
+        });
+        kumite_fs::set_layers(std::path::Path::new(&ttt), vec![extras.clone()]);
+        Some(kumite_assets::Assets::new(std::path::Path::new(&ttt)).unwrap())
+    }
+
+    /// TEKKEN BALL online in Tekken Tag (the slice's ball.json, as the app sets it up): Paul against Jin, two
+    /// computers.
+    #[test]
+    fn a_tekken_tag_ball_match_online_is_the_same_on_both_computers() {
+        let Some(a) = ttt_slice_assets() else { return };
+        let mut g = kumite_game::Game::load(&a, [TTT_MODELS[0], TTT_MODELS[3]]).unwrap();
+        g.ball = Some(kumite_game::BallSetup { data: std::sync::Arc::new(a.gamedata("ball.json").unwrap()), kind: 0, server: 0, rounds: 0 });
+        g.round_frames = u32::MAX / 2;
+        (g.ko_collapse, g.fight.ko_collapse) = (false, false);
+        let bout = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+        let (sums, rollbacks) = play(bout, 2, 1500, &|b, p| b.step([p[0], p[1]]));
+        same_everywhere(&sums, rollbacks, 1500);
+    }
+
+    /// TEKKEN FORCE online in Tekken Tag (the slice's force.json, stage 1): Lei with the fight and the stage in the
+    /// rollback, as the app's Force online; 1P's computer plays him, the other's pad the partner's.
+    #[test]
+    fn a_tekken_tag_force_stage_online_is_the_same_on_both_computers() {
+        use kumite_game::force::{ForceData, ForceEvent, ForceStage};
+        let Some(a) = ttt_slice_assets() else { return };
+        let data: std::sync::Arc<ForceData> = std::sync::Arc::new(a.gamedata("force.json").unwrap());
+        let roster: serde_json::Value = a.gamedata("roster.json").unwrap();
+        let soldier = |k: usize| {
+            let sel = data.soldier_selection_base + data.soldier_costumes[0][k].min(3);
+            let e = roster["selections"]["entries"].as_array().unwrap().iter().find(|e| e["selection"] == sel).unwrap();
+            e["model_record"].as_u64().unwrap() as usize
+        };
+        let soldiers = [0, 1].map(|k| kumite_game::Actor::load(&a, soldier(k)).unwrap());
+        let mut g = kumite_game::Game::load(&a, [TTT_MODELS[1], soldier(0)]).unwrap();
+        g.round_frames = kumite_game::force::CLOCK;
+        (g.ko_collapse, g.fight.ko_collapse) = (false, false);
+        let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 1, false);
+        b.force = true;
+        b.set_cpu(1, Some((1, data.ai_level(0))));
+        b.extra_cpu = Some(kumite_sim::ai::Ai::new(1, data.ai_level(0), 1));
+        let body = b.game.fight.fighters[0].character.unwrap_or(0).max(0) as usize;
+        let mut st = ForceStage::new(data.clone(), 0, soldiers, body * 8, body, 0, 0, 0, 0);
+        st.setup(&mut b.game);
+        let (sums, rollbacks) = play(ForceState(b, st), 2, 1500, &|s, p| {
+            s.0.partner_pad = p[1];
+            s.0.step([p[0], Pad::default()]);
+            let fighting = s.0.phase == kumite_game::bout::Phase::Fight;
+            let won = matches!(s.0.phase, kumite_game::bout::Phase::RoundOver { winner: Some(0) } | kumite_game::bout::Phase::MatchOver { winner: Some(0) });
+            s.1.step(&mut s.0.game, fighting, won);
+            // (stage 1's first area: no boss to load)
+            if std::mem::take(&mut s.1.events).iter().any(|e| matches!(e, ForceEvent::Swapped)) {
+                s.0.swap_cpus();
+            }
+        });
+        same_everywhere(&sums, rollbacks, 1500);
+    }
+
     /// TAG BRAWL online in Tekken Tag: four fighters, four computers, two on two.
     #[test]
     fn a_tekken_tag_brawl_online_is_the_same_on_every_computer() {

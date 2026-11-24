@@ -11,11 +11,13 @@ use serde_json::Value;
 /// The frames a wind wave keeps (0x3D4178's ring).
 const KEPT: usize = 1024;
 
+#[derive(Clone)]
 struct Set {
     cell: u32,
     paths: Vec<Vec<[f32; 5]>>,
 }
 
+#[derive(Clone)]
 struct Stream {
     set: usize,
     every: u32,
@@ -33,6 +35,7 @@ struct Stream {
 }
 
 /// A particle of a stream: its path, the frames it has been drawn, and what the wind has pushed it.
+#[derive(Clone)]
 struct Particle {
     stream: usize,
     path: usize,
@@ -41,6 +44,7 @@ struct Particle {
 }
 
 /// A wind wave (0x3D3988): its Lorenz series of the last 1024 frames, sampled by where a point lies along it.
+#[derive(Clone)]
 struct Wave {
     toward: [f32; 2],
     /// The point its front line passes through, the line's slope (x to z), 1 / its speed, its strength.
@@ -97,6 +101,7 @@ impl Wave {
 }
 
 /// An arena's wind (0x3D3630): its Lorenz step and beta, and its waves.
+#[derive(Clone)]
 pub struct Wind {
     dt: f32,
     beta: f32,
@@ -150,6 +155,7 @@ impl Wind {
     }
 }
 
+#[derive(Clone)]
 struct Wisp {
     group: usize,
     angle: f32,
@@ -161,6 +167,7 @@ struct Wisp {
     fade_rate: f32,
 }
 
+#[derive(Clone)]
 struct WispGroup {
     set: usize,
     swing: f32,
@@ -170,6 +177,7 @@ struct WispGroup {
     level: f32,
 }
 
+#[derive(Clone)]
 struct Beacon {
     set: usize,
     at: Vec3,
@@ -181,7 +189,7 @@ struct Beacon {
 
 /// Arena 4's lightning (task 0x3A76C0, stages.json `weather.lightning`) and arena 12's signs (tasks 0x3A7590,
 /// `weather.signs`): the frame each still texture channel shows, the thunder, the fighters' lights turned.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Flashes {
     /// The frame lists (s16 a frame, to a negative) by EMBU op 7's table: 0 the long flicker, 1-3 the middle ones,
     /// 4-5 the short ones, 6-8 the bolts.
@@ -209,6 +217,7 @@ struct Flashes {
 }
 
 /// A layer of snow (0x3E6B10 makes its flakes as the arena loads; VU1 program 0x708 moves and draws them).
+#[derive(Clone)]
 struct Snow {
     /// Each flake's start (m, about the box's corner), its move a frame (m) and its first frame.
     flakes: Vec<(Vec3, Vec3, u32)>,
@@ -222,6 +231,7 @@ struct Snow {
 }
 
 /// An arena's weather as it is now.
+#[derive(Clone)]
 pub struct Weather {
     sets: Vec<Set>,
     streams: Vec<Stream>,

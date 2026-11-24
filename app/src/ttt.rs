@@ -46,7 +46,7 @@ pub const BALL: u32 = 0x100;
 pub const FORCE: u32 = 0x101;
 /// TAG BRAWL (OpenKumite's own mode, Tekken 3's: its modes' list and setup): no mode of the game's.
 pub const TAG_BRAWL: u32 = 0x102;
-/// ONLINE (OpenKumite's own: Tekken 3's rooms, VS BATTLE and TAG BRAWL there): no mode of the game's.
+/// ONLINE (OpenKumite's own: Tekken 3's rooms, VS BATTLE, TAG BRAWL, Ball and Force there): no mode of the game's.
 pub const ONLINE: u32 = 0x103;
 /// REPLAYS (OpenKumite's own, Tekken 3's list of the matches recorded): no mode of the game's.
 pub const REPLAYS: u32 = 0x104;
@@ -893,10 +893,12 @@ pub enum Page {
         run: Box<Run>,
         cursor: usize,
     },
-    /// Tekken Ball's ball type (Tekken 3 picks it on its select, 0x800B5478; OpenKumite's list here).
+    /// Tekken Ball's ball type (Tekken 3 picks it on its select, 0x800B5478; OpenKumite's list here); online's (its
+    /// keys the room's, BACK back to the room).
     BallType {
         run: Box<Run>,
         cursor: usize,
+        online: bool,
     },
     /// The arcade ladder lost: CONTINUE? 9..0, then GAME OVER, over the fight's scene and HUD.
     Continue {
@@ -978,8 +980,8 @@ pub struct Select {
     pub cont: Option<Box<Run>>,
     /// HOLD's memory ([`Progress::cursors`]) as the picks change it.
     memory: [[Option<usize>; 2]; 2],
-    /// Online (the room's seed): RANDOM's roll stands still at it (the keys come at other frames on each computer),
-    /// the room's clock in place of the select's timer, no stage select, nothing saved.
+    /// Online (from the room's seed, drawn again on each key: the keys come at other frames on each computer, in the
+    /// same order): what RANDOM picks; the room's clock in place of the select's timer, no stage select, nothing saved.
     pub online: Option<u32>,
 }
 
@@ -1006,11 +1008,12 @@ impl Select {
         Self { mode, sides, frame: 0, done: 0, tally, cont: None, memory, online: None }
     }
 
-    /// Online VS BATTLE's select, the same on every computer (no save's cursors).
-    pub fn online(d: &Data, tally: [u32; 2], seed: u32) -> Self {
-        let mut s = Self { memory: [[None; 2]; 2], online: Some(seed), ..Self::new(VS, d, Some(tally)) };
+    /// Online VS BATTLE's or TEKKEN BALL's (`mode`) select, the same on every computer (no save's cursors; 2P in).
+    pub fn online(d: &Data, mode: u32, tally: [u32; 2], seed: u32) -> Self {
+        let mut s = Self { memory: [[None; 2]; 2], online: Some(seed), ..Self::new(mode, d, Some(tally)) };
         for (k, side) in s.sides.iter_mut().enumerate() {
             side.cursor = int(&d.raw["select"]["start_slots"][k]).min(d.slots.len().saturating_sub(1));
+            side.player = Some(k);
         }
         s
     }
@@ -1023,10 +1026,14 @@ impl Select {
     /// The character RANDOM shows and picks for `side` now (0x3C99C8: the next selectable character every `random_roll`
     /// frames, in id order, not one the side picked).
     fn roll(&self, d: &Data, roster: &Roster, progress: &Progress, side: usize) -> Option<usize> {
+        self.roll_at(d, roster, progress, side, self.frame as usize / int(&d.raw["select"]["random_roll"]).max(1))
+    }
+
+    /// ... the `at`th (online, what it picks: the room's draw, not the frame, which differs between computers).
+    fn roll_at(&self, d: &Data, roster: &Roster, progress: &Progress, side: usize, at: usize) -> Option<usize> {
         let taken: Vec<usize> = self.sides.get(side).map_or(vec![], |s| s.picks.iter().map(|p| p.0).collect());
         let mut free: Vec<usize> = roster.characters.iter().map(|c| c.id).filter(|&c| d.selectable(progress.stage, c) && roster.index_of(c).is_some_and(|i| !taken.contains(&i))).collect();
         free.sort_unstable();
-        let at = self.online.map_or(self.frame as usize / int(&d.raw["select"]["random_roll"]).max(1), |s| s as usize);
         free.get(at % free.len().max(1)).copied()
     }
 
@@ -1061,6 +1068,9 @@ impl Select {
     }
 
     fn key(&mut self, player: usize, key: Key, d: &Data, roster: &Roster, progress: &Progress) -> Option<Page> {
+        if let Some(n) = self.online.as_mut() {
+            *n = n.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
+        }
         // Team Battle, Tekken Bowl, Tekken Ball: 2P's START joins
         if matches!(self.mode, TEAM | BOWL | BALL) && player == 1 && key == Key::Start && self.sides[1].player.is_none() {
             sfx::play(sound(d, "start"));
@@ -1134,7 +1144,10 @@ impl Select {
         let taken: Vec<usize> = side.picks.iter().map(|p| p.0).collect();
         let id = match slot.character {
             Some(c) => Some(c).filter(|&c| d.selectable(progress.stage, c)),
-            None => self.roll(d, roster, progress, s),
+            None => match self.online {
+                Some(n) => self.roll_at(d, roster, progress, s, (n >> 16) as usize),
+                None => self.roll(d, roster, progress, s),
+            },
         };
         let i = id.and_then(|c| roster.index_of(c)).filter(|i| !taken.contains(i))?;
         let c = roster.characters.get(i)?;
@@ -1247,11 +1260,18 @@ impl Front {
         }
     }
 
-    /// Online, the room's time is up: the select's picks taken at once, alike on every computer (the room's seed).
-    pub fn finish(&mut self, roster: &Roster) {
-        if let (Page::Select(s), Some(d)) = (&mut self.page, roster.ttt.as_deref()) {
-            let mut seed = s.online.unwrap_or(1);
-            s.finish(d, roster, &Progress::online(), &mut seed);
+    /// Online, the room's time is up: the select's picks taken at once, alike on every computer (the room's seed);
+    /// the ball type's page, its ball.
+    // shortcut: the time runs out once: a ball type's page after it waits for a key, add a clock of its own if needed
+    pub fn finish(&mut self, roster: &Roster) -> Option<Outcome> {
+        match (&mut self.page, roster.ttt.as_deref()) {
+            (Page::Select(s), Some(d)) => {
+                let mut seed = s.online.unwrap_or(1);
+                s.finish(d, roster, &Progress::online(), &mut seed);
+                None
+            }
+            (Page::BallType { run, cursor, online: true }, _) => Some(Outcome::TttFight(Box::new(Run { ball: *cursor, ..*run.clone() }))),
+            _ => None,
         }
     }
 
@@ -1490,7 +1510,7 @@ impl Front {
                     _ => None,
                 }
             }
-            Page::BallType { run, cursor } => {
+            Page::BallType { run, cursor, online } => {
                 let n = roster.ball_types();
                 match key {
                     Key::Left | Key::Right => {
@@ -1507,6 +1527,7 @@ impl Front {
                         sfx::play(sound(&d, "decide"));
                         return Outcome::TttFight(Box::new(Run { ball: *cursor, ..*run.clone() }));
                     }
+                    Key::Back if *online => return Outcome::Quit,
                     Key::Back => {
                         sfx::play(sound(&d, "cancel"));
                         Some(Page::Select(Box::new(Select::new(run.mode, &d, None))))
@@ -1682,9 +1703,13 @@ impl Front {
                     self.frame = 0;
                 }
             }
-            // (online: the host's run goes to the room, on a RANDOM arena)
+            // (online: the host's run goes to the room, on a RANDOM arena; TEKKEN BALL's after its ball type)
             Page::Select(s) if s.online.is_some() => {
                 if let Some(run) = s.tick(&d, roster, progress, seed) {
+                    if run.mode == BALL && roster.ball_types() > 1 {
+                        self.page = Page::BallType { run: Box::new(run), cursor: 0, online: true };
+                        return Outcome::None;
+                    }
                     return Outcome::TttFight(Box::new(run));
                 }
             }
@@ -1717,7 +1742,7 @@ impl Front {
                         return Outcome::None;
                     }
                     if run.mode == BALL && roster.ball_types() > 1 {
-                        self.page = Page::BallType { run: Box::new(run), cursor: 0 };
+                        self.page = Page::BallType { run: Box::new(run), cursor: 0, online: false };
                         return Outcome::None;
                     }
                     return Outcome::TttFight(Box::new(run));
@@ -1851,7 +1876,7 @@ impl Front {
                     }
                 }
             }
-            Page::BallType { cursor, run } => {
+            Page::BallType { cursor, run, .. } => {
                 backdrop(painter, v, art);
                 font(painter, v, art, d, "BALL SELECT", W / 2.0, 30.0, 0.6, Color32::WHITE);
                 // (left / right: OpenKumite's 2 ON 2)
@@ -5713,7 +5738,7 @@ mod tests {
     fn the_online_select_is_alike_everywhere_and_its_run_is_checked() {
         let (d, mut seed) = (data(), 1);
         let tag = Roster { ttt: Some(d.clone()), ..roster() };
-        let online = || Front { page: Page::Select(Box::new(Select::online(&d, [1, 2], 7))), frame: 0 };
+        let online = || Front { page: Page::Select(Box::new(Select::online(&d, VS, [1, 2], 7))), frame: 0 };
         // (character 2 is locked with this save's original unlocks; online it is not)
         let mut f = online();
         for k in [Key::Right, Key::Right, Key::Button(0)] {
@@ -5742,6 +5767,23 @@ mod tests {
             assert!(!crate::room::MatchSetup::Ttt(Box::new(r)).valid(&tag));
         }
         assert!(!ok.valid(&roster()), "Tekken 3's roster takes no Tekken Tag run");
+        // RANDOM (slot 3) rolls by the frame as offline, and picks by the room's keys: alike at any frame
+        let p = Progress::online();
+        let random = |frame: u32, keys: &[(usize, Key)]| {
+            let mut s = Select::online(&d, VS, [0, 0], 7);
+            (s.sides[0].cursor, s.frame) = (3, frame);
+            let shown = s.roll(&d, &tag, &p, 0);
+            for &(player, k) in keys {
+                s.key(player, k, &d, &tag, &p);
+            }
+            (shown, s.sides[0].picks.clone())
+        };
+        let picks: Vec<_> = (0..12).map(|f| random(f, &[(0, Key::Button(0))])).collect();
+        assert!(picks.iter().any(|x| x.0 != picks[0].0), "RANDOM rolls: {picks:?}");
+        assert!(picks.iter().all(|x| x.1 == picks[0].1 && x.1.len() == 1), "the same pick at any frame: {picks:?}");
+        // (2P's cursor keys before it)
+        let draws: std::collections::BTreeSet<_> = (0..8).map(|n| random(0, &[vec![(1, Key::Left); n], vec![(0, Key::Button(0))]].concat()).1).collect();
+        assert!(draws.len() > 1, "the room's keys draw it: {draws:?}");
     }
 
     #[test]
@@ -5896,7 +5938,7 @@ mod tests {
         let s = run.setup(&d);
         assert_eq!((s.mode, s.stage, s.ball, run.bench(), run.teams[1].len()), (Mode::Ball, 23, Some((0, 0)), None, 2));
         // the ball type chosen after the select (IRON)
-        let mut front = Front { page: Page::BallType { run: Box::new(run), cursor: 0 }, frame: 0 };
+        let mut front = Front { page: Page::BallType { run: Box::new(run), cursor: 0, online: false }, frame: 0 };
         let mut roster = roster;
         let mesh = serde_json::json!({"vertices": [], "normals": [], "triangles": [], "quads": []});
         let kind = serde_json::json!({"speed_unit": 0, "lob_unit": 0, "gravity": 0, "ambient": [0, 0, 0], "damage_percent": 0, "zone": 0, "level": "", "name": "", "colours": []});
@@ -5916,6 +5958,37 @@ mod tests {
             }
         }
         panic!("no fight");
+    }
+
+    /// TEKKEN BALL online (and BALL 2 ON 2, Force: the room's list with the slice): 2P in at once, both pairs picked
+    /// (the time up), the ball type's page on the room's keys (BACK: the room; the time up: its ball); the run checked.
+    #[test]
+    fn tekken_ball_online() {
+        use crate::room::{MatchSetup, OnlineMode as M};
+        let d = Arc::new(Data { ball: Some(23), force: true, ..Arc::try_unwrap(data()).unwrap() });
+        assert_eq!(M::list(Some(&data())), vec![M::Versus, M::TagFree, M::TagTeams, M::TagArcade]);
+        assert_eq!(M::list(Some(&d)), M::ALL.to_vec());
+        let mut roster = roster();
+        let mesh = serde_json::json!({"vertices": [], "normals": [], "triangles": [], "quads": []});
+        let kind = serde_json::json!({"speed_unit": 0, "lob_unit": 0, "gravity": 0, "ambient": [0, 0, 0], "damage_percent": 0, "zone": 0, "level": "", "name": "", "colours": []});
+        roster.ball = Some(Arc::new(serde_json::from_value(serde_json::json!({"types": vec![kind; 3], "mesh": mesh, "body_offsets": []})).unwrap()));
+        roster.ttt = Some(d.clone());
+        let (mut seed, select) = (1, Select::online(&d, BALL, [0, 0], 7));
+        assert!(select.sides.iter().all(|s| s.player.is_some() && s.need == 2));
+        let mut f = Front { page: Page::Select(Box::new(select)), frame: 0 };
+        assert!(f.finish(&roster).is_none());
+        assert!((0..200).all(|_| matches!(f.tick(&roster, &mut seed), Outcome::None)));
+        let Page::BallType { run, online: true, .. } = &f.page else { panic!("no ball type") };
+        assert_eq!((run.stage, run.teams.iter().map(Vec::len).collect::<Vec<_>>()), (23, vec![2, 2]));
+        let mut back = Front { page: f.page.clone(), frame: 0 };
+        assert!(matches!(back.key(0, Key::Back, &roster, &mut seed), Outcome::Quit));
+        f.key(1, Key::Down, &roster, &mut seed);
+        let Some(Outcome::TttFight(run)) = f.finish(&roster) else { panic!("no fight") };
+        assert_eq!(run.setup(&d).ball, Some((1, 0)));
+        assert!(MatchSetup::Ttt(run.clone()).valid(&roster));
+        for bad in [Run { stage: 3, ..*run.clone() }, Run { ball: 3, ..*run.clone() }] {
+            assert!(!MatchSetup::Ttt(Box::new(bad)).valid(&roster));
+        }
     }
 
     /// The CPU's profile (0x380120, measured in PCSX2: fight n of the arcade plays NORMAL level n - 1): the

@@ -59,17 +59,17 @@ pub enum OnlineMode {
 
 impl OnlineMode {
     pub const ALL: [OnlineMode; 7] = [OnlineMode::Versus, OnlineMode::Ball, OnlineMode::Ball2, OnlineMode::TagFree, OnlineMode::TagTeams, OnlineMode::TagArcade, OnlineMode::Force];
-    /// Tekken Tag's: its VS BATTLE (tag pairs, on its own select) and TAG BRAWL's.
-    // shortcut: no Ball nor Force online in Tekken Tag (its runs of them are not the rooms' yet), add them when asked
-    pub const TTT: [OnlineMode; 4] = [OnlineMode::Versus, OnlineMode::TagFree, OnlineMode::TagTeams, OnlineMode::TagArcade];
-
-    /// The modes a room plays (`ttt`: Tekken Tag the game).
-    pub fn list(ttt: bool) -> &'static [OnlineMode] {
-        if ttt {
-            &Self::TTT
-        } else {
-            &Self::ALL
-        }
+    /// The modes a room plays: Tekken 3's all; Tekken Tag's (`ttt`) its VS BATTLE (tag pairs, on its own select),
+    /// TAG BRAWL's, and the Ball and Force of the Tekken 3 slice when it is there (as on its main menu).
+    pub fn list(ttt: Option<&crate::ttt::Data>) -> Vec<OnlineMode> {
+        let has = |m: &OnlineMode| {
+            ttt.is_none_or(|d| match m {
+                OnlineMode::Ball | OnlineMode::Ball2 => d.ball.is_some(),
+                OnlineMode::Force => d.force,
+                _ => true,
+            })
+        };
+        Self::ALL.into_iter().filter(has).collect()
     }
 
     /// Its title (the Ball's and the Force's names: screens.json `menu`).
@@ -91,9 +91,10 @@ impl OnlineMode {
         use crate::menu::Screen;
         use crate::tagrun::{TagMode, TagSelect};
         let tag = |mode| Screen::Tag(Box::new(TagSelect::new(roster, 1, seed, mode)));
-        // (Tekken Tag: its own VS BATTLE select, tag pairs)
-        if let (OnlineMode::Versus, Some(d)) = (self, roster.ttt.as_deref()) {
-            return Screen::Ttt(Box::new(crate::ttt::Front { page: crate::ttt::Page::Select(Box::new(crate::ttt::Select::online(d, record.wins, seed))), frame: 0 }));
+        // (Tekken Tag: its own select for VS BATTLE (tag pairs) and TEKKEN BALL, as on its main menu)
+        if let (OnlineMode::Versus | OnlineMode::Ball, Some(d)) = (self, roster.ttt.as_deref()) {
+            let mode = if self == OnlineMode::Ball { crate::ttt::BALL } else { crate::ttt::VS };
+            return Screen::Ttt(Box::new(crate::ttt::Front { page: crate::ttt::Page::Select(Box::new(crate::ttt::Select::online(d, mode, record.wins, seed))), frame: 0 }));
         }
         match self {
             OnlineMode::Versus => Screen::Grid(Box::new(crate::grid::GridSelect::new(roster.grid.clone(), 1, record))),
@@ -133,7 +134,14 @@ impl MatchSetup {
         match self {
             MatchSetup::Fight(f) => matches!(f.mode, Mode::Versus | Mode::Ball) && roster.is_stage(f.stage) && self.numbers_valid(roster),
             MatchSetup::Tag(_) => self.numbers_valid(roster),
-            MatchSetup::Ttt(r) => roster.ttt.as_ref().is_some_and(|d| r.mode == crate::ttt::VS && d.pool(&crate::ttt::Progress::online()).contains(&r.stage)) && self.numbers_valid(roster),
+            MatchSetup::Ttt(r) => {
+                let stage_ok = |d: &crate::ttt::Data| match r.mode {
+                    crate::ttt::VS => d.pool(&crate::ttt::Progress::online()).contains(&r.stage),
+                    crate::ttt::BALL => d.ball == Some(r.stage) && r.ball < roster.ball_types(),
+                    _ => false,
+                };
+                roster.ttt.as_deref().is_some_and(stage_ok) && self.numbers_valid(roster)
+            }
         }
     }
 
@@ -158,7 +166,7 @@ impl MatchSetup {
                     && t.slots.iter().all(|s| pick((s.character, s.costume)) && player(s.player))
                     && t.arcade.as_ref().is_none_or(|a| a.level < a.ladder.len() && a.ladder.len() <= crate::tagrun::arcade_ladder_len(roster) && a.ladder.iter().flatten().all(|&p| pick(p)))
             }
-            // (a VS BATTLE's: two pairs, no ladder nor carried health; the options' values the menu's few)
+            // (a VS BATTLE's, a TEKKEN BALL's: two pairs, no ladder nor carried health; the options' values the menu's few)
             MatchSetup::Ttt(r) => {
                 r.teams.iter().all(|t| t.len() == 2 && t.iter().all(|&p| pick(p)))
                     && r.ladder.is_empty()
@@ -574,8 +582,8 @@ pub struct RoomScreen {
     pub status: String,
     pub host: bool,
     pub players: usize,
-    /// Tekken Tag the game: its modes ([`OnlineMode::TTT`]).
-    pub ttt: bool,
+    /// The modes it lists ([`OnlineMode::list`]).
+    pub modes: Vec<OnlineMode>,
 }
 
 impl RoomScreen {
@@ -584,13 +592,13 @@ impl RoomScreen {
         if player != 0 {
             return None;
         }
-        let modes = OnlineMode::list(self.ttt);
-        let n = modes.len();
+        let modes = &self.modes;
+        let n = modes.len().max(1);
         match key {
             Key::Up => self.cursor = (self.cursor + n - 1) % n,
             Key::Down => self.cursor = (self.cursor + 1) % n,
             Key::Start | Key::Button(_) => {
-                let m = modes[self.cursor % n];
+                let m = *modes.get(self.cursor % n)?;
                 if !m.fits(players) {
                     self.note = Some(match m {
                         OnlineMode::Versus | OnlineMode::Ball => "FOR TWO PLAYERS".into(),
@@ -637,7 +645,7 @@ impl RoomScreen {
         }
         // the modes
         let players = self.players;
-        for (k, m) in OnlineMode::list(self.ttt).iter().enumerate() {
+        for (k, m) in self.modes.iter().enumerate() {
             let y = 176.0 + 28.0 * k as f32;
             let on = k == self.cursor;
             if on {

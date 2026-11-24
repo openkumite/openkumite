@@ -31,9 +31,16 @@ pub enum Request {
     Exit,
 }
 
-/// The match at a step, of whichever kind, with its HUD (what a seek starts from).
+/// The match at a step and the arena about it (what a seek starts from).
 #[derive(Clone)]
-pub enum Snapshot {
+pub struct Snapshot {
+    pub game: Match,
+    pub arena: Option<Box<crate::ArenaCopy>>,
+}
+
+/// The match at a step, of whichever kind, with its HUD.
+#[derive(Clone)]
+pub enum Match {
     /// A fight (a Force stage's: with the run and its stage), its HUD and what its sounds go by.
     Fight {
         bout: Box<Bout>,
@@ -42,6 +49,8 @@ pub enum Snapshot {
         heard: Box<crate::Heard>,
     },
     Tag(Box<kumite_game::tag::TagGame>, Box<TagHud>),
+    /// Tekken Bowl's game and the steps bowled.
+    Bowl(Box<kumite_game::bowl::BowlScene>, usize),
 }
 
 pub struct View {
