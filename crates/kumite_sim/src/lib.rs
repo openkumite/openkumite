@@ -2496,6 +2496,9 @@ pub struct Fight {
     pub teams: Option<Box<[TagTeam; 2]>>,
     /// The effect objects that strike (Gon's fire and gas).
     pub objects: objects::Objects,
+    /// Tekken Tag's pair distance limit (0x371458): each fighter's kept place (x, z; 0x879610) and its move's flags
+    /// of the frame before (gp-0x6508); None until the round's first frame (0x3713F0 starts them at the places).
+    pub kept: Option<([[i32; 2]; 2], [u32; 2])>,
 }
 
 /// An arena's walk grid (metres, x along a row, rows along z): cells a fighter's root cannot enter.
@@ -2665,6 +2668,7 @@ impl Fight {
             idle_target: None,
             teams: None,
             objects: objects::Objects::default(),
+            kept: None,
         }
     }
 
@@ -2962,6 +2966,10 @@ impl Fight {
         self.hits.clear();
         let roots_before = self.fighters.each_ref().map(Fighter::root);
         let gd = self.data.clone();
+        // (Tekken Tag's fights: after the facing angle 0x371330 took the roots, before the moves)
+        if gd.tag_moves && self.extra.is_none() && self.ball.is_none() && self.fighters.iter().all(|f| !f.inactive) {
+            self.keep_together(&gd);
+        }
         // no one to fight: the player faces the idle target
         let idle = self.idle_point();
         // ... and, standing in its stance, turns to face it (at most 22.5 degrees a frame)
@@ -3308,6 +3316,55 @@ impl Fight {
         } else {
             self.push_apart(bodies)
         }
+    }
+
+    /// Tekken Tag's pair distance limit (0x371458): with the roots 0x1D00 or more apart, a fighter whose move lacks
+    /// flags24 bit 0x2000 (the tag moves) goes back to its kept place, only an eighth of the way while its move of
+    /// the frame before had the bit (and then keeps no place); against a fighter in such a move only when 0x1D00 or
+    /// more from the other's kept place. The kept places are the roots after it, but not of a fighter with the bit
+    /// past 0x1D00.
+    fn keep_together(&mut self, gd: &GameData) {
+        let at = |f: &Fighter| [f.root().x as i32, f.root().z as i32];
+        // (against the square of the limit: its square root 0x358090 is the integer one, rounded down)
+        let far = |a: [i32; 2], b: [i32; 2], limit: i64| {
+            let (x, z) = (i64::from(b[0] - a[0]), i64::from(b[1] - a[1]));
+            x * x + z * z >= limit * limit
+        };
+        let (mut kept, mut last) = self.kept.unwrap_or((self.fighters.each_ref().map(|f| [f.position.x as i32, f.position.z as i32]), [0; 2]));
+        let flags = self.fighters.each_ref().map(|f| f.current_move(gd).flags24.raw & 0x7FFFF);
+        let free = flags.map(|x| x & 0x2000 != 0);
+        let mut keep = [true; 2];
+        if far(at(&self.fighters[0]), at(&self.fighters[1]), 0x1D00) {
+            for i in 0..2 {
+                let root = at(&self.fighters[i]);
+                match (free[i], free[1 - i]) {
+                    (true, true) => last[i] |= 0x2000,
+                    (true, false) => last[i] = flags[i],
+                    (false, true) if !far(root, kept[1 - i], 0x1D00) => {}
+                    _ => {
+                        // shortcut: the eighth moves the root too (the PS2 puts it 7/8 back until its root update), upgrade
+                        // if a pull back after a tag move shows a frame off
+                        let mut d = [kept[i][0] - root[0], kept[i][1] - root[1]];
+                        if last[i] & 0x2000 != 0 {
+                            d = d.map(|v| v / 8);
+                            keep[i] = false;
+                        } else {
+                            last[i] = flags[i];
+                        }
+                        self.fighters[i].position += Vec3::new(d[0] as f32, 0.0, d[1] as f32);
+                    }
+                }
+            }
+        } else {
+            last = flags;
+        }
+        let near = !far(at(&self.fighters[0]), at(&self.fighters[1]), 0x1D01);
+        for i in 0..2 {
+            if keep[i] && (!free[i] || near) {
+                kept[i] = at(&self.fighters[i]);
+            }
+        }
+        self.kept = Some((kept, last));
     }
 
     /// Tekken 3's body push (EXE push spheres, actor+0x324): every pair of push spheres that overlaps horizontally

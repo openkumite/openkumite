@@ -1736,6 +1736,16 @@ pub fn view_camera(v: &View) -> (Vec3, Vec3, f32) {
     (eye, forward, 2.0 * (240.0 / (v.h as f32 * 7122.0 / 4096.0)).atan())
 }
 
+/// Tekken Tag's fight z guard (0x341E0C): the depth (m, along `forward` from `eye`) nearer than which the arena's
+/// scenery is not drawn. The guard is the nearer fighter's depth (+0x620, its root `roots`, m) less 500 mm, d, on
+/// 0x433440's projection (2d / z(d)); the arena's own (0x433480, its z row 3/4 of that one's; read in PCSX2) meets it
+/// at 3d / (4 - d / 196608 mm).
+pub fn scenery_cut(eye: Vec3, forward: Vec3, roots: [Vec3; 2]) -> f32 {
+    let depth = |r: Vec3| (r - eye).dot(forward.normalize_or_zero());
+    let d = (depth(roots[0]).min(depth(roots[1])) - 0.5).max(0.0);
+    3.0 * d / (4.0 - d / 196.608)
+}
+
 /// The CPU AI tables (gamedata/ai.json; a game without them, a Tekken Tag pack before format 7, gets none).
 pub fn ai_data(assets: &Assets) -> Result<Arc<kumite_sim::ai::AiData>> {
     let path = assets.root.join("gamedata/ai.json");

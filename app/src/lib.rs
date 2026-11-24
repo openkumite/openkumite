@@ -154,6 +154,8 @@ struct Scene {
     sky_cull: bool,
     /// Tekken Tag's arena (`drum_depth: "floor"`): drawn on the frame's sRGB bytes, as the GS does.
     sky_floor_depth: bool,
+    /// ... and its scenery is cut before the fighters in a fight (0x341E0C: every arena but 12).
+    z_guard: bool,
     sky_picture: Option<(kumite_assets::SkyPicture, Arc<kumite_render::Texture>, [f32; 2], Arc<kumite_render::Texture>)>,
     /// The full-screen fill behind the stage (sRGB; one stage's sky blue, black elsewhere).
     background: [u8; 3],
@@ -1427,6 +1429,7 @@ impl App {
             sky_model: false,
             sky_cull: false,
             sky_floor_depth: false,
+            z_guard: false,
             sky_picture: None,
             background: [0; 3],
             strip: None,
@@ -1533,6 +1536,7 @@ impl App {
                 // (a mesh carries the glb's whole vertex list: its own are the ones its indices name)
                 scene.wall_z = st.sky.first().and_then(|m| m.vertices.get(*m.indices.first()? as usize)).filter(|_| st.backdrop_wall).map(|v| place(glam::Vec3::from(v.pos)).z);
                 (scene.sky_model, scene.sky_cull, scene.sky_floor_depth) = (st.sky_model, st.sky_cull, st.sky_floor_depth);
+                scene.z_guard = st.sky_floor_depth && stage != 12;
                 scene.sky_picture = st
                     .sky_picture
                     .filter(|p| st.textures.get(p.image).is_some_and(|t| t.width.max(t.height) <= r.max_texture()))
@@ -5649,6 +5653,10 @@ impl App {
                     None => game.display.map_or(game.fight.fighters[i].root(), |d| d[i].root),
                 };
                 stage_view(&mut cam, scene, [shown(0), shown(1)].map(|p| p / kumite_game::UNITS), self.debug.free_cam.is_some());
+                // Tekken Tag's fight: nothing of the arena's scenery stands before the fighters (its z guard)
+                if scene.z_guard && cutscene.is_none() {
+                    cam.scenery_cut = kumite_game::scenery_cut(cam.eye, cam.target - cam.eye, [shown(0), shown(1)].map(|p| p / kumite_game::UNITS));
+                }
                 // the hit light on the fighters (the scene has none)
                 if cutscene.is_none() {
                     cam.hit_light = self.vfx.as_ref().and_then(|v| v.hit_light()).map(|(c, k, p)| (c.map(|x| x * k), p));
