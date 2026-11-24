@@ -3602,7 +3602,11 @@ impl Fight {
         let drawn = |f: &Fighter| f.root() + Vec3::Y * f.eased().map_or(f.anim_root_y, |e| f.anim_root_y + e.1);
         let roots = [drawn(&self.fighters[0]), drawn(&self.fighters[1])].map(point);
         // (the basis +0x1A, not the body's facing +0x3C: a jump's re-aim turns only the body, 0x36FEE4)
-        let angle = |f: &Fighter| (f.root_yaw * 4096.0 / std::f32::consts::TAU).round() as i32;
+        // (as 0x377338: the s16 angle over 16, cut toward zero)
+        let angle = |f: &Fighter| {
+            let pi = std::f32::consts::PI;
+            2048 - ((pi - f.root_yaw) * 32768.0 / pi).round() as i32 as i16 as i32 / 16
+        };
         let cut = |v: i32| v / 4096;
         // a trade: both attacking, their points 200 ahead within 500 of each other and passed (their places' gap
         // against the points'): the whole push, at least 400, at once
