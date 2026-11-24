@@ -394,6 +394,59 @@ fn jack2s_walk_pushes_and_his_grab_misses_as_on_the_ps2() {
     assert!(!grab, "the grab");
 }
 
+/// The joint slots in the game's integers (0x34EF20): Kazuya and Paul against Hwoarang (model 426) and Paul, as the
+/// move audit picks them in PCSX2. In the stance his 18 slots are PCSX2's within 2 units (the turns come from the
+/// converted motions, not the game's angles), and his walk's push leaves him where PCSX2 does to the unit (`$W/moves10`,
+/// kazuya_1: 3 and 26 at his walk's frames 9 and 10; the float skeleton's spheres left 2 and 25).
+#[test]
+fn kazuyas_slots_and_walk_push_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [585, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    // (PCSX2's slots 0-17 in its axes: y down, z flipped; the stance's frame 61, Hwoarang's 11)
+    let slots = [
+        [-992, -1041, -8],
+        [-992, -1041, -8],
+        [-993, -1496, -47],
+        [-1080, -1384, -86],
+        [-1161, -1392, -176],
+        [-981, -1189, -299],
+        [-798, -1272, -192],
+        [-906, -1392, 10],
+        [-805, -1408, 78],
+        [-556, -1247, 118],
+        [-406, -1323, -36],
+        [-992, -1041, -8],
+        [-1039, -885, -97],
+        [-1100, -466, -213],
+        [-1300, -103, -73],
+        [-893, -889, 35],
+        [-663, -518, -6],
+        [-626, -98, 116],
+    ];
+    let (mut stance, mut walk) = (false, Vec::new());
+    for pad in parse_script("n*62,f*30,n*2,1*2,n*20").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        if (f[0].current.index, f[0].frame, f[1].frame) == (26, 61, 11) && !stance {
+            stance = true;
+            for (s, (p, q)) in b.game.spheres()[0].bones.iter().zip(slots).enumerate() {
+                let p = [p.x as i32, -p.y as i32, -p.z as i32];
+                assert!((0..3).all(|k| (p[k] - q[k]).abs() <= 2), "slot {s}: {p:?}, PCSX2 {q:?}");
+            }
+        }
+        if f[0].current.index == 101 && (9..=10).contains(&f[0].frame) {
+            walk.push((f[0].root().x as i32, f[1].root().x as i32));
+        }
+    }
+    assert!(stance, "the stance's frame 61");
+    assert_eq!(walk, [(3, 1010), (26, 1033)]);
+}
+
 /// Mokujin (no moves of his own) fights as another fighter, drawn from Tekken Tag's pool (0x35C850): he jabs.
 #[test]
 fn mokujin_fights_with_a_copied_moveset() {

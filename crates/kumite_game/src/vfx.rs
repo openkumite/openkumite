@@ -336,10 +336,14 @@ pub struct Burn {
     pub left: i32,
     pub rise: f32,
     pub mirror: bool,
+    /// Tekken Tag's (task 0x3A50B8): `slot` is a drawn node, the cells the attacker's flame's.
+    pub tag: bool,
 }
 
 /// The bone slots a struck fighter burns on (0x80025180).
 const BURN_SLOTS: [usize; 10] = [1, 2, 4, 8, 5, 9, 12, 13, 15, 16];
+/// The drawn nodes a fighter True Ogre's fire struck burns on (0x3A54D8's table 0x5198A0).
+const TAG_BURN_NODES: [usize; 10] = [1, 31, 37, 56, 62, 79, 81, 86, 90, 95];
 /// The pictures' sizes (their corners: 0x80025584 ±432, 0x800256A0 ±345, 0x80025770 ±250 units) and the fires'
 /// light (0x8002517C, 48 frames).
 const FIRE_SIZE: f32 = 0.864;
@@ -707,10 +711,19 @@ impl Vfx {
                 self.effect("spark", &data.spark, pos, Some(strike), Blend::Add, eye);
                 // Gon's fire sets the struck one burning (0x80076D24 -> 0x8006EF60)
                 // shortcut: a struck Gon burns on all ten slots, the game on one, larger (+0xD bit 5)
-                if matches!(h.limb, 0x18 | 0x1A) {
+                if h.limb == 0x18 && !data.bursts.is_empty() {
+                    // Tekken Tag's: a move of descriptor byte 0x18 burns the struck one instead of its sparks (0x35C0E0
+                    // -> 0x3A54D8): ten flames on his nodes, each 60-75 frames at its own phase of the 30 cells
+                    // shortcut: the smoke (0x3A4970, one in 32 frames) and the embers (0x3A4C28) are not drawn; port them
+                    for slot in TAG_BURN_NODES {
+                        let count = (self.rand() % 30) as i32;
+                        let left = 60 + (self.rand() & 15) as i32;
+                        self.burns.push(Burn { victim: h.victim, slot, pos, state: 1, count, left, rise: 0.0, mirror: false, tag: true });
+                    }
+                } else if matches!(h.limb, 0x18 | 0x1A) {
                     for slot in BURN_SLOTS {
                         let r = self.rand() as i32;
-                        self.burns.push(Burn { victim: h.victim, slot, pos, state: 1, count: r >> 4, left: (r & 15) + 60, rise: 0.0, mirror: r & 1 != 0 });
+                        self.burns.push(Burn { victim: h.victim, slot, pos, state: 1, count: r >> 4, left: (r & 15) + 60, rise: 0.0, mirror: r & 1 != 0, tag: false });
                     }
                 }
                 if h.damage.max(h.base_damage) >= HEAVY {
@@ -758,14 +771,17 @@ impl Vfx {
             b.count += 1;
             match b.state {
                 1 => {
-                    if let Some(p) = crate::BONE_SLOTS.get(b.slot).and_then(|name| node(b.victim, name)).and_then(|n| at(b.victim, n)) {
+                    let n = if b.tag { Some(b.slot) } else { crate::BONE_SLOTS.get(b.slot).and_then(|name| node(b.victim, name)) };
+                    if let Some(p) = n.and_then(|n| at(b.victim, n)) {
                         b.pos = p;
                     }
                     if self.rand() >> 8 & 15 == 0 {
                         self.light = Some((FIRE_LIGHT, LIGHT_FRAMES, b.pos, LIGHT_FRAMES));
                     }
                     b.left -= 1;
-                    if b.left < 0 {
+                    if b.left < 0 && b.tag {
+                        b.state = 2;
+                    } else if b.left < 0 {
                         (b.state, b.count) = (2, 0);
                     }
                 }
@@ -773,13 +789,15 @@ impl Vfx {
                     // (rising: 0x18000 more a frame in 16.16 units)
                     b.rise += 1.5 / UNITS;
                     b.pos.y += b.rise;
-                    if b.state == 2 && b.count >= 8 {
+                    // (Tekken Tag's: 16 frames, fading, 0x3A5318)
+                    b.left -= 1;
+                    if b.state == 2 && (b.count >= 8 && !b.tag || b.left < -16) {
                         (b.state, b.count) = (3, 0);
                     }
                 }
             }
         }
-        burns.retain(|b| b.state < 3 || b.count < 5);
+        burns.retain(|b| b.state < 3 || b.count < 5 && !b.tag);
         self.burns = burns;
     }
 
@@ -833,6 +851,24 @@ impl Vfx {
             }
         }
         for b in &self.burns {
+            if b.tag {
+                // (the attacker's flame cells at +0x54 0.4 of its quad +0x44 128, the flame's 192 at 0.6 being
+                // TAG_FIRE_SIZE; added, fading as it rises)
+                let c = models.get(1 - b.victim.min(1)).and_then(|m| d.characters.get(m));
+                let cell = c.and_then(|c| c.special.first()).and_then(|s| s.get(b.count.rem_euclid(30) as usize)).copied();
+                let fade = if b.state == 2 { (-b.left) as f32 / 16.0 } else { 0.0 };
+                self.objects.extend(c.and_then(|c| c.burst.as_ref()).zip(cell).map(|(set, cell)| Sprite {
+                    pos: b.pos,
+                    size: TAG_FIRE_SIZE * 0.4 * 128.0 / 192.0,
+                    cell,
+                    color: [1.0, 1.0, 1.0, 1.0 - fade],
+                    blend: Blend::Add,
+                    mirror: false,
+                    nearer: 0.0,
+                    sheet: set.sheet,
+                }));
+                continue;
+            }
             let s = match b.state {
                 1 => sprite(&d.fire, 4 + ((b.count & 6) >> 1), b.pos, BURN_SIZE, Blend::Add, b.mirror),
                 2 => sprite(&d.fire, 4 + ((b.count - 1) >> 1), b.pos, BURN_SIZE, Blend::Add, b.mirror),

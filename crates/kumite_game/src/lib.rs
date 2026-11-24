@@ -138,7 +138,7 @@ impl Animations for FighterAnims<'_> {
             let j = if partner { src.character.nodes.iter().position(|o| o.name == node.name) } else { Some(n) };
             let r = j.and_then(|j| clip.rotations.get(j)?.as_ref()).and_then(|v| v.get((frame as usize).min(v.len().saturating_sub(1)))).copied().unwrap_or(node.rotation);
             let c = Mat3::from_quat(r).to_cols_array_2d();
-            *t = std::array::from_fn(|k| (c[k % 3][k / 3] * 4096.0).round() as i16);
+            *t = std::array::from_fn(|k| fixed(c[k % 3][k / 3]) as i16);
         }
         (self.own.bones.len() >= 18).then_some(turns)
     }
@@ -1831,12 +1831,21 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
         }
         more.push((slot, p));
     }
+    // (the 18 joint slots in the game's integers: its strikes and spheres start there)
+    let fixed = fixed_slots(body, pose, place);
+    for (b, p) in bones.iter_mut().zip(&fixed) {
+        *b = Vec3::new(p[0] as f32, p[1] as f32, p[2] as f32);
+    }
     let make = |layout: &[(usize, Vec3, f32, usize)]| -> Vec<Sphere> {
         layout
             .iter()
             .map(|&(node, offset, radius, zone)| {
-                let at = body.bones.iter().position(|&n| n == node).and_then(|s| slots.get(s)).copied().unwrap_or_else(|| pose[node].w_axis.truncate());
-                Sphere { centre: (place.transform_point3(at) + offset) * UNITS, radius, zone }
+                let s = body.bones.iter().position(|&n| n == node);
+                let centre = match s.and_then(|s| fixed.get(s)) {
+                    Some(p) => Vec3::new(p[0] as f32, p[1] as f32, p[2] as f32) + offset * UNITS,
+                    None => (place.transform_point3(s.and_then(|s| slots.get(s)).copied().unwrap_or_else(|| pose[node].w_axis.truncate())) + offset) * UNITS,
+                };
+                Sphere { centre, radius, zone }
             })
             .collect()
     };
@@ -1848,6 +1857,40 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
         Mat4::from_cols(m.x_axis, m.y_axis, m.z_axis, (m.w_axis.truncate() * UNITS).extend(1.0))
     };
     BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones, slots: [slot(body.chest), slot(body.pelvis)] }
+}
+
+/// A turn's float entry as the game's 4096 = 1 (0x34ED90: times 4096, truncated; a float a hair off a whole number,
+/// as ours from the converted motions are where the game's sines were exact, is that number).
+fn fixed(v: f32) -> i32 {
+    let x = v * 4096.0;
+    if (x - x.round()).abs() < 0.01 {
+        x.round() as i32
+    } else {
+        x as i32
+    }
+}
+
+/// Tekken Tag's 18 joint slots as the game builds them (0x34EF20), in units in our world axes (its flips change
+/// signs only): the facing (+0x508) and each slot's turn as [`fixed`]; a slot's world turn its parent's times its own
+/// (0x39A670), its place the parent's plus the parent's turn times its joint place (0x39B310), each product's
+/// twelfth bits cut toward zero. Empty for a body without the game's joint places.
+fn fixed_slots(body: &Body, pose: &[Mat4], place: Mat4) -> Vec<[i32; 3]> {
+    type Fixed = [[i32; 3]; 3];
+    let fix = |m: Mat3| -> Fixed { std::array::from_fn(|r| std::array::from_fn(|c| fixed(m.col(c)[r]))) };
+    let mul = |a: &Fixed, b: &Fixed| -> Fixed { std::array::from_fn(|r| std::array::from_fn(|c| (0..3).map(|k| a[r][k] * b[k][c] / 4096).sum())) };
+    let rot = |s: usize| body.bones.get(s).and_then(|&n| pose.get(n)).map_or(Mat3::IDENTITY, |m| Mat3::from_mat4(*m));
+    if body.joints.len() < body.bones.len() || body.bones.len() < 18 {
+        return Vec::new();
+    }
+    let root = place.transform_point3(pose.get(body.bones[0]).map_or(Vec3::ZERO, |m| m.w_axis.truncate())) * UNITS;
+    let mut out: Vec<(Fixed, [i32; 3])> = vec![(mul(&fix(Mat3::from_mat4(place)), &fix(rot(0))), root.round().to_array().map(|v| v as i32))];
+    for (s, &(parent, at)) in body.joints.iter().enumerate().take(18).skip(1) {
+        let Some(&(turn, p)) = out.get(parent) else { return Vec::new() };
+        let at = (at * UNITS).round().to_array().map(|v| v as i64);
+        let to: [i32; 3] = std::array::from_fn(|r| p[r] + (0..3).map(|k| turn[r][k] as i64 * at[k] / 4096).sum::<i64>() as i32);
+        out.push((mul(&turn, &fix(rot(parent).transpose() * rot(s))), to));
+    }
+    out.into_iter().map(|(_, p)| p).collect()
 }
 
 /// Render camera for a game view: eye and look direction in glTF metres (y up), vertical field of view from
