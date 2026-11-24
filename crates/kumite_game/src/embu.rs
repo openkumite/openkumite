@@ -90,6 +90,10 @@ impl EmbuData {
         data.moveset = Some(Arc::new(ms));
         let rules: serde_json::Value = kumite_sim::data::load(&gd.join("rules.json")).unwrap_or_default();
         data.bone_slots = rules["bone_slots"]["joints"].as_array().into_iter().flatten().map(|j| j.as_str().unwrap_or("").to_string()).collect();
+        // (Tekken Tag's rules name none: its converter names the slots' nodes so)
+        if data.bone_slots.is_empty() {
+            data.bone_slots = crate::BONE_SLOTS.map(String::from).to_vec();
+        }
         Ok(data)
     }
 
