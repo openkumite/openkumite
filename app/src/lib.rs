@@ -8395,7 +8395,7 @@ pub fn main() -> Result<()> {
     let found = assetdir::find(&args, &env, std::env::current_exe().ok().as_deref(), std::env::consts::OS);
     // a command line that does its work and ends (a screenshot, a video, a scripted run) takes the game data as it is;
     // otherwise the Game data screen converts it when there is none (in the per-user place, unless a folder was given),
-    // or the packs need installing
+    // or the packs need installing (Tekken Tag Tournament's extras too, when it is the main game)
     let batch = ["--shot", "--export-video", "--quit-after", "--record-reads", "--hash-log"].iter().any(|f| args.iter().any(|a| a == f));
     let given = args.iter().any(|a| a == "--assets") || env("OPENKUMITE_ASSETS").is_some_and(|v| !v.is_empty());
     let root = match found {
@@ -8408,7 +8408,7 @@ pub fn main() -> Result<()> {
         log::warn!("the packs in {} are not installed: Tekken 3 alone", root.display());
     }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-    if !batch && (!state.playable() || args.iter().any(|a| a == "--game-data")) {
+    if !batch && (!state.ready() || args.iter().any(|a| a == "--game-data")) {
         EventLoop::new()?.run_app(&mut datascreen::Root::data(root, args))?;
         return Ok(());
     }

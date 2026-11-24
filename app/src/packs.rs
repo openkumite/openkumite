@@ -60,7 +60,7 @@ pub fn game() -> Game {
 /// What the game data's parts are now.
 #[derive(Clone, Debug, Default)]
 pub struct State {
-    /// Each part's manifest (None: not converted, or another format: converted again).
+    /// Each part's manifest (None: not converted; an older format's plays, `Part::outdated`).
     pub manifests: kumite_packs::Manifests,
     /// The packs there are installed, as they are (the extras are theirs).
     pub installed: bool,
@@ -68,6 +68,8 @@ pub struct State {
     pub game: Game,
     /// Tekken Tag Tournament's pack has its game root (assets/; a pack of the converter's research layout has none).
     pub ttt_assets: bool,
+    /// Tekken Tag Tournament's extras are installed on the games' data as they are now.
+    pub ttt_installed: bool,
 }
 
 impl State {
@@ -75,7 +77,8 @@ impl State {
         let m = |p: Part| p.manifest(&StdFs(dir(p, root)));
         let manifests = kumite_packs::Manifests { t3: m(Part::T3), t2: m(Part::T2), cs: m(Part::Cs), arcade: m(Part::Arcade), ttt: m(Part::Ttt) };
         let installed = manifests.installed(&StdFs(root.join(EXTRAS)));
-        Self { manifests, installed, game, ttt_assets: game_root(root, Game::Ttt).is_dir() }
+        let ttt_installed = kumite_packs::ttt_installed(&StdFs(game_root(root, Game::Ttt)), &StdFs(root.to_path_buf()), &StdFs(dir(Part::Ttt, root).join(EXTRAS)));
+        Self { manifests, installed, game, ttt_assets: game_root(root, Game::Ttt).is_dir(), ttt_installed }
     }
 
     pub fn get(&self, part: Part) -> Option<&Value> {
@@ -93,6 +96,12 @@ impl State {
             Game::T3 => self.manifests.t3.is_some() && self.installed,
             Game::Ttt => self.manifests.ttt.is_some() && self.ttt_assets,
         }
+    }
+
+    /// The game starts straight away (else the Game data screen first, installing what is not: Tekken Tag
+    /// Tournament's extras too, when it is the main game).
+    pub fn ready(&self) -> bool {
+        self.playable() && (self.game == Game::T3 || self.ttt_installed)
     }
 }
 
@@ -116,9 +125,8 @@ fn layers(root: &Path, state: &State) -> Vec<PathBuf> {
 fn ttt_layers(root: &Path, state: &State) -> Vec<PathBuf> {
     let extras = dir(Part::Ttt, root).join(EXTRAS);
     let arcade = dir(Part::Arcade, root).join(kumite_packs::ASSETS);
-    let installed = kumite_packs::ttt_installed(&StdFs(game_root(root, Game::Ttt)), &StdFs(root.to_path_buf()), &StdFs(extras.clone()));
     let arcade_there = state.get(Part::Arcade).is_some() && arcade.is_dir();
-    [(extras, installed), (arcade, arcade_there)].into_iter().filter_map(|(p, there)| there.then_some(p)).collect()
+    [(extras, state.ttt_installed), (arcade, arcade_there)].into_iter().filter_map(|(p, there)| there.then_some(p)).collect()
 }
 
 /// The game reads the main game's layers from now on (Tekken 3: none while the packs are not installed).
@@ -340,6 +348,24 @@ mod tests {
         assert!(layers(&root, &State::of(&root, Game::T3)).is_empty() && !root.join(EXTRAS).exists());
         std::fs::write(root.join("manifest.json"), format!("{{\"format\": {}, \"fingerprint\": \"y\"}}", ok_tekken3_converter::convert_all::FORMAT)).unwrap();
         assert!(ttt_layers(&root, &State::of(&root, Game::Ttt)).is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Packs of an older converter's format play as they are (#177 took Tekken 3's for none: Tekken Tag lost its
+    /// Tekken 3 slice), and Tekken Tag's extras made before are installed again first.
+    #[test]
+    fn older_packs_still_play() {
+        let root = std::env::temp_dir().join(format!("ok_packs_older_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(game_root(&root, Game::Ttt)).unwrap();
+        std::fs::write(root.join("manifest.json"), format!("{{\"format\": {}, \"fingerprint\": \"x\"}}", Part::T3.format() - 1)).unwrap();
+        std::fs::write(dir(Part::Ttt, &root).join("manifest.json"), serde_json::json!({"pack": "ttt", "format": Part::Ttt.format() - 1}).to_string()).unwrap();
+        std::fs::write(game_root(&root, Game::Ttt).join("manifest.json"), r#"{"game": "ttt", "format": 8, "fingerprint": "t"}"#).unwrap();
+        let (t3, ttt) = (State::of(&root, Game::T3), State::of(&root, Game::Ttt));
+        assert!(t3.ready() && ttt.playable() && !ttt.ready());
+        assert!([Part::T3, Part::Ttt].iter().all(|p| t3.get(*p).is_some_and(|m| p.outdated(m))));
+        run(&root, &Job::Install, &|_| {}, &AtomicBool::new(false)).unwrap();
+        assert!(State::of(&root, Game::Ttt).ready());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

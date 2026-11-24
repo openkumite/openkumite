@@ -2905,6 +2905,7 @@ pub struct Poser {
     size: [f32; 2],
     room: Arc<Vec<glam::Vec3>>,
     fingers: Option<Fingers>,
+    hidden: Arc<Vec<usize>>,
     hands: kumite_game::hands::Hands,
     shift: glam::Vec3,
     frame: u32,
@@ -2927,7 +2928,7 @@ impl Poser {
 type Fingers = (Arc<kumite_game::hands::Poses>, Arc<[Vec<[u32; 3]>; 2]>);
 
 /// A loaded body: its model record, character, select clips, lift, height, size, room and fingers.
-type Body = (usize, Arc<kumite_assets::Character>, [usize; 2], f32, Option<f32>, [f32; 2], Arc<Vec<glam::Vec3>>, Option<Fingers>);
+type Body = (usize, Arc<kumite_assets::Character>, [usize; 2], f32, Option<f32>, [f32; 2], Arc<Vec<glam::Vec3>>, Option<Fingers>, Arc<Vec<usize>>);
 
 /// The select's 3D characters, and the bodies loaded so far.
 #[derive(Default)]
@@ -2955,9 +2956,9 @@ impl Posers {
                 None => {
                     let id = roster.characters.iter().find(|c| c.costumes.contains(&record)).map_or(0, |c| c.id);
                     match self.load(assets, d, record, id) {
-                        Ok((_, character, clips, lift, height, size, room, fingers)) => {
+                        Ok((_, character, clips, lift, height, size, room, fingers, hidden)) => {
                             let hands = Default::default();
-                            self.shown.push(Poser { slot, record, picked, character, clips, lift, height, size, room, fingers, hands, shift: glam::Vec3::ZERO, frame: 0 });
+                            self.shown.push(Poser { slot, record, picked, character, clips, lift, height, size, room, fingers, hidden, hands, shift: glam::Vec3::ZERO, frame: 0 });
                             moved = true;
                         }
                         Err(e) => log::warn!("select model {record}: {e:#}"),
@@ -3010,7 +3011,10 @@ impl Posers {
         if let Some(l) = self.loaded.iter().find(|l| l.0 == record) {
             return Ok(l.clone());
         }
-        let names = &d.raw["select"]["models"]["motions"][id];
+        // (Mokujin has none: the PS2 never stands him on the select, FRONTEND.md 3; here he stands as the fighter he
+        // is until his fight's first draw, 0x8002A40C)
+        let motions = &d.raw["select"]["models"]["motions"];
+        let names = if motions[id].is_null() && id as i64 == kumite_game::COPIER { &motions[kumite_game::COPY_DEFAULT as usize] } else { &motions[id] };
         let mut ch = assets.character(record)?;
         ch.select_look();
         let mut clip = |k: usize| -> anyhow::Result<usize> {
@@ -3046,7 +3050,9 @@ impl Posers {
             ch.add_motions(&kumite_fs::read(&assets.root.join("characters").join(&h.file)).ok()?).ok()?;
             Some((Arc::new(kumite_game::hands::Poses::new(&ch, h)?), Arc::new(ops)))
         });
-        let body = (record, Arc::new(ch), clips, lift, height, size, room, fingers);
+        // (Mokujin's stick and blades as in his fight as that fighter)
+        let hidden = Arc::new(if motions[id].is_null() && id as i64 == kumite_game::COPIER { kumite_game::copy_hidden(&ch, kumite_game::COPY_DEFAULT) } else { Vec::new() });
+        let body = (record, Arc::new(ch), clips, lift, height, size, room, fingers, hidden);
         self.loaded.push(body.clone());
         Ok(body)
     }
@@ -3061,6 +3067,11 @@ impl Posers {
                 let mut pose = select_pose(&p.character, p.clips[k], f as usize, p.size);
                 if let Some((poses, _)) = &p.fingers {
                     p.hands.apply(poses, &p.character, &mut pose);
+                }
+                for &n in p.hidden.iter() {
+                    if let Some(m) = pose.get_mut(n) {
+                        *m *= glam::Mat4::from_scale(glam::Vec3::ZERO);
+                    }
                 }
                 (pose, glam::Mat4::from_translation(p.shift) * place(d, mode, p.slot, p.lift, p.height))
             })
@@ -6167,7 +6178,7 @@ mod tests {
         assert_eq!((int(&m["scales"][0]), int(&m["scales"][11])), (4352, 2992));
         // (Kuma, model 492: the head as far from the root as unscaled times 2992 / 4096; the root at its motion's
         // height times the model's 3686 / 4096)
-        let (_, ch, clips, _, _, size, _, fingers) = Posers::default().load(&assets, &d, 492, 11).unwrap();
+        let (_, ch, clips, _, _, size, _, fingers, _) = Posers::default().load(&assets, &d, 492, 11).unwrap();
         assert_eq!(size.map(|s| (s * 4096.0).round()), [3686.0, 2992.0]);
         let head = ch.nodes.iter().position(|n| n.name == "head").unwrap();
         let root = ch.nodes.iter().position(|n| n.parent.is_none()).unwrap();
@@ -6176,7 +6187,7 @@ mod tests {
         assert!((reach(&scaled) / reach(&plain) - 2992.0 / 4096.0).abs() < 1e-4);
         assert!((scaled[root].w_axis.y / plain[root].w_axis.y - 3686.0 / 4096.0).abs() < 1e-4);
         // (Paul, model 345: both hands at pose 17 two frames in)
-        let (.., fingers345) = Posers::default().load(&assets, &d, 345, 0).unwrap();
+        let (.., fingers345, _) = Posers::default().load(&assets, &d, 345, 0).unwrap();
         let (poses, ops) = fingers345.unwrap();
         assert_eq!(ops[0], [[1, 0x11, 1]]);
         let mut h = kumite_game::hands::Hands::default();
@@ -6186,6 +6197,11 @@ mod tests {
         let turns = h.turns.unwrap();
         assert!((0..2).all(|k| turns[k].iter().zip(&poses.poses[17][k]).all(|(a, b)| a.angle_between(*b) < 1e-3)), "Paul's hands not at pose 17");
         assert!(fingers.is_some());
+        // (Mokujin, model 546, who has none: Jin's, his blades hidden as in his fight as Jin)
+        let (_, ch, clips, .., hidden) = Posers::default().load(&assets, &d, 546, 15).unwrap();
+        assert_eq!(clips.map(|c| ch.clips[c].name.clone()), [m["motions"][9][0].as_str().unwrap(), m["motions"][9][1].as_str().unwrap()]);
+        assert_eq!(*hidden, kumite_game::copy_hidden(&ch, 9));
+        assert!(!hidden.is_empty(), "Mokujin's blades show");
     }
 
     /// The select's 3D characters keep clear of each other: every two characters (each in its costume of the most
@@ -6202,7 +6218,7 @@ mod tests {
         let (mut bodies, mut stand_in) = (vec![], None);
         for c in &roster.characters {
             let costumes = c.costumes.iter().filter_map(|&record| Some((record, Posers::default().load(&assets, &d, record, c.id).ok()?)));
-            if let Some((record, (_, ch, clips, lift, height, size, room, _))) = costumes.max_by_key(|b| b.1 .6.len()) {
+            if let Some((record, (_, ch, clips, lift, height, size, room, ..))) = costumes.max_by_key(|b| b.1 .6.len()) {
                 bodies.push((format!("{} {record}", c.name), stand_in.get_or_insert(ch).clone(), clips, lift, height, size, room));
             }
         }
@@ -6214,7 +6230,22 @@ mod tests {
                 .iter()
                 .map(|&(slot, b)| {
                     let (_, character, clips, lift, height, size, room) = bodies[b].clone();
-                    Poser { slot, record: b, picked: false, character, clips, lift, height, size, room, fingers: None, hands: Default::default(), shift: glam::Vec3::ZERO, frame: 0 }
+                    Poser {
+                        slot,
+                        record: b,
+                        picked: false,
+                        character,
+                        clips,
+                        lift,
+                        height,
+                        size,
+                        room,
+                        fingers: None,
+                        hidden: Default::default(),
+                        hands: Default::default(),
+                        shift: glam::Vec3::ZERO,
+                        frame: 0,
+                    }
                 })
                 .collect();
             let mut p = Posers { shown, loaded: vec![] };

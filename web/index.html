@@ -824,7 +824,7 @@
     snapshot() {
       const s = this.state;
       const parts = {};
-      for (const p of PARTS) parts[p] = { converted: !!s?.[p], size: this.sizes[p], manifest: s?.[p] ?? null };
+      for (const p of PARTS) parts[p] = { converted: !!s?.[p], size: this.sizes[p], manifest: s?.[p] ?? null, outdated: !!s?.outdated?.includes(p) };
       const job = this.job && { kind: this.job.kind, part: this.job.part, seconds: (Date.now() - this.job.started) / 1000, log: this.job.log, cancelling: !!this.job.cancelling };
       return JSON.stringify({
         loading: this.loading, parts, playable: mainGame() === 'ttt' ? !!s?.ttt : !!(s?.t3 && s?.installed), main: mainGame() === 'ttt' ? 'ttt' : 't3', job, outcome: this.outcome,
