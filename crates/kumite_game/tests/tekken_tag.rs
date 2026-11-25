@@ -472,6 +472,31 @@ fn the_tag_runs_off_and_comes_in_as_the_game() {
     assert_eq!(play_tag([585, 426], script, 5397, &[1, 2, 20]), [(-2213.0, -14.0), (-2145.0, -14.0), (-329.0, 9.0)]);
 }
 
+/// The incoming partner keeps the entrance's tracking mode (+0x11E 8): Paul, tagged in for Wang, turns his body +0x3C
+/// toward Hwoarang each frame of his entrance (4936) while the basis +0x1A stays, as in PCSX2: +0x3C 16384, 16399,
+/// 16543 on its frames 1, 12, 25, +0x1A 16384 throughout.
+#[test]
+fn the_partner_comes_in_turning_to_the_opponent() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [624, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    let hold = Pad { buttons: 3, ..Pad::default() };
+    while b.phase != Phase::Fight {
+        b.step([hold; 2]);
+    }
+    let u = |y: f32| ((std::f32::consts::PI - y) * 32768.0 / std::f32::consts::PI).round() as i32 & 0xFFFF;
+    let mut seen = Vec::new();
+    for pad in parse_script("n*61,f*30,n*2,5*2,n*100").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        if f.current.index == 4936 && [1, 12, 25].contains(&f.frame) {
+            seen.push((u(f.yaw), u(f.root_yaw)));
+        }
+    }
+    assert_eq!(seen, [(16384, 16384), (16399, 16384), (16543, 16384)]);
+}
+
 /// The fight camera samples as the game (0x38EC08): a walk's root (flags bits 20-21 = 1), so the eye follows Nina's
 /// walk from its first frames; the tag's run-off (id 0x18) eases toward the opponent by 6/128 and the framing steps
 /// 1/16 while it runs; she is off the screen and the partner comes in 20 frames after the run-off starts. PCSX2 (the
