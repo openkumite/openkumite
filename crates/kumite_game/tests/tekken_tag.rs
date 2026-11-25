@@ -527,7 +527,8 @@ fn yoshimitsus_side_throw_camera_samples_on_odd_frames() {
 /// Eddy's run-off (4829) turns to the screen's axis, so its path follows the camera's yaw: the yaw chases the
 /// runner's root (flags bits 20-21 = 2, 0x38F7F8), the eased sample starts from the last one moved by the other's
 /// step (0x38F2DC), and the atan is the PS2's table (floor). PCSX2 (+0x51C) on frame 20: (-1702, 1746); ours was
-/// (-1625, 1883).
+/// (-1625, 1883). Its head's and feet's screen x (+0x628..0x62C) then, through last frame's matrix (0x34FD90): -144,
+/// -18, -121 (ours were -148, -21, -125 through this frame's: the middle one under -0x14, off the screen a frame early).
 #[test]
 fn eddys_run_off_follows_the_cameras_yaw() {
     let Some(a) = assets() else { return };
@@ -542,11 +543,12 @@ fn eddys_run_off_follows_the_cameras_yaw() {
         b.step([pad, Pad::default()]);
         let f = &b.game.fight.fighters[0];
         if (f.alias, f.frame) == (RUN_OFF, 20) {
-            at = Some((f.root().x as i32, -f.root().z as i32));
+            at = Some((f.root().x as i32, -f.root().z as i32, f.screen_points));
         }
     }
-    let (x, z) = at.unwrap();
+    let (x, z, p) = at.unwrap();
     assert!((x + 1702).abs() <= 5 && (z - 1746).abs() <= 5, "{x} {z}");
+    assert!(p.iter().zip([-144, -18, -121]).all(|(a, b)| (a - b).abs() <= 1), "{p:?}");
 }
 
 /// The fight camera samples as the game (0x38EC08): a walk's root (flags bits 20-21 = 1), so the eye follows Nina's
