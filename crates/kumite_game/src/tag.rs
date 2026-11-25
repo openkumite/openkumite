@@ -263,11 +263,7 @@ impl TagGame {
             self.camera.actors = s.map(|p| kumite_sim::camera::Actor { at: [p.x, 0, p.z], root: [p.x, 0, p.z], ..Default::default() });
         }
         // (Tekken Tag's yaw freezes on the pair's distance, as its fight's)
-        let freeze = if self.camera.data().director.is_some() {
-            (((s[0].x - s[1].x).pow(2) + (s[0].z - s[1].z).pow(2)) as f64).sqrt() as i64
-        } else {
-            self.melee.fight.frame as i64
-        };
+        let freeze = if self.camera.data().director.is_some() { (((s[0].x - s[1].x).pow(2) + (s[0].z - s[1].z).pow(2)) as f64).sqrt() as i64 } else { self.melee.fight.frame as i64 };
         let v = self.camera.step(s, freeze, mc);
         let w = v.yaw as f32 * std::f32::consts::TAU / 4096.0;
         self.melee.fight.screen_right = Vec3::new(w.dcos(), 0.0, -w.dsin());
