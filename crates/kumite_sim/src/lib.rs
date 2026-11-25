@@ -720,6 +720,10 @@ pub struct Fighter {
     shown_turns: Turns,
     shown_height: i32,
     reacting: bool,
+    /// Tekken Tag: the move and frame drawn until the next step. A hit's reaction is only queued (+0x188 / +0x178,
+    /// 0x36A2B4, from the pass 0x372A10 after the hits) for the next frame's moves to commit, so the struck one shows
+    /// its old move on the frame of the hit.
+    shown_move: Option<(Current, u32)>,
 }
 
 /// Facing angles in game units (u16 turn = 0x10000), as the actor keeps them (0x80043A94): `off` (+0x2E) the
@@ -830,6 +834,7 @@ impl Fighter {
             shown_turns: [[0; 9]; 18],
             shown_height: 0,
             reacting: false,
+            shown_move: None,
         };
         f.current = f.resolve(neutral).unwrap_or(f.current);
         f
@@ -905,7 +910,14 @@ impl Fighter {
 
     /// The glTF animation and frame to display (0-based).
     pub fn animation<'a>(&'a self, gd: &'a GameData) -> (&'a str, u32) {
-        (&self.current_move(gd).anim, self.frame.saturating_sub(1))
+        let (c, f) = self.shown_move();
+        let m = self.moves(gd, c.bank).moves.get(c.index).unwrap_or_else(|| self.current_move(gd));
+        (&m.anim, f.saturating_sub(1))
+    }
+
+    /// The move and frame drawn.
+    pub fn shown_move(&self) -> (Current, u32) {
+        self.shown_move.unwrap_or((self.current, self.frame))
     }
 
     /// Start a move now (debug tools: play any move of the character's set or the common set).
@@ -2175,6 +2187,7 @@ impl Fighter {
 
     /// Advance one frame of move logic.
     fn step(&mut self, gd: &GameData, pad: Pad, facing_right: bool, anims: &dyn Animations) {
+        self.shown_move = None;
         self.started_with = None;
         self.landing = 0;
         self.deal_damage = None;
@@ -2190,12 +2203,14 @@ impl Fighter {
             if !self.opponent.moveset_id.is_some_and(|m| gd.characters.hitstop_still.contains(&m)) {
                 self.fly();
             }
-            // Tekken Tag draws the root of the held frame all the same (0x34E748 after the move logic): a new
-            // reaction's frame 1 shows its root step before the body push. Tekken 3's hold (+0x76, 0x8002F4A4) is
+            // Tekken Tag draws the root of the held frame and eases its pose all the same (0x34E748 after the move
+            // logic, its ease 0x373428): a new reaction's frame 1 shows its root step and its pose before the body
+            // push. Tekken 3's hold (+0x76, 0x8002F4A4) is
             // the reaction's commit step (none more at hit-stop 0 or 1): only the frame stays, its pushback
             // (0x8003F798), root and pose ease go on
             if self.tag_rules(gd) {
                 self.root_motion(gd, anims);
+                self.ease(gd, anims);
             } else {
                 self.push_back();
                 self.root_motion(gd, anims);
@@ -4242,6 +4257,10 @@ impl Fight {
                 continue;
             }
             let v = 1 - a;
+            let fv = &mut self.fighters[v];
+            if fv.tag_rules(gd) && fv.shown_move.is_none() {
+                fv.shown_move = Some((fv.current, fv.frame));
+            }
             let victim_posture = postures[v];
             // (the actual roots: a fighter's position lags behind by its move's root motion)
             let to_attacker = self.fighters[a].root() - self.fighters[v].root();

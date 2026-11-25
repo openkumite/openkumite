@@ -401,6 +401,31 @@ fn the_struck_turn_in_the_hit_stop() {
     assert_eq!(x, 1739.0);
 }
 
+/// A hit's reaction is queued (0x36A2B4) and committed by the next frame's moves, which ease its first pose
+/// (0x34E748 -> 0x373428): the struck one shows its old move on the hit's frame, the reaction's frame 1 once, and the
+/// push of that frame meets the reaction's pose. Kuma's d+3 on Hwoarang's walk back, as in PCSX2.
+#[test]
+fn a_reaction_starts_the_frame_after_the_hit() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [492, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    let hold = Pad { buttons: 3, ..Pad::default() };
+    while b.phase != Phase::Fight {
+        b.step([hold; 2]);
+    }
+    let mut rows = Vec::new();
+    for pad in parse_script("n*62,f*30,n*2,d*20,d+3*2,d*6,n*20").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        if f[0].current.index == 1138 && (20..=22).contains(&f[0].frame) {
+            let (m, k) = f[1].shown_move();
+            rows.push((f[0].root().x as i32, m.index, k, f[1].root().x as i32, -f[1].root().z as i32));
+        }
+    }
+    assert_eq!(rows, [(67, 17, 35, 1255, 0), (-152, 5188, 1, 1407, 383), (-156, 5188, 2, 1522, 563)]);
+}
+
 /// A throw's link (0x36B638): the thrower goes onto the victim's root as drawn last frame (+0x51C), faces the last
 /// facing pass's angle +0x3A by the quadrant, and turns over 16 frames to the victim's facing, which turns round
 /// (0x36B77C); the victim's root takes the thrower's scale (0x363A80). Kunimitsu's 1+3 on Hwoarang after a long walk,

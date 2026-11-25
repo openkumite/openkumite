@@ -161,7 +161,7 @@ impl Animations for FighterAnims<'_> {
     }
 
     fn volumes(&self, f: &kumite_sim::Fighter, gd: &kumite_sim::GameData) -> Option<BodyVolumes> {
-        let partner = f.current.bank == kumite_sim::data::Bank::Partner;
+        let partner = f.shown_move().0.bank == kumite_sim::data::Bank::Partner;
         let other = if partner { self.other } else { self.own };
         let (anim, frame) = f.animation(gd);
         let clip = other.character.clip(anim);
@@ -1533,7 +1533,7 @@ impl Game {
     fn clip_owner(&self, i: usize) -> &Body {
         let other = self.body_of(self.fight.opponent_index(i)).unwrap_or(&self.bodies[1 - i]);
         let f = &self.fight.fighters[i];
-        if f.current.bank == kumite_sim::data::Bank::Partner {
+        if f.shown_move().0.bank == kumite_sim::data::Bank::Partner {
             return other;
         }
         // Tekken Tag: a victim move resolved through the opponent's aliases (a crossover fighter's, Force's soldiers':
@@ -1568,7 +1568,7 @@ impl Game {
         let opponent = self.body_of(self.fight.opponent_index(k)).unwrap_or(body);
         // (a victim move's motion may be the opponent's alone, as in [`Game::clip_owner`])
         let borrowed = self.fight.data.tag_moves && body.character.clip(anim).is_none();
-        let partner = f.current.bank == kumite_sim::data::Bank::Partner || borrowed;
+        let partner = f.shown_move().0.bank == kumite_sim::data::Bank::Partner || borrowed;
         let other = if partner { opponent } else { body };
         let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw, ease: f.eased() };
         Some(shown_pose(body, other, &shown))
