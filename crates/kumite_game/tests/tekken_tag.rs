@@ -1592,6 +1592,34 @@ fn the_ko_replay_has_its_own_shots() {
     assert_eq!(eyes, run());
 }
 
+/// The swaying nodes go on through the K.O. replay (0x34D258 each drawn frame, on the replayed poses): Paul's belt
+/// and Lei's hair stay on their parents (held at the K.O.'s places, they streaked across the replay's shots).
+#[test]
+fn the_swaying_nodes_follow_the_ko_replay() {
+    let Some(a) = assets() else { return };
+    let mut b = tag_bout(&a, LAW);
+    b.game.fight.fighters[0].health = kumite_sim::ONE;
+    let (walk, jab) = (parse_script("f").unwrap()[0], parse_script("1").unwrap()[0]);
+    let mut cloth: [kumite_game::Cloth; 2] = Default::default();
+    let (mut k, mut replayed) = (0, 0);
+    while !matches!(b.phase, Phase::Result { .. }) && k < 1200 {
+        b.step(if b.phase == Phase::Fight { [walk, if k % 20 == 0 { jab } else { Pad::default() }] } else { [Pad::default(); 2] });
+        for (i, c) in cloth.iter_mut().enumerate() {
+            let character = &b.game.bodies[i].character;
+            let (mut pose, place) = b.game.pose(i);
+            c.apply(character, b.frames, place, &mut pose);
+            for n in &character.cloth {
+                let node = &character.nodes[n.node];
+                let at = (pose[node.parent.unwrap()] * glam::Mat4::from_translation(node.translation)).w_axis;
+                assert!((pose[n.node].w_axis - at).length() < 0.001, "step {k} ({:?}): fighter {i}'s node {} off its parent", b.phase, n.node);
+            }
+        }
+        replayed += usize::from(matches!(b.phase, Phase::Replay { .. }));
+        k += 1;
+    }
+    assert!(replayed > 30 && b.game.bodies.iter().all(|b| !b.character.cloth.is_empty()), "{replayed} replay steps");
+}
+
 /// What the sound tables make a step play: the files under audio/sfx.
 fn heard(a: &Assets, s: &SoundData, b: &Bout, st: &mut SoundState) -> Vec<String> {
     let mut out: Vec<_> = s.step(b, st, ["", ""], [0, 0]);

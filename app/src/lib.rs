@@ -537,8 +537,10 @@ impl Fight {
         if cloth.len() <= i {
             cloth.resize_with(i + 1, Default::default);
         }
+        // (0x34D258 moves them each drawn frame, the K.O. replay's too: its poses are shown while the fight stands)
+        let frame = self.cutscene.as_ref().map_or(self.bout.frames, |c| c.scene.game.fight.frame);
         if let (Some(c), Some(body)) = (cloth.get_mut(i), game.bodies.get(i)) {
-            c.apply(&body.character, game.fight.frame, place, pose);
+            c.apply(&body.character, frame, place, pose);
         }
     }
 
