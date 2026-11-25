@@ -159,7 +159,7 @@ fn a_hurt_ai_player_goes_for_the_chicken() {
 
 /// Alone on stage 1: the AI clears it more often and takes the chickens (before the Force layer these 48 runs
 /// cleared 5, took 28 chickens and went 23000 on average; with it 16, 108 and 25800; with the PS1's jumps 9, 81
-/// and 23600).
+/// and 23600; with the PS1's push and distance limit 14, 84 and 24700).
 #[test]
 fn the_ai_player_gets_on_through_stage_1() {
     let Some(a) = assets() else { return };
@@ -168,8 +168,7 @@ fn the_ai_player_gets_on_through_stage_1() {
     let cleared = runs.iter().filter(|r| r.cleared).count();
     let pickups: u32 = runs.iter().map(|r| r.pickups).sum();
     eprintln!("48 runs: {cleared} cleared, {progress} on average, {pickups} chickens");
-    // (9 cleared and 81 chickens since the jumps drift as far as the PS1's)
-    assert!(cleared >= 8 && pickups >= 60, "{cleared} cleared, {pickups} chickens");
+    assert!(cleared >= 10 && pickups >= 60, "{cleared} cleared, {pickups} chickens");
 }
 
 #[test]

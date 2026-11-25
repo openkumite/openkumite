@@ -98,14 +98,10 @@ fn each_style_does_its_thing_more_than_classic() {
     let rate = |r: &Run| r.attacks as f32 / r.fight_frames.max(1) as f32;
     let more = |s: Style, what: &str, v: f32, base: f32, by: f32| assert!(v >= base * by, "{s:?}: {what} {v} against Classic's {base} (want x{by})");
     more(Style::Rushdown, "attacks a frame", rate(&total(Style::Rushdown)), rate(&c), 1.1);
-    // (x1.3 since the body push's contact (condition 0x33), the pair's distance limit and the hold's facing are the
-    // PS1's: 168 against Classic's 122)
-    more(Style::Defensive, "guarded", total(Style::Defensive).guarded as f32, c.guarded as f32, 1.3);
-    // (x1.1 since Tekken 3's facings are the PS1's integers: 86 against Classic's 77)
-    more(Style::Counter, "counter hits", total(Style::Counter).counters as f32, c.counters as f32, 1.1);
+    more(Style::Defensive, "guarded", total(Style::Defensive).guarded as f32, c.guarded as f32, 1.6);
+    more(Style::Counter, "counter hits", total(Style::Counter).counters as f32, c.counters as f32, 1.15);
     more(Style::Thrower, "throws", total(Style::Thrower).throws as f32, c.throws as f32, 2.0);
-    // (x1.3 since the hits' commit steps are the PS1's: 24 against Classic's 18)
-    more(Style::Evasive, "sidesteps", total(Style::Evasive).sidesteps as f32, c.sidesteps as f32, 1.3);
+    more(Style::Evasive, "sidesteps", total(Style::Evasive).sidesteps as f32, c.sidesteps as f32, 1.6);
     more(Style::Juggler, "launches", total(Style::Juggler).launches as f32, c.launches as f32, 1.1);
 }
 
