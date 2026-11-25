@@ -968,7 +968,8 @@ impl FightCamera {
     }
 
     /// One frame of the versus camera director (phase 1 intro, phase 2 normal).
-    /// `frames_since_start`: the yaw controller stays frozen for the first 200 frames of a round.
+    /// `frames_since_start`: the yaw controller stays frozen while it is under 200: Tekken 3's round frames, Tekken
+    /// Tag's distance between the fighters' roots (gp-0x74C8, 0x38F9CC).
     /// `move_cam`: camera-control values of the two current moves (`move_caps`: Tekken 3 0x27..0x2A, Tekken Tag 0x13..0x16 cap the yaw speed).
     pub fn step(&mut self, p: [Sample; 2], frames_since_start: i64, move_cam: [i64; 2]) -> View {
         self.sample(p);

@@ -1305,7 +1305,14 @@ impl Game {
         if self.camera.data().director.is_some() {
             self.camera.actors = self.camera_actors();
         }
-        let v = self.camera.step(self.camera_samples(), self.fight.frame as i64, mc);
+        // (Tekken Tag's yaw freezes on the roots' distance gp-0x74C8 (0x371940), not on Tekken 3's round frames)
+        let freeze = if self.camera.data().director.is_some() {
+            let d = self.fight.fighters[0].root() - self.fight.fighters[1].root();
+            (d.x * d.x + d.z * d.z).sqrt() as i64
+        } else {
+            self.fight.frame as i64
+        };
+        let v = self.camera.step(self.camera_samples(), freeze, mc);
         // screen right in game space is (cos yaw, 0, sin yaw); Z flips into the simulation's axes
         let w = v.yaw as f32 * std::f32::consts::TAU / 4096.0;
         self.fight.screen_right = Vec3::new(w.dcos(), 0.0, -w.dsin());
