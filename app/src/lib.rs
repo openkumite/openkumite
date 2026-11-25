@@ -223,6 +223,20 @@ pub(crate) struct ArenaCopy {
     cloth: Vec<kumite_game::Cloth>,
 }
 
+/// A TAG BRAWL step's effects: the four actors' hits and move effects, the effect objects.
+fn tag_vfx(v: &mut kumite_game::vfx::Vfx, g: &kumite_game::tag::TagGame) {
+    let (eye, _, _) = kumite_game::view_camera(&g.camera.view);
+    let models: Vec<usize> = g.bodies.iter().map(|b| b.model_record).collect();
+    let actors: Vec<(&kumite_sim::Fighter, usize, usize)> = (0..4).map(|i| (&g.melee.actors[i], i, g.melee.facing(i))).collect();
+    let at = |i: usize, node: usize| {
+        let (pose, place) = g.pose(i);
+        Some(place.transform_point3(pose.get(node)?.w_axis.truncate()))
+    };
+    let node = |i: usize, name: &str| g.bodies[i].character.nodes.iter().position(|n| n.name == name);
+    v.step_actors(&g.melee.hits, &models, &actors, eye, &at, &node);
+    v.objects(&g.melee.objects.list, &models);
+}
+
 /// Tekken Tag's lens flare (0x3A1C78): its sun (m, the arena's axes), its strength, its nine discs (picture, size,
 /// brightness of 128).
 struct Flare {
@@ -1327,7 +1341,7 @@ impl App {
             let force = self.force.as_ref().filter(|_| self.force_fight()).map(|run| Box::new(run.clone()));
             M::Fight { bout: Box::new(f.bout.clone()), force, hud: Box::new(self.hud.state.clone()), heard: Box::new(f.heard.clone()) }
         };
-        Some(replay_view::Snapshot { game, arena })
+        Some(replay_view::Snapshot { game, arena, vfx_seed: self.vfx.as_ref().map_or(1, |v| v.seed) })
     }
 
     fn replay_restore(&mut self, snap: replay_view::Snapshot) {
@@ -1363,6 +1377,9 @@ impl App {
             if let Some(f) = self.fight.as_ref() {
                 *f.cloth.borrow_mut() = a.cloth;
             }
+        }
+        if let Some(v) = self.vfx.as_mut() {
+            v.seed = snap.vfx_seed;
         }
         // (the joins still to come: from this step on)
         let at = self.replay_played() as u64;
@@ -1421,8 +1438,9 @@ impl App {
         }
     }
 
-    /// One step of the replay's match, its sounds not played and without effects (the run-through, a seek): the
-    /// fight's or the tag brawl's, a Force stage's logic after it, then the HUD's (and the sounds' log).
+    /// One step of the replay's match, its sounds not played (the run-through, a seek): the fight's or the tag
+    /// brawl's, a Force stage's logic after it, then the HUD's (and the sounds' log) and the effects' (cleared after,
+    /// for the rand state they leave).
     fn replay_sim_step(&mut self) {
         // (the arena as playing it moves it: its first step comes with the match's second, the match loaded in the
         // step after the arena's)
@@ -1435,6 +1453,9 @@ impl App {
         if let Some(t) = self.tag.as_mut() {
             t.game.step([Pad::default(); 4]);
             t.hud.step(&t.game, self.roster.ttt.as_deref().map_or(self.hud.data.bar_w(), ttt::bar_w));
+            if let Some(v) = self.vfx.as_mut() {
+                tag_vfx(v, &t.game);
+            }
             return;
         }
         self.replay_quiet = true;
@@ -1454,6 +1475,9 @@ impl App {
                 f.step_sounds(sound);
             }
             self.hud.step(&f.bout);
+            if let Some(v) = self.vfx.as_mut() {
+                v.step(&f.bout.game);
+            }
         }
     }
 
@@ -1481,6 +1505,9 @@ impl App {
             log::warn!("the replay's run-through ended in another state than recorded");
         }
         self.replay_restore(start);
+        if let Some(v) = self.vfx.as_mut() {
+            v.clear();
+        }
         if let Some(v) = self.replay_view.as_mut() {
             (v.snapshots, v.rounds, v.verified) = (snaps, rounds, verified);
         }
@@ -5181,16 +5208,7 @@ impl App {
         t.hud.step(&t.game, self.roster.ttt.as_deref().map_or(self.hud.data.bar_w(), ttt::bar_w));
         let g = &t.game;
         if let Some(v) = self.vfx.as_mut() {
-            let (eye, _, _) = kumite_game::view_camera(&g.camera.view);
-            let models: Vec<usize> = g.bodies.iter().map(|b| b.model_record).collect();
-            let actors: Vec<(&kumite_sim::Fighter, usize, usize)> = (0..4).map(|i| (&g.melee.actors[i], i, g.melee.facing(i))).collect();
-            let at = |i: usize, node: usize| {
-                let (pose, place) = g.pose(i);
-                Some(place.transform_point3(pose.get(node)?.w_axis.truncate()))
-            };
-            let node = |i: usize, name: &str| g.bodies[i].character.nodes.iter().position(|n| n.name == name);
-            v.step_actors(&g.melee.hits, &models, &actors, eye, &at, &node);
-            v.objects(&g.melee.objects.list, &models);
+            tag_vfx(v, g);
         }
         if let Some(sound) = &self.sound {
             let banks: Vec<&str> = t.banks.iter().map(String::as_str).collect();

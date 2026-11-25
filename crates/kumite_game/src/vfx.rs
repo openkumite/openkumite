@@ -348,8 +348,8 @@ pub struct Vfx {
     /// Camera shake scripts (camera.json `shake`: pitch offsets per frame).
     scripts: Vec<Vec<i32>>,
     shake: Option<(usize, usize)>,
-    /// PsyQ rand state (0x8007A318).
-    seed: u32,
+    /// PsyQ rand state (0x8007A318); a replay's seek sets it as playing straight left it.
+    pub seed: u32,
     /// Bone slot -> joint name (rules.json `bone_slots`).
     slots_joints: Vec<String>,
     /// Each arena's dust (stages.json `dust`), and the fight's arena's.

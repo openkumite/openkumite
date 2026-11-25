@@ -112,7 +112,6 @@ pub struct Slot {
 }
 
 /// roster.json `front_end`.
-#[derive(Debug)]
 pub struct Data {
     raw: Value,
     pub slots: Vec<Slot>,
@@ -141,6 +140,13 @@ pub struct Data {
     survival: Vec<[usize; 4]>,
     /// `--ttt-unlocks original`: characters, modes and extras unlocked over play as on the PS2 (else every one).
     pub original_unlocks: bool,
+}
+
+// (by name only: the HUD's state, logged by a replay's `--shot`, holds it; its maps print in no fixed order)
+impl std::fmt::Debug for Data {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ttt::Data")
+    }
 }
 
 impl Data {

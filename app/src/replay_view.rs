@@ -31,11 +31,12 @@ pub enum Request {
     Exit,
 }
 
-/// The match at a step and the arena about it (what a seek starts from).
+/// The match at a step, the arena about it and the effects' rand state (what a seek starts from).
 #[derive(Clone)]
 pub struct Snapshot {
     pub game: Match,
     pub arena: Option<Box<crate::ArenaCopy>>,
+    pub vfx_seed: u32,
 }
 
 /// The match at a step, of whichever kind, with its HUD.
