@@ -259,8 +259,8 @@ pub struct Bout {
     result: ResultKind,
     /// The pads of the last step (a held button picks the win pose).
     last_pads: [Pad; 2],
-    /// Total frames stepped (the win pose parity).
-    frames: u64,
+    /// Total frames stepped (the win pose parity; the swaying nodes' clock, which runs through the replay).
+    pub frames: u64,
     /// Stop for the boss-change scene once the human has won a round (0x80051204): set by the app at the arcade's
     /// last stage against its boss.
     pub interlude_check: bool,
