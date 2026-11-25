@@ -497,6 +497,32 @@ fn the_partner_comes_in_turning_to_the_opponent() {
     assert_eq!(seen, [(16384, 16384), (16399, 16384), (16543, 16384)]);
 }
 
+/// Yoshimitsu's 1+3 from Hwoarang's side (sidestep, then the grab: move 5903, camera id 0xAE): while he spins, his
+/// root swings ~450 units each frame, and the sampler takes his side on its odd frames only (CAM+0xC0 = 0 in
+/// PCSX2), so the eye glides. PCSX2 (0x41581C) on the throw's frames 21, 44 and 65: -1934, -1528, -1276.
+#[test]
+fn yoshimitsus_side_throw_camera_samples_on_odd_frames() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [YOSHIMITSU, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let mut seen = Vec::new();
+    for pad in parse_script("n*61,f*30,n*2,u*1,n*11,1+3*2,n*79").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        if f.current.index == 5903 && [21, 44, 65].contains(&f.frame) {
+            seen.push(b.game.camera.view.eye[0]);
+        }
+    }
+    assert_eq!(seen.len(), 3, "{seen:?}");
+    for (x, ps2) in seen.iter().zip([-1934, -1528, -1276]) {
+        assert!((*x - ps2).abs() <= 10, "{seen:?}");
+    }
+}
+
 /// The fight camera samples as the game (0x38EC08): a walk's root (flags bits 20-21 = 1), so the eye follows Nina's
 /// walk from its first frames; the tag's run-off (id 0x18) eases toward the opponent by 6/128 and the framing steps
 /// 1/16 while it runs; she is off the screen and the partner comes in 20 frames after the run-off starts. PCSX2 (the
