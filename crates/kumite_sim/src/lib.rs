@@ -2204,7 +2204,10 @@ impl Fighter {
         // no ease from the pose shown (a3), none toward the next move (s2). shortcut: player +0x17E (transition bit
         // 0x4000, Unknown's only) is left out
         let (cut, hold) = if tag {
-            (fl & 0x181 != 0 || self.reacting || last_fl & fl & 0x40 != 0 || ko, fl & 2 != 0 || (active[0] != 0 && frame <= active[1]) || self.juggle != 0 || (self.air.is_some() && self.reacting) || ko)
+            (
+                fl & 0x181 != 0 || self.reacting || last_fl & fl & 0x40 != 0 || ko,
+                fl & 2 != 0 || (active[0] != 0 && frame <= active[1]) || self.juggle != 0 || (self.air.is_some() && self.reacting) || ko,
+            )
         } else {
             // Tekken 3 (0x8003C87C, 0x8003C9B4): the move's +0x24 bits 0x100 / 0x200, juggled (+0x94), struck in the air
             // (+0xDB, +0x87)
