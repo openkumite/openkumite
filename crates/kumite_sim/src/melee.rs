@@ -79,7 +79,7 @@ impl Melee {
     /// Four actors of `team`: two teams (0, 0, 1, 1) stand left and right facing each other; each for themselves
     /// (0, 1, 2, 3) they stand at the corners of a square facing its middle.
     pub fn with_teams(data: Arc<GameData>, sets: [Arc<Moveset>; 4], team: Vec<usize>) -> Self {
-        let h = data.max_health;
+        let h = data.max_health * ONE;
         let fight = Fight::new(data, sets[0].clone(), sets[2].clone());
         let pairs = team.iter().max().copied().unwrap_or(0) <= 1;
         let actors = sets
@@ -392,7 +392,7 @@ impl Melee {
         // the moves' damage to themselves (timed ops 0x0C / 0x0D), then the throws'
         for f in self.actors.iter_mut().filter(|_| !self.fight.ball_rules) {
             if f.self_damage != 0 {
-                f.health = (f.health - f.self_damage * ONE).clamp(0, f.max_health * ONE);
+                f.health = (f.health - f.self_damage * ONE).clamp(0, f.max_health);
             }
         }
         for (a, b, _) in self.links.clone() {

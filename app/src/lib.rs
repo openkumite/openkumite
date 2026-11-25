@@ -1169,7 +1169,7 @@ impl App {
         if watch {
             // the attract demo's fighters have 125 health (0x800516CC)
             for f in &mut bout.game.fight.fighters {
-                f.max_health = 125;
+                f.max_health = 125 * kumite_sim::ONE;
                 f.health = 125 * kumite_sim::ONE;
             }
         }
@@ -3351,13 +3351,13 @@ impl App {
         // Tekken Tag's front end: its run decides (the next fight, CONTINUE?, the results); the unlocks are saved
         if let (Some(run), Some(d)) = (self.ttt_run.take(), self.roster.ttt.clone()) {
             let f = &fight.bout.game.fight;
-            let (health, max) = (f.fighters.each_ref().map(|x| x.health), f.fighters.each_ref().map(|x| x.max_health * kumite_sim::ONE));
+            let (health, max) = (f.fighters.each_ref().map(|x| x.health), f.fighters.each_ref().map(|x| x.max_health));
             // (a tag battle's members in their run order, the fighting one's health its fighter's)
             let tag = f.teams.as_deref().map(|t| {
                 std::array::from_fn(|k| {
                     std::array::from_fn(|m| {
                         let x = &t[k].members[m];
-                        (if m == t[k].active { f.fighters[k].health } else { x.health }, x.cap, x.max_health * kumite_sim::ONE)
+                        (if m == t[k].active { f.fighters[k].health } else { x.health }, x.cap, x.max_health)
                     })
                 })
             });

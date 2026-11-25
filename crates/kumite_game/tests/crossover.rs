@@ -462,7 +462,7 @@ fn force_stage(a: &Assets, player: usize, boss: bool, frames: usize) -> ForceRun
             }
         }
         if r.boss.is_some() {
-            r.boss_lost = f.fighters[1].max_health - f.fighters[1].health / kumite_sim::ONE;
+            r.boss_lost = f.fighters[1].max_health / kumite_sim::ONE - f.fighters[1].health / kumite_sim::ONE;
         }
         r.missing += (0..2).filter(|&i| !f.fighters[i].inactive && b.game.clip(i).is_none()).count();
         r.hashes.push(b.game.state_hash());

@@ -74,7 +74,7 @@ fn new_fight(gd: &Arc<GameData>, dir: &Path) -> Fight {
     let mut fight = Fight::new(gd.clone(), set(PAUL), set(JIN));
     for (f, body) in fight.fighters.iter_mut().zip([PAUL.0, JIN.0]) {
         f.character = Some(body);
-        f.max_health = gd.max_health_of(f.character);
+        f.max_health = gd.max_health_of(f.character, 100);
         f.guard_input = false; // (standing still does not block: the hits land)
     }
     fight
@@ -90,7 +90,7 @@ fn reset(fight: &mut Fight) {
         let yaw = [1.0, -1.0][k] * std::f32::consts::FRAC_PI_2;
         (f.position, f.yaw, f.root_yaw, f.offset) = (Vec3::new([-400.0, 400.0][k], 0.0, 0.0), yaw, yaw, Vec3::ZERO);
         (f.pushback, f.air, f.freeze, f.stun, f.stun_timer, f.locked, f.thrown) = (None, None, 0, 0, 0, false, false);
-        f.health = f.max_health * ONE;
+        f.health = f.max_health;
     }
 }
 

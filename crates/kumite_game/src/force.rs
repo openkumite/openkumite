@@ -743,7 +743,7 @@ impl ForceStage {
                 let player = game.fight.fighters[0].root();
                 if let Some(f) = self.fighter(game, k) {
                     f.inactive = false;
-                    f.max_health = hp;
+                    f.max_health = hp * ONE;
                     f.health = hp * ONE;
                     f.position = Vec3::new(x as f32, 0.0, -z as f32);
                     let to = player - f.position;
@@ -1023,7 +1023,7 @@ impl ForceStage {
         let x = self.cam_x as f32 + 4096.0;
         let player = game.fight.fighters[0].root();
         let f = &mut game.fight.fighters[1];
-        (f.inactive, f.max_health, f.health) = (false, hp, hp * ONE);
+        (f.inactive, f.max_health, f.health) = (false, hp * ONE, hp * ONE);
         f.position = Vec3::new(x, 0.0, 0.0);
         let to = player - f.position;
         f.yaw = to.x.datan2(to.z);
@@ -1070,7 +1070,7 @@ impl ForceStage {
             game.set_actor(actor_id, actor);
             let z = if j % 2 == 1 { side } else { -side - 900.0 * (j / 2) as f32 };
             if let Some(f) = game.fight.actor_mut(actor_id) {
-                (f.inactive, f.max_health, f.health) = (false, hp, hp * ONE);
+                (f.inactive, f.max_health, f.health) = (false, hp * ONE, hp * ONE);
                 f.position = Vec3::new(x + 600.0 * j as f32, 0.0, z);
                 let to = player - f.position;
                 f.yaw = to.x.datan2(to.z);

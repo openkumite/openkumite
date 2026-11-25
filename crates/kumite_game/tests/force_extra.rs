@@ -76,7 +76,7 @@ fn two_bosses_come_in_together_and_both_must_fall() {
     let g = &bout.game.fight;
     let extra = g.extra.as_deref().expect("the second boss");
     assert!(!g.fighters[1].inactive && !extra.inactive, "both in play");
-    assert_eq!((g.fighters[1].max_health, extra.max_health), (d.health[3][4], d.health[3][4]));
+    assert_eq!((g.fighters[1].max_health, extra.max_health), (d.health[3][4] * kumite_sim::ONE, d.health[3][4] * kumite_sim::ONE));
     // the first down: the round goes on; then the second: it is won
     bout.game.fight.fighters[1].health = 0;
     st.step(&mut bout.game, true, false);

@@ -525,7 +525,7 @@ impl Hud {
         for i in 0..2 {
             // the bar is its width in px of the fighter's own full health (the VS handicap changes it)
             let bar_w = d.bar_w as i64;
-            let max = (fight.fighters[i].max_health * kumite_sim::ONE) as i64;
+            let max = fight.fighters[i].max_health as i64;
             let unit = (max / bar_w.max(1)).max(1);
             let hp = fight.fighters[i].health.max(0) as i64;
             let target = ((hp + unit - 1) / unit).min(bar_w) as i32;
@@ -580,7 +580,7 @@ impl Hud {
                 for i in 0..2 {
                     let Some(f) = bout.game.fight.actor([3, 2][i]) else { continue };
                     let [x, y] = d.bar_xy[i];
-                    let full = (f.max_health * kumite_sim::ONE).max(1) as f32;
+                    let full = f.max_health.max(1) as f32;
                     let w = 150.0 * (f.health.max(0) as f32 / full).clamp(0.0, 1.0);
                     let x0 = if i == 0 { x + 154.0 - w } else { x + 2.0 };
                     Art::shade(&painter, &v, [x + 2.0, y + 25.0, 152.0, 5.0], [Color32::from_rgb(30, 30, 40); 4]);
@@ -763,7 +763,7 @@ fn plain(painter: &egui::Painter, v: &View, bout: &Bout, info: &HudInfo, result:
     let (w, y) = (150.0, 30.0);
     // a bar from the side's edge: health (yellow) and, in a tag battle, the recoverable part above it (red)
     let bar = |i: usize, left: f32, y: f32, w: f32, h: f32, health: i32, cap: Option<i32>, max: i32| {
-        let part = |x: i32| (x.max(0) as f32 / (max * kumite_sim::ONE).max(1) as f32).clamp(0.0, 1.0);
+        let part = |x: i32| (x.max(0) as f32 / max.max(1) as f32).clamp(0.0, 1.0);
         Art::shade(painter, v, [left - 1.0, y - 1.0, w + 2.0, h + 2.0], [Color32::from_rgb(20, 20, 30); 4]);
         for (x, c) in [(cap.unwrap_or(0), Color32::from_rgb(200, 40, 30)), (health, Color32::from_rgb(250, 210, 60))] {
             // (P1's drains towards the centre from the left, P2's from the right)

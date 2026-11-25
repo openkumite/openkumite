@@ -884,7 +884,7 @@ impl Game {
         let gd = self.fight.data.clone();
         let members = std::array::from_fn(|i| {
             let p = &partners[i];
-            let max = self.max_health[i].unwrap_or(gd.max_health_of(p.character) * self.handicap[i] / 100);
+            let max = self.max_health[i].map_or_else(|| gd.max_health_of(p.character, self.handicap[i]), |h| h * kumite_sim::ONE);
             kumite_sim::TagMember::new(p.moveset.clone(), p.character, max, &gd.tag)
         });
         self.fight.start_tag(members);
@@ -1122,11 +1122,11 @@ impl Game {
         self.fight.walls = walls;
         for (i, (f, g)) in self.fight.fighters.iter_mut().zip(guard_input).enumerate() {
             f.guard_input = g; // who is CPU-controlled stays the same
-            f.max_health = self.max_health[i].unwrap_or(self.fight.data.max_health_of(self.characters[i]) * self.handicap[i] / 100);
+            f.max_health = self.max_health[i].map_or_else(|| self.fight.data.max_health_of(self.characters[i], self.handicap[i]), |h| h * kumite_sim::ONE);
             f.character = self.characters[i];
             f.health = match self.start_health[i].take() {
-                Some(h) if h > 0 && h <= f.max_health * kumite_sim::ONE => h,
-                _ => f.max_health * kumite_sim::ONE,
+                Some(h) if h > 0 && h <= f.max_health => h,
+                _ => f.max_health,
             };
         }
         self.fight.clock = self.round_frames;
@@ -1390,7 +1390,7 @@ impl Game {
     pub fn join_player(&mut self, p: usize, actor: &Actor) {
         let k = 2 + p.clamp(2, 3);
         self.widen_coop(12);
-        let max = self.fight.data.max_health;
+        let max = self.fight.data.max_health * kumite_sim::ONE;
         let lead = &self.fight.fighters[0];
         let pos = lead.position + Vec3::new(-400.0 * (p as f32 - 1.0), 0.0, if p == 2 { -900.0 } else { 1800.0 });
         let mut f = kumite_sim::Fighter::new(actor.moveset.clone(), max, pos, lead.yaw, lead.side);
@@ -1406,7 +1406,7 @@ impl Game {
     /// Ball 2 ON 2: each side's two on its back line, apart in depth; the partners (CPU) join the fight as
     /// actors 3 (the players' side) and 2, and from then the four play as the co-op melee.
     fn ball_doubles(&mut self, partner: &Actor, extra: &Actor) {
-        let max = self.fight.data.max_health;
+        let max = self.fight.data.max_health * kumite_sim::ONE;
         let depth = kumite_sim::ball::COURT_Z_DOUBLES / 2.0;
         for f in &mut self.fight.fighters {
             f.position.z = -depth;
@@ -1439,7 +1439,7 @@ impl Game {
     /// again at full health).
     pub fn join_partner(&mut self, actor: &Actor) {
         // (1P's full health, Force co-op's balance: 2P's the same)
-        let max = self.fight.data.max_health * self.handicap[0] / 100;
+        let max = self.fight.data.max_health * self.handicap[0] / 100 * kumite_sim::ONE;
         let p = &self.fight.fighters[0];
         let pos = p.position + Vec3::new(-400.0, 0.0, 900.0);
         let mut f = kumite_sim::Fighter::new(actor.moveset.clone(), max, pos, p.yaw, p.side);
@@ -1532,7 +1532,7 @@ impl Game {
 
     /// Put `actor` in slot 1 (the player's target) or 2 (the extra), a fresh fighter where the old one stood.
     pub fn set_actor(&mut self, slot: usize, actor: &Actor) {
-        let max = self.fight.data.max_health;
+        let max = self.fight.data.max_health * kumite_sim::ONE;
         let (pos, yaw, side) = match slot {
             1 => (self.fight.fighters[1].position, self.fight.fighters[1].yaw, self.fight.fighters[1].side),
             2 => self.fight.extra.as_ref().map_or((Vec3::ZERO, std::f32::consts::FRAC_PI_2, 100), |f| (f.position, f.yaw, f.side)),

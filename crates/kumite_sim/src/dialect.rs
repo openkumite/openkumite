@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(r.anger(Some(9), Some(4), 5), 3, "any partner");
         assert_eq!((r.anger(Some(9), Some(9), 5), r.anger(Some(9), Some(9), 0)), (4, 6));
         let set = std::sync::Arc::new(Moveset { moveset_id: None, moves: Vec::new(), cancels: Vec::new(), aliases: None, camera_motions: Default::default(), fixed: TTT.fixed.clone() });
-        let m = |health: i32| crate::TagMember { health: health * crate::ONE, ..crate::TagMember::new(set.clone(), None, 100, &r) };
+        let m = |health: i32| crate::TagMember { health: health * crate::ONE, ..crate::TagMember::new(set.clone(), None, 100 * crate::ONE, &r) };
         let t = crate::TagTeam { members: [m(100), m(50)], active: 0 };
         assert_eq!(t.score(25 * crate::ONE), (1024 + 2048) / 2);
     }

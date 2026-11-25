@@ -3444,10 +3444,10 @@ impl TagHud {
             Some(t) => (0..2)
                 .map(|k| {
                     let m = &t.members[k];
-                    (if k == t.active { f.health } else { m.health }, m.cap, m.max_health * kumite_sim::ONE, m.anger)
+                    (if k == t.active { f.health } else { m.health }, m.cap, m.max_health, m.anger)
                 })
                 .collect(),
-            None => vec![(f.health, 0, f.max_health * kumite_sim::ONE, 0)],
+            None => vec![(f.health, 0, f.max_health, 0)],
         }
     }
 
@@ -5174,7 +5174,7 @@ pub fn ball_partner_bars(painter: &egui::Painter, v: &View, art: &Art, d: &Data,
     // (actor 3 is P1's side's partner, 2 the other side's)
     for (i, actor) in [3, 2].into_iter().enumerate() {
         let Some(f) = fight.actor(actor) else { continue };
-        let part = (f.health.max(0) as f32 / (f.max_health * kumite_sim::ONE).max(1) as f32).clamp(0.0, 1.0);
+        let part = (f.health.max(0) as f32 / f.max_health.max(1) as f32).clamp(0.0, 1.0);
         // (above the side's bar, where a tag battle shows the member in back)
         let y = by - 10.0;
         image(painter, v, art, strip(2), [bx[i], y, bw, 6.0], Color32::WHITE);

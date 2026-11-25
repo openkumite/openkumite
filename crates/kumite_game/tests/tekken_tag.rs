@@ -419,6 +419,17 @@ fn play_tag(m: [usize; 2], script: &str, alias: usize, frames: &[u32]) -> Vec<(f
     seen
 }
 
+/// Full health keeps the game's 20.12 fraction (0x3C1350): Hwoarang's 108 % of 140 is 151.2 (PCSX2's +0x3F4: 619315),
+/// so 151 points of damage leave him standing.
+#[test]
+fn full_health_keeps_its_fraction() {
+    let Some(a) = assets() else { return };
+    let b = Bout::new(Game::load(&a, [PAUL, 426]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    let f = &b.game.fight.fighters[1];
+    assert_eq!((f.max_health, f.health), (619315 << 4, 619315 << 4));
+    assert!(f.health - 151 * kumite_sim::ONE > 0);
+}
+
 /// The tag (Kazuya out, Paul in) as in PCSX2: the run-off turns each frame toward the screen axis by the camera
 /// (0x370730, +0x50); the partner's entrance starts from the origin the leaving fighter's committed, facing the
 /// opponent by the game's angle (0x36BAE0, 0x371330).
@@ -1082,7 +1093,7 @@ fn recoverable_health_and_anger() {
     let one = kumite_sim::ONE;
     lei_jabs(&mut b);
     let (f, t) = (&b.game.fight.fighters[0], &b.game.fight.teams.as_ref().unwrap()[0]);
-    let max = f.max_health * one;
+    let max = f.max_health;
     let damage = (max - f.health) / one;
     assert!(damage > 0, "the jab lands");
     assert_eq!(t.members[0].cap, max - damage * one * 6 / 10, "the cap loses 0.6 x the damage");
@@ -1100,7 +1111,7 @@ fn recoverable_health_and_anger() {
     }
     let (k, at) = swapped.expect("the swap");
     let paul = &b.game.fight.teams.as_ref().unwrap()[0].members[0];
-    let step = paul.max_health * one / 6000;
+    let step = ((paul.max_health >> 4) / 6000) << 4; // (in the game's 20.12)
     assert_eq!(paul.health, (at + step * (149 - k)).min(paul.cap), "max / 6000 a frame up to the cap {}", paul.cap);
     // an angry member (anger at 120 or more) deals 1.3 x: Law's jab, calm and angry
     let jab = |anger: i32| {
@@ -1142,7 +1153,7 @@ fn a_team_loses_when_its_member_falls() {
     }
     let (f, t) = (&b.game.fight.fighters[0], &b.game.fight.teams.as_ref().unwrap()[0]);
     assert_eq!((t.active, f.moveset.moveset_id, b.game.bodies[0].model_record), (0, Some(0), PAUL));
-    assert_eq!((t.members[1].health, t.members[1].cap), (t.members[1].max_health * kumite_sim::ONE, t.members[1].max_health * kumite_sim::ONE));
+    assert_eq!((t.members[1].health, t.members[1].cap), (t.members[1].max_health, t.members[1].max_health));
 }
 
 /// Paul's crouching u/f+3+4 (his alias 80 list): alias 1040 with Law as his partner only (req 0x65).

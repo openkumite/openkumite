@@ -237,7 +237,7 @@ impl ForceRun {
             let w = self.bar_w(k) - 4;
             let b = &mut self.bars[k];
             if let Some(a) = a {
-                let max = (a.max_health.max(1) * kumite_sim::ONE) as i64;
+                let max = a.max_health.max(kumite_sim::ONE) as i64;
                 let unit = (max / w.max(1) as i64).max(1);
                 let hp = a.health.max(0) as i64;
                 if hp as i32 != b.0 {

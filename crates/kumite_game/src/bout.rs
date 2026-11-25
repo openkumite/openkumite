@@ -751,7 +751,7 @@ impl Bout {
         // health in bar units of 0x1000 of each fighter's own full health, as the game compares them
         let units = |i: usize| {
             let f = &self.game.fight.fighters[i];
-            (f.health.max(0) as i64 * 0x1000 / (f.max_health.max(1) * kumite_sim::ONE) as i64) as u32
+            (f.health.max(0) as i64 * 0x1000 / f.max_health.max(kumite_sim::ONE) as i64) as u32
         };
         let call = match winner {
             _ if time_up => Announcement::TimeUp,
@@ -1000,7 +1000,7 @@ impl Bout {
                 force: (self.force && kumite_sim::Fight::is_player(i)).then_some(ForceSight { fight: f, me: i, pickups: &self.game.pickups }),
                 melee: false,
                 // (Tekken Tag's tag battle: the benched partner's health)
-                partner: f.teams.as_ref().and_then(|t| t.get(i)).map(|t| t.partner()).map(|p| (p.health, p.max_health * kumite_sim::ONE)),
+                partner: f.teams.as_ref().and_then(|t| t.get(i)).map(|t| t.partner()).map(|p| (p.health, p.max_health)),
             }
         };
         // the round setup of both CPUs comes before either thinks

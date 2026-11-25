@@ -102,7 +102,7 @@ fn the_round_goes_on_while_one_player_stands() {
     // a down partner comes back at full health
     bout.game.join_partner(&Actor::load(&a, MODEL_71).unwrap());
     let p = bout.game.fight.partner.as_ref().unwrap();
-    assert_eq!(p.health, p.max_health * kumite_sim::ONE);
+    assert_eq!(p.health, p.max_health);
 }
 
 #[test]

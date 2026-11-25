@@ -284,7 +284,7 @@ impl Debug {
         self.hit_log.truncate(14);
         for (i, fighter) in f.fighters.iter_mut().enumerate() {
             if self.infinite_health || (i == 0 && self.god_mode) {
-                fighter.health = fighter.max_health * kumite_sim::ONE;
+                fighter.health = fighter.max_health;
             }
         }
     }
