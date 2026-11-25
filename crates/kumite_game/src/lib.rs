@@ -125,8 +125,8 @@ impl Animations for FighterAnims<'_> {
         }
     }
 
-    fn root_scale(&self, partner: bool) -> i32 {
-        if partner {
+    fn root_scale(&self, other: bool) -> i32 {
+        if other {
             self.other.motion_scale
         } else {
             self.own.motion_scale
