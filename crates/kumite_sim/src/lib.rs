@@ -2067,9 +2067,10 @@ impl Fighter {
             0x32 => self.stun != 0 || self.stun_timer != 0,
             // opponent lying (ground attacks, pick-ups)
             // Tekken Tag's 0x36: the body push moved me last frame (+0x3E8 / +0x3F0, 0x371CF0): a dash pushing on
-            // goes on instead of breaking into the run. shortcut: Tekken 3's and Tag's 0x37 (the same and the
-            // opponent's +0x135 clear) stay false until checked there
-            0x33 if self.tag_rules(gd) => self.pushed,
+            // goes on instead of breaking into the run; Tekken 3's +0xD5 likewise (0x80043EA8: Gon's walk into a
+            // fighter turns into his shove). shortcut: Tag's 0x37 (the same and the opponent's +0x135 clear) stays
+            // false until checked there
+            0x33 => self.pushed,
             0x35 => o.posture & posture::LYING != 0,
             0x36 => o.posture & posture::LYING == 0,
             0x37 => o.posture & posture::LYING != 0 && o.jump_start == 0 && distance <= param as f32,
@@ -2181,8 +2182,8 @@ impl Fighter {
             }
             // Tekken Tag draws the root of the held frame all the same (0x34E748 after the move logic): a new
             // reaction's frame 1 shows its root step before the body push. Tekken 3's hold (+0x76, 0x8002F4A4) is
-            // the reaction's commit step (none more at hit-stop 0 or 1): only the frame stays, its pushback (0x8003F798),
-            // root and pose ease go on
+            // the reaction's commit step (none more at hit-stop 0 or 1): only the frame stays, its pushback
+            // (0x8003F798), root and pose ease go on
             if self.tag_rules(gd) {
                 self.root_motion(gd, anims);
             } else {
@@ -3457,7 +3458,6 @@ impl Fight {
                 e.partner = Some(self.fighters[0].moveset.clone());
             }
         }
-        let frozen = self.fighters.each_ref().map(|f| f.freeze > 0);
         let ball = self.ball_court();
         for f in &mut self.fighters {
             f.early_end = if ball { gd.ball.end(f.alias) } else { None };
@@ -3513,7 +3513,7 @@ impl Fight {
                 e.track(&gd, None);
             }
         }
-        for (i, frozen) in frozen.into_iter().enumerate() {
+        for i in 0..2 {
             let o = &self.fighters[1 - i];
             let (root, evasive) = match idle {
                 Some(t) if i == 0 => (t, 0),
@@ -3522,12 +3522,13 @@ impl Fight {
             let f = &mut self.fighters[i];
             (f.opponent.root, f.opponent.evasive) = (root, evasive);
             // Tekken Tag moves the pushback and turns in the facing pass (0x36FEF0) from the frame the reaction is
-            // committed: a struck fighter starts turning to the attacker in its hit-stop frame
+            // committed: a struck fighter starts turning to the attacker in its hit-stop frame; Tekken 3's facing pass
+            // (0x8003F098) runs in its hold as in any step
             // shortcut: also through a hit-stop longer than 1 frame, which was not seen in PCSX2; check one there
             if f.tag_rules(&gd) {
                 f.push_back();
             }
-            if !frozen || f.tag_rules(&gd) {
+            {
                 let basis = f.root_yaw;
                 f.track(&gd, idle.is_none().then_some([roots_before[i], roots_before[1 - i]]));
                 // (Tekken Tag turns the basis before the root's update of the frame: the rebase and the basis's turn
@@ -3605,6 +3606,10 @@ impl Fight {
         if self.keep_off_walls(roots_before) && self.link.is_none() && pair {
             self.separate(bodies.each_ref());
             self.keep_off_walls(roots_before);
+        }
+        // (Tekken 3's fights but Ball's and Force's: after the push and the hit pass, 0x8002B1F4)
+        if !gd.tag_moves && self.extra.is_none() && self.ball.is_none() && pair {
+            self.keep_together_t3(roots_before);
         }
         if self.state == RoundState::Fighting && self.link.is_none() {
             self.clock = self.clock.saturating_sub(1);
@@ -3841,6 +3846,35 @@ impl Fight {
         self.kept = Some((kept, last));
     }
 
+    /// Tekken 3's pair distance limit (0x800430FC, P1 then P2): from 0x1D00 apart at the step before (+0xF8), a fighter
+    /// now as far or farther than that from where the other stood then (+0x12C) goes back to where it stood; past 0x1E00
+    /// it is pulled toward the other by the excess, along its angle to it (+0x2A) on the sine table; each axis at most
+    /// 2000 a step (0x80097A44, 2000 from a fight's first step on, 0x80042F40). In the game's x and z (OpenKumite's
+    /// negated).
+    fn keep_together_t3(&mut self, before: [Vec3; 2]) {
+        let at = |v: Vec3| [v.x as i64, -v.z as i64];
+        let square = |a: [i64; 2], b: [i64; 2]| (b[0] - a[0]).pow(2) + (b[1] - a[1]).pow(2);
+        // (+0xF8 the pair table's Newton root 0x8002A324, this one the GTE's 0x8004AEDC)
+        let was = camera::isqrt(square(at(before[0]), at(before[1])));
+        if was < 0x1D00 {
+            return;
+        }
+        for i in 0..2 {
+            let (me, kept, other) = (at(self.fighters[i].root()), at(before[i]), at(before[1 - i]));
+            let d = i64::from(gte_sqrt(square(me, other).min(i64::from(i32::MAX)) as i32));
+            let step = if d > 0x1E00 {
+                let a = self.fighters[i].geometry16(self.fighters[i].root(), self.fighters[1 - i].root()).0 >> 4;
+                [ball::sin12(a), ball::cos12(a)].map(|t| (d - 0x1E00) * i64::from(t.clamp(-0xFFF, 0xFFF) * 8) / 0x7FFF)
+            } else if d >= was {
+                [kept[0] - me[0], kept[1] - me[1]]
+            } else {
+                continue;
+            };
+            let [x, z] = step.map(|v| v.clamp(-2000, 2000));
+            self.fighters[i].position += Vec3::new(x as f32, 0.0, -z as f32);
+        }
+    }
+
     /// Tekken 3's body push (EXE push spheres, actor+0x324): every pair of push spheres that overlaps horizontally
     /// (and in height) pushes the two actors apart along the line between them, half each. The actor
     /// positions (not the animation's root lean) are moved; their roots never come closer than
@@ -4034,7 +4068,8 @@ impl Fight {
                 f.position.x += (d[0] / half) as f32;
                 f.position.z += (d[1] / half) as f32;
             }
-            f.pushed = true;
+            // (Tekken 3's +0xD5: this fighter's push vector is not nothing)
+            f.pushed = !t3 || d != [0, 0];
             // (the next frame measures from here: 0x8A7A90 keeps the place after the push)
             f.push_prev = Some(drawn(f));
         }

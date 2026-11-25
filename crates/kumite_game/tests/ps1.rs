@@ -19,12 +19,16 @@ fn assets() -> Option<Assets> {
 type Row = [(i32, i32, i32, i16, i16, i32, String, Vec<[i32; 3]>); 2];
 
 /// A VS fight of `models` from the round's first fight step, the pads' scripts from there, `steps` of them.
-/// `lead`: steps P1's start move runs ahead of P2's (the PS1's round 2 starts them a step apart).
-fn rows(a: &Assets, models: [usize; 2], lead: u32, p1: &str, p2: &str, steps: usize) -> Vec<Row> {
+/// `lead`: steps P1's start move runs ahead of P2's (the PS1's round 2 starts them a step apart); `copy`: the copying
+/// character P1's draw for the round (its pool's entry).
+fn rows(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize) -> Vec<Row> {
     let mut g = Game::load(a, models).unwrap();
     // (the PS1's VS LIFE level 3, "100 %", is the life table's 140, 0x800225EC; round 1's intro ends on a commit facing
     // the opponent, type 0: P2 at the atan of the start marks, 0xBFFF)
     g.max_health = [Some(140); 2];
+    if let Some(k) = copy {
+        g.copy_as(0, k);
+    }
     g.reset_round();
     // (round 2: the later rounds' start move, as the bout's call puts them)
     g.set_start_moves(g.fight.fighters.each_ref().map(|f| f.moveset.fixed.round_start[2]));
@@ -51,8 +55,9 @@ fn rows(a: &Assets, models: [usize; 2], lead: u32, p1: &str, p2: &str, steps: us
         .collect()
 }
 
-/// Prints the rows (VS_TRACE=1; VS_MODELS=a,b, VS_P1 / VS_P2 the pads' scripts, VS_STEPS) as "step vs p1=x,y,z,2c,e,hp
-/// m1=move@frame p2=...", with VS_PUSH=1 each push sphere's centre after the step ("s10=x,y,z ...").
+/// Prints the rows (VS_TRACE=1; VS_MODELS=a,b, VS_P1 / VS_P2 the pads' scripts, VS_STEPS, VS_COPY P1's copy draw) as
+/// "step vs p1=x,y,z,2c,e,hp m1=move@frame p2=...", with VS_PUSH=1 each push sphere's centre after the step
+/// ("s10=x,y,z ...").
 #[test]
 fn print_vs_trace() {
     let Some(a) = assets() else { return };
@@ -61,7 +66,7 @@ fn print_vs_trace() {
     }
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     let models = env("VS_MODELS").split(',').filter_map(|m| m.parse().ok()).collect::<Vec<usize>>().try_into().unwrap_or([71, 79]);
-    for (k, row) in rows(&a, models, env("VS_LEAD").parse().unwrap_or(0), &env("VS_P1"), &env("VS_P2"), env("VS_STEPS").parse().unwrap_or(600)).iter().enumerate() {
+    for (k, row) in rows(&a, models, env("VS_COPY").parse().ok(), env("VS_LEAD").parse().unwrap_or(0), &env("VS_P1"), &env("VS_P2"), env("VS_STEPS").parse().unwrap_or(600)).iter().enumerate() {
         let p = |i: usize| {
             let (x, y, z, f, e, hp, m, push) = &row[i];
             let mut s = format!("p{}={x},{y},{z},{f},{e},{hp} m{}={m}", i + 1, i + 1);
@@ -88,7 +93,7 @@ fn at(rows: &[Row], first: usize, row: usize, i: usize) -> &(i32, i32, i32, i16,
 #[test]
 fn lei_sidesteps_out_of_the_round_start_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let t = rows(&a, [91, 155], 1, "n*196,u*2,n*40,d*2,n*40,u*2,n*6,u*2,n*40,d*30,n*96", "n*457", 300);
+    let t = rows(&a, [91, 155], None, 1, "n*196,u*2,n*40,d*2,n*40,u*2,n*6,u*2,n*40,d*30,n*96", "n*457", 300);
     for (row, want) in [(724, (-956, -953, -708, 15932)), (728, (-992, -956, -548, 14381)), (733, (-976, -816, -58, 18170)), (740, (-759, -828, 425, 22761))] {
         let r = at(&t, 525, row, 0);
         assert_eq!((r.0, r.1, r.2, r.3), want, "PS1 row {row}");
@@ -104,7 +109,7 @@ fn king_knocks_out_jin_as_on_the_ps1() {
     let Some(a) = assets() else { return };
     // (the PS1's presses every 27 vsyncs, on its steps)
     let p1 = "n*178,f*20,n+2*2,n*25,n+2*2,n*25,n+2*2,n*24,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*22";
-    let t = rows(&a, [99, 147], 1, p1, "n*179,b*556", 720);
+    let t = rows(&a, [99, 147], None, 1, p1, "n*179,b*556", 720);
     for (row, want) in [(882, 127), (994, 88), (1127, 49), (1260, 10), (1316, 0)] {
         assert_eq!(at(&t, 673, row, 1).5 >> 16, want, "PS1 row {row}");
     }
@@ -124,10 +129,55 @@ fn king_knocks_out_jin_as_on_the_ps1() {
 #[test]
 fn julia_juggles_nina_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let t = rows(&a, [155, 115], 1, "n*141,f*40,d/f+2*2,n*16,n+1*2,n*10,n+1*2,n*10,n+2*2,n*136", "n*142,b*40,n*180", 360);
+    let t = rows(&a, [155, 115], None, 1, "n*141,f*40,d/f+2*2,n*16,n+1*2,n*10,n+1*2,n*10,n+2*2,n*136", "n*142,b*40,n*180", 360);
     for (row, want) in [(753, (938, -994, 10)), (756, (1265, -987, 26)), (790, (1728, -989, 54)), (820, (1875, -1017, 62))] {
         let r = at(&t, 554, row, 1);
         assert_eq!((r.0, r.1, r.2), want, "PS1 row {row}");
+    }
+}
+
+/// Mokujin (P1) stands while Ogre walks in, jabs and kicks low: with the PS1's draw for round 2 (Kuma's moves, the
+/// pool's entry 11; rand() on the PS1, 0x8004F2DC) both roots are the PS1's. (Mokujin's height runs 2 or 3 off: the
+/// PS1 scales Kuma's motion root by Mokujin's size, the converted clips have Kuma's.)
+#[test]
+fn mokujin_as_kuma_stands_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [195, 187], Some(11), 1, "n*287", "n*128,b*40,n+2*2,n*30,d+4*2,n*86", 280);
+    for (row, want) in [(640, [(-1000, 0), (1000, 0)]), (760, [(-1000, 0), (638, 0)]), (790, [(-1152, 0), (-338, 0)])] {
+        assert_eq!([0, 1].map(|i| (at(&t, 622, row, i).0, at(&t, 622, row, i).2)), want, "PS1 row {row}");
+    }
+}
+
+/// Xiaoyu and Jin walk away from each other for ten seconds: past 0x1D00 apart each goes back to where it stood
+/// (0x800430FC), so they stop 7434 apart as on the PS1 (they walked on 5000 off).
+#[test]
+fn walking_apart_stops_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [131, 147], None, 1, "n*154,b*599,n*60,f*2,n*4,f*2,n*80,n+2*2,n*50", "n*155,f*599,n*60,b*2,n*4,b*2,n*132", 480);
+    for (row, want) in [(994, [-3698, 3736]), (1000, [-3698, 3736]), (1100, [-3701, 3736])] {
+        assert_eq!([0, 1].map(|i| at(&t, 630, row, i).0), want, "PS1 row {row}");
+    }
+}
+
+/// Gon walks into Paul: his walk's f entry on the body push's contact (condition 0x33, +0xD5 from the push vector,
+/// 0x80043EA8) turns it into his shove at frame 14, as on the PS1 (ours walked on, 406 off).
+#[test]
+fn gon_shoves_paul_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [243, 75], None, 1, "n*223,f*40,n+1+2*2,n*217", "n*224,b*60,n*199", 260);
+    for (row, want) in [(862, [-443, 510]), (870, [-404, 417]), (880, [-552, 368])] {
+        assert_eq!([0, 1].map(|i| at(&t, 624, row, i).0), want, "PS1 row {row}");
+    }
+}
+
+/// Yoshimitsu's 1+2 strikes Eddy: Eddy's reaction turns to him from its commit step on, the facing pass running in
+/// the hold as in any step (0x8003F098; it started a step late, 62 off).
+#[test]
+fn a_reaction_turns_from_its_commit_step_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [107, 139], None, 1, "n*174,f*38,n+1+2*2,n*60,b*2,n*4,b*2,n*60,f+2*2,n*88", "n*175,b*38,d+4*2,n*218", 260);
+    for (row, want) in [(865, -16135), (868, -15632)] {
+        assert_eq!(at(&t, 643, row, 1).3, want, "PS1 row {row}");
     }
 }
 
@@ -137,7 +187,7 @@ fn julia_juggles_nina_as_on_the_ps1() {
 #[test]
 fn paul_runs_into_law_and_is_pushed_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let t = rows(&a, [75, 83], 1, "n*202,f*57,n*28,b*60,n*30,f*150,n*120", "n*398,b*90,n*160", 440);
+    let t = rows(&a, [75, 83], None, 1, "n*202,f*57,n*28,b*60,n*30,f*150,n*120", "n*398,b*90,n*160", 440);
     for (row, want) in [(840, (141, 92)), (860, (400, 232)), (900, (202, 249)), (940, (-316, 250))] {
         let r = at(&t, 599, row, 0);
         assert_eq!((r.0, r.2), want, "PS1 row {row}");
@@ -151,7 +201,7 @@ fn paul_runs_into_law_and_is_pushed_as_on_the_ps1() {
 #[test]
 fn push_spheres_sit_on_the_ps1s_slots() {
     let Some(a) = assets() else { return };
-    let t = rows(&a, [99, 115], 1, "n*254,f*2,n*4,f*2,n*40,b*2,n*4,b*2,n*60,f*2,n*4,f*2,n*175", "n*554", 300);
+    let t = rows(&a, [99, 115], None, 1, "n*254,f*2,n*4,f*2,n*40,b*2,n*4,b*2,n*60,f*2,n*4,f*2,n*175", "n*554", 300);
     let ps1: [(usize, [[[i32; 3]; 8]; 2]); 3] = [
         (
             735,

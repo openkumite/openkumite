@@ -112,7 +112,8 @@ fn gons_gas_strikes_close_by() {
 
 /// Gon's kicks strike from his feet: each kick's strike (Tekken 3's path, baked at his 45 %) ends by the drawn foot
 /// of its slot (14 foot_A, 17 foot_B) on its active frames, and lands on Paul in front of him. (The feet are the PS1's
-/// slots, its pose solver bending his short legs on its own full-size ones: f+4's first frame ends 57 off.)
+/// slots, its pose solver bending his short legs on its own full-size ones: f+4's first frame ends 57 off, and on the
+/// PS1 58, its strike 0x8006A230 against slot 14 in PCSX-Redux; 3's and d+3's 10 and 9.)
 #[test]
 fn gons_kicks_strike_from_his_feet() {
     let Some(a) = assets() else { return };
