@@ -443,6 +443,35 @@ fn the_tag_runs_off_and_comes_in_as_the_game() {
     assert_eq!(play_tag([585, 426], script, 5397, &[1, 2, 20]), [(-2213.0, -14.0), (-2145.0, -14.0), (-329.0, 9.0)]);
 }
 
+/// The fight camera samples as the game (0x38EC08): a walk's root (flags bits 20-21 = 1), so the eye follows Nina's
+/// walk from its first frames; the tag's run-off (id 0x18) eases toward the opponent by 6/128 and the framing steps
+/// 1/16 while it runs; she is off the screen and the partner comes in 20 frames after the run-off starts. PCSX2 (the
+/// view block's eye x, 0x41581C): 84 on the walk's frame 11, 619 as the partner enters (ours 622).
+#[test]
+fn the_fight_camera_follows_as_the_game() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [NINA, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let (mut walk, mut run, mut entrance) = (None, None, None);
+    for (k, pad) in parse_script("n*61,f*30,n*2,5*2,n*60").unwrap().into_iter().enumerate() {
+        b.step([pad, Pad::default()]);
+        let (f, x) = (&b.game.fight.fighters[0], b.game.camera.view.eye[0]);
+        match (f.alias, f.frame) {
+            (63, 11) => walk = Some(x),
+            (5394, 1) => run = Some(k),
+            (5397, 1) => entrance = Some((k, x)),
+            _ => {}
+        }
+    }
+    let (r, (e, ex)) = (run.unwrap(), entrance.unwrap());
+    assert_eq!((walk, e - r), (Some(84), 20));
+    assert!((ex - 619).abs() <= 3, "{ex}");
+}
+
 /// Ogre's strike slot 0x13 is his slot 6 (0x34F2C0, body 14 only): his b+2 (alias 359, bones 0x13) reaches Lei from
 /// 1000 as in PCSX2.
 #[test]

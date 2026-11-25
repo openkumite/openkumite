@@ -755,6 +755,15 @@ pub struct Actor {
     /// The shot a K.O. row takes when this fighter is the one down: 2 on a counter hit taken this frame (+0x13A,
     /// 0x3724AC), 1 on a close reaction (+0x13B, 0x371FCC), else 0 (0x394460).
     pub shot: usize,
+    /// The screen x of its head and feet last frame (+0x628-0x62C, on the 512 pixels).
+    pub points: [i64; 3],
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TagSamp {
+    using: [bool; 2],
+    id: [i64; 2],
+    ease: [i64; 2],
 }
 
 /// Tekken Tag's director block (CAM 0x433330).
@@ -858,6 +867,10 @@ pub struct FightCamera {
     look_yaw: i64,
     cam: Cam,
     lift: i64,
+    /// The sampler's state (0x38EC08): per side last frame's "sample now" (gp-0x6F90), camera id (gp-0x6F88) and
+    /// easing frames left (gp-0x6F80); the framing's "pair wider than the fit" (gp-0x6F70).
+    tag_samp: TagSamp,
+    wide: bool,
     pub rng: crate::ai::AiRng,
     pub lcg: u32,
 }
@@ -909,6 +922,8 @@ impl FightCamera {
             look_yaw: 0,
             cam: Cam::new(),
             lift: 0,
+            tag_samp: TagSamp::default(),
+            wide: false,
             rng: crate::ai::AiRng::new(0),
             lcg: 0,
         }
@@ -1556,18 +1571,8 @@ impl FightCamera {
     fn sample(&mut self, p: [Sample; 2]) {
         let last = self.samp;
         self.samp = p;
-        // Tekken Tag's (0x38EC08): x / z the position (+0x4 / +0xC), the root only in a throw or while the move's flags
-        // bits 20-21 are 1; at 2 the last frame's sample stays. shortcut: the ids 0x17-0x1A paths and the 1/4 easing
-        // they start are not ported
         if self.data.director.is_some() {
-            for ((s, a), l) in self.samp.iter_mut().zip(&self.actors).zip(last) {
-                match a.follow {
-                    2 => (s.x, s.y, s.z) = (l.x, l.y, l.z),
-                    1 => {}
-                    _ if a.throw == 0 => (s.x, s.z) = (a.at[0], a.at[2]),
-                    _ => {}
-                }
-            }
+            self.samp = self.tag_sample(p, last);
         }
         let [a, b] = &mut self.samp;
         if a.x == b.x && a.z == b.z {
@@ -1576,6 +1581,99 @@ impl FightCamera {
             b.x += 1;
             b.z += 1;
         }
+    }
+
+    /// Tekken Tag's sampler (0x38EC08). x / z are the root (+0x51C) while the move's flags bits 20-21 are 1 (stances,
+    /// walks) or in a throw, else the place (+0x4, the move's start); y the chest's, kept while bits 20-21 are 2.
+    /// A tag entrance (camera id 0x19) holds its sample, moved by the other's steps, until its head and feet are on
+    /// the screen (+0x628-0x62C in [21, 492)), then eases in over 4 frames (2 when they are off the 512 pixels); ids
+    /// 0x17 / 0x18 / 0x1A (the run-off 0x18) ease the sample toward the other's by 6/128 a frame, 0x18 / 0x1A less
+    /// when the pair is far apart. shortcut: not the odd-frame sampling of a side on camera id 0xAE (CAM+0xC0).
+    fn tag_sample(&mut self, p: [Sample; 2], last: [Sample; 2]) -> [Sample; 2] {
+        let a = self.actors;
+        let rng = a.map(|a| (0x17..=0x1A).contains(&a.cam));
+        let mut follow = a.map(|a| a.follow);
+        // (moves 0x1589-0x1598 take the root for both, 0x38EAF0)
+        if a.iter().any(|a| (0x1589..=0x1598).contains(&a.alias)) {
+            follow = [1, 1];
+        }
+        // (+0xE0 while the sampler runs: a throw, unless either side is on an id 0x17-0x1A)
+        let throw = a.map(|a| a.throw != 0 && !rng[0] && !rng[1]);
+        let snap = throw[0] || throw[1];
+        let on = |q: [i64; 3]| if q[0] < 0x101 { q.iter().all(|&x| x >= 0x15) } else { q.iter().all(|&x| x < 0x1EC) };
+        let inside = |q: [i64; 3]| if q[0] < 0x101 { q.iter().all(|&x| x >= 0) } else { q.iter().all(|&x| x < 0x201) };
+        let mut using = [0, 1].map(|i| follow[i] != 2 && a[i].cam != 0x19);
+        for i in (0..2).filter(|&i| a[1 - i].cam != 0x19) {
+            if !using[i] && a[i].cam == 0x19 && on(a[i].points) {
+                using[i] = true;
+            }
+            if self.tag_samp.id[i] == 0x19 && self.tag_samp.using[i] && a[i].cam == 0x19 {
+                using[i] = true;
+            }
+        }
+        if snap {
+            self.tag_samp.ease = [0; 2];
+        }
+        for i in 0..2 {
+            if !self.tag_samp.using[i] && using[i] {
+                self.tag_samp.ease[i] = if inside(a[i].points) { 4 } else { 2 };
+            }
+        }
+        (self.tag_samp.using, self.tag_samp.id) = (using, a.map(|a| a.cam));
+        let mut s = last;
+        // the root (+0x51C) or the place (+0x4, the move's start)
+        let root = |i: usize| (p[i].x, p[i].z);
+        let place = |i: usize| (a[i].at[0], a[i].at[2]);
+        for i in 0..2 {
+            let o = 1 - i;
+            let at = if follow[i] == 1 || throw[i] || (using[i] && follow[i] == 2) {
+                Some(root(i))
+            } else if (follow[i] == 0 && !rng[i]) || using[i] {
+                Some(place(i))
+            } else {
+                None
+            };
+            if let Some(at) = at {
+                (s[i].x, s[i].z) = at;
+                if self.tag_samp.ease[i] != 0 && !rng[o] {
+                    self.tag_samp.ease[i] -= 1;
+                    (s[i].x, s[i].z) = (last[i].x + tdiv(s[i].x - last[i].x, 4), last[i].z + tdiv(s[i].z - last[i].z, 4));
+                }
+            } else if follow[o] == 2 && (!rng[o] || self.wide) {
+                (s[i].x, s[i].z) = (last[i].x, last[i].z);
+            } else {
+                // side 0 places side 1 first (as its own pass would), then moves by its step
+                let one = if follow[1] == 1 || throw[0] {
+                    Some(root(1))
+                } else if follow[1] == 0 && !rng[1] {
+                    Some(if snap { root(1) } else { place(1) })
+                } else {
+                    None
+                };
+                if let Some(at) = one.filter(|_| i == 0) {
+                    (s[1].x, s[1].z) = at;
+                    if self.tag_samp.ease[1] != 0 && !rng[0] {
+                        self.tag_samp.ease[1] -= 1;
+                        (s[1].x, s[1].z) = (last[1].x + tdiv(s[1].x - last[1].x, 4), last[1].z + tdiv(s[1].z - last[1].z, 4));
+                    }
+                }
+                s[i].x += s[o].x - last[o].x;
+                s[i].z += s[o].z - last[o].z;
+            }
+            s[i].y = if follow[i] != 2 { p[i].y } else { last[i].y };
+            s[i].side = p[i].side;
+        }
+        for i in (0..2).filter(|&i| rng[i] && !rng[1 - i] && !snap) {
+            let o = 1 - i;
+            let f = match a[i].cam {
+                0x17 => 6,
+                0x18 | 0x1A => (0x2198 - isqrt((s[0].x - s[1].x).pow(2) + (s[0].z - s[1].z).pow(2))) / 0x4E2,
+                _ => continue,
+            };
+            s[i].x = last[i].x + (((s[o].x - last[i].x) * f) >> 7);
+            s[i].z = last[i].z + (((s[o].z - last[i].z) * f) >> 7);
+        }
+        s
     }
 
     fn slot0_update(&mut self, snap: bool, fss: i64, mc: [i64; 2]) {
@@ -1741,8 +1839,21 @@ impl FightCamera {
                 r = 2;
             }
         }
+        // the lateral step: 1/8 (Tekken Tag: x * 16 >> 7, x * 8 >> 7 while either fighter is on a camera id 0x17-0x1A)
+        let soft = self.actors.iter().any(|a| (0x17..=0x1A).contains(&a.cam));
+        let tag = d_.director.is_some();
+        let lateral = |v: i64| {
+            if !tag {
+                sra_tz(v, 3)
+            } else if soft {
+                (v * 8) >> 7
+            } else {
+                (v * 16) >> 7
+            }
+        };
         let sxl = tdiv(xs[l] * h, zs[l]);
         let sxr = tdiv(xs[r] * h, zs[r]);
+        let wide = sxr - sxl > fit;
         if sxr - sxl > fit {
             let v1 = tdiv(h * (xs[r] - xs[l]) - (fit / 2) * (zs[r] - zs[l]), fit);
             let mut a1 = zs[l] - v1;
@@ -1752,7 +1863,7 @@ impl FightCamera {
             }
             st.hpull = a1;
             dz_ += a1;
-            dx_ = sra_tz(xs[l] - tdiv(-((fit / 2) * v1), h), 3);
+            dx_ = lateral(xs[l] - tdiv(-((fit / 2) * v1), h));
             zs[0] -= a1;
             zs[1] -= a1;
             zs[2] -= a1;
@@ -1762,15 +1873,15 @@ impl FightCamera {
             let b2 = tdiv(dead * zs[r], h);
             let a2 = tdiv(-dead * zs[l], h);
             if flag || (b2 - (xs[r] - xs[l])) < a2 {
-                dx_ = sra_tz(xs[l] + tdiv((xs[r] - xs[l]) * zs[l], zs[l] + zs[r]), 3);
+                dx_ = lateral(xs[l] + tdiv((xs[r] - xs[l]) * zs[l], zs[l] + zs[r]));
                 if flag {
                     st.hpull = 0;
                     decay = false;
                 }
             } else if sxl < -dead {
-                dx_ += sra_tz(xs[l] - a2, 3);
+                dx_ += lateral(xs[l] - a2);
             } else if sxr > dead {
-                dx_ += sra_tz(xs[r] - b2, 3);
+                dx_ += lateral(xs[r] - b2);
             }
             if decay {
                 let prev = st.hpull;
@@ -1847,6 +1958,7 @@ impl FightCamera {
             st.moving = ddx * ddx + ddz * ddz > 1000;
         }
         self.keys[slot] = Key { x: nx, y: ny, z: nz, p: pitch6, w: yaw6, h: key.h };
+        self.wide = wide;
     }
 
     /// 0x80063D00: look target of a key (distance = mean eye-fighter distance).

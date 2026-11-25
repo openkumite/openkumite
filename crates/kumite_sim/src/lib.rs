@@ -672,7 +672,9 @@ pub struct Fighter {
     /// a tag-in left out of the juggle count (the count goes to -1 then, 0x3D3288).
     pub tag_swap: bool,
     pub tag_partner: Option<(Option<i64>, Option<i64>)>,
-    pub off_screen: bool,
+    /// Tekken Tag: the screen x of its head and both feet (+0x628-0x62C, 0x34FD90: 256 + x * H / z on the 512 pixels,
+    /// z at least 1000) under the last view, set by the game layer.
+    pub screen_points: [i32; 3],
     /// Tekken Tag: the screen's right in the ground plane, as an angle (the axis of +0x54, set by the game layer).
     pub screen_right: f32,
     pub juggle_bias: u32,
@@ -784,7 +786,7 @@ impl Fighter {
             last_bones: Vec::new(),
             tag_swap: false,
             tag_partner: None,
-            off_screen: false,
+            screen_points: [0; 3],
             screen_right: 0.0,
             juggle_bias: 0,
             push_prev: None,
@@ -1883,7 +1885,8 @@ impl Fighter {
             // back-turned states (0x8002E41C..0x8002E6A8, facing_re §4)
             0x24 => back,
             dialect::COND_NOT_BACK => !back,
-            dialect::COND_OFF_SCREEN => self.off_screen,
+            // (0x369B98: all three at 0x215 or more, or all below -0x14)
+            dialect::COND_OFF_SCREEN => self.screen_points.iter().all(|&x| x >= 0x215) || self.screen_points.iter().all(|&x| x < -0x14),
             // Tekken Tag's 0x54-0x5B (0x3693E0): my facing's quadrant off the screen's right (+0x54, 0x371130: 0 facing
             // right, PCSX2) is 1, 2, 0, 3, on the left of the screen, then the same on its right
             c @ dialect::COND_SCREEN..=0x109 => {
