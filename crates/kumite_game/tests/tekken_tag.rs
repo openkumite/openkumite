@@ -472,6 +472,21 @@ fn the_fight_camera_follows_as_the_game() {
     assert!((ex - 619).abs() <= 3, "{ex}");
 }
 
+/// The yaw freezes only while the fighters are within 200 (gp-0x74C8, 0x38F9CC), not for a round's first 200 frames:
+/// Eddy's stance sways him 387 off the axis and the camera turns with him. PCSX2 (0x41580C): 112 after his walk.
+#[test]
+fn the_fight_camera_turns_from_the_rounds_start() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [450, 426]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    for pad in parse_script("n*62,f*30").unwrap().into_iter().take(61) {
+        b.step([pad, Pad::default()]);
+    }
+    assert!((b.game.camera.view.yaw - 112).abs() <= 2, "{}", b.game.camera.view.yaw);
+}
+
 /// Ogre's strike slot 0x13 is his slot 6 (0x34F2C0, body 14 only): his b+2 (alias 359, bones 0x13) reaches Lei from
 /// 1000 as in PCSX2.
 #[test]
