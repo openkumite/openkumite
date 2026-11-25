@@ -814,6 +814,8 @@ fn devils_laser_strikes() {
 fn true_ogres_arm_waves_as_on_the_ps2() {
     let Some(a) = assets() else { return };
     let mut b = Bout::new(Game::load(&a, [TRUE_OGRE, HWOARANG]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    // (his intro alias 6, as the recording's flip gave him: × held at the call)
+    b.step([parse_script("3").unwrap()[0], Pad::default()]);
     while b.phase != Phase::Fight {
         b.step([Pad::default(); 2]);
     }
@@ -1198,6 +1200,18 @@ fn lei_jabs(b: &mut Bout) {
     for _ in 0..80 {
         b.step([Pad::default(); 2]);
     }
+}
+
+/// Round 1's intros with no button held (0x368398): rand() & 1, odd alias 4, even 6. 0x40FBD0 returns the state's low
+/// 31 bits, whose bit 0 turns over each draw, and P1's and P2's flips are drawn in a row (0x373038): the two always
+/// take different intros (PCSX2, four rand() states written before the round: 4 / 6 once, 6 / 4 three times).
+#[test]
+fn the_round_one_intros_differ_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [PAUL, LEI]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    b.step([Pad::default(); 2]);
+    let aliases = b.game.fight.fighters.each_ref().map(|f| f.alias);
+    assert!(aliases == [4, 6] || aliases == [6, 4], "{aliases:?}");
 }
 
 fn assets() -> Option<Assets> {

@@ -571,6 +571,17 @@ fn play_out(b: &mut Bout, limit: u32) -> Vec<(u32, Announcement)> {
     events
 }
 
+/// Round 1's intros with no button held (0x8002D31C): libc rand() & 1, odd alias 0. The PS1 seeds rand() at boot
+/// (0x800B07E4: 0x800B0000 on an emulator) and draws none through the menus, so the first fight's P1 and P2 both
+/// take alias 0, as in all five PS1 recordings (PCSX-Redux, rand() traced at 0x8007A318).
+#[test]
+fn the_first_fights_intros_are_the_ps1s() {
+    let Some(a) = assets() else { return };
+    let mut b = bout(&a, [MODEL_71, MODEL_79], [None, Some((0, 0))], true);
+    b.step([Pad::default(); 2]);
+    assert_eq!(b.game.fight.fighters.each_ref().map(|f| f.alias), [0, 0]);
+}
+
 #[test]
 fn a_round_starts_with_the_fly_in_and_the_call_and_holds_the_fighters() {
     let Some(a) = assets() else { return };

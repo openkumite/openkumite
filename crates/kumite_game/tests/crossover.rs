@@ -34,6 +34,15 @@ fn assets() -> Option<Assets> {
     Some(Assets::new(std::path::Path::new(&ttt)).unwrap())
 }
 
+/// Through the round's call to the fight, P1 in its intro alias 6 and Paul in 4 (× and □ held at the call: the
+/// starts these tests were set on).
+fn to_fight(b: &mut Bout) {
+    b.step(["3", "1"].map(|k| parse_script(k).unwrap()[0]));
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+}
+
 /// What a run saw: per frame the state hash, both aliases, both healths; whether a throw linked; frames on which a
 /// fighter had no motion for its move.
 #[derive(Default)]
@@ -50,9 +59,7 @@ struct Run {
 fn run(a: &Assets, p1: usize, scripts: [&str; 2], frames: usize) -> Run {
     let scripts = scripts.map(|s| s.replace("JABS", &"1,n*15,".repeat(30)).replace("LOWS", &"d+3,n*30,".repeat(10)).replace("THROWS", &"1+3,n*20,".repeat(10)));
     let mut b = Bout::new(Game::load(a, [p1, PAUL]).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
-    while b.phase != Phase::Fight {
-        b.step([Pad::default(); 2]);
-    }
+    to_fight(&mut b);
     let pads = scripts.map(|s| parse_script(&s).unwrap());
     let mut r = Run::default();
     for k in 0..frames {
@@ -93,9 +100,7 @@ fn gons_fire_and_gas() {
     let Some(a) = assets() else { return };
     for (moves, byte) in [("1+2,n*120", kumite_sim::objects::FIRE), ("f*60,b+4,n*120", kumite_sim::objects::GAS)] {
         let mut b = Bout::new(Game::load(&a, [GON, PAUL]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
-        while b.phase != Phase::Fight {
-            b.step([Pad::default(); 2]);
-        }
+        to_fight(&mut b);
         b.game.fight.fighters[1].guard_input = false;
         let mut vfx = kumite_game::vfx::Vfx::new(&a);
         let sheet = vfx.data.as_ref().map_or(0, |d| d.objects_sheet);
@@ -137,9 +142,11 @@ fn tag_out(a: &Assets, team: [usize; 2], lying: bool, at: usize) -> (Vec<(usize,
     let mut g = Game::load(a, [team[0], PAUL]).unwrap();
     g.start_tag([kumite_game::Actor::load(a, team[1]).unwrap(), kumite_game::Actor::load(a, JIN).unwrap()]);
     let mut b = Bout::new(g, kumite_game::ai_data(a).unwrap(), 2, false);
-    let start = parse_script(if lying { "1" } else { "n" }).unwrap()[0];
+    // (P1 lying holds 1 (its intro alias 4, then the fall), else × (alias 6); Paul □ at the call (4))
+    let start = parse_script(if lying { "1" } else { "3" }).unwrap()[0];
+    b.step([start, parse_script("1").unwrap()[0]]);
     while b.phase != Phase::Fight {
-        b.step([start, Pad::default()]);
+        b.step([if lying { start } else { Pad::default() }, Pad::default()]);
     }
     let tag = parse_script("5").unwrap()[0];
     let mut missing = 0;
@@ -227,9 +234,7 @@ fn hits_and_voices_sound() {
     let bank = sound["voice_banks"]["characters"].as_array().unwrap().iter().find(|v| v["model_record"] == GON).unwrap()["bank"].as_u64().unwrap();
     let own = format!("{bank:03}/");
     let mut b = Bout::new(Game::load(&a, [GON, PAUL]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
-    while b.phase != Phase::Fight {
-        b.step([Pad::default(); 2]);
-    }
+    to_fight(&mut b);
     let mut st = SoundState::default();
     // each side's hit until one lands: (Gon jabs, Paul walks in), then (Gon walks in, Paul kicks low)
     let hit = |b: &mut Bout, st: &mut SoundState, scripts: [&str; 2], attacker: usize| {
@@ -270,9 +275,7 @@ fn doctor_bs_scripts_sound() {
     let sound: serde_json::Value = a.gamedata("sound.json").unwrap();
     let own = sound["voice_banks"]["characters"].as_array().unwrap().iter().find(|v| v["model_record"] == DOCTOR_B).unwrap()["bank"].as_u64().unwrap();
     let mut b = Bout::new(Game::load(&a, [DOCTOR_B, PAUL]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
-    while b.phase != Phase::Fight {
-        b.step([Pad::default(); 2]);
-    }
+    to_fight(&mut b);
     let mut st = SoundState::default();
     heard(&a, &s, &b, &mut st);
     let f = &b.game.fight.fighters[0];
@@ -295,9 +298,7 @@ fn doctor_bs_type_9_mutes_his_jumps() {
     let s = SoundData::load(&a).unwrap();
     let play = |strip: bool| {
         let mut b = Bout::new(Game::load(&a, [DOCTOR_B, PAUL]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
-        while b.phase != Phase::Fight {
-            b.step([Pad::default(); 2]);
-        }
+        to_fight(&mut b);
         let mut st = SoundState::default();
         heard(&a, &s, &b, &mut st);
         let f = &mut b.game.fight.fighters[0];
@@ -564,9 +565,7 @@ fn gon_and_paul_push_apart() {
     let Some(a) = assets() else { return };
     let gap = |m: [usize; 2]| {
         let mut b = Bout::new(Game::load(&a, m).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
-        while b.phase != Phase::Fight {
-            b.step([Pad::default(); 2]);
-        }
+        to_fight(&mut b);
         let mut least = f32::MAX;
         for pad in parse_script("f*150").unwrap() {
             b.step([pad, pad]);
@@ -587,9 +586,7 @@ fn gon_and_paul_push_apart() {
 fn eased_poses_stay_upright() {
     let Some(a) = assets() else { return };
     let mut b = Bout::new(Game::load(&a, [GON, PAUL]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
-    while b.phase != Phase::Fight {
-        b.step([Pad::default(); 2]);
-    }
+    to_fight(&mut b);
     let (mut eased, mut over) = (0, Vec::new());
     for (k, pad) in parse_script(&"f*20,n*10,b*20,n*10,d*20,n*10,".repeat(3)).unwrap().into_iter().enumerate() {
         b.step([pad, Pad::default()]);

@@ -113,10 +113,11 @@ fn king_knocks_out_jin_as_on_the_ps1() {
     for (row, want) in [(882, 127), (994, 88), (1127, 49), (1260, 10), (1316, 0)] {
         assert_eq!(at(&t, 673, row, 1).5 >> 16, want, "PS1 row {row}");
     }
-    // (the stagger's height later runs a unit off)
-    for (row, want) in [(883, (514, -90)), (886, (923, -71)), (890, (1073, -63))] {
+    // (the stagger's commit sets +0xDA, 0x8002F900, which its hold step's ease sees: the end-of-move ease left from
+    // the reaction before stops there; its height ran 1 to 2 off)
+    for (row, want) in [(883, (514, -1042, -90)), (886, (923, -1034, -71)), (890, (1073, -1024, -63)), (894, (1112, -1020, -51))] {
         let r = at(&t, 673, row, 1);
-        assert_eq!((r.0, r.2), want, "PS1 row {row}");
+        assert_eq!((r.0, r.1, r.2), want, "PS1 row {row}");
     }
     assert_eq!(at(&t, 673, 883, 1).1, -1042, "PS1 row 883: frame 1's height");
     // King's d/f+2 again from the END look-ahead (+0x8B 3) eases in from the pose shown, as a new motion (+0xDA): his
@@ -265,4 +266,18 @@ fn push_spheres_sit_on_the_ps1s_slots() {
             assert_eq!(at(&t, 622, row, i).7, w.to_vec(), "PS1 row {row}, P{}", i + 1);
         }
     }
+}
+
+/// King's crouching throw (d+1+3) on Nina crouching: the throw links on the step its attempt makes contact (+0xD1,
+/// 0x800442C8; the link 0x80030E78 before the next facing pass), King facing from the push's angle to her turned by
+/// the quadrant (0x800306D4) and Nina turned round where she stands (0x80030858). Ours linked a step later, King 1064
+/// off and Nina facing away.
+#[test]
+fn king_links_his_crouching_throw_on_contact_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [99, 115], None, 1, "n*254,f*60,n+1+3*2,n*40,d+1+3*2,n*136", "n*285,d*200,n*10", 380);
+    let r = at(&t, 622, 994, 0);
+    assert_eq!((r.0, r.2, r.3), (790, 99, 17439), "PS1 row 994: King");
+    let r = at(&t, 622, 994, 1);
+    assert_eq!((r.0, r.2, r.3), (1944, -19, 16383), "PS1 row 994: Nina");
 }
