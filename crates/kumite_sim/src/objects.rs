@@ -24,8 +24,13 @@
 //!   node's z towards 400, its pitch and yaw each turned by up to pi / 32, 48 units a frame for 21 frames; it
 //!   strikes its first 15 (table 0x5198C8) while its owner is still in the move.
 //!
-//! shortcut: the breath's sparks and floor flames (objects 7 and 9, drawn only) and Tekken 3's bytes 0x19 / 0x1C
-//! (object 10) start nothing yet; port them here.
+//! - bytes 0x19 and 0x1C, Doctor B.'s mist (0x8006ECA4 -> object 10, 0x800729FC): from the head at (100, 0, 70) in
+//!   its axes towards (400, 0, 70), its pitch and yaw turned by rand() (up to 127 / 4096 of a turn) at 48 units a
+//!   frame, moving from its first frame; 21 frames, striking for its first 16 (0x80025688) while its owner is in a
+//!   move of its byte.
+//!
+//! shortcut: the breath's sparks and floor flames (objects 7 and 9) and the mist's two sprites are not drawn; port
+//! them in vfx.
 
 use crate::detmath::DetMath;
 use glam::{Mat4, Vec3};
@@ -34,6 +39,7 @@ use glam::{Mat4, Vec3};
 pub const FIRE: u32 = 0x1A;
 pub const GAS: u32 = 0x1B;
 pub const BREATH: u32 = 0x18;
+pub const MIST: [u32; 2] = [0x19, 0x1C];
 /// Tekken Tag's True Ogre's fire: its moves' strike to slot 0x18 (no descriptor byte; this stands for it).
 pub const TAG_FIRE: u32 = 0x118;
 /// Tekken Tag's mist: its moves' strike to slot 0x19 (as [`TAG_FIRE`]).
@@ -57,6 +63,12 @@ const FIRE_AT: [Vec3; 2] = [Vec3::new(300.0, 0.0, -50.0), Vec3::new(800.0, 0.0, 
 const BREATH_AT: [[Vec3; 2]; 2] = [[Vec3::new(600.0, 0.0, -50.0), Vec3::new(800.0, 0.0, -50.0)], [Vec3::new(600.0, 0.0, 50.0), Vec3::new(800.0, 0.0, 50.0)]];
 /// The breath's speeds (0xA00, then 0x1000 at 0x800717A0).
 const BREATH_SPEED: [f32; 2] = [160.0, 256.0];
+/// The mist's start and second point in the head's axes (0x80098830, as `FIRE_AT`), speed (0x300), frames and striking
+/// frames.
+const MIST_AT: [Vec3; 2] = [Vec3::new(100.0, 0.0, -70.0), Vec3::new(400.0, 0.0, -70.0)];
+const MIST_SPEED: f32 = 48.0;
+const MIST_LIFE: i32 = 21;
+const MIST_STRIKES: i32 = 16;
 const GAS_AT: [Vec3; 2] = [Vec3::new(0.0, -200.0, 0.0), Vec3::new(0.0, -600.0, 0.0)];
 /// The fire's speed (0x800 at 0x8006E120: 128 units a frame) and its lowest height (y −0xD8).
 const FIRE_SPEED: f32 = 128.0;
@@ -77,6 +89,8 @@ pub enum Kind {
     Breath,
     TagFire,
     TagMist,
+    /// Doctor B.'s mist and the descriptor byte it strikes for (+0x4C).
+    Mist(u32),
     /// The gas's source: its heading (sine, cosine of the yaw) and the next puff.
     GasSource {
         heading: [f32; 2],
@@ -129,6 +143,7 @@ impl Objects {
             BREATH => (slots[0], BREATH_AT[owner % 2], Kind::Breath),
             TAG_FIRE => (slots[0], TAG_FIRE_AT, Kind::TagFire),
             TAG_MIST => (slots[0], TAG_MIST_AT, Kind::TagMist),
+            b if MIST.contains(&b) => (slots[0], MIST_AT, Kind::Mist(b)),
             GAS if first => (slots[1], GAS_AT, Kind::GasSource { heading: [0.0, 1.0], next: 0 }),
             _ => return,
         };
@@ -141,7 +156,7 @@ impl Objects {
         let vel = match kind {
             Kind::Fire => d.normalize_or_zero() * FIRE_SPEED,
             // (its heading: turned by rand() on its first frame)
-            Kind::Breath | Kind::TagFire | Kind::TagMist => d.normalize_or_zero(),
+            Kind::Breath | Kind::TagFire | Kind::TagMist | Kind::Mist(_) => d.normalize_or_zero(),
             _ => Vec3::ZERO,
         };
         self.list.push(Object { kind, owner, pos: p, prev: p, vel, strikes: false, state: 0, count: -1, frames: 0, left: 0, mirror: false });
@@ -172,6 +187,7 @@ impl Objects {
                 }
                 Kind::TagFire => self.tag_fire(&mut o, on(TAG_FIRE)),
                 Kind::TagMist => self.tag_mist(&mut o, on(TAG_MIST)),
+                Kind::Mist(byte) => self.mist(&mut o, on(byte)),
                 Kind::GasSource { heading, next } => {
                     o.count += 1;
                     if let Some(&[_, far, high]) = GAS_PUFFS.get(next).filter(|p| on(GAS) && o.count as f32 >= p[0]) {
@@ -332,6 +348,31 @@ impl Objects {
         o.count += 1;
         o.strikes &= o.count < TAG_MIST_STRIKES;
         o.count < TAG_MIST_LIFE
+    }
+
+    /// Doctor B.'s mist (0x800729FC): false when it is gone. `count` its frames (+0x48).
+    fn mist(&mut self, o: &mut Object, on: bool) -> bool {
+        o.strikes &= on;
+        if o.state == 0 {
+            // 0x80072B88: two draws, the first's low bits turning the heading (as the breath's), then on as any frame
+            let r = self.rand();
+            self.rand();
+            let turn = |v: i32| v as f32 * std::f32::consts::TAU / 4096.0;
+            let d = Vec3::new(o.vel.x, -o.vel.y, -o.vel.z);
+            let yaw = d.z.datan2(d.x) + turn(((r >> 2) & 0xFF) - 0x7F);
+            let pitch = glam::Vec2::new(d.x, d.z).length().datan2(d.y) + turn((r & 0xFF) - 0x7F);
+            let (h, v) = (pitch.dsin(), pitch.dcos());
+            o.vel = Vec3::new(h * yaw.dcos(), -v, -h * yaw.dsin()) * MIST_SPEED;
+            (o.state, o.strikes) = (1, on);
+        }
+        o.count += 1;
+        if o.count >= MIST_LIFE {
+            return false;
+        }
+        o.strikes &= o.count < MIST_STRIKES;
+        o.prev = o.pos;
+        o.pos += o.vel;
+        true
     }
 
     /// Fighter `owner`'s strikes this frame: its striking objects' travel.

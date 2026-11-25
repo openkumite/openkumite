@@ -3215,7 +3215,7 @@ impl Ai {
             // in, never back
             Style::Rushdown if self.myzone > 2 => 4,
             Style::Rushdown if self.myzone > 1 && matches!(mode, 0 | 2 | 3 | 6 | 8) => 1,
-            Style::Thrower if self.myzone > 1 && matches!(mode, 0 | 3 | 6 | 8) => 2,
+            Style::Thrower if self.myzone > 1 && matches!(mode, 0 | 1 | 3 | 6 | 8) => 2,
             Style::Juggler if self.odown && self.myzone > 1 => 2,
             // at the edge of his reach: out of it when in, back in when out
             Style::Counter => match self.hiszone {

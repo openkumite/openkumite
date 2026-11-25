@@ -713,6 +713,10 @@ pub struct Fighter {
     /// (+0xB390, +0xB5D2); struck, until a move starts on a frame it is not (+0xF3: 0x371F58, 0x36A8F8).
     ease: Ease,
     ease_last: Option<Current>,
+    /// Tekken 3's +0xDA: a new motion started (0x8002F900), kept until a step does not start with the queued move
+    /// (0x8002F4A8); the last commit was the END look-ahead's (+0x8B 3, 0x8002DCD4).
+    new_motion: bool,
+    again: bool,
     shown_turns: Turns,
     shown_height: i32,
     reacting: bool,
@@ -821,6 +825,8 @@ impl Fighter {
             push_prev: None,
             ease: Ease::default(),
             ease_last: None,
+            new_motion: false,
+            again: false,
             shown_turns: [[0; 9]; 18],
             shown_height: 0,
             reacting: false,
@@ -1178,7 +1184,11 @@ impl Fighter {
         self.commits_root = self.current_move(gd).flags24.raw & 0x1000_0000 != 0;
         if t != 0x11 {
             let same = self.current_move(gd).anim == old_anim;
-            self.since = if same && !buffered { self.frame } else { 1 };
+            // (Tekken 3's +0x5C is 1 while +0xDA is on, 0x80030ED0: a new motion (0x8002F900), kept through commits
+            // back into the same one, as a pushed move's condition 0x33 entry makes each step)
+            self.new_motion |= !self.tag_rules(gd) && (!same || buffered || matches!(t, 1 | 3));
+            self.again = buffered;
+            self.since = if same && !buffered && !self.new_motion { self.frame } else { 1 };
         }
         if to_mv.as_ref().is_some_and(|m| m.flags24.raw & 0x800 != 0) {
             self.evasive = 9;
@@ -2177,6 +2187,7 @@ impl Fighter {
         // except against the last boss's move set (0x8003F248)
         if self.freeze > 0 {
             self.freeze -= 1;
+            self.new_motion = false;
             if !self.opponent.moveset_id.is_some_and(|m| gd.characters.hitstop_still.contains(&m)) {
                 self.fly();
             }
@@ -2256,6 +2267,8 @@ impl Fighter {
                 return;
             }
         }
+        // (Tekken 3's +0xDA is cleared by a step that does not start with the queued move, 0x8002F4A8)
+        self.new_motion = false;
         // a juggled fighter's fall animation holds its hold frame until it lands
         let holding = self.air.is_some() && hold > 0 && self.frame >= hold;
         if !holding {
@@ -2392,7 +2405,7 @@ impl Fighter {
         let (fl, frames, active, next) = (if tag { m.flags24.tag } else { m.flags24.raw >> 8 }, m.frames as i32, m.active.map(|a| a as i32), m.next.alias);
         let last_move = last.and_then(|c| self.moves(gd, c.bank).moves.get(c.index));
         // +0x134: a new motion started (0x36A9A0; Tekken 3's +0xDA, 0x8002F900)
-        let new_motion = self.started_with.is_some_and(|t| matches!(t & 0x3F, 1 | 3) || last_move.is_some_and(|l| l.anim != m.anim));
+        let new_motion = if tag { self.started_with.is_some_and(|t| matches!(t & 0x3F, 1 | 3) || last_move.is_some_and(|l| l.anim != m.anim)) } else { self.new_motion };
         let last_fl = last_move.map_or(0, |l| l.flags24.tag);
         self.ease_last = Some(self.current);
         // (+0x131: down for the round)
@@ -2424,9 +2437,9 @@ impl Fighter {
         // +0xF8 is 3, which is not followed
         let left = (frames - frame).max(0);
         let n = match active[0] {
-            _ if cut || last.is_none_or(|l| l == self.current) || left == 0 || (!tag && !new_motion) => 0,
+            _ if cut || last.is_none_or(|l| l == self.current && (tag || !self.again)) || left == 0 || (!tag && !new_motion) => 0,
             // (Tekken 3's, 0x8003C8F0: to its first active frame, and 4 / 16 past it too; the same move again when
-            // +0x8B is 3, likewise not followed)
+            // +0x8B is 3)
             a if !tag && a != 0 && frame < a => (a - frame).min(16),
             _ if !tag && self.chain < 0 => 16,
             _ if !tag => 4,

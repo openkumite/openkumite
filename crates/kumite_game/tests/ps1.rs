@@ -119,9 +119,43 @@ fn king_knocks_out_jin_as_on_the_ps1() {
         assert_eq!((r.0, r.2), want, "PS1 row {row}");
     }
     assert_eq!(at(&t, 673, 883, 1).1, -1042, "PS1 row 883: frame 1's height");
+    // King's d/f+2 again from the END look-ahead (+0x8B 3) eases in from the pose shown, as a new motion (+0xDA): his
+    // height was 41 off
+    let h: Vec<i32> = (902..=909).map(|row| at(&t, 673, row, 0).1).collect();
+    assert_eq!(h, [-1158, -1163, -1172, -1177, -1182, -1181, -1179, -1179]);
     // the collapse stays where it fell, 3954 on the PS1 (a few units off by then; it slid 729 on)
     let ko = [1321, 1339].map(|row| at(&t, 673, row, 1).0);
     assert!(ko[0] == ko[1] && (ko[0] - 3954).abs() < 10, "{ko:?}");
+}
+
+/// Doctor B. against Gon: Gon's walk, pushed, commits itself again each step (condition 0x33), which keeps +0xDA, the
+/// new motion, on (0x8002F4A8 is not reached): his end-of-move ease starts over each step and his facing tracks as
+/// from frame 1 (+0x5C, 0x80030ED0). Doctor B.'s crawl (descriptor byte 0x1C) lets out his mist (object 10,
+/// 0x800729FC), which strikes Gon, and Gon plays Doctor B.'s reaction at his own size (45 %, 0x80038970). Ours missed
+/// (1894 off).
+#[test]
+fn doctor_bs_mist_strikes_gon_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [251, 243], None, 1, "n*155,f*40,n+2*2,n*30,d+4*2,n*40,b+3*2,n*144", "n*156,b*40,n+4*2,n*40,n+1+2*2,n*176", 260);
+    for (row, want) in [(917, (439, -16416)), (920, (500, -16414)), (922, (521, -16412))] {
+        let r = at(&t, 739, row, 1);
+        assert_eq!((r.0, r.3), want, "PS1 row {row}");
+    }
+    assert_eq!(at(&t, 739, 941, 1).5 >> 16, 137, "PS1 row 941: the mist's 3");
+    let r = at(&t, 739, 942, 1);
+    assert_eq!((r.0, r.1), (391, -467), "PS1 row 942");
+}
+
+/// Kuma's 1+2 throws Heihachi into Kuma's reaction: Heihachi plays it at his own size (98 %, the raw root times
+/// P+0x4EC, 0x80038970), not Kuma's (90 %): his height was 81 off.
+#[test]
+fn a_borrowed_reaction_plays_at_the_victims_size_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [159, 179], None, 1, "n*152,f*39,n+2*2,n*20,n+2+4*2,n*60,d/f+1*2,n*114", "n*153,b*39,d+1*2,n*198", 240);
+    for (row, want) in [(804, (190, -990)), (805, (391, -986)), (806, (494, -984))] {
+        let r = at(&t, 601, row, 1);
+        assert_eq!((r.0, r.1), want, "PS1 row {row}");
+    }
 }
 
 /// Julia's d/f+2 launches Nina and her jabs juggle her: Nina's root as the PS1's through the reactions (the launcher's
