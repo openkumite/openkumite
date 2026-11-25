@@ -485,8 +485,8 @@ pub struct Pushback {
     pub curve: PushbackCurve,
     pub frame: i32,
     pub direction: glam::Vec2,
-    /// Tekken Tag: the direction's sine and cosine on its table (x, OpenKumite's z; 0x7FF8 = 1), each step cut toward
-    /// zero (0x36FF60).
+    /// The direction's sine and cosine on the game's table (x, OpenKumite's z; 0x7FF8 = 1), each step cut toward zero
+    /// (0x36FF60, 0x8003F820); `direction` without.
     pub tag: Option<[i32; 2]>,
 }
 
@@ -2180,9 +2180,15 @@ impl Fighter {
                 self.fly();
             }
             // Tekken Tag draws the root of the held frame all the same (0x34E748 after the move logic): a new
-            // reaction's frame 1 shows its root step before the body push
+            // reaction's frame 1 shows its root step before the body push. Tekken 3's hold (+0x76, 0x8002F4A4) is
+            // the reaction's commit step (none more at hit-stop 0 or 1): only the frame stays, its pushback (0x8003F798),
+            // root and pose ease go on
             if self.tag_rules(gd) {
                 self.root_motion(gd, anims);
+            } else {
+                self.push_back();
+                self.root_motion(gd, anims);
+                self.ease(gd, anims);
             }
             return;
         }
@@ -4326,6 +4332,11 @@ impl Fight {
                         if let Some(to) = fv.resolve(collapse) {
                             fv.start_reaction(to, collapse);
                             fv.freeze = 0;
+                            // Tekken 3's pushback comes with the reaction's commit (0x800309E4), which the collapse
+                            // replaces (0x8002D82C, transition 6): the K.O.'d fighter does not slide
+                            if !fv.tag_rules(gd) {
+                                pushback = None;
+                            }
                         }
                     } else if !self.ko_collapse && to_stance && !lying {
                         self.juggle_hit(gd, AirHit { victim: v, attacker: a, damage, quadrant, strike_down: strike_down[a], angle: param(0) });
@@ -4341,14 +4352,13 @@ impl Fight {
                 let away = -glam::Vec2::new(to_attacker.x, to_attacker.z).normalize_or_zero();
                 let turn = angle as f32 * std::f32::consts::TAU / 65536.0;
                 let direction = glam::Vec2::from_angle(turn).rotate(away);
-                // Tekken Tag: +0x156 = the last facing pass's angle to the attacker (+0x3A) turned by the angle,
-                // less half a turn (0x36B8E0)
+                // the game's angle to the attacker turned by the angle, less half a turn: Tekken Tag's +0x156 from the
+                // last facing pass's +0x3A (0x36B8E0), Tekken 3's +0x10C from the commit's +0x2A (0x80030A5C), each
+                // step cut toward zero on the sine table (0x36FF60, 0x8003F820)
                 let fv = &self.fighters[v];
-                let tag = fv.tag_rules(gd).then(|| {
-                    let to = fv.seen.unwrap_or_else(|| fv.geometry().0);
-                    let a = (((PI - to) / ANGLE).round() as i32 + angle - 0x8000) >> 4;
-                    [ball::sin12(a), -ball::cos12(a)].map(|v| v.clamp(-0xFFF, 0xFFF) * 8)
-                });
+                let to = if fv.tag_rules(gd) { ((PI - fv.seen.unwrap_or_else(|| fv.geometry().0)) / ANGLE).round() as i32 } else { fv.geometry16(fv.root(), self.fighters[a].root()).0 };
+                let a = (to + angle - 0x8000) >> 4;
+                let tag = Some([ball::sin12(a), -ball::cos12(a)].map(|v| v.clamp(-0xFFF, 0xFFF) * 8));
                 self.fighters[v].pushback = gd.reactions.pushback_curves.entries.iter().find(|c| c.index as i32 == curve_ref).map(|curve| Pushback { curve: curve.clone(), frame: 0, direction, tag });
             }
             self.fighters[v].struck_in_move = true;

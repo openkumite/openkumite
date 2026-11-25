@@ -102,8 +102,8 @@ fn each_style_does_its_thing_more_than_classic() {
     // (x1.1 since Tekken 3's facings are the PS1's integers: 86 against Classic's 77)
     more(Style::Counter, "counter hits", total(Style::Counter).counters as f32, c.counters as f32, 1.1);
     more(Style::Thrower, "throws", total(Style::Thrower).throws as f32, c.throws as f32, 2.0);
-    // (x1.4 since the jumps drift as far as the PS1's: 24 against Classic's 17)
-    more(Style::Evasive, "sidesteps", total(Style::Evasive).sidesteps as f32, c.sidesteps as f32, 1.4);
+    // (x1.3 since the hits' commit steps are the PS1's: 24 against Classic's 18)
+    more(Style::Evasive, "sidesteps", total(Style::Evasive).sidesteps as f32, c.sidesteps as f32, 1.3);
     more(Style::Juggler, "launches", total(Style::Juggler).launches as f32, c.launches as f32, 1.1);
 }
 
