@@ -1296,17 +1296,18 @@ impl Game {
     /// (0x80037924 projects bone 11 to +0x1278 as it draws; 0x80046234 compares the two for the pad's forward and
     /// the camera's framing).
     fn step_camera(&mut self) -> View {
+        let last = self.camera.view;
         let v = self.step_view();
         self.camera.turn_world();
-        self.project_sides(&v);
+        self.project_sides(&v, &last);
         v
     }
 
     /// The fighters' sides under view `v`: their pelvis's horizontal place on the screen (scaled to whole units).
-    fn project_sides(&mut self, v: &View) {
+    fn project_sides(&mut self, v: &View, last: &View) {
         for i in 0..2 {
             let (pose, place) = self.pose(i);
-            project_side(&mut self.fight.fighters[i], &self.bodies[i], &pose, place, v);
+            project_side(&mut self.fight.fighters[i], &self.bodies[i], &pose, place, v, last);
         }
     }
 
@@ -1873,8 +1874,9 @@ impl Game {
 }
 
 /// Fighter `f`'s side under view `v`, posed `pose` at `place`: the screen's right (its angle), its pelvis's
-/// horizontal place on the screen (scaled to whole units), whether it is off the screen.
-fn project_side(f: &mut kumite_sim::Fighter, body: &Body, pose: &[Mat4], place: Mat4, v: &View) {
+/// horizontal place on the screen (scaled to whole units), whether it is off the screen (under `last`, the frame
+/// before's view: Tekken Tag's points take this frame's bones through last frame's matrix 0x436530, PCSX2).
+fn project_side(f: &mut kumite_sim::Fighter, body: &Body, pose: &[Mat4], place: Mat4, v: &View, last: &View) {
     let (eye, forward, _) = view_camera(v);
     let right = forward.cross(Vec3::Y).normalize_or_zero();
     f.screen_right = right.x.datan2(right.z);
@@ -1884,13 +1886,16 @@ fn project_side(f: &mut kumite_sim::Fighter, body: &Body, pose: &[Mat4], place: 
     if depth > 1e-3 {
         f.side = (d.dot(right) / depth * 10000.0).round() as i32;
     }
-    // its head's and both feet's x on the 512 pixels (0x34FD90), for the off-screen test (0x5C) and the camera
+    // its head's and both feet's x on the 512 pixels (0x34FD90: 256 + x * H / z, cut toward 0), for the off-screen
+    // test (0x5C) and the camera
+    let (eye, forward, _) = view_camera(last);
+    let right = forward.cross(Vec3::Y).normalize_or_zero();
     let sx: Vec<i32> = [2, 14, 17]
         .iter()
         .filter_map(|&k| body.bones.get(k).and_then(|&n| pose.get(n)))
         .map(|m| {
             let d = (place.transform_point3(m.w_axis.truncate()) - eye) * UNITS;
-            (256.0 + d.dot(right) * (v.h as f32 * 512.0 / 368.0) / d.dot(forward).max(1000.0)) as i32
+            256 + (d.dot(right) * (last.h as f32 * 512.0 / 368.0) / d.dot(forward).max(1000.0)) as i32
         })
         .collect();
     if let Ok(p) = sx.try_into() {
