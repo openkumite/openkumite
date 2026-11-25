@@ -1079,15 +1079,9 @@ impl Fighter {
             }
             0x16 => (self.mode, self.turn) = (8, None),
             0x18 | 0x19 | dialect::TRANSITION_FACE => self.mode = 8,
-            // Tekken Tag's 34 / 35 (0x36BB1C, modes 0xC / 0xD): over 8 frames, at most 10° a frame, to the screen axis
-            // nearest the facing, or across it
-            // shortcut: the pair's line stands in for the screen axis (the fight camera looks across it); take the
-            // camera's yaw once the sim runs Tekken Tag's camera
-            dialect::TRANSITION_AXIS | dialect::TRANSITION_ACROSS => {
-                let axis = if t == dialect::TRANSITION_AXIS { target } else { a2a + FRAC_PI_2.copysign(wrap_pi(yaw - a2a)) };
-                let max = 0x71C as f32 * ANGLE;
-                (self.mode, self.turn) = (0xB, Some(((wrap_pi(axis - yaw) / 8.0).clamp(-max, max), 8)));
-            }
+            // Tekken Tag's 34 / 35 (0x36BB1C, modes 0xC / 0xD): turn to the screen axis nearest the facing, or across
+            // it (the facing pass, below)
+            dialect::TRANSITION_AXIS | dialect::TRANSITION_ACROSS => (self.mode, self.turn) = (t as u8, None),
             0x17 => self.mode = 9,
             0x1C | 0x1D => (self.mode, self.turn) = (0xA, None),
             0x1E | 0x24 | 0x25 | 0x27..=0x2B => (self.mode, self.turn) = (0xB, None),
@@ -1260,6 +1254,18 @@ impl Fighter {
             }
             // walks and dashes track all the way
             8 => self.yaw += clamp(to_target * self.since.min(8) as f32 / 8.0, 0x71C as f32 * ANGLE),
+            // Tekken Tag's 0xC / 0xD (0x370730): each frame toward the screen axis nearest the facing (+0x50: the camera's
+            // yaw +0x48, 0x3713C8, or half a turn from it), or across it (+0x52), at most 10° a frame
+            m if [dialect::TRANSITION_AXIS, dialect::TRANSITION_ACROSS].contains(&u32::from(m)) => {
+                let g = |y: f32| ((PI - y) / ANGLE).round() as i32;
+                let mut axis = g(self.screen_right) - if u32::from(m) == dialect::TRANSITION_AXIS { 0 } else { 0x4000 };
+                if ((axis - g(self.yaw)) as i16).unsigned_abs() >= 0x4000 {
+                    axis += 0x8000;
+                }
+                let step = (i32::from((axis - g(self.yaw)) as i16) * self.since.min(8) as i32 / 8).clamp(-0x71C, 0x71C);
+                self.yaw -= step as f32 * ANGLE;
+                self.root_yaw = self.yaw;
+            }
             // ground rolls: the basis turns back toward where the roll started
             9 => {
                 let dist = (self.opponent.root - self.root()).length();
@@ -2837,8 +2843,9 @@ impl Fight {
         t.members[t.active].health = out.health;
         t.active = 1 - t.active;
         let m = &t.members[t.active];
-        let root = out.root();
-        let mut f = Fighter::new(m.moveset.clone(), m.max_health, Vec3::new(root.x, 0.0, root.z), out.yaw, out.side);
+        // (the origin the leaving fighter's entrance committed, the root drawn last frame, 0x36BAE0; the entrance's first
+        // frame shows its root as the leaving body moved it)
+        let mut f = Fighter::new(m.moveset.clone(), m.max_health, Vec3::new(out.position.x, 0.0, out.position.z), out.yaw, out.side);
         f.health = m.health;
         f.character = m.character;
         f.tag_partner = Some((t.partner().moveset.moveset_id, t.partner().character));
@@ -2848,8 +2855,11 @@ impl Fight {
         if !f.play_alias(entrance) {
             log::warn!("P{}: the incoming partner has no entrance (alias {entrance})", i + 1);
         }
-        let d = f.opponent.root - f.root();
-        (f.yaw, f.root_yaw) = (d.x.datan2(d.z), d.x.datan2(d.z));
+        f.offset = out.offset;
+        // facing the opponent: +0x3A between the roots drawn last frame (0x371330)
+        let d = f.opponent.root - f.position;
+        let a = PI - tag_atan(d.x as i32, -d.z as i32) as f32 * ANGLE;
+        (f.yaw, f.root_yaw) = (a, a);
         self.fighters[i] = f;
         let o = &mut self.fighters[1 - i];
         if o.air.is_some() || o.juggle != 0 {
@@ -3355,13 +3365,15 @@ impl Fight {
             let target = drawn.filter(|_| fi.tag_rules(gd)).unwrap_or_else(|| fj.root());
             let to = target - fi.position;
             // Tekken Tag (0x36B638): the facing +0x3C is the last facing pass's angle +0x3A turned by the quadrant; the
-            // victim takes the thrower's basis from before, and over 16 frames the thrower turns to it, its basis with it
-            // (+0x15C / +0x15E, cut toward zero)
+            // victim turns round where it stands (0x36B77C), and over 16 frames the thrower turns to the victim's new
+            // facing, its basis with it (+0x15C / +0x15E, cut toward zero)
             let game = |y: f32| ((PI - y) / ANGLE).round() as i32;
             if fi.tag_rules(gd) {
                 let g = game(fi.seen.unwrap_or_else(|| fi.geometry().0)) + [0, 0x4000, -0x8000, -0x4000][quadrant];
-                victim_yaw = Some(fi.root_yaw);
-                tag_turn = Some((PI - g as f32 * ANGLE, -(((game(fi.root_yaw) - g) as i16 as i32) / 16) as f32 * ANGLE));
+                // shortcut: Force's soldiers keep the thrower's basis (the pair's rule moved its AI runs); check one there
+                let v = if self.extra.is_none() { fj.yaw + PI } else { fi.root_yaw };
+                victim_yaw = Some(v);
+                tag_turn = Some((PI - g as f32 * ANGLE, -(((game(v) - g) as i16 as i32) / 16) as f32 * ANGLE));
             }
             let yaw = tag_turn.map_or(to.x.datan2(to.z) + [0.0, -FRAC_PI_2, PI, FRAC_PI_2][quadrant], |t| t.0);
             let fi = &mut self.fighters[i];

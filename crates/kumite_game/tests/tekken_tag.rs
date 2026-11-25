@@ -373,9 +373,9 @@ fn the_struck_turn_in_the_hit_stop() {
 }
 
 /// A throw's link (0x36B638): the thrower goes onto the victim's root as drawn last frame (+0x51C), faces the last
-/// facing pass's angle +0x3A by the quadrant, and turns over 16 frames to its old basis, which the victim takes; the
-/// victim's root takes the thrower's scale (0x363A80). Kunimitsu's 1+3 on Hwoarang after a long walk, frames 1 and 5
-/// of the throw, as in PCSX2.
+/// facing pass's angle +0x3A by the quadrant, and turns over 16 frames to the victim's facing, which turns round
+/// (0x36B77C); the victim's root takes the thrower's scale (0x363A80). Kunimitsu's 1+3 on Hwoarang after a long walk,
+/// frames 1 and 5 of the throw, as in PCSX2; Law's off the pair's line too.
 #[test]
 fn a_throw_links_as_the_game() {
     let Some(a) = assets() else { return };
@@ -395,6 +395,41 @@ fn a_throw_links_as_the_game() {
         }
     }
     assert_eq!(seen, [(492.0, 107.0, 1682.0), (657.0, 72.0, 1732.0)]);
+    assert_eq!(play_tag([LAW, 426], "n*61,f*60,n*2,1+3*2,n*30", 3812, &[1, 5]), [(373.0, 54.0), (529.0, 57.0)]);
+}
+
+/// Fighter 0's root (x, the game's z) on the given frames of alias `alias`, from the fight's start (both holding 1+2
+/// through the intro, partners Paul), P1 playing `script`.
+fn play_tag(m: [usize; 2], script: &str, alias: usize, frames: &[u32]) -> Vec<(f32, f32)> {
+    let Some(a) = assets() else { return Vec::new() };
+    let mut g = Game::load(&a, m).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let mut seen = Vec::new();
+    for pad in parse_script(script).unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        if f.alias == alias && frames.contains(&f.frame) && seen.len() < frames.len() {
+            seen.push((f.root().x, -f.root().z));
+        }
+    }
+    seen
+}
+
+/// The tag (Kazuya out, Paul in) as in PCSX2: the run-off turns each frame toward the screen axis by the camera
+/// (0x370730, +0x50); the partner's entrance starts from the origin the leaving fighter's committed, facing the
+/// opponent by the game's angle (0x36BAE0, 0x371330).
+#[test]
+fn the_tag_runs_off_and_comes_in_as_the_game() {
+    if assets().is_none() {
+        return;
+    }
+    let script = "n*62,f*30,n*2,5*2,n*60";
+    assert_eq!(play_tag([585, 426], script, 5394, &[2, 4]), [(14.0, -10.0), (-32.0, -24.0)]);
+    assert_eq!(play_tag([585, 426], script, 5397, &[1, 2, 20]), [(-2213.0, -14.0), (-2145.0, -14.0), (-329.0, 9.0)]);
 }
 
 /// Ogre's strike slot 0x13 is his slot 6 (0x34F2C0, body 14 only): his b+2 (alias 359, bones 0x13) reaches Lei from
