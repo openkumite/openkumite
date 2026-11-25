@@ -1113,7 +1113,8 @@ impl Fighter {
             self.yaw += PI;
             self.root_yaw += PI;
         }
-        if (end || buffered) && t != 0x22 && old_turn != 0 {
+        // (Tekken 3 sets the basis to the facing with no turn too, 0x8002F9F0)
+        if (end || buffered) && t != 0x22 && (old_turn != 0 || !self.tag_rules(gd)) {
             // the game's angles run the other way round on OpenKumite's flipped z (Tekken Tag's 0x36AA48 adds +0x12
             // to +0x3C); shortcut: Tekken 3 keeps its sign, as its turns are mostly half a turn, until checked there
             let turn = if self.tag_rules(gd) { -(old_turn as f32) } else { old_turn as f32 };

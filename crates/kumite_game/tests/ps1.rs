@@ -303,3 +303,12 @@ fn a_throw_linked_on_contact_eases_in_as_on_the_ps1() {
     let h: Vec<i32> = (801..=804).map(|row| at(&t, 462, row, 0).1).collect();
     assert_eq!(h, [-988, -1004, -1020, -1034]);
 }
+
+/// Eddy's d/f+4 links from his 3 at the END with no net turn: the link sets the basis to the facing all the same
+/// (0x8002F9F0, +0xC1 without +0x12); it kept the 3's, 3060 off.
+#[test]
+fn an_end_link_without_a_turn_sets_the_basis_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [139, 131], None, 1, "n*219,f*40,d+4*2,n*20,n+4*2,n*20,n+3*2,n*19,d/f+4*2,n*127", "n*220,b*40,n+2*2,n*192", 320);
+    assert_eq!((at(&t, 561, 862, 0).3, at(&t, 561, 862, 0).4), (26269, 26411), "PS1 row 862");
+}
