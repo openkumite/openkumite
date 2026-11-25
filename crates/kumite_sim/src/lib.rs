@@ -394,8 +394,8 @@ pub trait Animations {
     fn volumes(&self, _f: &Fighter, _gd: &GameData) -> Option<BodyVolumes> {
         None
     }
-    /// Tekken Tag: the turns of the 18 joint slots at a frame of a clip (their local matrices, 4096 = 1), for the
-    /// pose ease ([`Ease`]).
+    /// The turns of the 18 joint slots at a frame of a clip (their local matrices, 4096 = 1), for the pose ease
+    /// ([`Ease`]).
     fn turns(&self, _anim: &str, _frame: u32, _partner: bool) -> Option<Turns> {
         None
     }
@@ -543,6 +543,9 @@ pub struct Fighter {
     commits_root: bool,
     /// Sign of the current move's lateral root motion (sidestep facing offset, mode 0xA).
     lateral: f32,
+    /// Tekken 3: the clip root's x at the last two root updates (P+0x24): a sidestep leans by its side as the step
+    /// before left it (0x80040098).
+    root_x: [f32; 2],
     /// Tekken Tag: the basis turned, the origin is rebased at the next root update (+0x126).
     rebase_root: bool,
     /// The root as drawn before this frame's update.
@@ -723,6 +726,7 @@ impl Fighter {
             pin: 0,
             commits_root: false,
             lateral: 0.0,
+            root_x: [0.0; 2],
             rebase_root: false,
             shown_root: Vec3::ZERO,
             seen: None,
@@ -1148,9 +1152,9 @@ impl Fighter {
             self.air = None;
             (self.juggle, self.juggle_bias) = (0, 0);
         }
-        // Tekken Tag keeps the opponent's root (+0x110 / +0x114 from the other's +0x51C, 0x36A814): a ground roll's
-        // basis turns toward where the opponent was
-        self.commit_root = if self.tag_rules(gd) { self.opponent.root } else { self.root() };
+        // the opponent's root is kept (Tekken 3's +0xAC / +0xB0 from the other's P+0xF68, 0x8002F600; Tekken Tag's +0x110
+        // / +0x114 from its +0x51C, 0x36A814): a ground roll's basis turns toward where the opponent was
+        self.commit_root = self.opponent.root;
         self.lateral = 0.0;
         if self.mode == 0xA {
             let (anim, _) = self.animation(gd);
@@ -1166,10 +1170,14 @@ impl Fighter {
 
     /// Per-frame facing (driver 0x8003F098, after both fighters' move logic): the auto-turn, then the tracking
     /// mode the commit chose (switch 0x8003F890, facing_re §3).
-    /// `seen`: both roots before this frame's root motion (mine, the opponent's): Tekken Tag takes the angle
-    /// between them (+0x3A, 0x371330) before the roots move (0x34E748).
+    /// `seen`: both roots before this frame's root motion (mine, the opponent's): the angle between them is taken
+    /// before the roots move (Tekken 3's 0x8003F0DC before 0x8003A818; Tekken Tag's +0x3A, 0x371330, before 0x34E748).
     fn track(&mut self, gd: &GameData, seen: Option<[Vec3; 2]>) {
-        let (a2a, off, target) = match seen.filter(|_| self.tag_rules(gd)) {
+        let (a2a, off, target) = match seen {
+            Some([me, opp]) if !self.tag_rules(gd) => {
+                let d = opp - me;
+                self.geometry_from((d.x * d.x + d.z * d.z > 1.0).then(|| d.x.datan2(d.z)))
+            }
             Some([me, opp]) => {
                 let d = opp - me;
                 self.seen = (d.x * d.x + d.z * d.z > 1.0).then(|| PI - tag_atan(d.x as i32, -d.z as i32) as f32 * ANGLE);
@@ -1299,25 +1307,29 @@ impl Fighter {
                     let step = clamp(wrap_pi(a - self.root_yaw) * frame as f32 / len as f32, deg(8.0));
                     self.root_yaw += step;
                     self.yaw = self.root_yaw;
-                    // Tekken Tag rebases the origin as the basis turns (+0x126, 0x37068C): the root stays and the
-                    // roll goes on from there, so its path curves instead of swinging round the start
-                    if self.tag_rules(gd) {
-                        self.rebase();
-                    }
+                    // the origin is rebased as the basis turns (Tekken 3's +0xBE, 0x80040070; Tekken Tag's +0x126,
+                    // 0x37068C): the root stays and the roll goes on from there, so its path curves instead of
+                    // swinging round the start
+                    self.rebase();
                 }
             }
             // sidesteps (and get-ups): face the opponent's live direction every frame, leaning up to 25° into
             // the step
             0xA if frame <= len => {
                 let o = if self.character.is_some_and(|c| gd.characters.sidestep_lean.contains(&c)) && off >= deg(135.0) { 0x71C } else { 0x11C7 };
-                // Tekken Tag leans the other way but in Tekken 3's 0x71C case (0x3706D4), and rebases the origin as the
-                // basis turns (+0x126): the step's path follows the facing round the opponent
-                let lean = if self.tag_rules(gd) && o == 0x11C7 { -self.lateral } else { self.lateral };
-                // (Tekken Tag in integers: 0x3706F4)
-                self.yaw = if self.tag_rules(gd) { target + lean * (o * frame as i32 / len as i32) as f32 * ANGLE } else { target + lean * (o as f32 * ANGLE) * frame as f32 / len as f32 };
-                if self.tag_rules(gd) {
-                    self.rebase();
-                }
+                // (against the root's side but in the 0x71C case, in integers: 0x800400DC, 0x3706F4), the origin rebased
+                // as the basis turns (+0xBE, 0x80040108; Tekken Tag's +0x126): the step's path follows the facing round
+                // the opponent
+                let side = if self.tag_rules(gd) {
+                    self.lateral
+                } else if self.root_x[0] >= 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let lean = if o == 0x11C7 { -side } else { side };
+                self.yaw = target + lean * (o * frame as i32 / len as i32) as f32 * ANGLE;
+                self.rebase();
                 self.root_yaw = self.yaw;
             }
             _ => {}
@@ -1325,8 +1337,9 @@ impl Fighter {
         self.evasive = self.evasive.saturating_sub(1);
     }
 
-    /// The root basis turned (Tekken Tag's +0x126, 0x37068C): at the next root update the origin goes to the root
-    /// less the clip's frame before in the new basis (0x34FA60), so the move goes on from where it stands.
+    /// The root basis turned (Tekken 3's +0xBE, Tekken Tag's +0x126, 0x37068C): at the next root update the origin goes
+    /// to the root less the clip's frame before in the new basis (0x8003A9C8, 0x34FA60), so the move goes on from where
+    /// it stands.
     fn rebase(&mut self) {
         self.rebase_root = true;
     }
@@ -2179,14 +2192,15 @@ impl Fighter {
                 self.position = Vec3::new(root.x, self.position.y, root.z) - root_offset(rp, self.root_yaw, scale);
             }
             self.offset = if self.pin == 0 { root_offset(r, self.root_yaw, scale) } else { Vec3::ZERO };
+            self.root_x = [self.root_x[1], r.x];
             // Tekken Tag's height is scaled as the distance (0x363AB8)
             self.anim_root_y = scale.map_or(r.y, |s| (r.y.round() as i32 * s / 4096) as f32);
         }
     }
 
-    /// Tekken Tag's pose ease for the frame (0x373428, after the move logic), then the root height and the joint
-    /// turns drawn with it (0x34E938, 0x34EF20). Tekken 3's (0x8003C270) eases the root height alone here, which is
-    /// the root's (0x8003AB78: P+0xF6C); its joint turns are not followed (the pose drawn is the clip's).
+    /// The pose ease for the frame (Tekken Tag's 0x373428, after the move logic; Tekken 3's 0x8003C270), then the root
+    /// height and the joint turns drawn with it (0x34E938, 0x34EF20; 0x8003AB78, 0x8003B0A0). Tekken 3's eased height
+    /// is the root's (P+0xF6C).
     fn ease(&mut self, gd: &GameData, anims: &dyn Animations) {
         let (anim, f) = self.animation(gd);
         let tag = self.tag_rules(gd);
@@ -2312,26 +2326,28 @@ impl Fighter {
         if !tag {
             // (Tekken 3's root carries the eased height, 0x8003AB78)
             self.anim_root_y = self.shown_height as f32;
-        } else if e.mode != 0 {
+        }
+        if e.mode != 0 {
             for (s, (r, d)) in self.shown_turns.iter_mut().zip(raw.iter().zip(&e.turns)).skip(1) {
                 *s = orthonormal(std::array::from_fn(|k| (r[k] as i32 + part(d[k] as i32)) as i16));
             }
         }
     }
 
-    /// Move `c`'s joint turns and root height at `frame`: Tekken Tag's scaled (0x363BD8), Tekken 3's without turns.
+    /// Move `c`'s joint turns and root height at `frame`: Tekken Tag's scaled (0x363BD8); Tekken 3's turns none for a
+    /// body without the slots (the height eases alone).
     fn pose_at(&self, gd: &GameData, anims: &dyn Animations, c: Current, frame: u32) -> Option<(Turns, i32)> {
         let (anim, partner) = (&self.moves(gd, c.bank).moves.get(c.index)?.anim, c.bank == Bank::Partner);
         let y = anims.root(anim, frame, partner)?.y.round() as i32;
         if !self.tag_rules(gd) {
-            return Some(([[0; 9]; 18], y));
+            return Some((anims.turns(anim, frame, partner).unwrap_or([[0; 9]; 18]), y));
         }
         Some((anims.turns(anim, frame, partner)?, y * anims.root_scale(self.thrown) / 4096))
     }
 
-    /// Tekken Tag: the joint turns and the root height eased, while an ease is on (for the pose drawn).
+    /// The joint turns and the root height eased, while an ease is on (for the pose drawn).
     pub fn eased(&self) -> Option<(Turns, f32)> {
-        // (Tekken 3's has no turns: its root carries the height)
+        // (none without the turns: Tekken 3's root carries the height)
         (self.ease.mode != 0 && self.shown_turns[0] != [0; 9]).then_some((self.shown_turns, self.shown_height as f32 - self.anim_root_y))
     }
 
@@ -2633,13 +2649,16 @@ pub enum KoRule {
 /// A clip's root `r` (game units, its own axes) as the offset from the origin, turned by the root basis `yaw`.
 /// Tekken Tag (`scale`: the body's, 4096 = 1) in the game's integers (0x363AB8, 0x34E938): the stored polar root's
 /// distance times the scale, cut toward zero, then along the facing plus the root's heading on the 4096 sine table,
-/// each product cut toward zero (the facing is 0x8000 less the basis, both 65536 a turn).
+/// each product cut toward zero (the facing is 0x8000 less the basis, both 65536 a turn). Tekken 3 (None) likewise
+/// (0x8003AAF4): the root as stored (z negated) turned on the table at the facing's top 12 bits, each sum cut toward
+/// zero.
 fn root_offset(r: Vec3, yaw: f32, scale: Option<i32>) -> Vec3 {
-    let Some(scale) = scale else {
-        let (s, c) = yaw.dsin_cos();
-        return Vec3::new(r.x * c + r.z * s, 0.0, -r.x * s + r.z * c);
-    };
     let turn = |a: f64| (a * 65536.0 / std::f64::consts::TAU).round() as i32;
+    let Some(scale) = scale else {
+        let a = (turn(f64::from(yaw)) >> 4) & 0xFFF;
+        let (s, c, x, z) = (ball::sin12(a), ball::cos12(a), r.x.round() as i32, -r.z.round() as i32);
+        return Vec3::new(((x * c - z * s) / 4096) as f32, 0.0, (-(x * s + z * c) / 4096) as f32);
+    };
     let (x, z) = (f64::from(r.x), f64::from(r.z));
     let heading = turn(x.datan2(-z));
     let distance = ((x * x + z * z).sqrt().round() as i32 * scale / 4096) & 0x7FFF;
@@ -3277,9 +3296,14 @@ impl Fight {
                 let basis = f.root_yaw;
                 f.track(&gd, idle.is_none().then_some([roots_before[i], roots_before[1 - i]]));
                 // (Tekken Tag turns the basis before the root's update of the frame: the rebase and the basis's turn
-                // show at once, and a throw's pair shows its link frame's places)
+                // show at once, and a throw's pair shows its link frame's places; Tekken 3's rebase likewise,
+                // 0x8003A9C8, its root keeping the eased height)
                 if f.rebase_root || f.tag_rules(&gd) && (linked || f.root_yaw != basis) {
+                    let y = f.anim_root_y;
                     f.root_motion(&gd, anims[i]);
+                    if !f.tag_rules(&gd) {
+                        f.anim_root_y = y;
+                    }
                 }
             }
         }
