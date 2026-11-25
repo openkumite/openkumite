@@ -3528,18 +3528,16 @@ impl Fight {
             if f.tag_rules(&gd) {
                 f.push_back();
             }
-            {
-                let basis = f.root_yaw;
-                f.track(&gd, idle.is_none().then_some([roots_before[i], roots_before[1 - i]]));
-                // (Tekken Tag turns the basis before the root's update of the frame: the rebase and the basis's turn
-                // show at once, and a throw's pair shows its link frame's places; Tekken 3's rebase likewise,
-                // 0x8003A9C8, its root keeping the eased height)
-                if f.rebase_root || f.tag_rules(&gd) && (linked || f.root_yaw != basis) {
-                    let y = f.anim_root_y;
-                    f.root_motion(&gd, anims[i]);
-                    if !f.tag_rules(&gd) {
-                        f.anim_root_y = y;
-                    }
+            let basis = f.root_yaw;
+            f.track(&gd, idle.is_none().then_some([roots_before[i], roots_before[1 - i]]));
+            // (Tekken Tag turns the basis before the root's update of the frame: the rebase and the basis's turn
+            // show at once, and a throw's pair shows its link frame's places; Tekken 3's rebase likewise,
+            // 0x8003A9C8, its root keeping the eased height)
+            if f.rebase_root || f.tag_rules(&gd) && (linked || f.root_yaw != basis) {
+                let y = f.anim_root_y;
+                f.root_motion(&gd, anims[i]);
+                if !f.tag_rules(&gd) {
+                    f.anim_root_y = y;
                 }
             }
         }
