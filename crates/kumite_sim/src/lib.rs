@@ -3626,8 +3626,9 @@ impl Fight {
         }
         // Tekken 3 links a throw on the step its attempt makes contact (the contact +0xD1 at 0x800442C8, the link
         // 0x80030E78 before the next facing pass, read in PCSX-Redux): the pair shows the link's facings on that row,
-        // their roots where they stood until the next step's root update samples frame 1
-        for a in 0..2 {
+        // their roots where they stood until the next step's root update samples frame 1; two at once go to the
+        // frame's parity (0x800455A0)
+        for a in [0, 1].map(|k| (k + self.frame as usize) % 2) {
             let f = &self.fighters[a];
             if f.tag_rules(&gd) || self.extra.is_some() || self.link.is_some() || connected_before[a] || !f.connected || f.current_move(&gd).damage_type != 1 {
                 continue;
