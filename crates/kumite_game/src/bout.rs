@@ -441,10 +441,14 @@ impl Bout {
             0
         } else if b & 0b0100 != 0 || (tag && b & 0b1000 != 0) {
             1
-        } else if self.random(2) == 1 {
-            0
+        } else if tag {
+            // (rand() & 1, odd alias 4: 0x40FBD0 returns the state's low 31 bits, whose bit 0 turns over each draw, so
+            // flips drawn in a row, the round's P1 then P2 (0x373038) and a team's two (0x3B51BC), always differ)
+            self.random(2);
+            usize::from(self.rng & 1 == 0)
         } else {
-            1
+            // (libc rand() & 1, its odd draws alias 0; the CPUs' draws share the stream)
+            usize::from(self.ai_rng.rand() & 1 == 0)
         }
     }
 
@@ -579,7 +583,7 @@ impl Bout {
             }
             Phase::Call => {
                 // the round's start moves (0x8002D31C), picked on its first frame: round 1 an intro (a held □ / △
-                // picks alias 0, × alias 2, else a coin flip, P1 first; the CPU's idle pad always flips), later
+                // picks alias 0, × alias 2, else a coin flip on rand(), P1 first; the CPU's idle pad always flips), later
                 // rounds alias 1. Inputs are off for the whole call (input mode 0); each start move's END link takes
                 // the fighter to its stance by the FIGHT cue. Tekken Tag (0x368398): □ / △ alias 4, × / ○ 6, later
                 // rounds 5 from frame 1

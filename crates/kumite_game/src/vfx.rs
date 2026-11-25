@@ -128,10 +128,12 @@ pub struct EffectsData {
     pub bursts: HashMap<String, BurstSet>,
     /// Tekken Tag's characters' picture sheets (`pictures/effects/` file, columns, rows): sprite sheet k + 1.
     pub sheets: Vec<(String, u32, u32)>,
-    /// Gon's fire (its start and loop, its end) and gas, and their sheet (Tekken Tag's: Tekken 3's atlas, `t3`).
+    /// Gon's fire (its start and loop, its end) and gas, Doctor B.'s mist of byte 0x19, and their sheet (Tekken Tag's:
+    /// Tekken 3's atlas, `t3`).
     pub fire: Strip,
     pub fire_end: Strip,
     pub gas: Strip,
+    pub mist: Strip,
     pub objects_sheet: usize,
 }
 
@@ -228,6 +230,7 @@ impl EffectsData {
             fire: object("fire"),
             fire_end: object("fire_end"),
             gas: object("gas"),
+            mist: object("mist"),
             objects_sheet,
         })
     }
@@ -417,7 +420,7 @@ const TAG_FIRE_SIZE: f32 = 1024.0 / 400.0 * 0.6822;
 const BURN_SIZE: f32 = 0.690;
 const GAS_SIZE: f32 = 0.5;
 /// Doctor B.'s mist's cell by its frame (0x8002565C's u, v on sheet 008: the dust's cells, as the gas strip's from cell
-/// 9), in the gas's palette (0x800ADD80 entry 0, its byte 0x1C).
+/// 9), byte 0x1C's in the gas's palette (0x800ADD80 entry 0), byte 0x19's in entry 8 (+0x4C 0, 0x80072B88).
 const MIST_CELLS: [i32; 21] = [0, 2, 4, 6, 8, 9, 10, 11, 12, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26];
 const FIRE_LIGHT: [f32; 3] = [1.0, 128.0 / 255.0, 0.0];
 
@@ -1071,9 +1074,16 @@ impl Vfx {
                     sheet: set.sheet,
                 }),
                 (Kind::Gas, _) => sprite(&d.gas, o.count >> 1, pos, GAS_SIZE, Blend::Half, o.mirror),
-                // shortcut: one quad of the two (0x80072B88), byte 0x19's palette (entry 8) drawn as 0x1C's; port them
-                // when a byte 0x19 move is seen
-                (Kind::Mist(_), 1..) => sprite(&d.gas, MIST_CELLS.get(usize::try_from(o.count).unwrap_or(0)).copied().unwrap_or(26), pos, GAS_SIZE, Blend::Half, false),
+                // (one quad: the object's two are the two frame buffers' copies, 0x80072D5C; a pack before format 13,
+                // without the mist's palette, draws it as the gas)
+                (Kind::Mist(b), 1..) => sprite(
+                    if b == kumite_sim::objects::MIST[0] && !d.mist.cells.is_empty() { &d.mist } else { &d.gas },
+                    MIST_CELLS.get(usize::try_from(o.count).unwrap_or(0)).copied().unwrap_or(26),
+                    pos,
+                    GAS_SIZE,
+                    Blend::Half,
+                    false,
+                ),
                 _ => None,
             };
             self.objects.extend(s);

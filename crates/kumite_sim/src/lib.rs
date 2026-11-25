@@ -2187,7 +2187,6 @@ impl Fighter {
         // except against the last boss's move set (0x8003F248)
         if self.freeze > 0 {
             self.freeze -= 1;
-            self.new_motion = false;
             if !self.opponent.moveset_id.is_some_and(|m| gd.characters.hitstop_still.contains(&m)) {
                 self.fly();
             }
@@ -2202,6 +2201,8 @@ impl Fighter {
                 self.root_motion(gd, anims);
                 self.ease(gd, anims);
             }
+            // (+0xDA cleared after the ease: the reaction's hold step is its commit's, whose ease sees it, 0x8002F4A8)
+            self.new_motion = false;
             return;
         }
         // knockdown stun (0x800403C0): the reaction timer runs down; in its last 30 frames the pool drains, faster
@@ -3592,6 +3593,7 @@ impl Fight {
             self.swap_extra();
         }
         // (hits are still detected after a K.O. or time-up: a falling body can be struck again)
+        let connected_before = [self.fighters[0].connected, self.fighters[1].connected];
         if self.link.is_none() && pair {
             let now: [Option<BodyVolumes>; 2] = posed.unwrap_or_else(|| std::array::from_fn(|i| anims[i].volumes(&self.fighters[i], &gd)));
             self.resolve_hits(&gd, [now[0].as_ref().unwrap_or(&bodies[0]), now[1].as_ref().unwrap_or(&bodies[1])], anims);
@@ -3621,6 +3623,31 @@ impl Fight {
         // (Tekken 3's fights but Ball's and Force's: after the push and the hit pass, 0x8002B1F4)
         if !gd.tag_moves && self.extra.is_none() && self.ball.is_none() && pair {
             self.keep_together_t3(roots_before);
+        }
+        // Tekken 3 links a throw on the step its attempt makes contact (the contact +0xD1 at 0x800442C8, the link
+        // 0x80030E78 before the next facing pass, read in PCSX-Redux): the pair shows the link's facings on that row,
+        // their roots where they stood until the next step's root update samples frame 1
+        for a in 0..2 {
+            let f = &self.fighters[a];
+            if f.tag_rules(&gd) || self.extra.is_some() || self.link.is_some() || connected_before[a] || !f.connected || f.current_move(&gd).damage_type != 1 {
+                continue;
+            }
+            let f = &mut self.fighters[a];
+            let saved = (f.queued, f.queued_alias, f.queued_buffered);
+            f.walk_cancels(&gd);
+            match f.queued {
+                Some((to, exec, t)) if t == TRANSITION_LINK && f.frame >= exec => {
+                    let alias = f.queued_alias;
+                    let roots = self.fighters.each_ref().map(|f| f.root());
+                    self.fighters[a].commit(&gd, to, alias, t, false, anims[a]);
+                    self.link(&gd, a, None);
+                    for (f, r) in self.fighters.iter_mut().zip(roots) {
+                        f.frame = 0;
+                        f.offset = r - f.position;
+                    }
+                }
+                _ => (f.queued, f.queued_alias, f.queued_buffered) = saved,
+            }
         }
         if self.state == RoundState::Fighting && self.link.is_none() {
             self.clock = self.clock.saturating_sub(1);
@@ -3684,10 +3711,13 @@ impl Fight {
             let to = target - fi.position;
             // Tekken Tag (0x36B638): the facing +0x3C is the last facing pass's angle +0x3A turned by the quadrant; the
             // victim turns round where it stands (0x36B77C), and over 16 frames the thrower turns to the victim's new
-            // facing, its basis with it (+0x15C / +0x15E, cut toward zero)
+            // facing, its basis with it (+0x15C / +0x15E, cut toward zero). Tekken 3 the same (0x800306D4, the
+            // victim's 0x80030858) from the push's angle to the victim +0x2A (0x8004394C, on the roots the link
+            // finds); Force's soldiers keep the old way
             let game = |y: f32| ((PI - y) / ANGLE).round() as i32;
-            if fi.tag_rules(gd) {
-                let g = game(fi.seen.unwrap_or_else(|| fi.geometry().0)) + [0, 0x4000, -0x8000, -0x4000][quadrant];
+            if fi.tag_rules(gd) || self.extra.is_none() {
+                let a = if fi.tag_rules(gd) { game(fi.seen.unwrap_or_else(|| fi.geometry().0)) } else { fi.geometry16(fi.root(), fj.root()).0 };
+                let g = a + [0, 0x4000, -0x8000, -0x4000][quadrant];
                 // shortcut: Force's soldiers keep the thrower's basis (the pair's rule moved its AI runs); check one there
                 let v = if self.extra.is_none() { fj.yaw + PI } else { fi.root_yaw };
                 victim_yaw = Some(v);
@@ -4353,7 +4383,11 @@ impl Fight {
                         // (Force's soldier hitting is not always the one the facing pass faced: its basis is not on him)
                         let pair = self.extra.is_none();
                         let fv = &mut self.fighters[v];
+                        let old = fv.current_move(gd).anim.clone();
                         fv.start_reaction(to, alias);
+                        // (Tekken 3's reaction commit sets +0xDA when its motion is another, 0x8002F900: the hold step's
+                        // ease sees it)
+                        fv.new_motion |= !fv.tag_rules(gd) && fv.current_move(gd).anim != old;
                         // blocks and counter hits (0x800309E4, 0x80030C8C): the root basis on the attacker, and the
                         // body turning to it while it reels (mode 7); Tekken Tag's basis is the facing pass's target
                         // +0x44 (0x36B8FC), not one from the roots now
