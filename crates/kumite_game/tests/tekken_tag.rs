@@ -814,6 +814,8 @@ fn devils_laser_strikes() {
 fn true_ogres_arm_waves_as_on_the_ps2() {
     let Some(a) = assets() else { return };
     let mut b = Bout::new(Game::load(&a, [TRUE_OGRE, HWOARANG]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    // (his intro alias 6, as the recording's flip gave him: × held at the call)
+    b.step([parse_script("3").unwrap()[0], Pad::default()]);
     while b.phase != Phase::Fight {
         b.step([Pad::default(); 2]);
     }

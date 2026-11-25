@@ -3630,7 +3630,7 @@ impl Fight {
         // frame's parity (0x800455A0)
         for a in [0, 1].map(|k| (k + self.frame as usize) % 2) {
             let f = &self.fighters[a];
-            if f.tag_rules(&gd) || self.extra.is_some() || self.link.is_some() || connected_before[a] || !f.connected || f.current_move(&gd).damage_type != 1 {
+            if gd.tag_moves || self.extra.is_some() || self.link.is_some() || connected_before[a] || !f.connected || f.current_move(&gd).damage_type != 1 {
                 continue;
             }
             let f = &mut self.fighters[a];
@@ -3716,7 +3716,7 @@ impl Fight {
             // victim's 0x80030858) from the push's angle to the victim +0x2A (0x8004394C, on the roots the link
             // finds); Force's soldiers keep the old way
             let game = |y: f32| ((PI - y) / ANGLE).round() as i32;
-            if fi.tag_rules(gd) || self.extra.is_none() {
+            if fi.tag_rules(gd) || (!gd.tag_moves && self.extra.is_none()) {
                 let a = if fi.tag_rules(gd) { game(fi.seen.unwrap_or_else(|| fi.geometry().0)) } else { fi.geometry16(fi.root(), fj.root()).0 };
                 let g = a + [0, 0x4000, -0x8000, -0x4000][quadrant];
                 // shortcut: Force's soldiers keep the thrower's basis (the pair's rule moved its AI runs); check one there
@@ -4388,7 +4388,7 @@ impl Fight {
                         fv.start_reaction(to, alias);
                         // (Tekken 3's reaction commit sets +0xDA when its motion is another, 0x8002F900: the hold step's
                         // ease sees it)
-                        fv.new_motion |= !fv.tag_rules(gd) && fv.current_move(gd).anim != old;
+                        fv.new_motion |= !gd.tag_moves && fv.current_move(gd).anim != old;
                         // blocks and counter hits (0x800309E4, 0x80030C8C): the root basis on the attacker, and the
                         // body turning to it while it reels (mode 7); Tekken Tag's basis is the facing pass's target
                         // +0x44 (0x36B8FC), not one from the roots now
