@@ -921,6 +921,14 @@ impl Game {
         }
     }
 
+    /// Another game's fight camera (Tekken Ball in Tekken Tag: Tekken 3's, gamedata/ball_camera.json, which frames the
+    /// ball too).
+    pub fn load_camera(&mut self, path: &std::path::Path) -> Result<()> {
+        self.camera = FightCamera::new(Arc::new(CameraData::load(path)?), false, 0, true);
+        self.step_camera();
+        Ok(())
+    }
+
     /// The win pose of a tag battle (0x3B5DB0): side `w`'s benched partner takes the loser's place, x 0x400 and z
     /// -0xC00 from the winner (taken as to its right and behind it), playing the winner's alias. False without a
     /// partner.

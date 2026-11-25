@@ -927,6 +927,11 @@ impl App {
         let court = self.roster.ttt.as_ref().is_some_and(|d| d.ball == Some(stage));
         let arena = if self.ttt_arcade(stage).is_some() || court { ttt::ARCADE_STAND_IN } else { stage };
         game.set_arena(arena);
+        // (Tekken Ball there: Tekken 3's camera, as the slice brings it; an older slice keeps Tekken Tag's)
+        let ball_camera = self.assets.root.join("gamedata/ball_camera.json");
+        if court && kumite_fs::exists(&ball_camera) {
+            game.load_camera(&ball_camera)?;
+        }
         game.handicap = setup.as_ref().map_or([100; 2], |s| s.handicap);
         if setup.is_none() {
             if let Some(v) = self.intro {
