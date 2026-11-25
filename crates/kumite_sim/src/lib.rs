@@ -4383,6 +4383,7 @@ impl Fight {
                     if let Some(to) = self.fighters[v].resolve(alias) {
                         // (Force's soldier hitting is not always the one the facing pass faced: its basis is not on him)
                         let pair = self.extra.is_none();
+                        let at = self.fighters[a].root();
                         let fv = &mut self.fighters[v];
                         let old = fv.current_move(gd).anim.clone();
                         fv.start_reaction(to, alias);
@@ -4391,9 +4392,11 @@ impl Fight {
                         fv.new_motion |= !fv.tag_rules(gd) && fv.current_move(gd).anim != old;
                         // blocks and counter hits (0x800309E4, 0x80030C8C): the root basis on the attacker, and the
                         // body turning to it while it reels (mode 7); Tekken Tag's basis is the facing pass's target
-                        // +0x44 (0x36B8FC), not one from the roots now
+                        // +0x44 (0x36B8FC), not one from the roots now; Tekken 3's the target +0x34 on both roots as
+                        // the step leaves them (the attacker's own, not the one seen before the root update; Force's
+                        // soldiers the seen one)
                         if blocked || counter {
-                            fv.root_yaw = fv.basis.filter(|_| pair).unwrap_or_else(|| fv.geometry_of(gd).2);
+                            fv.root_yaw = fv.basis.filter(|_| pair).unwrap_or_else(|| if fv.tag_rules(gd) || !pair { fv.geometry_of(gd).2 } else { t3y(fv.geometry16(fv.root(), at).2) });
                             fv.mode = 7;
                         }
                         if !blocked && !lying && !counter && quadrant != 0 {

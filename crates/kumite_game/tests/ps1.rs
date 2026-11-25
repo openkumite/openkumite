@@ -281,3 +281,15 @@ fn king_links_his_crouching_throw_on_contact_as_on_the_ps1() {
     let r = at(&t, 622, 994, 1);
     assert_eq!((r.0, r.2, r.3), (1944, -19, 16383), "PS1 row 994: Nina");
 }
+
+/// Gun Jack blocks Xiaoyu's 1, 2 and Hwoarang takes Eddy's counter hit: the reaction's basis is the target +0x34 on
+/// the roots as the step leaves them (0x800309E4), the attacker's own root, not the one the victim saw before the
+/// root update: it was 16 and 32 off (and in 18 more of the 60 cases).
+#[test]
+fn a_block_and_a_counter_turn_their_basis_on_the_attacker_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [131, 211], None, 1, "n*198,f*60,n+1*2,n*10,n+2*2,n*30,n+4*2,n*94", "n*399", 270);
+    assert_eq!(at(&t, 632, 899, 1).4, -15649, "PS1 row 899: the block");
+    let t = rows(&a, [139, 123], None, 1, "n*246,f*37,n+1*2,n*86", "n*247,b*33,n*8,n+4*2,n*82", 300);
+    assert_eq!(at(&t, 598, 892, 1).4, -11825, "PS1 row 892: the counter hit");
+}
