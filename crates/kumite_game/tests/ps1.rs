@@ -293,3 +293,13 @@ fn a_block_and_a_counter_turn_their_basis_on_the_attacker_as_on_the_ps1() {
     let t = rows(&a, [139, 123], None, 1, "n*246,f*37,n+1*2,n*86", "n*247,b*33,n*8,n+4*2,n*82", 300);
     assert_eq!(at(&t, 598, 892, 1).4, -11825, "PS1 row 892: the counter hit");
 }
+
+/// Law's throw (1+3) on Heihachi, linked on contact: the link commits in the next step's move logic, so that step's
+/// ease sees +0xDA (0x80030E78) and Law's height eases in from the pose shown over 4 frames (it was 48 off).
+#[test]
+fn a_throw_linked_on_contact_eases_in_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [83, 179], None, 1, "n*265,f*60,n+1+3*2,n*135", "n*463", 350);
+    let h: Vec<i32> = (801..=804).map(|row| at(&t, 462, row, 0).1).collect();
+    assert_eq!(h, [-988, -1004, -1020, -1034]);
+}

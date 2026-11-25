@@ -2268,8 +2268,9 @@ impl Fighter {
                 return;
             }
         }
-        // (Tekken 3's +0xDA is cleared by a step that does not start with the queued move, 0x8002F4A8)
-        self.new_motion = false;
+        // (Tekken 3's +0xDA is cleared by a step that does not start with the queued move, 0x8002F4A8; a throw linked
+        // on contact last step (frame 0) commits in this one's move logic, 0x80030E78)
+        self.new_motion &= self.frame == 0;
         // a juggled fighter's fall animation holds its hold frame until it lands
         let holding = self.air.is_some() && hold > 0 && self.frame >= hold;
         if !holding {
@@ -3644,6 +3645,7 @@ impl Fight {
                     self.link(&gd, a, None);
                     for (f, r) in self.fighters.iter_mut().zip(roots) {
                         f.frame = 0;
+                        f.new_motion = !f.tag_rules(&gd);
                         f.offset = r - f.position;
                     }
                 }
