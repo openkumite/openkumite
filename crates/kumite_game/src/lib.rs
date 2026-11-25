@@ -68,6 +68,8 @@ pub struct Body {
     pub motion_scale: i32,
     /// Tekken Tag: its spring slots ([`springs`]).
     pub springs: Vec<kumite_sim::Spring>,
+    /// Tekken Tag's True Ogre: his arm A and slots 18 / 19 wave ([`step_flap`]).
+    pub flaps: bool,
 }
 
 /// The joints of the bone slots, slot by slot (the arcade engine's matrix slots; Tekken Tag's converter names them so).
@@ -107,6 +109,8 @@ struct FighterAnims<'a> {
     other: &'a Body,
     /// Its spring slots' last frame (Game::springs).
     springs: &'a [Spring],
+    /// Its wave's last frame (Game::flaps).
+    flap: Flap,
 }
 
 /// A spring slot's turn in its parent's axes and its tip's place (Body::springs).
@@ -155,6 +159,7 @@ impl Animations for FighterAnims<'_> {
         let (anim, frame) = f.animation(gd);
         let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw, ease: f.eased() };
         let (mut pose, place) = shown_pose(self.own, other, &shown);
+        step_flap(self.own, other, &shown, &mut pose, self.flap.next());
         step_springs(self.own, &mut pose, place, self.springs);
         Some(volumes(self.own, &pose, place))
     }
@@ -401,6 +406,8 @@ pub struct Game {
     pub wolves: [Option<Vec3>; 2],
     /// Tekken Tag's spring slots (Body::springs): each one's turn in its parent's axes and its tip's place.
     pub springs: [Vec<Spring>; 2],
+    /// Tekken Tag's True Ogre's wave (Body::flaps).
+    pub flaps: [Flap; 2],
     /// The mode's K.O. style (Fight::ko_collapse), kept across rounds.
     pub ko_collapse: bool,
     /// Tekken Tag's GUARD DAMAGE option (Fight::guard_damage), kept across rounds.
@@ -494,8 +501,25 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let joints = if tag { joint_places(&rules["joints"], record, id) } else { Vec::new() };
     let motion_scale = entry.motion_scale.unwrap_or(4096);
     let hidden = blades_hidden(&character, entry.moveset_id);
-    let body =
-        Body { character, model_record: record, root, hurt, push, chest, torso, pelvis, hidden, bones, extra, joints, hands, face, motion_scale, springs: if tag { springs(id) } else { Vec::new() } };
+    let body = Body {
+        character,
+        model_record: record,
+        root,
+        hurt,
+        push,
+        chest,
+        torso,
+        pelvis,
+        hidden,
+        bones,
+        extra,
+        joints,
+        hands,
+        face,
+        motion_scale,
+        springs: if tag { springs(id) } else { Vec::new() },
+        flaps: tag && id == 20,
+    };
     // the copying character: its own moveset is never played; outside a bout's rounds it stays the setup's fighter
     // shortcut: Force's bosses and the tag brawl's draw their fighter too (0x800B2770), here they keep this one,
     // and Force's player draws without a seed of the match (the same fighters every run)
@@ -618,6 +642,7 @@ fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
         face: own.face.clone(),
         motion_scale: own.motion_scale,
         springs: Vec::new(),
+        flaps: false,
     }
 }
 
@@ -652,6 +677,51 @@ fn springs(body: u64) -> Vec<kumite_sim::Spring> {
         17 => vec![at(18, [16615, 125, 9392], 128, 128, 24), at(19, [1, 110, 370], 128, 128, 24), at(20, [-6, -258, -386], 128, 128, 24)],
         20 => vec![at(20, [0, 0, 9658], 128, 1, 0)],
         _ => Vec::new(),
+    }
+}
+
+/// Tekken Tag's True Ogre's wave (0x3626B8, called by 0x34EF20 for each slot while player +0xB130 bit 0, set for his
+/// models (+0x2E 82-85, 0x3ADAA0)): its counter (+0xB120, one a frame) and amplitude, and slot 6's height (units, up)
+/// the frame before (-(+0x84C)).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Flap {
+    pub count: u16,
+    amp: i32,
+    high: i32,
+}
+
+impl Flap {
+    /// The next frame's: the amplitude half slot 6's height, at most 256.
+    fn next(self) -> Self {
+        Self { count: self.count.wrapping_add(1), amp: (self.high / 2).clamp(0, 256), high: self.high }
+    }
+}
+
+/// True Ogre's wave: slots 5, 6 (arm A's forearm and hand), 18 and 19 turned in their parents' axes, parts 0-3 a
+/// quarter of a wave apart, instead of their motion (0x3626B8: the sine table 0x4FCE88 at the counter x 64 and x 32
+/// (half), times the amplitude over 256; slot 5's motion z angle over 4 added; Rz Ry Rx of the angles' top 12 bits,
+/// 0x3986D8). Slot 6 is turned a quarter about x first.
+/// shortcut: the rows' scales by 0x3659B0(+0xB122) are left out: nothing writes +0xB122, so they are 1
+fn step_flap(body: &Body, other: &Body, shown: &Snapshot, pose: &mut [Mat4], f: Flap) {
+    if !body.flaps {
+        return;
+    }
+    let owner = if shown.partner { &other.character } else { &body.character };
+    let z5 = shown.clip.and_then(|(c, k)| owner.clips.get(c)?.angles.get(k).map(|a| i32::from(a[3 + 3 * 5 + 2] as i16))).unwrap_or(0);
+    for (part, slot) in [5, 6, 18, 19].into_iter().enumerate() {
+        let at = part as i32 * 0x400;
+        let full = kumite_sim::ball::sin12(i32::from(f.count) * 64 + at) * f.amp / 256 + z5 / 4;
+        let half = kumite_sim::ball::sin12(i32::from(f.count) * 32 + at) / 2 * f.amp / 256;
+        let a = match slot {
+            5 => [0, half, full],
+            6 => [0x4000, half, full],
+            _ => [0, full, -half],
+        };
+        let turn = kumite_sim::euler(a.map(|v| i32::from(v as i16) >> 4));
+        let n = if slot < 18 { body.bones.get(slot).copied() } else { slot_node(body, slot) };
+        if let Some(n) = n {
+            head::set_local(&body.character.nodes, pose, n, turn_mat3(&turn));
+        }
     }
 }
 
@@ -695,9 +765,8 @@ fn slot_node(body: &Body, slot: usize) -> Option<usize> {
 /// (0x439A80's places, the drawn glbs' nodes 98-100): True Ogre's 18 on hand A, 19 on 18, 20 on the pelvis (PCSX2: his
 /// 20 behind the hips); Roger's tail, 18 on the pelvis, 19 on 18, 20 on 19. A slot on a slot past 17 is turned as
 /// that one's node.
-/// Roger's three and True Ogre's 20 sway on springs instead ([`springs`]).
-/// shortcut: True Ogre's wing code (0x3626B8: his 18 / 19, and his slots 5 / 6, flap by a counter and his rise) is left
-/// out, his 18 / 19 take arm A's tracks (PCSX2's are some 600 from these); port it with his wings' flaps
+/// Roger's three and True Ogre's 20 sway on springs instead ([`springs`]); True Ogre's 18 and 19 wave with his arm A
+/// ([`step_flap`]).
 fn strike_slots(body: u64, moveset: i64) -> Vec<(usize, usize, Vec3)> {
     let at = |slot, joint, [x, y, z]: [f32; 3]| (slot, joint, Vec3::new(x, y, z) / UNITS);
     let mut out = Vec::new();
@@ -784,6 +853,7 @@ impl Game {
             wings: Default::default(),
             wolves: Default::default(),
             springs: Default::default(),
+            flaps: Default::default(),
             ko_collapse: true,
             guard_damage: false,
             tag_carry: [None; 2],
@@ -1084,6 +1154,9 @@ impl Game {
         }
         self.looks = Default::default();
         self.wolves = Default::default();
+        // (the wave's counter starts again with the round's start motion, PCSX2's +0xB120)
+        // shortcut: the PS2 starts it again with the win poses too; upgrade where they start
+        self.flaps = Default::default();
         self.step_camera();
     }
 
@@ -1234,10 +1307,10 @@ impl Game {
         } else {
             let spheres = self.spheres();
             let [b0, b1] = &self.bodies;
-            let (a0, a1) = (FighterAnims { own: b0, other: b1, springs: &self.springs[0] }, FighterAnims { own: b1, other: b0, springs: &self.springs[1] });
+            let (a0, a1) = (FighterAnims { own: b0, other: b1, springs: &self.springs[0], flap: self.flaps[0] }, FighterAnims { own: b1, other: b0, springs: &self.springs[1], flap: self.flaps[1] });
             // Force's other soldier
             let extra_spheres = self.actor_spheres(2);
-            let extra_anims = self.extra_body.as_deref().map(|b| FighterAnims { own: b, other: b0, springs: &[] });
+            let extra_anims = self.extra_body.as_deref().map(|b| FighterAnims { own: b, other: b0, springs: &[], flap: Flap::default() });
             let extra = match (&extra_spheres, &extra_anims) {
                 (Some(sp), Some(an)) => Some((self.extra_pad, sp, an as &dyn Animations)),
                 _ => None,
@@ -1278,7 +1351,7 @@ impl Game {
         let n = self.fight.actor_count();
         let spheres: Vec<BodyVolumes> = (0..n).map(|k| self.actor_spheres(k).unwrap_or_default()).collect();
         let bodies: Vec<Arc<Body>> = (0..n).map(|k| self.body_of(k).cloned().unwrap_or_else(|| self.bodies[0].clone())).collect();
-        let anims: Vec<FighterAnims> = (0..n).map(|k| FighterAnims { own: &bodies[k], other: &bodies[self.fight.opponent_index(k).min(n - 1)], springs: &[] }).collect();
+        let anims: Vec<FighterAnims> = (0..n).map(|k| FighterAnims { own: &bodies[k], other: &bodies[self.fight.opponent_index(k).min(n - 1)], springs: &[], flap: Flap::default() }).collect();
         let a: Vec<&dyn Animations> = anims.iter().map(|a| a as &dyn Animations).collect();
         let mut pads = vec![pads[0], pads[1], self.extra_pad, self.partner_pad];
         pads.extend((4..n).map(|k| self.more_pad.get(k - 4).copied().unwrap_or_default()));
@@ -1691,6 +1764,7 @@ impl Game {
         let (mut pose, place) = shown_pose(&self.bodies[i], other, &shown);
         if self.display.is_none() {
             let b = &self.bodies[i];
+            step_flap(b, other, &shown, &mut pose, self.flaps[i]);
             for (sp, (local, _)) in b.springs.iter().zip(&self.springs[i]) {
                 if let Some(n) = slot_node(b, sp.slot) {
                     head::set_local(&b.character.nodes, &mut pose, n, turn_mat3(local));
@@ -1703,11 +1777,20 @@ impl Game {
     /// Tekken Tag's spring slots, stepped as the fight step's volumes stepped them.
     fn step_springs(&mut self) {
         for i in 0..2 {
-            if !self.bodies[i].springs.is_empty() {
-                let (shown, other) = (self.snapshot(i), self.clip_owner(i));
-                let (mut pose, place) = shown_pose(&self.bodies[i], other, &shown);
-                self.springs[i] = step_springs(&self.bodies[i], &mut pose, place, &self.springs[i]);
+            let b = &self.bodies[i];
+            if b.springs.is_empty() && !b.flaps {
+                continue;
             }
+            let (shown, other) = (self.snapshot(i), self.clip_owner(i));
+            let (mut pose, place) = shown_pose(b, other, &shown);
+            let mut f = self.flaps[i].next();
+            if b.flaps {
+                step_flap(b, other, &shown, &mut pose, f);
+                // (+0x84C: slot 6's height, read by the next frame's wave)
+                f.high = fixed_slots(b, &pose, place).get(6).map_or(0, |p| p[1]);
+            }
+            let springs = step_springs(b, &mut pose, place, &self.springs[i]);
+            (self.flaps[i], self.springs[i]) = (f, springs);
         }
     }
 
@@ -1934,7 +2017,8 @@ fn fixed_slots(body: &Body, pose: &[Mat4], place: Mat4) -> Vec<[i32; 3]> {
     type Fixed = [[i32; 3]; 3];
     let fix = |m: Mat3| -> Fixed { std::array::from_fn(|r| std::array::from_fn(|c| fixed(m.col(c)[r]))) };
     let mul = |a: &Fixed, b: &Fixed| -> Fixed { std::array::from_fn(|r| std::array::from_fn(|c| (0..3).map(|k| a[r][k] * b[k][c] / 4096).sum())) };
-    let rot = |s: usize| body.bones.get(s).and_then(|&n| pose.get(n)).map_or(Mat3::IDENTITY, |m| Mat3::from_mat4(*m));
+    let node = |s: usize| if s < 18 { body.bones.get(s).copied() } else { slot_node(body, s) };
+    let rot = |s: usize| node(s).and_then(|n| pose.get(n)).map_or(Mat3::IDENTITY, |m| Mat3::from_mat4(*m));
     if body.joints.len() < body.bones.len() || body.bones.len() < 18 {
         return Vec::new();
     }
@@ -1946,7 +2030,17 @@ fn fixed_slots(body: &Body, pose: &[Mat4], place: Mat4) -> Vec<[i32; 3]> {
     let (s, c) = (kumite_sim::ball::sin12(2048 - (u >> 4)), kumite_sim::ball::cos12(2048 - (u >> 4)));
     let facing: Fixed = [[c, 0, s], [0, 4096, 0], [-s, 0, c]];
     let mut out: Vec<(Fixed, [i32; 3])> = vec![(mul(&facing, &fix(rot(0))), root.round().to_array().map(|v| v as i32))];
-    for (s, &(parent, at)) in body.joints.iter().enumerate().take(18).skip(1) {
+    let extra = |s: usize| body.extra.iter().find(|e| e.0 == s).map(|e| (e.1, e.2));
+    let mut chain: Vec<(usize, usize, Vec3)> = body.joints.iter().enumerate().take(18).skip(1).map(|(s, &(parent, at))| (s, parent, at)).collect();
+    if body.flaps {
+        // (True Ogre's wave, 0x3626B8, puts a slot's turn in another slot's block, whose place goes with it: 18's to 5,
+        // 5's to 6, 19's to 18, 6's to 19 (PCSX2: 4-5 272 apart, 5-6 342); 18 and 19 follow, on 6 and 18)
+        let (Some((_, at18)), Some((_, at19))) = (extra(18), extra(19)) else { return Vec::new() };
+        let (at5, at6) = (chain[4].2, chain[5].2);
+        (chain[4].2, chain[5].2) = (at18, at5);
+        chain.extend([(18, 6, at19), (19, 18, at6)]);
+    }
+    for (s, parent, at) in chain {
         let Some(&(turn, p)) = out.get(parent) else { return Vec::new() };
         let at = (at * UNITS).round().to_array().map(|v| v as i64);
         let to: [i32; 3] = std::array::from_fn(|r| p[r] + (0..3).map(|k| turn[r][k] as i64 * at[k] / 4096).sum::<i64>() as i32);
