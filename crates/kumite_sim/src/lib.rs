@@ -161,8 +161,7 @@ pub struct GameData {
     pub tag: TagRules,
     /// Tekken Tag's body push (0x377338), not Tekken 3's.
     pub tag_push: bool,
-    /// Tekken Tag's move rules, not Tekken 3's: the END look-ahead without a new press inside the window (0x368F78),
-    /// the dash's window (0x36CAF8), motion inputs (0x36CDD8), jumps toward the opponent (0x36FC04).
+    /// Tekken Tag's move rules, not Tekken 3's: the dash's window (0x36CAF8), motion inputs (0x36CDD8), jumps toward the opponent (0x36FC04).
     pub tag_moves: bool,
 }
 
@@ -1780,11 +1779,13 @@ impl Fighter {
                 self.queued_buffered = false;
             }
         } else if let Some(e) = end_entry.filter(|_| self.frame_step > 0) {
-            // END look-ahead (0x8002DB0C): from 5 frames before the END window until it closes, an attack of the
-            // END destination's own list is buffered and takes over at the window's first frame; Tekken Tag tries
-            // that list inside the window with or without a press (0x368F78)
+            // END look-ahead (0x8002DB0C): from 5 frames before the END window, an attack of the END destination's
+            // own list is buffered and takes over at the window's first frame; inside the window that list is tried
+            // with or without a press (0x8002DB74; Tekken Tag's 0x368F78)
             let early = self.early_end.is_some_and(|f| self.frame >= f);
-            let open = self.tag_rules(gd) && self.frame >= e.win_start;
+            // shortcut: Tekken 3's fighters under Tekken Tag (OpenKumite's crossover) keep the press; open it there too
+            // once a crossover case is checked (Doctor B.'s jabs on Paul stall in a loop with it)
+            let open = (self.tag_rules(gd) || !gd.tag_moves) && self.frame >= e.win_start;
             if (self.frame + 5 >= e.win_start || early) && self.frame <= e.win_end && (self.input.pressed != 0 || open) {
                 if let Some(dest) = self.resolve(e.dest) {
                     // the next list's back-turned conditions see the facing after this animation's net turn
@@ -2857,6 +2858,18 @@ fn root_offset(r: Vec3, yaw: f32, scale: Option<i32>) -> Vec3 {
 
 /// Tekken Tag's sine and cosine of an angle (0x357F18 / 0x357F58): its 4096 table at the angle's top 12 bits,
 /// within ±0xFFF, times 8 (0x7FF8 at most).
+/// The GTE's square root as Tekken 3 has it (0x8004AEDC, SquareRoot0): its table of sqrt((k + 64) / 64) x 4096 at the
+/// top bits past an even shift.
+fn gte_sqrt(a: i32) -> i32 {
+    if a <= 0 {
+        return 0;
+    }
+    let lz = (a as u32).leading_zeros() & !1;
+    let m = if lz <= 24 { (a as u32) >> (24 - lz) } else { (a as u32) << (lz - 24) } as i32;
+    let t = (f64::from(m) / 64.0).sqrt() * 4096.0;
+    ((t as i32) << ((31 - lz) >> 1)) >> 12
+}
+
 /// Tekken Tag's square root (0x39BCF8): Newton's from the power of two past the halving.
 fn tag_isqrt(n: u32) -> u32 {
     if n == 0 {
@@ -3750,9 +3763,9 @@ impl Fight {
         }
     }
 
-    /// Body collision: Tekken Tag's push in its two-fighter fights, else Tekken 3's (Force under Tekken Tag too).
+    /// Body collision: the games' push in their two-fighter fights, else OpenKumite's sphere push (Force).
     fn separate(&mut self, bodies: [&BodyVolumes; 2]) {
-        if self.data.tag_push && self.extra.is_none() {
+        if self.extra.is_none() {
             self.separate_tag(bodies)
         } else {
             self.push_apart(bodies)
@@ -3846,12 +3859,21 @@ impl Fight {
     /// Tekken Tag's body push (0x377338): the deepest overlap of the push spheres (in 3D; sized by the moves, 0x377B58)
     /// is shared by how far each moved since the last push, each backing off along its facing's axis (turned towards
     /// the other) and carried by the other's step along its axis; half of it a frame, all of it in a trade.
+    /// Tekken 3's (0x80046D34, its push control 0x8003EC64) is the same but for: no mode shared, its modes 6 and 7 are
+    /// Tekken Tag's 7 and 8, flags24 bit 0x20000 drops spheres 4 to 7, the GTE's square root (0x8004AEDC), and the
+    /// halves cut down (`>> 1`).
     fn separate_tag(&mut self, bodies: [&BodyVolumes; 2]) {
         let gd = self.data.clone();
+        let t3 = !gd.tag_push;
         let ctrl: [u32; 2] = std::array::from_fn(|i| self.fighters[i].current_move(&gd).push_control.raw & 0xFFFF);
         let radii: [Vec<f32>; 2] = std::array::from_fn(|i| {
             // (mode 6 of either side is both sides')
-            let c = if ctrl[1 - i] & 0xF == 6 { 6 } else { ctrl[i] };
+            let c = match ctrl[i] & 0xF {
+                6 | 7 if t3 => ctrl[i] + 1,
+                8 | 9 if t3 => 0xF,
+                _ if !t3 && ctrl[1 - i] & 0xF == 6 => 6,
+                _ => ctrl[i],
+            };
             let f = &self.fighters[i];
             let m = f.current_move(&gd);
             let near = c & 0x1000 == 0 || m.active[0] == 0 || (f.frame + 8 > m.active[0] && f.frame < m.active[1]);
@@ -3904,7 +3926,7 @@ impl Fight {
                 1..3
             } else if (f.juggle != 0 || j0 != 0 && (j0..=j1).contains(&f.frame)) && f.reacting {
                 6..8
-            } else if m.flags24.raw & 0x400 != 0 {
+            } else if m.flags24.raw & if t3 { 0x20000 } else { 0x400 } != 0 {
                 4..8
             } else {
                 0..0
@@ -3914,7 +3936,7 @@ impl Fight {
         });
         // in the game's integers (0x377338): the spheres' places and radii as its s16, the square roots as
         // 0x3985D8's (float, truncated), the sines 4096 to one, each product's twelfth bits cut toward zero
-        let isqrt = |v: i32| (v.max(0) as f32).sqrt() as i32;
+        let isqrt = |v: i32| if t3 { gte_sqrt(v) } else { (v.max(0) as f32).sqrt() as i32 };
         let s16 = |v: i32| v as i16 as i32;
         let point = |v: Vec3| [v.x as i32, v.y as i32, v.z as i32];
         let mut depth = 0;
@@ -3984,8 +4006,14 @@ impl Fight {
             let d = [cut(o[0] * moved[1 - i]) - cut(a[0] * share[i]), cut(o[1] * moved[1 - i]) - cut(a[1] * share[i])];
             let f = &mut self.fighters[i];
             let half = if whole { 1 } else { 2 };
-            f.position.x += (d[0] / half) as f32;
-            f.position.z += (d[1] / half) as f32;
+            if t3 {
+                // (cut down in the game's z, OpenKumite's negated)
+                f.position.x += (d[0] >> (half - 1)) as f32;
+                f.position.z -= (-d[1] >> (half - 1)) as f32;
+            } else {
+                f.position.x += (d[0] / half) as f32;
+                f.position.z += (d[1] / half) as f32;
+            }
             f.pushed = true;
             // (the next frame measures from here: 0x8A7A90 keeps the place after the push)
             f.push_prev = Some(drawn(f));

@@ -592,7 +592,8 @@ impl Bout {
                         self.game.fight.fighters[i].moveset.fixed.round_start[k]
                     });
                     self.game.set_start_moves(aliases);
-                    if tag && self.round > 1 {
+                    // (later rounds from frame 1: Tekken 3 keeps the last 150 frames in round 1 only, 0x8002D3DC)
+                    if self.round > 1 {
                         for (f, a) in self.game.fight.fighters.iter_mut().zip(aliases) {
                             if f.alias == a {
                                 f.frame = 1;
