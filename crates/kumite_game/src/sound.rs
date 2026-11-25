@@ -464,12 +464,22 @@ impl SoundData {
     /// Sounds started by the last bout step. `last` holds each fighter's move before the step (updated
     /// here); `banks` the characters' sound banks ("m071"), `characters` their character ids (voice rows).
     pub fn step(&self, bout: &Bout, state: &mut SoundState, banks: [&str; 2], characters: [usize; 2]) -> Vec<Sound> {
-        self.step_with_partner(bout, state, banks, characters, None, None)
+        self.step_with_partner(bout, state, banks, characters, None, None, &[])
     }
 
-    /// [`SoundData::step`] with a co-op partner (actor 3: Force's, Ball 2 ON 2's) and actor 2's own
+    /// [`SoundData::step`] with a co-op partner (actor 3: Force's, Ball 2 ON 2's), Force's 3P and 4P (`more`: actors 4,
+    /// 5; the soldiers after them play the target's bank, unvoiced) and actor 2's own
     /// voice (Ball 2 ON 2): their banks and character ids.
-    pub fn step_with_partner(&self, bout: &Bout, state: &mut SoundState, banks: [&str; 2], characters: [usize; 2], partner: Option<(&str, usize)>, extra: Option<(&str, usize)>) -> Vec<Sound> {
+    pub fn step_with_partner(
+        &self,
+        bout: &Bout,
+        state: &mut SoundState,
+        banks: [&str; 2],
+        characters: [usize; 2],
+        partner: Option<(&str, usize)>,
+        extra: Option<(&str, usize)>,
+        more: &[Option<(&str, usize)>],
+    ) -> Vec<Sound> {
         if let Some(t) = &self.tag {
             return t.step(bout, state);
         }
@@ -491,6 +501,18 @@ impl SoundData {
             characters.push(ch);
             if partner.is_some() {
                 voiced.push(3);
+            }
+        }
+        if fighters.len() == 4 {
+            for (k, m) in f.more.iter().enumerate() {
+                let own = more.get(k).copied().flatten();
+                let (bank, ch) = own.unwrap_or((banks[1], characters[1]));
+                fighters.push(m);
+                banks.push(bank);
+                characters.push(ch);
+                if own.is_some() {
+                    voiced.push(4 + k);
+                }
             }
         }
         let n = fighters.len();
@@ -942,8 +964,11 @@ impl Tag {
     /// row come from its character file (a tag swap brings the partner's).
     fn step(&self, bout: &Bout, state: &mut SoundState) -> Vec<Sound> {
         let (g, f) = (&bout.game, &bout.game.fight);
-        let models: Vec<usize> = g.bodies.iter().map(|b| b.model_record).collect();
-        let mut out = self.step_actors(&f.fighters.each_ref(), &models, &[1, 0], &f.hits, &f.data, state);
+        // (and Force's, Ball 2 ON 2's other actors: the soldier, the partner, 3P, 4P, the soldiers after them)
+        let fighters: Vec<&kumite_sim::Fighter> = (0..f.actor_count()).map_while(|k| f.actor(k)).collect();
+        let models: Vec<usize> = (0..fighters.len()).map(|k| g.body_of(k).map_or(usize::MAX, |b| b.model_record)).collect();
+        let opponents: Vec<usize> = (0..fighters.len()).map(|k| f.opponent_index(k)).collect();
+        let mut out = self.step_actors(&fighters, &models, &opponents, &f.hits, &f.data, state);
         // Ball (the Tekken 3 slice's): its sounds are ids of a group of their own (ball.json `constants.sounds`)
         for e in f.ball.iter().flat_map(|b| &b.events) {
             if let kumite_sim::ball::BallEvent::Sound(id) = *e {
