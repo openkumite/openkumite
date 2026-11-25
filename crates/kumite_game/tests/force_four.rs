@@ -127,7 +127,8 @@ fn check(a: &Assets, models: &[usize], stride: usize) {
     let players = b.game.players();
     for (k, &i) in players.iter().enumerate() {
         b.game.fight.actor_mut(i).unwrap().health = 0;
-        for _ in 0..30 {
+        // (a throw under way holds the K.O. off)
+        for _ in 0..90 {
             b.step([Pad::default(); 2]);
         }
         let last = k + 1 == players.len();

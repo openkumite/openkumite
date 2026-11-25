@@ -2036,12 +2036,11 @@ impl Fighter {
             let reached = if self.frame_step > 0 { exec != 255 && self.frame >= exec } else { self.frame as i64 <= exec as i64 };
             if reached {
                 self.commit(gd, to, self.queued_alias, transition, false, anims);
-                // Tekken Tag draws the new move's root on the frame it starts (0x34E748 runs after the move logic)
-                if self.tag_rules(gd) {
-                    self.shown_root = self.root();
-                    self.root_motion(gd, anims);
-                    self.ease(gd, anims);
-                }
+                // the new move's root on the frame it starts (Tekken Tag's 0x34E748 runs after the move logic; Tekken 3's
+                // root 0x8003AAF4 and ease 0x8003C270 too)
+                self.shown_root = self.root();
+                self.root_motion(gd, anims);
+                self.ease(gd, anims);
                 return;
             }
         }
@@ -2111,9 +2110,7 @@ impl Fighter {
         let before = self.root();
         self.shown_root = self.root();
         self.root_motion(gd, anims);
-        if self.tag_rules(gd) {
-            self.ease(gd, anims);
-        }
+        self.ease(gd, anims);
         self.fly();
         if self.air.is_none() {
             self.drift(gd);
@@ -2168,23 +2165,34 @@ impl Fighter {
     }
 
     /// Tekken Tag's pose ease for the frame (0x373428, after the move logic), then the root height and the joint
-    /// turns drawn with it (0x34E938, 0x34EF20).
+    /// turns drawn with it (0x34E938, 0x34EF20). Tekken 3's (0x8003C270) eases the root height alone here, which is
+    /// the root's (0x8003AB78: P+0xF6C); its joint turns are not followed (the pose drawn is the clip's).
     fn ease(&mut self, gd: &GameData, anims: &dyn Animations) {
         let (anim, f) = self.animation(gd);
-        let Some(raw) = anims.turns(anim, f, self.current.bank == Bank::Partner) else { return };
+        let tag = self.tag_rules(gd);
+        let raw = match anims.turns(anim, f, self.current.bank == Bank::Partner) {
+            Some(raw) => raw,
+            None if !tag => [[0; 9]; 18],
+            None => return,
+        };
         let (m, frame, last) = (self.current_move(gd), self.frame as i32, self.ease_last);
-        let (fl, frames, active, next) = (m.flags24.tag, m.frames as i32, m.active.map(|a| a as i32), m.next.alias);
+        let (fl, frames, active, next) = (if tag { m.flags24.tag } else { m.flags24.raw >> 8 }, m.frames as i32, m.active.map(|a| a as i32), m.next.alias);
         let last_move = last.and_then(|c| self.moves(gd, c.bank).moves.get(c.index));
         // +0x134: a new motion started (0x36A9A0)
-        let new_motion = self.started_with.is_some_and(|t| matches!(t & 0x3F, 1 | 3) || last_move.is_some_and(|l| l.anim != m.anim));
+        let new_motion = self.started_with.is_some_and(|t| !tag || matches!(t & 0x3F, 1 | 3) || last_move.is_some_and(|l| l.anim != m.anim));
         let last_fl = last_move.map_or(0, |l| l.flags24.tag);
         self.ease_last = Some(self.current);
         // (+0x131: down for the round)
         let ko = self.health <= 0;
         // no ease from the pose shown (a3), none toward the next move (s2). shortcut: player +0x17E (transition bit
         // 0x4000, Unknown's only) is left out
-        let cut = fl & 0x181 != 0 || self.reacting || last_fl & fl & 0x40 != 0 || ko;
-        let hold = fl & 2 != 0 || (active[0] != 0 && frame <= active[1]) || self.juggle != 0 || (self.air.is_some() && self.reacting) || ko;
+        let (cut, hold) = if tag {
+            (fl & 0x181 != 0 || self.reacting || last_fl & fl & 0x40 != 0 || ko, fl & 2 != 0 || (active[0] != 0 && frame <= active[1]) || self.juggle != 0 || (self.air.is_some() && self.reacting) || ko)
+        } else {
+            // Tekken 3 (0x8003C87C, 0x8003C9B4): the move's +0x24 bits 0x100 / 0x200, juggled (+0x94), struck in the air
+            // (+0xDB, +0x87)
+            (fl & 1 != 0, fl & 2 != 0 || self.juggle != 0 || (self.airborne_flag(gd) && self.struck_in_move))
+        };
         let e = &mut self.ease;
         if match e.mode {
             1 => e.count == 0 || cut,
@@ -2201,13 +2209,18 @@ impl Fighter {
         let left = (frames - frame).max(0);
         let n = match active[0] {
             _ if cut || last.is_none_or(|l| l == self.current) || left == 0 => 0,
+            // (Tekken 3's, 0x8003C8F0: to its first active frame, and 4 / 16 past it too; the same move again when
+            // +0x8B is 3, likewise not followed)
+            a if !tag && a != 0 && frame < a => (a - frame).min(16),
+            _ if !tag && self.chain < 0 => 16,
+            _ if !tag => 4,
             0 if self.chain < 0 => 16,
             0 => 4,
             a if frame < a - 1 => (a - frame - 1).min(16),
             _ => 0,
         };
         let mut start = (n.min(left) >= 2).then_some((1, n.min(left)));
-        if start.is_none() && !matches!(mode, 1 | 2) && !hold {
+        if start.is_none() && (if tag { !matches!(mode, 1 | 2) } else { mode == 0 }) && !hold {
             // 0x3737B0: past its last active frame, toward the queued move's start over the frames to the switch,
             // unless that start is in the next move's active frames
             if let Some((to, exec, t)) = self.queued.filter(|_| !self.queued_buffered) {
@@ -2216,7 +2229,8 @@ impl Fighter {
                 let first = if matches!(t & 0x3F, 2 | 18..=22 | 25 | 26 | 0x1D | 0x2C) { exec } else { 0 };
                 let next = self.moves(gd, to.bank).moves.get(to.index).map_or([0, 0], |m| m.active.map(|a| a as i32));
                 let n = exec - frame + 1;
-                if frame < exec && active[1] < frame && (next[0] == 0 || first + 1 < next[0] || next[1] < first + 1) && n >= 2 {
+                // (Tekken 3's, 0x8003CA9C: any frame before the switch)
+                if frame < exec && (!tag || active[1] < frame && (next[0] == 0 || first + 1 < next[0] || next[1] < first + 1) && n >= 2) {
                     start = Some((2, n));
                 }
             }
@@ -2231,7 +2245,7 @@ impl Fighter {
             // first (2, 3)
             Some((mode, n)) => {
                 let [a, b] = match mode {
-                    1 => [Some((self.shown_turns, self.shown_height)), Some((raw, self.anim_root_y as i32))],
+                    1 => [Some((self.shown_turns, self.shown_height)), Some((raw, self.anim_root_y.round() as i32))],
                     2 => {
                         let (to, exec, t) = self.queued.unwrap_or((self.current, 0, 0));
                         let exec = if exec == 255 { frames as u32 } else { exec };
@@ -2269,26 +2283,33 @@ impl Fighter {
             let v = d * w2;
             (v + if v < 0 { 0x1FFF } else { 0 }) >> 13
         };
-        let h = self.anim_root_y as i32;
+        let h = self.anim_root_y.round() as i32;
         self.shown_height = if e.mode != 0 && e.frames != 0 { (h as i16 as i32 + part(e.height)) as i16 as i32 } else { h };
         self.shown_turns = raw;
-        if e.mode != 0 {
+        if !tag {
+            // (Tekken 3's root carries the eased height, 0x8003AB78)
+            self.anim_root_y = self.shown_height as f32;
+        } else if e.mode != 0 {
             for (s, (r, d)) in self.shown_turns.iter_mut().zip(raw.iter().zip(&e.turns)).skip(1) {
                 *s = orthonormal(std::array::from_fn(|k| (r[k] as i32 + part(d[k] as i32)) as i16));
             }
         }
     }
 
-    /// Tekken Tag: move `c`'s joint turns and scaled root height at `frame` (0x363BD8).
+    /// Move `c`'s joint turns and root height at `frame`: Tekken Tag's scaled (0x363BD8), Tekken 3's without turns.
     fn pose_at(&self, gd: &GameData, anims: &dyn Animations, c: Current, frame: u32) -> Option<(Turns, i32)> {
         let (anim, partner) = (&self.moves(gd, c.bank).moves.get(c.index)?.anim, c.bank == Bank::Partner);
-        let y = anims.root(anim, frame, partner)?.y.round() as i32 * anims.root_scale(self.thrown) / 4096;
-        Some((anims.turns(anim, frame, partner)?, y))
+        let y = anims.root(anim, frame, partner)?.y.round() as i32;
+        if !self.tag_rules(gd) {
+            return Some(([[0; 9]; 18], y));
+        }
+        Some((anims.turns(anim, frame, partner)?, y * anims.root_scale(self.thrown) / 4096))
     }
 
     /// Tekken Tag: the joint turns and the root height eased, while an ease is on (for the pose drawn).
     pub fn eased(&self) -> Option<(Turns, f32)> {
-        (self.ease.mode != 0).then_some((self.shown_turns, self.shown_height as f32 - self.anim_root_y))
+        // (Tekken 3's has no turns: its root carries the height)
+        (self.ease.mode != 0 && self.shown_turns[0] != [0; 9]).then_some((self.shown_turns, self.shown_height as f32 - self.anim_root_y))
     }
 
     /// Juggle flight (0x8003F238): the physics height replaces the animation's root height until landing, with
@@ -4084,7 +4105,7 @@ impl Fight {
         let table = &gd.reactions.air_reactions.entries;
         // the air reaction (0x8002EE94): a late fall (low, or already falling sideways), a spike (the striking limb
         // moving down 110+ units this frame, or two moves the code names), else by the side hit
-        let (vf, af) = (&self.fighters[v], &self.fighters[a]);
+        let (Some(vf), Some(af)) = (self.actor(v), self.actor(a)) else { return false };
         let plays = |f: &Fighter, alias: usize| f.resolve(alias) == Some(f.current);
         let queued = |f: &Fighter, alias: usize| f.queued.is_some_and(|q| f.resolve(alias) == Some(q.0));
         let fixed = &vf.moveset.fixed;
@@ -4141,7 +4162,8 @@ impl Fight {
         };
         let spike = index == 1 || (gd.tag_juggles && index == 7);
         let Some(air) = table.get(index).or_else(|| table.first()) else { return false };
-        let f = &mut self.fighters[v];
+        let from = af.root();
+        let Some(f) = self.actor_mut(v) else { return false };
         // knockdown stun (0x80030AF8): this hit's damage plus half the pool left (none after a 0x1000 move)
         f.stun = if f.current_move(gd).flags24.raw & 0x1000 != 0 { 0 } else { (damage.unsigned_abs() + f.stun / 2).min(0x42) };
         let (old_motion, old_frames, old_frame) = {
@@ -4164,7 +4186,7 @@ impl Fight {
         f.air_pop(gd, Pop { damage, strike_down, target, prev: (old_motion, old_frames, old_frame), y0, falling, spike, extra_drift: 0, kind });
         if spike {
             // it slides 40 units a frame away from the attacker for the rest of the animation
-            let away = f.root() - self.fighters[a].root();
+            let away = f.root() - from;
             let direction = glam::Vec2::new(away.x, away.z).normalize_or_zero();
             // (with the air curve's impulses on top, 0x8002F2F8)
             let mut impulses = [0; 8];
@@ -4172,7 +4194,7 @@ impl Fight {
                 impulses[k] = *v;
             }
             let curve = PushbackCurve { index: 0, constant_frames: mv_frames as i32 - 6, velocity: 40, impulses };
-            self.fighters[v].pushback = Some(Pushback { curve, frame: 0, direction, tag: None });
+            f.pushback = Some(Pushback { curve, frame: 0, direction, tag: None });
         }
         spike
     }
