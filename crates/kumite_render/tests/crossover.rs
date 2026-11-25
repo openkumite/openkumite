@@ -132,6 +132,7 @@ fn retarget(to: &mut Character, from: &Character, clip: usize, to_ttt: bool) -> 
         translations: vec![None; to.nodes.len()],
         scales: vec![None; to.nodes.len()],
         angles: Vec::new(),
+        channels: Vec::new(),
     };
     for (i, n) in to.nodes.iter().enumerate() {
         let Some(j) = joint(&n.name) else { continue };

@@ -2500,8 +2500,14 @@ impl Fighter {
             self.anim_root_y = self.shown_height as f32;
         }
         if e.mode != 0 {
+            // (Tekken 3's, 0x8003B0A0: the GPF's (w d) >> 12 at P+0x186E, then 0x80075FC8)
+            let w = if e.frames != 0 { (e.count << 12) / e.frames } else { 0x1000 };
             for (s, (r, d)) in self.shown_turns.iter_mut().zip(raw.iter().zip(&e.turns)).skip(1) {
-                *s = orthonormal(std::array::from_fn(|k| (r[k] as i32 + part(d[k] as i32)) as i16));
+                *s = if tag {
+                    orthonormal(std::array::from_fn(|k| (r[k] as i32 + part(d[k] as i32)) as i16))
+                } else {
+                    t3_orthonormal(std::array::from_fn(|k| (r[k] as i32 + ((w * d[k] as i32) >> 12)) as i16))
+                };
             }
         }
     }
@@ -2842,7 +2848,7 @@ fn root_offset(r: Vec3, yaw: f32, scale: Option<i32>) -> Vec3 {
 /// within ±0xFFF, times 8 (0x7FF8 at most).
 /// The GTE's square root as Tekken 3 has it (0x8004AEDC, SquareRoot0): its table of sqrt((k + 64) / 64) x 4096 at the
 /// top bits past an even shift.
-fn gte_sqrt(a: i32) -> i32 {
+pub fn gte_sqrt(a: i32) -> i32 {
     if a <= 0 {
         return 0;
     }
@@ -2884,6 +2890,28 @@ fn orthonormal(m: [i16; 9]) -> [i16; 9] {
     let d = (at(1) * x[0] + at(4) * x[1] + at(7) * x[2]) >> 12;
     let y = unit([at(1) - ((d * x[0]) >> 12), at(4) - ((d * x[1]) >> 12), at(7) - ((d * x[2]) >> 12)]);
     let z = [cut(x[1] * y[2]) - cut(x[2] * y[1]), cut(x[2] * y[0]) - cut(x[0] * y[2]), cut(x[0] * y[1]) - cut(x[1] * y[0])];
+    [x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]].map(|v| v as i16)
+}
+
+/// Tekken 3's turn made orthonormal again (0x80075FC8): its first column to unit length (VectorNormalS 0x8003A618:
+/// times the table's 1 / sqrt at the square's top bits, 0x8001A194, then down by half its shift), the second square to
+/// it and to unit length, the third their cross product (the GTE's OP, 0x8003A6D8); 4096 = 1.
+fn t3_orthonormal(m: [i16; 9]) -> [i16; 9] {
+    let unit = |v: [i32; 3]| {
+        let sq = v.iter().fold(0i32, |a, x| a.wrapping_add(x.wrapping_mul(*x)));
+        if sq <= 0 {
+            return [0; 3];
+        }
+        let lz = (sq.leading_zeros() & 0x1E) as i32;
+        let top = if lz >= 24 { sq << (lz - 24) } else { sq >> (24 - lz) };
+        let r = (4096.0 * (64.0 / f64::from(top)).sqrt()) as i32;
+        v.map(|x| (x * r) >> ((31 - lz) >> 1))
+    };
+    let at = |k: usize| m[k] as i32;
+    let x = unit([at(0), at(3), at(6)]);
+    let d = (at(1) * x[0] + at(4) * x[1] + at(7) * x[2]) >> 12;
+    let y = unit([at(1) - ((d * x[0]) >> 12), at(4) - ((d * x[1]) >> 12), at(7) - ((d * x[2]) >> 12)]);
+    let z = [(x[1] * y[2] - x[2] * y[1]) >> 12, (x[2] * y[0] - x[0] * y[2]) >> 12, (x[0] * y[1] - x[1] * y[0]) >> 12];
     [x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]].map(|v| v as i16)
 }
 
@@ -3529,12 +3557,13 @@ impl Fight {
         let extra_on = self.extra.as_ref().is_some_and(|e| !e.inactive) && !self.fighters[0].inactive;
         let mut posed = None;
         if self.link.is_none() && pair {
-            // Tekken Tag pushes the bodies in the pose of this frame (0x377338 after the moves' update)
+            // the bodies push in the pose of this frame (Tekken Tag's 0x377338 after the moves' update; Tekken 3's spheres
+            // 0x80041F6C after the roots and the skeleton, 0x8002BA64)
             let now: [Option<BodyVolumes>; 2] = std::array::from_fn(|i| anims[i].volumes(&self.fighters[i], &gd));
             self.separate([now[0].as_ref().unwrap_or(&bodies[0]), now[1].as_ref().unwrap_or(&bodies[1])]);
-            // Tekken Tag's hit pass (0x371D68) strikes in the pose made before the push moves the bodies (0x34F3D8,
-            // then 0x371C68)
-            posed = (self.data.tag_push && self.extra.is_none()).then_some(now);
+            // the hit pass (Tekken Tag's 0x371D68, Tekken 3's 0x80044008) strikes in the pose made before the push
+            // moves the bodies (0x34F3D8, then 0x371C68; Tekken 3's spheres 0x80041F6C, then 0x8003EC64)
+            posed = self.extra.is_none().then_some(now);
         }
         if let (true, Some((_, body, _))) = (extra_on && self.link.is_none(), extra) {
             self.swap_extra();

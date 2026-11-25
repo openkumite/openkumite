@@ -21,6 +21,7 @@ pub mod head;
 pub mod rumble;
 pub mod scene;
 pub mod sound;
+mod t3pose;
 pub mod tag;
 pub mod tagface;
 pub mod vfx;
@@ -141,6 +142,9 @@ impl Animations for FighterAnims<'_> {
         if let Some(t) = angle_turns(clip, frame as usize) {
             return (self.own.slots.len() >= 18).then_some(t);
         }
+        if let Some(c) = channels(clip, frame as usize) {
+            return (self.own.character.slots.len() == 18).then(|| t3pose::locals(c));
+        }
         let mut turns = [[0; 9]; 18];
         for (t, &n) in turns.iter_mut().zip(&self.own.slots) {
             let node = nodes.get(n)?;
@@ -153,17 +157,37 @@ impl Animations for FighterAnims<'_> {
     }
 
     fn volumes(&self, f: &kumite_sim::Fighter, gd: &kumite_sim::GameData) -> Option<BodyVolumes> {
-        if self.own.bones.is_empty() {
-            return None;
-        }
         let partner = f.current.bank == kumite_sim::data::Bank::Partner;
         let other = if partner { self.other } else { self.own };
         let (anim, frame) = f.animation(gd);
-        let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw, ease: f.eased() };
+        let clip = other.character.clip(anim);
+        // Tekken 3: the spheres on the slots in the PS1's integers (0x80041F6C), from the frame's turns as eased
+        let t3 = clip.and_then(|c| channels(other.character.clips.get(c)?, frame as usize)).filter(|_| self.own.bones.is_empty() && self.own.character.slots.len() == 18);
+        if self.own.bones.is_empty() && t3.is_none() {
+            return None;
+        }
+        let shown = Snapshot { clip: clip.map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw, ease: f.eased() };
         let (mut pose, place) = shown_pose(self.own, other, &shown);
         step_flap(self.own, other, &shown, &mut pose, self.flap.next());
         step_springs(self.own, &mut pose, place, self.springs);
-        Some(volumes(self.own, &pose, place))
+        let mut v = volumes(self.own, &pose, place);
+        if let Some(c) = t3 {
+            let turns = f.eased().map_or_else(|| t3pose::locals(c), |e| e.0);
+            let r = f.root();
+            let root = [r.x, -r.y - f.anim_root_y, -r.z].map(|v| v.round() as i32);
+            let facing = 0x8000 - (f.yaw / std::f32::consts::TAU * 65536.0).round() as i32;
+            let at = t3pose::places(&turns, &self.own.character.slots, facing, root);
+            let on = |layout: &[(usize, Vec3, f32, usize)], spheres: &mut [Sphere]| {
+                for (&(node, offset, ..), s) in layout.iter().zip(spheres) {
+                    if let Some(p) = self.own.slots.iter().position(|&n| n == node).and_then(|k| at.get(k)) {
+                        s.centre = Vec3::new(p[0] as f32, -p[1] as f32, -p[2] as f32) + offset * UNITS;
+                    }
+                }
+            };
+            on(&self.own.hurt, &mut v.hurt);
+            on(&self.own.push, &mut v.push);
+        }
+        Some(v)
     }
 }
 
@@ -1819,6 +1843,11 @@ impl Game {
     /// Collision volumes of both fighters for the pose currently shown (game units).
     pub fn spheres(&self) -> [BodyVolumes; 2] {
         std::array::from_fn(|i| {
+            // (Tekken 3's in the PS1's integers, as the step takes them)
+            let anims = FighterAnims { own: &self.bodies[i], other: &self.bodies[1 - i], springs: &self.springs[i], flap: self.flaps[i] };
+            if let Some(v) = (self.bodies[i].bones.is_empty() && self.display.is_none()).then(|| anims.volumes(&self.fight.fighters[i], &self.fight.data)).flatten() {
+                return v;
+            }
             // (Tekken Tag's look only changes what is drawn)
             let (pose, place) = if self.bodies[i].bones.is_empty() { self.pose(i) } else { self.pose_animated(i) };
             volumes(&self.bodies[i], &pose, place)
@@ -1902,9 +1931,19 @@ pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Ma
             head::set_local(&body.character.nodes, &mut pose, n, turn_mat(t));
         }
     }
+    // (Tekken 3: the slots past the hips at the PS1's turns of the frame's channels, eased while an ease is on, in
+    // glTF's axes: y and z turned over)
+    let t3 = shown.clip.filter(|_| body.bones.is_empty() && body.character.slots.len() == 18).and_then(|(clip, frame)| channels(owner.clips.get(clip)?, frame));
+    if let Some(c) = t3 {
+        let flip = Mat3::from_diagonal(Vec3::new(1.0, -1.0, -1.0));
+        let turns = shown.ease.map_or_else(|| t3pose::locals(c), |e| e.0);
+        for (t, &n) in turns.iter().zip(&body.slots).skip(1) {
+            head::set_local(&body.character.nodes, &mut pose, n, flip * turn_mat(t) * flip);
+        }
+    }
     if let Some((turns, lift)) = shown.ease {
         // (the slots past the hips take the eased turns, rows of 4096; the body rises by the eased height)
-        for (t, &n) in turns.iter().zip(&body.slots).skip(1) {
+        for (t, &n) in turns.iter().zip(&body.slots).skip(1).filter(|_| t3.is_none()) {
             head::set_local(&body.character.nodes, &mut pose, n, turn_mat(t));
         }
         for m in &mut pose {
@@ -1918,6 +1957,11 @@ pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Ma
         }
     }
     (pose, place)
+}
+
+/// Tekken 3: a clip's channels at `frame` (clamped to its end), None without them.
+fn channels(clip: &kumite_assets::Clip, frame: usize) -> Option<&[i16; 49]> {
+    clip.channels.get(frame.min(clip.channels.len().checked_sub(1)?))
 }
 
 /// A slot's turn (rows, 4096 = 1) as a matrix.
