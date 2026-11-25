@@ -609,6 +609,8 @@ pub struct Roster {
     pub ball_hud: Value,
     /// Its stage (ball.json `constants.stage`), the CPU's opponents and the first one ever (`constants.cpu`).
     pub ball_stage: usize,
+    /// Its full health (`constants.max_health`: Tekken 3's default, 130).
+    pub ball_health: Option<i32>,
     pub ball_pool: Vec<usize>,
     pub ball_first: Option<usize>,
     /// The CPU's opponent is drawn from those picked at most this many times more than the least picked.
@@ -715,6 +717,7 @@ impl Roster {
             ball_select: ball["constants"]["select"].clone(),
             ball_hud: serde_json::json!({"gauges": ball["constants"]["gauges"], "texts": ball["constants"]["texts"], "court_lines": ball["constants"]["court_lines"]}),
             ball_stage: ball["constants"]["stage"].as_u64().unwrap_or(0) as usize,
+            ball_health: ball["constants"]["max_health"].as_i64().and_then(|h| i32::try_from(h).ok()),
             ball_pool: ball["constants"]["cpu"]["pool"].as_array().into_iter().flatten().filter_map(|c| c.as_u64()).map(|c| c as usize).collect(),
             ball_first: ball["constants"]["cpu"]["first_ever"].as_u64().map(|c| c as usize),
             ball_spread: ball["constants"]["cpu"]["spread"].as_u64().unwrap_or(0) as u32,

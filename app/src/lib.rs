@@ -991,6 +991,10 @@ impl App {
             let (kind, server) = s.ball.unwrap_or((0, 0));
             game.ball = Some(kumite_game::BallSetup { data, kind, server, rounds: 0 });
             game.round_frames = u32::MAX / 2;
+            // (Tekken Tag: Tekken 3's health, which the ball's damage is made for)
+            if self.roster.ttt.is_some() {
+                game.max_health = [self.roster.ball_health; 2];
+            }
             // (Tekken Tag has no effect atlas: the ball's untextured triangles take a white texel)
             if scene.effects.is_none() {
                 scene.effects = Some(r.texture(1, 1, &[255; 4]));
@@ -1147,7 +1151,10 @@ impl App {
             let bgm = self.roster.bgm_of.get(&models[k]).or(self.roster.bgm_of.get(&models[0])).copied();
             // (Tekken Tag: the arena's)
             let arcade = arcade.and_then(|b| sound.music(b));
-            let track = sound.arena_music(stage).or(arcade).or_else(|| bgm.and_then(|b| sound.music(b))).or_else(|| sound.music_for(&names[k]));
+            // (Tekken Ball's court in Tekken Tag: Tekken 3 plays the opponent's theme, which Tekken Tag's fighters have
+            // none of; the theme of the arena it stands in)
+            // shortcut: Tekken Tag's music, not Tekken 3's; upgrade: the install brings Tekken 3's themes (440 MB)
+            let track = sound.arena_music(stage).or(arcade).or_else(|| bgm.and_then(|b| sound.music(b))).or_else(|| sound.music_for(&names[k])).or_else(|| sound.arena_music(arena));
             audio.music(track);
         }
         if watch {
@@ -1620,7 +1627,15 @@ impl App {
                 scene.background = st.background;
                 (scene.camera_drum, scene.floor_patch, scene.floor_light, scene.floor_levels, scene.fog) = (st.camera_drum, st.floor_patch, st.floor_light, st.floor_levels, st.fog);
                 if let Some((m, at)) = st.strip.as_ref().filter(|(m, _)| !m.indices.is_empty()) {
-                    scene.sky = vec![r.sorted_mesh(&conv(m), &m.indices, tex[m.texture].clone())];
+                    // the strip flat on the screen, as the original's sprites: x in its texels (three turns, u
+                    // repeating), y 0..1 its height (the stage's fill above it); `stage_view` places it
+                    let w = st.textures.get(m.texture).map_or(1024.0, |t| t.width as f32);
+                    let template = m.vertices.first().map(|v| StaticVertex { pos: [0.0; 3], uv: [0.0; 2], color: v.color, cell: v.cell, normal: v.normal });
+                    let corners = [(-1.0, 0.0), (2.0, 0.0), (-1.0, 1.0), (2.0, 1.0)];
+                    let quad: Vec<StaticVertex> = template.into_iter().flat_map(|t| corners.map(|(u, y)| StaticVertex { pos: [u * w, y, 0.0], uv: [u, 1.0 - y], ..t })).collect();
+                    scene.sky = vec![r.sorted_mesh(&quad, &[0, 1, 2, 1, 3, 2], tex[m.texture].clone())];
+                    // above it the original's fill (record 8 0x800B59AC)
+                    scene.background = [0x21, 0x3A, 0x94];
                     scene.moving.clear();
                     scene.strip = Some(*at);
                 }
@@ -4533,8 +4548,11 @@ impl App {
                 self.ball_cpu = [d.seats[0].is_none(), d.seats[1].is_none()];
             }
         }
-        // no model twice on screen (the CPU's picks: Survival's, Ball's opponent, the demo's)
-        menu::distinct_models(&self.roster, &mut setup);
+        // no model twice on screen (the CPU's picks: Survival's, the demo's); Ball's opponent may be the player's
+        // own (0x800B4DC8: the PS1's first Ball match of a Gon is against Gon)
+        if setup.mode != Mode::Ball {
+            menu::distinct_models(&self.roster, &mut setup);
+        }
         // (a browser: the fight's files arrive while the VS screen shows)
         kumite_fs::prefetch(&self.fight_files(&setup));
         let run = self.run.as_ref().filter(|r| r.mode() == setup.mode);
@@ -7109,18 +7127,25 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
     cam.sky_y_scale = scene.sky_y_scale;
     cam.sky_first = scene.sky_first;
     cam.background = Some(scene.background);
-    // Ball's 2D sky strip (0x800B5A48): a drum around the camera, its bottom on the point
-    // `ahead` in front at the strip's height, `px` screen rows tall; drawn before the floor
+    // Ball's 2D sky strip (0x800B5A48): flat on the screen, `px` rows tall, its bottom on the point `ahead` from the
+    // court's middle along the view at the strip's height (the original adds the eye unshifted to the 4096-scaled
+    // offset: the point ignores where the eye stands); its left edge at texel scroll + 64, scroll = the eye across
+    // the view / 96 less half the yaw. Over the floor (its OT 1008, the floor's further)
     if let Some([ahead, y, px]) = scene.strip {
-        let radius = ahead / kumite_game::UNITS;
-        let h = px * radius * (cam.fov_y * 0.5).tan() / 240.0;
-        cam.sky = glam::Mat4::from_translation(glam::Vec3::new(cam.eye.x, -y / kumite_game::UNITS, cam.eye.z)) * glam::Mat4::from_scale(glam::Vec3::new(radius, h, radius));
-        // the original's floor is a finite 10 x 10 tile patch around the midpoint (0x8004994C):
-        // the strip shows beyond it
-        let tile = 1.8;
-        let (x0, z0) = (((mid.x / tile).floor() - 5.0) * tile, ((mid.z / tile).floor() - 5.0) * tile);
-        cam.floor_clip = Some([x0, x0 + 10.0 * tile, z0, z0 + 10.0 * tile]);
-        (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, true, false);
+        let f = glam::Vec2::new(cam.target.x - cam.eye.x, cam.target.z - cam.eye.z).normalize_or_zero();
+        let view = cam.view();
+        let p = view.transform_point3(glam::Vec3::new(f.x * ahead, -y, f.y * ahead) / kumite_game::UNITS);
+        let d = (-p.z).max(0.1);
+        // shortcut: the yaw taken from 0, the original's from the round's start (0 on the court)
+        let yaw = (-f.x).atan2(-f.y) * 4096.0 / std::f32::consts::TAU;
+        let scroll = ((cam.eye.z * f.x - cam.eye.x * f.y) * kumite_game::UNITS / 96.0 - yaw / 2.0).rem_euclid(1024.0);
+        let t = (cam.fov_y * 0.5).tan();
+        let (kx, ky) = (d * t * 4.0 / 3.0 / 184.0, px * d * t / 240.0);
+        let place = glam::Mat4::from_translation(glam::Vec3::new(-(scroll + 64.0 + 184.0) * kx, p.y, -d)) * glam::Mat4::from_scale(glam::Vec3::new(kx, ky, 1.0));
+        cam.sky = view.inverse() * place;
+        // (no cut of the floor: the strip covers it far off, and the PS1 shows sand to the screen's foot from the
+        // round's far opening shot)
+        (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, false, false);
     }
     // an arcade stage: its model around the fighters' midpoint (x, z; 0x801D9118 of the arcade program), drawn after
     // the floor, hidden where the floor lies nearer (the helipad's tower below its deck, as the arcade shows it)

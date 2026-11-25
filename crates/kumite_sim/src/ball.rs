@@ -335,8 +335,10 @@ impl Fight {
         for i in self.ball_actors() {
             let Some(f) = self.actor_mut(i) else { continue };
             let (lo, hi) = if side_of(i) == 0 { (-FIGHTER_X, 0.0) } else { (0.0, FIGHTER_X) };
-            f.position.x = f.position.x.clamp(lo, hi);
-            f.position.z = f.position.z.clamp(-court_z, court_z);
+            // the root (P+0xF68) is kept in, by moving the fighter (Tekken Tag's moves carry the root off its place)
+            let r = f.root();
+            f.position.x += r.x.clamp(lo, hi) - r.x;
+            f.position.z += r.z.clamp(-court_z, court_z) - r.z;
         }
     }
 
@@ -520,9 +522,12 @@ impl Fight {
         // the strike's segments: Tekken 3's paths, or Tekken Tag's bone pairs of the pose (the Tekken 3 slice's Ball)
         // shortcut: the hit pass has made this pose the last, so a pair from the end bone's last place is its point
         // now; keep the last pose for the ball too if Tekken Tag's fast strikes pass through it
+        // (a move that starts an effect object, Gon's fire and gas, strikes with the object's: 0x80047D98 reads
+        // 0x8006E51C's segments when the descriptor's byte 0 is 0x18 or more)
         let segments = |i: usize, f: &crate::Fighter| {
             let mut s = f.attack_segments(gd);
             s.extend(bodies.get(i).map_or_else(Vec::new, |v| f.pair_segments(gd, &v.bones)));
+            s.extend(self.objects.strikes(i));
             s
         };
         // who hit it this frame, the players' side first (with two: P1 before P2)
@@ -540,6 +545,7 @@ impl Fight {
         let airborne = f.posture(gd) & posture::AIRBORNE != 0 || f.air.is_some() || f.airborne_flag(gd);
         let (moveset, alias) = (f.moveset.moveset_id, f.alias);
         let (spd, lob, g) = (b.kind.speed_unit, b.kind.lob_unit, b.kind.gravity);
+        log::info!("P{} hits the ball with {} (damage {dmg}, mask {mask:#x})", h + 1, mv.anim);
         (b.owner, b.receiver, b.homing) = (h, o, false);
         b.p3 = Some(h);
         if let Some(fh) = self.actor_mut(h) {

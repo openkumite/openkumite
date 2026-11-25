@@ -162,3 +162,32 @@ fn gon_and_paul_push_apart() {
     eprintln!("walked in: Gon and Paul {gon}, Paul and Law {paul}");
     assert!(gon >= kumite_sim::PUSH_DISTANCE - 1.0 && gon < paul, "{gon} vs {paul}");
 }
+
+/// Tekken Ball: Gon's fire (1+2) hits the ball as his kicks do (0x80047D98 strikes with the move's effect object):
+/// the ball resting on the floor 1.5 m before him, by the net, becomes his, sent at Paul.
+#[test]
+fn gons_fire_hits_the_ball() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [GON, PAUL]).unwrap();
+    let data = std::sync::Arc::new(kumite_sim::data::load(&a.root.join("gamedata/ball.json")).unwrap());
+    g.ball = Some(kumite_game::BallSetup { data, kind: 0, server: 1, rounds: 0 });
+    let mut b = kumite_game::bout::Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != kumite_game::bout::Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let g = &mut b.game;
+    // (in the net's zone, where a ball on the floor scores no point)
+    g.fight.fighters[0].position.x = -3500.0;
+    let x = g.fight.fighters[0].root().x as i32 + 1500;
+    let b = g.fight.ball.as_mut().unwrap();
+    (b.state, b.pos, b.vel, b.timer) = (2, [x, -384, 0], [0; 3], 0);
+    assert_eq!((b.owner, b.receiver), (1, 0));
+    for pad in parse_script("1+2,n*100").unwrap() {
+        g.step([pad, Pad::default()]);
+        if g.fight.ball.as_ref().unwrap().owner == 0 {
+            break;
+        }
+    }
+    let b = g.fight.ball.as_ref().unwrap();
+    assert_eq!((b.owner, b.receiver), (0, 1), "the fire did not reach the ball at {:?}", b.pos);
+}
