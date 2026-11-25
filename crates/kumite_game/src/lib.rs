@@ -1859,9 +1859,15 @@ impl Game {
             if let Some(v) = (self.bodies[i].bones.is_empty() && self.display.is_none()).then(|| anims.volumes(&self.fight.fighters[i], &self.fight.data)).flatten() {
                 return v;
             }
-            // (Tekken Tag's look only changes what is drawn)
-            let (pose, place) = if self.bodies[i].bones.is_empty() { self.pose(i) } else { self.pose_animated(i) };
-            volumes(&self.bodies[i], &pose, place)
+            // (Tekken Tag's look only changes what is drawn, but the fire and mist start at the drawn node 13, 0x3A4EE8)
+            if self.bodies[i].bones.is_empty() {
+                let (pose, place) = self.pose(i);
+                return volumes(&self.bodies[i], &pose, place);
+            }
+            let (pose, place) = self.pose_animated(i);
+            let mut v = volumes(&self.bodies[i], &pose, place);
+            v.slots[0] = volumes(&self.bodies[i], &self.pose(i).0, place).slots[0];
+            v
         })
     }
 }

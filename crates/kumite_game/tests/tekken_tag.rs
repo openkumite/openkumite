@@ -499,8 +499,8 @@ fn the_partner_comes_in_turning_to_the_opponent() {
 
 /// Yoshimitsu's 1+3 from Hwoarang's side (sidestep, then the grab: move 5903, camera id 0xAE): while he spins, his
 /// root swings ~450 units each frame, and the sampler takes his side on its odd frames only (CAM+0xC0 = 0 in
-/// PCSX2), so the eye glides. PCSX2 (0x41581C) on the throw's frames 21, 44 and 65: -1934, -1528, -1276 (ours
-/// -1921, -1528, -1275).
+/// PCSX2), so the eye glides. PCSX2 (0x41581C) on the throw's frames 20, 44 and 65: -1934, -1528, -1276 (its row
+/// labelled 21 holds frame 20's eye: the log's next rows -1921, -1920, -1905 are ours on frames 21-23).
 #[test]
 fn yoshimitsus_side_throw_camera_samples_on_odd_frames() {
     let Some(a) = assets() else { return };
@@ -514,13 +514,13 @@ fn yoshimitsus_side_throw_camera_samples_on_odd_frames() {
     for pad in parse_script("n*61,f*30,n*2,u*1,n*11,1+3*2,n*79").unwrap() {
         b.step([pad, Pad::default()]);
         let f = &b.game.fight.fighters[0];
-        if f.current.index == 5903 && [21, 44, 65].contains(&f.frame) {
+        if f.current.index == 5903 && [20, 44, 65].contains(&f.frame) {
             seen.push(b.game.camera.view.eye[0]);
         }
     }
     assert_eq!(seen.len(), 3, "{seen:?}");
     for (x, ps2) in seen.iter().zip([-1934, -1528, -1276]) {
-        assert!((*x - ps2).abs() <= 15, "{seen:?}");
+        assert!((*x - ps2).abs() <= 2, "{seen:?}");
     }
 }
 
@@ -552,7 +552,8 @@ fn eddys_run_off_follows_the_cameras_yaw() {
 /// The fight camera samples as the game (0x38EC08): a walk's root (flags bits 20-21 = 1), so the eye follows Nina's
 /// walk from its first frames; the tag's run-off (id 0x18) eases toward the opponent by 6/128 and the framing steps
 /// 1/16 while it runs; she is off the screen and the partner comes in 20 frames after the run-off starts. PCSX2 (the
-/// view block's eye x, 0x41581C): 84 on the walk's frame 11, 619 as the partner enters (ours 623).
+/// view block's eye x, 0x41581C): 84 on the walk's frame 11, 623 as the partner enters (the log's
+/// row there repeats the run-off's last 619 and skips 626: a read a frame late).
 #[test]
 fn the_fight_camera_follows_as_the_game() {
     let Some(a) = assets() else { return };
@@ -575,7 +576,7 @@ fn the_fight_camera_follows_as_the_game() {
     }
     let (r, (e, ex)) = (run.unwrap(), entrance.unwrap());
     assert_eq!((walk, e - r), (Some(84), 20));
-    assert!((ex - 619).abs() <= 4, "{ex}");
+    assert!((ex - 623).abs() <= 2, "{ex}");
 }
 
 /// The yaw freezes only while the fighters are within 200 (gp-0x74C8, 0x38F9CC), not for a round's first 200 frames:
