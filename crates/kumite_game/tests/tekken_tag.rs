@@ -985,6 +985,26 @@ fn jack2_is_drawn_with_the_games_joints() {
     assert!((shin.translation.length() * 1000.0 - 390.0).abs() < 1.0, "the knee {}", shin.translation.length() * 1000.0);
 }
 
+/// A slot's twist copies are drawn with its matrix (0x3478F0), eased or not: no shoulder, elbow or knee torn
+/// between the eased pose and the next motion's as moves change.
+#[test]
+fn twist_copies_turn_with_their_slot() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [PAUL, HWOARANG]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    let twins = b.game.bodies[0].twins.clone();
+    assert!(twins.iter().any(|&(c, n)| b.game.bodies[0].character.nodes[c].name == "upperarm_A.1" && b.game.bodies[0].character.nodes[n].name == "upperarm_A"), "{twins:?}");
+    let mut eased = 0;
+    for pad in parse_script("n*60,1*2,n*30,3+4*2,n*40,f*30,2*2,n*40").unwrap() {
+        b.step([pad, Pad::default()]);
+        eased += usize::from(b.game.fight.fighters[0].eased().is_some());
+        let (pose, _) = b.game.pose(0);
+        for &(c, n) in &twins {
+            assert!(pose[c].abs_diff_eq(pose[n], 1e-5), "node {c} off its slot's {n} at frame {}", b.game.fight.frame);
+        }
+    }
+    assert!(eased > 0);
+}
+
 /// Paul's belt ends sway (0x34D258): off their bind pose as he walks, never under the floor.
 #[test]
 fn pauls_belt_sways() {

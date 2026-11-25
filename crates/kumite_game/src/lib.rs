@@ -73,6 +73,8 @@ pub struct Body {
     pub springs: Vec<kumite_sim::Spring>,
     /// Tekken Tag's True Ogre: his arm A and slots 18 / 19 wave ([`step_flap`]).
     pub flaps: bool,
+    /// Tekken Tag: each slot's twist copies (`upperarm_A.1`...) and their slot's node: drawn with its matrix (0x3478F0).
+    pub twins: Vec<(usize, usize)>,
 }
 
 /// The joints of the bone slots, slot by slot (the arcade engine's matrix slots; Tekken Tag's converter names them so).
@@ -530,6 +532,7 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let joints = if tag { joint_places(&rules["joints"], record, id) } else { Vec::new() };
     let motion_scale = entry.motion_scale.unwrap_or(4096);
     let hidden = blades_hidden(&character, entry.moveset_id);
+    let twins = character.nodes.iter().enumerate().filter_map(|(c, n)| Some((c, *bones.get(BONE_SLOTS.iter().position(|&j| Some(j) == n.name.split_once('.').map(|s| s.0))?)?))).collect();
     let body = Body {
         character,
         model_record: record,
@@ -549,6 +552,7 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
         motion_scale,
         springs: if tag { springs(id) } else { Vec::new() },
         flaps: tag && id == 20,
+        twins,
     };
     // the copying character: its own moveset is never played; outside a bout's rounds it stays the setup's fighter
     // shortcut: Force's bosses and the tag brawl's draw their fighter too (0x800B2770), here they keep this one,
@@ -674,6 +678,7 @@ fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
         motion_scale: own.motion_scale,
         springs: Vec::new(),
         flaps: false,
+        twins: own.twins.clone(),
     }
 }
 
@@ -1950,6 +1955,13 @@ pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Ma
         }
         for m in &mut pose {
             *m = Mat4::from_translation(Vec3::Y * lift / UNITS) * *m;
+        }
+    }
+    // (Tekken Tag: a slot's twist copies turn with it, eased or not)
+    for &(c, n) in &body.twins {
+        let parent = body.character.nodes.get(n).and_then(|x| x.parent).and_then(|p| pose.get(p).copied()).unwrap_or(Mat4::IDENTITY);
+        if let Some(&m) = pose.get(n) {
+            head::set_local(&body.character.nodes, &mut pose, c, Mat3::from_mat4(parent.inverse() * m));
         }
     }
     // (a hidden node's mesh shrinks into its joint)
