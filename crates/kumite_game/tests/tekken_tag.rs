@@ -352,6 +352,35 @@ fn the_push_spheres_turn_with_the_games_sines() {
     assert!(x.is_some_and(|(p, q)| (113.0..=117.0).contains(&p) && (1051.0..=1055.0).contains(&q)), "{x:?}");
 }
 
+/// The tracking turns in the game's s16 angles (0x370094, 0x3703F0: the angle over the frames left, cut toward zero):
+/// King's 1 after a walk at Hwoarang (both holding 1+2 through the intro) faces +0x3C 17423 through frames 16-22 of
+/// its follow-up 809 and Paul's reaction 4565 turns 49711, 49823 on its frames 6 and 7, as in PCSX2 (in radians:
+/// 17424-17426, 49714, 49825), so the joint slots and the push spheres on them are the game's to the unit.
+#[test]
+fn the_tracking_turns_in_the_games_angles() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [384, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    let hold = Pad { buttons: 3, ..Pad::default() };
+    while b.phase != Phase::Fight {
+        b.step([hold; 2]);
+    }
+    let u = |y: f32| ((std::f32::consts::PI - y) * 32768.0 / std::f32::consts::PI).round() as i32 & 0xFFFF;
+    let (mut king, mut paul) = (Vec::new(), Vec::new());
+    for pad in parse_script("n*61,f*30,n*2,1*2,n*70").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        if f[0].current.index == 809 && (16..=22).contains(&f[0].frame) {
+            king.push(u(f[0].yaw));
+        }
+        if f[1].current.index == 4565 && (6..=7).contains(&f[1].frame) {
+            paul.push(u(f[1].yaw));
+        }
+    }
+    assert_eq!((king, paul), (vec![17423; 7], vec![49711, 49823]));
+}
+
 /// The facing pass (0x36FEF0) turns a fighter in its hit-stop frame too: Hwoarang, struck by Paul's 1 after a walk,
 /// starts turning to the attacker on the hit's frame (+0x3C -16384 -> -16350 in PCSX2), so the next push meets his
 /// body turned and his slide ends at x 1739, as in PCSX2 (not turning there: 1738).

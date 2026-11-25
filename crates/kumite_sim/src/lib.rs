@@ -85,6 +85,13 @@ fn wrap_pi(a: f32) -> f32 {
     (a + std::f32::consts::PI).rem_euclid(t) - std::f32::consts::PI
 }
 
+/// Tekken Tag's turn of the facing `yaw` toward `to` (0x3703F0, 0x3704F0, 0x370560): the s16 angle between them times
+/// `mul` over `div`, cut toward zero, within `lim` (0x370E98).
+fn tag_step(to: f32, yaw: f32, mul: i32, div: i32, lim: i32) -> f32 {
+    let g = |y: f32| ((std::f32::consts::PI - y) / ANGLE).round() as i32;
+    -((((g(to) - g(yaw)) as i16 as i32) * mul / div.max(1)).clamp(-lim, lim) as f32) * ANGLE
+}
+
 /// Queue-time normalization of a transition (0x80030F68): attacks still ahead keep continuing, non-attacks drop
 /// the facing variants. Bits 6-7 are kept.
 fn normalize_transition(transition: u32, to: Option<&data::Move>, exec: u32) -> u32 {
@@ -1246,67 +1253,55 @@ impl Fighter {
         let (j0, j1) = (mv.bytes_18.jump_start, mv.bytes_18.jump_end);
         let frame = self.frame;
         let airborne = self.juggle != 0 || self.air.is_some() || (j0 != 0 && (j0..=j1).contains(&frame));
-        let n = (a0 as i32 + 1 - frame as i32).max(1) as f32;
         let deg = |d: f32| d.to_radians();
         let clamp = |x: f32, l: f32| x.clamp(-l, l);
         let opp_evasive = self.opponent.evasive != 0;
         let homing = opp_evasive && attack && self.since < 9;
-        let to_opp = wrap_pi(a2a - self.yaw);
-        let to_target = wrap_pi(target - self.yaw);
+        let g = |y: f32| ((PI - y) / ANGLE).round() as i32;
         match self.mode {
-            0 => self.yaw = self.root_yaw,
-            1 => {
-                let s = self.cap(clamp(to_target / n, deg(30.0)), PI);
-                self.yaw += s;
-                self.root_yaw = self.yaw;
-                self.fin(s, a0);
-            }
-            // homing: an attack starting while the opponent has just started a sidestep (or another evasive move)
+            // Tekken Tag's tracking (0x36FFEC, 0x370094, 0x370180, 0x37025C) in its s16 angles: the angle left (to +0x3A,
+            // in mode 1 to the target +0x44, from the facing +0x3C) over the frames to the first active one, cut toward
+            // zero, within the mode's step (degrees as (d << 16) - d over 360) and, the move's turn so far (+0x46)
+            // with it, within its total (0x370ED0: past it what is left of it, unless nothing is); homing (an attack
+            // starting while the opponent has just started a sidestep or another evasive move) auto-turns instead
             2 | 3 | 5 if homing => {
-                let m = a0.saturating_sub(frame).max(1);
-                self.turn = Some((clamp(to_opp / m as f32, 0x9F4 as f32 * ANGLE), m));
+                let m = (a0 as i32 - frame as i32).max(1);
+                self.turn = Some((tag_step(a2a, self.yaw, 1, m, 0x9F4), m as u32));
                 self.mode = 0xC;
             }
-            2 | 3 => {
-                let mut k = deg(if airborne {
-                    1.0
-                } else if self.since < 8 {
-                    3.0
-                } else {
-                    14.0
-                });
-                if self.mode == 3 {
-                    k /= 2.0;
+            m @ 1..=5 if !(m == 4 && (self.turn.is_some() || opp_evasive && attack)) => {
+                let d = (g(if m == 1 { target } else { a2a }) - g(self.yaw)) as i16 as i32;
+                let n = (a0 as i32 + 1 - frame as i32).max(1);
+                let deg = |k: i32| ((k << 16) - k) / 360;
+                let pick = |a: i32, b: i32, c: i32| {
+                    if airborne {
+                        a
+                    } else if self.since < 8 {
+                        b
+                    } else {
+                        c
+                    }
+                };
+                let (k, limit) = match m {
+                    1 => (0x1555, 0x7FFF),
+                    2 | 3 => (deg(pick(1, 3, 14)) >> (m - 2), 0x5555),
+                    4 => (deg(pick(1, 2, 3)), 0xE38),
+                    _ => (deg(pick(4, 3, 100)), 0x9554),
+                };
+                let mut s = (d / n).clamp(-k, k);
+                let acc = g(PI - self.acc).abs();
+                let left = (limit - acc) as i16 as i32;
+                if acc + s.abs() > limit && left != 0 {
+                    s = if s < 0 { -left } else { left };
+                    self.mode = 6;
                 }
-                let s = self.cap(clamp(to_opp / n, k), deg(120.0));
-                self.yaw += s;
-                self.fin(s, a0);
+                self.yaw = PI - (g(self.yaw) + s) as f32 * ANGLE;
+                if m == 1 {
+                    self.root_yaw = self.yaw;
+                }
+                self.fin(-(s as f32) * ANGLE, a0);
             }
-            // linear moves: no tracking while an auto-turn runs, or against a sidestep
-            4 if self.turn.is_none() && !(opp_evasive && attack) => {
-                let k = deg(if airborne {
-                    1.0
-                } else if self.since < 8 {
-                    2.0
-                } else {
-                    3.0
-                });
-                let s = self.cap(clamp(to_opp / n, k), deg(20.0));
-                self.yaw += s;
-                self.fin(s, a0);
-            }
-            5 => {
-                let k = deg(if airborne {
-                    4.0
-                } else if self.since < 8 {
-                    3.0
-                } else {
-                    100.0
-                });
-                let s = self.cap(clamp(to_opp / n, k), deg(210.0));
-                self.yaw += s;
-                self.fin(s, a0);
-            }
+            0 => self.yaw = self.root_yaw,
             // after start-up: re-aim every 5 frames at ≤ 3°/frame (0x8003FD80)
             6 => {
                 if self.connected && j0 != 0 && !airborne && frame >= a1 {
@@ -1314,22 +1309,21 @@ impl Fighter {
                 } else if frame > a0 && (frame - a0).is_multiple_of(5) && off < deg(120.0) {
                     let left = len as i32 - frame as i32;
                     let m = if left < 6 { 5 } else { left as u32 };
-                    self.turn = Some((clamp(to_target / m as f32, 0x222 as f32 * ANGLE), m));
+                    self.turn = Some((tag_step(target, self.yaw, 1, m as i32, 0x222), m));
                 }
             }
             // guarding turns toward the attacker
             7 => {
                 let t = if j1 != 0 { j1 } else { len };
                 if frame <= t {
-                    self.yaw += clamp(to_target * frame as f32 / t as f32, 0x38E as f32 * ANGLE);
+                    self.yaw += tag_step(target, self.yaw, frame as i32, t as i32, 0x38E);
                 }
             }
             // walks and dashes track all the way
-            8 => self.yaw += clamp(to_target * self.since.min(8) as f32 / 8.0, 0x71C as f32 * ANGLE),
+            8 => self.yaw += tag_step(target, self.yaw, self.since.min(8) as i32, 8, 0x71C),
             // Tekken Tag's 0xC / 0xD (0x370730): each frame toward the screen axis nearest the facing (+0x50: the camera's
             // yaw +0x48, 0x3713C8, or half a turn from it), or across it (+0x52), at most 10° a frame
             m if [dialect::TRANSITION_AXIS, dialect::TRANSITION_ACROSS].contains(&u32::from(m)) => {
-                let g = |y: f32| ((PI - y) / ANGLE).round() as i32;
                 let mut axis = g(self.screen_right) - if u32::from(m) == dialect::TRANSITION_AXIS { 0 } else { 0x4000 };
                 if ((axis - g(self.yaw)) as i16).unsigned_abs() >= 0x4000 {
                     axis += 0x8000;
@@ -1529,16 +1523,6 @@ impl Fighter {
     /// it stands.
     fn rebase(&mut self) {
         self.rebase_root = true;
-    }
-
-    /// Limit a tracking step so the move's total turn stays within `limit`; reaching it ends the tracking (mode 6).
-    fn cap(&mut self, step: f32, limit: f32) -> f32 {
-        if self.acc.abs() + step.abs() > limit {
-            self.mode = 6;
-            step.signum() * (limit - self.acc.abs()).max(0.0)
-        } else {
-            step
-        }
     }
 
     /// Count a tracking step; the start-up tracking ends at the first active frame.

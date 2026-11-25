@@ -757,6 +757,8 @@ pub struct Actor {
     pub shot: usize,
     /// The screen x of its head and feet last frame (+0x628-0x62C, on the 512 pixels).
     pub points: [i64; 3],
+    /// Its move's frame (+0xC4).
+    pub frame: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -764,6 +766,8 @@ struct TagSamp {
     using: [bool; 2],
     id: [i64; 2],
     ease: [i64; 2],
+    /// CAM+0xC0 (0x38C188, set after the sampler): the side on a move of camera id 0xAE last frame, side 0 first.
+    odd: Option<usize>,
 }
 
 /// Tekken Tag's director block (CAM 0x433330).
@@ -1589,7 +1593,7 @@ impl FightCamera {
     /// A tag entrance (camera id 0x19) holds its sample, moved by the other's steps, until its head and feet are on
     /// the screen (+0x628-0x62C in [21, 492)), then eases in over 4 frames (2 when they are off the 512 pixels); ids
     /// 0x17 / 0x18 / 0x1A (the run-off 0x18) ease the sample toward the other's by 6/128 a frame, 0x18 / 0x1A less
-    /// when the pair is far apart. shortcut: not the odd-frame sampling of a side on camera id 0xAE (CAM+0xC0).
+    /// when the pair is far apart. The side last on a move of camera id 0xAE (CAM+0xC0) samples on its odd frames only.
     fn tag_sample(&mut self, p: [Sample; 2], last: [Sample; 2]) -> [Sample; 2] {
         let a = self.actors;
         let rng = a.map(|a| (0x17..=0x1A).contains(&a.cam));
@@ -1621,11 +1625,16 @@ impl FightCamera {
             }
         }
         (self.tag_samp.using, self.tag_samp.id) = (using, a.map(|a| a.cam));
+        let odd = self.tag_samp.odd;
+        self.tag_samp.odd = a.iter().position(|a| a.cam == 0xAE);
         let mut s = last;
         // the root (+0x51C) or the place (+0x4, the move's start)
         let root = |i: usize| (p[i].x, p[i].z);
         let place = |i: usize| (a[i].at[0], a[i].at[2]);
         for i in 0..2 {
+            if odd == Some(i) && a[i].frame % 2 == 0 {
+                continue;
+            }
             let o = 1 - i;
             let at = if follow[i] == 1 || throw[i] || (using[i] && follow[i] == 2) {
                 Some(root(i))

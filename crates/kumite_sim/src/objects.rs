@@ -13,14 +13,15 @@
 //!   the head's axes (the other side's z: -50), its heading turned by rand() (up to 63 / 4096 of a turn in pitch,
 //!   31 in yaw) at 160 units a frame, 256 once grown; 7 frames growing, 5-8 looped, 8 ending (it strikes for 4).
 //! - Tekken Tag's True Ogre (body 20) on a move striking to slot 0x18 ([`TAG_FIRE`]; 0x3A6390 -> 0x3A4EE8 each
-//!   active frame): a flame (task 0x3A44F8) from 200 along the head's heading towards 400, its pitch and
-//!   yaw turned by up to pi / 32 and pi / 64 (rand(), 0x3A94B0), 160 units a frame; 8 frames growing, then 256 a
-//!   frame, held 5-8, 7 fading; on along the floor 216 over it. Each striking flame's travel is a strike of its
-//!   owner's (0x346230's segments, read by 0x3770E0); none strike once the opponent burns (+0xC04, 0x346378).
+//!   active frame): a flame (task 0x3A44F8) from 200 along the z of the drawn node 13 on the head (player +0x1770)
+//!   towards 400, its pitch and yaw turned by up to pi / 32 and pi / 64 (rand(), 0x3A94B0), 160 units a frame; 8
+//!   frames growing, then 256 a frame, held 5-8, 7 fading; on along the floor 216 over it. Each striking flame's
+//!   travel is a strike of its owner's (0x346230's segments, read by 0x3770E0); none strike once the opponent burns
+//!   (+0xC04, 0x346378).
 //!
 //! - Tekken Tag's moves striking to slot 0x19 ([`TAG_MIST`]; 0x3A6390 -> 0x3A5810 each active frame: Yoshimitsu's
 //!   2365, Nina's 2034 and the reactions 5428 / 5429 they give): a puff of mist (task 0x3A55E0) from 100 along the
-//!   head's heading towards 400, its pitch and yaw each turned by up to pi / 32, 48 units a frame for 21 frames; it
+//!   node's z towards 400, its pitch and yaw each turned by up to pi / 32, 48 units a frame for 21 frames; it
 //!   strikes its first 15 (table 0x5198C8) while its owner is still in the move.
 //!
 //! shortcut: the breath's sparks and floor flames (objects 7 and 9, drawn only) and Tekken 3's bytes 0x19 / 0x1C
@@ -39,12 +40,13 @@ pub const TAG_FIRE: u32 = 0x118;
 pub const TAG_MIST: u32 = 0x119;
 /// The mist's start and heading's second point (0x437C30, as `TAG_FIRE_AT`), speed (0x3A3518's 48), frames (+0x14)
 /// and striking frames (0x5198C8: 16 ones, its counter past its first move).
-const TAG_MIST_AT: [Vec3; 2] = [Vec3::new(100.0, 0.0, 0.0), Vec3::new(400.0, 0.0, 0.0)];
+const TAG_MIST_AT: [Vec3; 2] = [Vec3::new(0.0, 0.0, -100.0), Vec3::new(0.0, 0.0, -400.0)];
 const TAG_MIST_SPEED: f32 = 48.0;
 pub const TAG_MIST_LIFE: i32 = 21;
 const TAG_MIST_STRIKES: i32 = 16;
-/// The flame's start and its heading's second point (0x437BF0: z of the drawn head node +0x1770, the head slot's x).
-const TAG_FIRE_AT: [Vec3; 2] = [Vec3::new(200.0, 0.0, 0.0), Vec3::new(400.0, 0.0, 0.0)];
+/// The flame's start and its heading's second point (0x437BF0: along the z of the drawn node 13, player +0x1770; -z
+/// in the joints' turned axes).
+const TAG_FIRE_AT: [Vec3; 2] = [Vec3::new(0.0, 0.0, -200.0), Vec3::new(0.0, 0.0, -400.0)];
 /// The flame's speeds (0x3A3518's 160, then 256) and its height over the floor.
 const TAG_FIRE_SPEED: [f32; 2] = [160.0, 256.0];
 const TAG_FIRE_FLOOR: f32 = 216.0;
