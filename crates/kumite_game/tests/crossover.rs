@@ -183,14 +183,15 @@ fn tag_out_and_in() {
     }
 }
 
-/// CPU against CPU: the Tekken 3 fighter against Paul; per side the attacks started and the clean hits, the frames
-/// without a motion, the state hashes.
-fn cpu_fight(a: &Assets, p1: usize) -> ([u32; 2], [u32; 2], usize, Vec<u64>) {
-    let mut b = Bout::new(Game::load(a, [p1, PAUL]).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
+/// CPU against CPU: the Tekken 3 fighter against a Tekken Tag one; per side the attacks started and the clean hits
+/// (in the fight: a K.O.'s replay shows its hits again), the frames without a motion, the state hashes.
+fn cpu_fight(a: &Assets, m: [usize; 2]) -> ([u32; 2], [u32; 2], usize, Vec<u64>) {
+    let mut b = Bout::new(Game::load(a, m).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
     b.set_cpu(0, Some((1, 5)));
     b.set_cpu(1, Some((1, 5)));
     let (mut starts, mut hits, mut missing, mut hashes, mut last) = ([0; 2], [0; 2], 0, Vec::new(), [0; 2]);
     for _ in 0..2400 {
+        let fight = b.phase == Phase::Fight;
         b.step([Pad::default(); 2]);
         hashes.push(b.game.state_hash());
         missing += (0..2).filter(|&i| b.game.clip(i).is_none()).count();
@@ -200,22 +201,28 @@ fn cpu_fight(a: &Assets, p1: usize) -> ([u32; 2], [u32; 2], usize, Vec<u64>) {
             }
             last[k] = f.alias;
         }
-        for h in b.game.fight.hits.iter().filter(|h| !h.blocked && h.attacker < 2) {
+        for h in b.game.fight.hits.iter().filter(|h| fight && !h.blocked && h.attacker < 2) {
             hits[h.attacker] += 1;
         }
     }
     (starts, hits, missing, hashes)
 }
 
-/// The CPU plays Gon and Doctor B.: it attacks and lands hits, every frame on a motion; the same twice.
+/// The CPU plays Gon and Doctor B. against Paul and Lei: it attacks and lands hits (in all, one fight's few depend on
+/// its course) and is hit, every frame on a motion; the same twice.
 #[test]
 fn cpu_plays_them() {
     let Some(a) = assets() else { return };
     for p1 in [GON, DOCTOR_B] {
-        let (starts, hits, missing, hashes) = cpu_fight(&a, p1);
-        eprintln!("model {p1}: attacks {starts:?}, hits {hits:?}");
-        assert!(starts[0] > 10 && hits[0] > 0 && missing == 0, "model {p1}: attacks {starts:?}, hits {hits:?}, {missing} frames without a motion");
-        assert_eq!(hashes, cpu_fight(&a, p1).3);
+        let mut landed = [0; 2];
+        for p2 in [PAUL, LEI] {
+            let (starts, hits, missing, hashes) = cpu_fight(&a, [p1, p2]);
+            eprintln!("model {p1} against {p2}: attacks {starts:?}, hits {hits:?}");
+            assert!(starts[0] > 10 && missing == 0, "model {p1} against {p2}: attacks {starts:?}, {missing} frames without a motion");
+            assert_eq!(hashes, cpu_fight(&a, [p1, p2]).3);
+            landed = [landed[0] + hits[0], landed[1] + hits[1]];
+        }
+        assert!(landed[0] > 0 && landed[1] > 0, "model {p1}: hits {landed:?}");
     }
 }
 

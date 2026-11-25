@@ -2,7 +2,7 @@
 //! (effects research; data in `pictures/effects/effects.json` + `atlas.png`, written by export_effects).
 //!
 //! The game has two effect systems and no blood:
-//! - **sprite slots** (0x80076884 / 0x80076E70): camera-facing 188.6 mm squares animating one 32-texel cell a
+//! - **sprite slots** (0x80076884 / 0x80076E70): camera-facing 754 mm squares animating one 32-texel cell a
 //!   frame. Hit sparks share a ring of 3 slots (a 4th overwrites the oldest). The red hit spark (sheet 007, CLUT
 //!   (32,503)) flies along the strike at 50 mm a frame with a drag of 118/128 and stays at least 250 mm up; the
 //!   block spark (steel blue) and the zero-damage spark (pink) stand still. Additive kinds dim linearly over their
@@ -262,8 +262,9 @@ pub struct Ribbon {
     pub cell: u32,
 }
 
-/// The sprite size: 32 texels at the game's projection = 188.6 mm, whatever the distance.
-const SPRITE: f32 = 0.1886;
+/// The sprite size, whatever the distance: 0x80076E70 draws 32 texels x 0x2E0B / SZ pixels (the GTE's SZ3, 0x80036AD4's
+/// SZ3 / 4 times 4), so 32 x 0x2E0B / H mm at H 500 (the PS1's guard spark stands 0.6 m tall on Paul's guard).
+const SPRITE: f32 = 32.0 * 11787.0 / 500.0 / UNITS;
 /// A sprite is sorted this much nearer than its centre (0x800771DC: ordering-table index (OTZ - 0x6E) >> 3, OTZ a
 /// quarter of the screen depth), so one at a joint shows over the limb around it (metres).
 const SORT_NEARER: f32 = 0x6E as f32 * 4.0 / UNITS;
