@@ -33,6 +33,14 @@ pub struct Capture {
     pub events: Vec<(u64, Event)>,
 }
 
+impl Capture {
+    /// An event at the step now (and logged: `RUST_LOG=sound=debug`, with `--shot ... --sound-log`).
+    fn note(&mut self, e: Event) {
+        log::debug!(target: "sound", "step {}: {e:?}", self.step);
+        self.events.push((self.step, e));
+    }
+}
+
 pub struct Audio {
     /// The output device (none in capture).
     sink: Option<MixerDeviceSink>,
@@ -80,7 +88,7 @@ impl Audio {
         }
         self.current = track.cloned();
         if let Some(c) = self.capture.as_mut() {
-            c.events.push((c.step, Event::Music(track.cloned())));
+            c.note(Event::Music(track.cloned()));
             return;
         }
         let (Some(t), Some(sink)) = (track, self.sink.as_ref()) else { return };
@@ -121,7 +129,7 @@ impl Audio {
             return;
         }
         if let Some(c) = self.capture.as_mut() {
-            c.events.push((c.step, Event::Sfx(path.to_path_buf(), volume * self.sfx_volume, speed)));
+            c.note(Event::Sfx(path.to_path_buf(), volume * self.sfx_volume, speed));
             return;
         }
         let Some(sink) = self.sink.as_ref() else { return };
@@ -171,7 +179,7 @@ impl Audio {
         if let Some(c) = self.capture.as_mut() {
             let was = c.events.iter().rev().find_map(|e| if let Event::Duck(d) = e.1 { Some(d) } else { None }).unwrap_or(false);
             if was != ducked {
-                c.events.push((c.step, Event::Duck(ducked)));
+                c.note(Event::Duck(ducked));
             }
         }
         if let Some(p) = &self.music {
