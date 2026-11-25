@@ -1207,21 +1207,21 @@ fn entry_of(item: &MenuItem) -> Option<Entry> {
 
 fn shown_items(roster: &Roster) -> Vec<(MenuItem, Entry)> {
     let mut items: Vec<(MenuItem, Entry)> = roster.ui.items.iter().filter_map(|i| entry_of(i).map(|e| (i.clone(), e))).collect();
-    // (OpenKumite's EXIT after the game's entries, red like VS MODE: every other colour of the menu font is taken or
-    // too dim; a page cannot close itself)
-    // (and OpenKumite's own TAG BRAWL before it)
+    // (OpenKumite's EXIT after the game's entries; a page cannot close itself)
+    // (and OpenKumite's own TAG BRAWL before it; OpenKumite's entries take CLUTs 17-26 of the EXE, past the menu's
+    // own, no two alike: TAG BRAWL peach, ONLINE cyan, the extra levels lavender, REPLAYS bronze, EXIT red)
     if !items.is_empty() {
         let at = items.iter().position(|i| i.1 == Entry::Options).unwrap_or(items.len());
-        items.insert(at, (MenuItem { name: "TAG BRAWL".into(), mode: u32::MAX - 1, colour: 7 }, Entry::Tag));
-        items.insert(at + 1, (MenuItem { name: "ONLINE".into(), mode: u32::MAX - 3, colour: 9 }, Entry::Online));
+        items.insert(at, (MenuItem { name: "TAG BRAWL".into(), mode: u32::MAX - 1, colour: 20 }, Entry::Tag));
+        items.insert(at + 1, (MenuItem { name: "ONLINE".into(), mode: u32::MAX - 3, colour: 21 }, Entry::Online));
         if !roster.extra_levels.is_empty() {
-            items.insert(at + 2, (MenuItem { name: roster.extra_levels_title.clone(), mode: u32::MAX - 2, colour: 5 }, Entry::ExtraLevels));
+            items.insert(at + 2, (MenuItem { name: roster.extra_levels_title.clone(), mode: u32::MAX - 2, colour: 22 }, Entry::ExtraLevels));
         }
         let at = items.iter().position(|i| i.1 == Entry::Options).unwrap_or(items.len());
-        items.insert(at, (MenuItem { name: "REPLAYS".into(), mode: u32::MAX - 4, colour: 6 }, Entry::Replays));
+        items.insert(at, (MenuItem { name: "REPLAYS".into(), mode: u32::MAX - 4, colour: 26 }, Entry::Replays));
     }
     if cfg!(not(target_arch = "wasm32")) && !items.is_empty() {
-        items.push((MenuItem { name: "EXIT".into(), mode: u32::MAX, colour: 2 }, Entry::Exit));
+        items.push((MenuItem { name: "EXIT".into(), mode: u32::MAX, colour: 17 }, Entry::Exit));
     }
     if items.is_empty() {
         // no screens.json: plain entries (OpenKumite's names)
