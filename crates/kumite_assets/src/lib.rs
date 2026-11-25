@@ -746,6 +746,8 @@ pub struct Stage {
     /// Per texture (image): the glb asks for linear filtering without mipmaps, tiling both ways (Tekken Tag's
     /// arenas: the PS2's TEX1 MXL 0).
     pub smooth: Vec<bool>,
+    /// Per smooth texture (image): the glb clamps it both ways (the GS's CLAMP REGION_CLAMP).
+    pub clamped: Vec<bool>,
     /// Per texture (image): the glb asks for sharp texels tiling both ways (the arcade stages' tiles).
     pub tiled: Vec<bool>,
     /// The sky is the stage's own model (scene extras `drum: "model"`: the arcade stages), not a drum of panels:
@@ -906,6 +908,7 @@ impl Stage {
             filtered: vec![false; images.len()],
             tiled: vec![false; images.len()],
             smooth: vec![false; images.len()],
+            clamped: vec![false; images.len()],
             sky_model: false,
             sky_cull: false,
             sky_floor_depth: false,
@@ -920,6 +923,10 @@ impl Stage {
                 let mipmaps = s.min_filter() != Some(gltf::texture::MinFilter::Linear);
                 if let Some(f) = if mipmaps { &mut st.filtered } else { &mut st.smooth }.get_mut(t.source().index()) {
                     *f = true;
+                }
+                let clamp = gltf::texture::WrappingMode::ClampToEdge;
+                if let (false, true, Some(c)) = (mipmaps, s.wrap_s() == clamp && s.wrap_t() == clamp, st.clamped.get_mut(t.source().index())) {
+                    *c = true;
                 }
             } else if s.wrap_t() == gltf::texture::WrappingMode::Repeat {
                 if let Some(f) = st.tiled.get_mut(t.source().index()) {

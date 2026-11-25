@@ -2226,6 +2226,16 @@ fn eddys_ground_runs_on_across_the_cells() {
     }
 }
 
+/// Eddy's sky panels clamp their parts of the sheet (CLAMP REGION_CLAMP in a GS dump of arena 10), so bilinear
+/// filtering draws no line of the far edge at a panel's edge; his floor's tiles repeat.
+#[test]
+fn eddys_sky_is_clamped_and_his_floor_repeats() {
+    let Some(a) = assets() else { return };
+    let st = a.stage(10).unwrap();
+    assert!(st.sky.iter().any(|m| st.clamped[m.texture]), "no sky panel's picture is clamped");
+    assert!(st.meshes.iter().any(|m| !st.clamped[m.texture] && st.smooth[m.texture]), "no picture repeats");
+}
+
 /// Op 16 in ending 35: Devil's type-2 beams run along his head's heading, 204 along and 220 down a frame; their ends
 /// on the 13th frame where PCSX2 has them (the beam record 0x8A7AD0 + 0x50 read over PINE; mm, our axes).
 #[test]
