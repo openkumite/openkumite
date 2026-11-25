@@ -208,8 +208,9 @@ fn cpu_fight(a: &Assets, m: [usize; 2]) -> ([u32; 2], [u32; 2], usize, Vec<u64>)
     (starts, hits, missing, hashes)
 }
 
-/// The CPU plays Gon and Doctor B. against Paul and Lei: it attacks and lands hits (in all, one fight's few depend on
-/// its course) and is hit, every frame on a motion; the same twice.
+/// The CPU plays Gon and Doctor B. against Paul and Lei: it attacks and lands about as many hits as in Tekken 3's own
+/// game (6 to 12 a fight there; Gon landed about 3 with his root at 100 %) and is hit, every frame on a motion; the
+/// same twice.
 #[test]
 fn cpu_plays_them() {
     let Some(a) = assets() else { return };
@@ -222,8 +223,28 @@ fn cpu_plays_them() {
             assert_eq!(hashes, cpu_fight(&a, [p1, p2]).3);
             landed = [landed[0] + hits[0], landed[1] + hits[1]];
         }
-        assert!(landed[0] > 0 && landed[1] > 0, "model {p1}: hits {landed:?}");
+        assert!(landed[0] >= 10 && landed[1] > 0, "model {p1}: hits {landed:?}");
     }
+}
+
+/// Gon's motions' root runs at his model's size (45 %, the roster's `models`), as in Tekken 3: his 2 from 1000 units
+/// hits an idle Paul. At 100 % his root ran 2.2 times as far as his strike, his body pushed Paul out of its reach and
+/// the CPU landed a third of his Tekken 3 hits.
+#[test]
+fn gons_root_runs_at_his_size() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [GON, PAUL]).unwrap();
+    for _ in 0..300 {
+        g.step([Pad::default(); 2]);
+    }
+    g.fight.fighters[1].guard_input = false;
+    g.fight.fighters[1].position.x = g.fight.fighters[0].position.x + 1000.0;
+    let pads = parse_script("2").unwrap();
+    let hit = (0..40).any(|k| {
+        g.step([pads.get(k).copied().unwrap_or_default(), Pad::default()]);
+        g.fight.hits.iter().any(|h| h.attacker == 0)
+    });
+    assert!(hit, "Gon's 2 from 1000 units");
 }
 
 /// What the sound tables make a step play: the files under audio/sfx.
