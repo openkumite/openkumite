@@ -161,6 +161,11 @@ impl GridData {
         self.percents.get(level).copied().unwrap_or(100)
     }
 
+    /// The LIFE level of a handicap.
+    pub fn level_of(&self, handicap: i32) -> Option<usize> {
+        self.percents.iter().position(|&p| p == handicap)
+    }
+
     /// A handicap the LIFE levels allow.
     pub fn allows(&self, handicap: i32) -> bool {
         handicap == 100 || self.percents.contains(&handicap)
@@ -1203,6 +1208,7 @@ mod tests {
             Outcome::Fight(setup, _) => {
                 assert_eq!(setup.mode, Mode::Versus);
                 assert_eq!(setup.handicap, [110, 90]);
+                assert_eq!(setup.handicap.map(|h| r.vs_max_health(h)), [Some(155), Some(125)], "the PS1's life table, 100 % = 140");
                 assert!(crate::room::MatchSetup::Fight(setup.clone()).valid(&r), "a host's own setup passes a guest's check");
                 assert_eq!((r.characters[setup.players[0].0].id, setup.players[0].1), (p2, 1));
             }

@@ -933,6 +933,9 @@ impl App {
             game.load_camera(&ball_camera)?;
         }
         game.handicap = setup.as_ref().map_or([100; 2], |s| s.handicap);
+        if let Some(s) = setup.as_ref().filter(|s| s.mode == Mode::Versus) {
+            game.max_health = s.handicap.map(|h| self.roster.vs_max_health(h));
+        }
         if setup.is_none() {
             if let Some(v) = self.intro {
                 game = game.with_intro(v, true);
