@@ -96,7 +96,9 @@ fn lei_sidesteps_out_of_the_round_start_as_on_the_ps1() {
 }
 
 /// King's d/f+2 over and over on Jin walking in: Jin's health as the PS1's hit by hit down to the K.O. (13 a hit; one
-/// came a step late without the END window open).
+/// came a step late without the END window open), and his root. Each stagger's commit step (no hold at hit-stop 0 or
+/// 1, +0x76, 0x8002F4A4) has the reaction's frame 1 root, pose and pushback (the K.O. chain was 729 off); the
+/// pushback steps on the sine table (+0x10C, 0x8003F820); the K.O.'s collapse does not slide (0x8002D82C).
 #[test]
 fn king_knocks_out_jin_as_on_the_ps1() {
     let Some(a) = assets() else { return };
@@ -105,6 +107,27 @@ fn king_knocks_out_jin_as_on_the_ps1() {
     let t = rows(&a, [99, 147], 1, p1, "n*179,b*556", 720);
     for (row, want) in [(882, 127), (994, 88), (1127, 49), (1260, 10), (1316, 0)] {
         assert_eq!(at(&t, 673, row, 1).5 >> 16, want, "PS1 row {row}");
+    }
+    // (the stagger's height later runs a unit off)
+    for (row, want) in [(883, (514, -90)), (886, (923, -71)), (890, (1073, -63))] {
+        let r = at(&t, 673, row, 1);
+        assert_eq!((r.0, r.2), want, "PS1 row {row}");
+    }
+    assert_eq!(at(&t, 673, 883, 1).1, -1042, "PS1 row 883: frame 1's height");
+    // the collapse stays where it fell, 3954 on the PS1 (a few units off by then; it slid 729 on)
+    let ko = [1321, 1339].map(|row| at(&t, 673, row, 1).0);
+    assert!(ko[0] == ko[1] && (ko[0] - 3954).abs() < 10, "{ko:?}");
+}
+
+/// Julia's d/f+2 launches Nina and her jabs juggle her: Nina's root as the PS1's through the reactions (the launcher's
+/// reaction came a step late, 197 off).
+#[test]
+fn julia_juggles_nina_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [155, 115], 1, "n*141,f*40,d/f+2*2,n*16,n+1*2,n*10,n+1*2,n*10,n+2*2,n*136", "n*142,b*40,n*180", 360);
+    for (row, want) in [(753, (938, -994, 10)), (756, (1265, -987, 26)), (790, (1728, -989, 54)), (820, (1875, -1017, 62))] {
+        let r = at(&t, 554, row, 1);
+        assert_eq!((r.0, r.1, r.2), want, "PS1 row {row}");
     }
 }
 
