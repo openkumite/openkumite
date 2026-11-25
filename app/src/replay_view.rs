@@ -205,11 +205,9 @@ impl View {
                     if cfg!(not(any(target_arch = "wasm32", target_os = "android"))) && ui.button("Video…").on_hover_text("Make it an MP4 video (V)").clicked() {
                         req.push(Request::Video);
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Exit").on_hover_text("Back to the replays (Esc)").clicked() {
-                            req.push(Request::Exit);
-                        }
-                    });
+                    if ui.button("Exit").on_hover_text("Back to the replays (Esc)").clicked() {
+                        req.push(Request::Exit);
+                    }
                 });
             });
         });
