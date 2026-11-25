@@ -712,6 +712,9 @@ struct App {
     ai_seats: [Option<replay::AiSeat>; 4],
     hash_steps: u64,
     hash_detail: bool,
+    /// `--net-delay`, `--net-jitter`, `--net-loss`: a room's matches over a bad connection (testing).
+    #[cfg(not(target_arch = "wasm32"))]
+    net_bad: (std::time::Duration, std::time::Duration, f32),
     /// Online play (rollback over UDP; the sync test): the fight's frames come from its session.
     net: Option<netplay::NetPlay>,
     /// `--online ROOM`: the room, until the other player is there.
@@ -3143,7 +3146,13 @@ impl App {
         let Some(room) = self.room.as_mut() else { return };
         let me = room.seat();
         let players: Vec<Option<netplay::NetAddr>> = (0..room.players()).map(|p| room.owner(p).filter(|&s| Some(s) != me).map(|s| netplay::NetAddr::Seat(s as u8))).collect();
-        match netplay::NetPlay::p2p(netlink::LinkSocket::open(room.link.clone(), room.matches), &players) {
+        let socket = netlink::LinkSocket::open(room.link.clone(), room.matches);
+        #[cfg(not(target_arch = "wasm32"))]
+        let session =
+            if self.net_bad == Default::default() { netplay::NetPlay::p2p(socket, &players) } else { netplay::NetPlay::p2p(netplay::LossySocket::new(socket, self.net_bad, room.matches), &players) };
+        #[cfg(target_arch = "wasm32")]
+        let session = netplay::NetPlay::p2p(socket, &players);
+        match session {
             Ok(n) => self.net = Some(n),
             // (no session: the match would run alone here, unchecked; the room is left, saying why)
             // (the host: back to the room, the guests called back; a guest: out of the room, the others told)
@@ -9058,6 +9067,8 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         rounds: None,
         hash_steps: 0,
         hash_detail: false,
+        #[cfg(not(target_arch = "wasm32"))]
+        net_bad: netplay::NetPlay::bad_from_args(&args),
         gamepads: None,
         audio: None,
         suspended: false,

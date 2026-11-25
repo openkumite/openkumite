@@ -119,6 +119,9 @@ fn a_cpu_turns_round_to_its_target_behind() {
     // actor 0 a CPU with its target (2, idle) straight behind, out of reach (where the game's routine turns
     // forward, which in these sets is no turn), the other foe out: it faces him within a second and a half
     let Some(a) = assets() else { return };
+    if !a.root.join(format!("characters/model_{MODEL_904}.glb")).exists() {
+        return eprintln!("skipping: no Tekken 2 pack (model {MODEL_904})");
+    }
     let slot = |record, cpu| Slot { record, cpu };
     let slots = [slot(MODEL_904, Some((2, 9))), slot(MODEL_902, Some((2, 9))), slot(MODEL_904, None), slot(MODEL_902, None)];
     let mut g = TagGame::load(&a, slots, vec![0, 0, 1, 1], kumite_game::ai_data(&a).unwrap(), 1).expect("load");

@@ -173,6 +173,9 @@ fn a_soldier_that_went_down_in_a_throw_comes_back_fresh() {
 fn a_tekken_2_player_with_no_one_to_fight_turns_to_the_way_on() {
     let Some(a) = assets() else { return };
     const T2_BRUCE: usize = 940;
+    if !a.root.join(format!("characters/model_{T2_BRUCE}.glb")).exists() {
+        return eprintln!("skipping: no Tekken 2 pack (model {T2_BRUCE})");
+    }
     let data: Arc<ForceData> = Arc::new(kumite_sim::data::load(&a.root.join("gamedata/force.json")).unwrap());
     let costumes = data.soldier_costumes[0];
     let soldiers = [0, 1].map(|k| Actor::load(&a, 259 + 4 * costumes[k].min(3)).unwrap());

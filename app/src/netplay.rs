@@ -10,7 +10,7 @@
 //! - `--net-local PORT --net-peer HOST:PORT --net-player 0|1`: two players over UDP (two windows on one machine, or a
 //!   local network), no room.
 //! - `--net-delay MS --net-jitter MS --net-loss PCT`: a bad connection, simulated on the packets received (both
-//!   sides: the round trip is twice the delay).
+//!   sides: the round trip is twice the delay); `--net-local`'s or a room's matches.
 //! - The ONLINE menu (or `--online ROOM`, `--host`, `--join`): a link (`netlink.rs`), then a session per match.
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -116,19 +116,24 @@ impl NetGame for kumite_game::tag::TagGame {
     }
 }
 
-/// A bad connection for testing (native: UDP): each packet received waits `delay` ± `jitter`, or is lost (`loss` 0..1).
+/// A bad connection for testing (native: UDP, or a room's link): each packet received waits `delay` ± `jitter`, or is
+/// lost (`loss` 0..1).
 #[cfg(not(target_arch = "wasm32"))]
-pub struct LossySocket {
-    inner: ggrs::UdpNonBlockingSocket,
+pub struct LossySocket<S> {
+    inner: S,
     delay: Duration,
     jitter: Duration,
     loss: f32,
-    queue: Vec<(Instant, SocketAddr, ggrs::Message)>,
+    queue: Vec<(Instant, NetAddr, ggrs::Message)>,
     rng: u32,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl LossySocket {
+impl<S> LossySocket<S> {
+    pub fn new(inner: S, bad: (Duration, Duration, f32), seed: u32) -> Self {
+        Self { inner, delay: bad.0, jitter: bad.1, loss: bad.2, queue: Vec::new(), rng: 0x1234_5678 ^ seed }
+    }
+
     fn random(&mut self) -> f32 {
         self.rng = self.rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         (self.rng >> 8) as f32 / (1u32 << 24) as f32
@@ -136,16 +141,14 @@ impl LossySocket {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl ggrs::NonBlockingSocket<NetAddr> for LossySocket {
+impl<S: ggrs::NonBlockingSocket<NetAddr>> ggrs::NonBlockingSocket<NetAddr> for LossySocket<S> {
     fn send_to(&mut self, msg: &ggrs::Message, addr: &NetAddr) {
-        if let NetAddr::Udp(a) = addr {
-            ggrs::NonBlockingSocket::send_to(&mut self.inner, msg, a);
-        }
+        self.inner.send_to(msg, addr);
     }
 
     fn receive_all_messages(&mut self) -> Vec<(NetAddr, ggrs::Message)> {
         let now = Instant::now();
-        for (addr, msg) in ggrs::NonBlockingSocket::receive_all_messages(&mut self.inner) {
+        for (addr, msg) in self.inner.receive_all_messages() {
             if self.random() < self.loss {
                 continue;
             }
@@ -154,7 +157,21 @@ impl ggrs::NonBlockingSocket<NetAddr> for LossySocket {
         }
         let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.queue).into_iter().partition(|(t, _, _)| *t <= now);
         self.queue = later;
-        due.into_iter().map(|(_, a, m)| (NetAddr::Udp(a), m)).collect()
+        due.into_iter().map(|(_, a, m)| (a, m)).collect()
+    }
+}
+
+/// `--net-local`'s UDP socket, its peers by address.
+#[cfg(not(target_arch = "wasm32"))]
+impl ggrs::NonBlockingSocket<NetAddr> for ggrs::UdpNonBlockingSocket {
+    fn send_to(&mut self, msg: &ggrs::Message, addr: &NetAddr) {
+        if let NetAddr::Udp(a) = addr {
+            ggrs::NonBlockingSocket::<SocketAddr>::send_to(self, msg, a);
+        }
+    }
+
+    fn receive_all_messages(&mut self) -> Vec<(NetAddr, ggrs::Message)> {
+        ggrs::NonBlockingSocket::<SocketAddr>::receive_all_messages(self).into_iter().map(|(a, m)| (NetAddr::Udp(a), m)).collect()
     }
 }
 
@@ -225,9 +242,16 @@ impl NetPlay {
         if local > 1 {
             bail!("--net-player 0|1");
         }
+        Ok(Some(Self::udp(port, peer, local, Self::bad_from_args(args))?))
+    }
+
+    /// `--net-delay MS --net-jitter MS --net-loss PCT`: the simulated delay, jitter and loss of the packets received.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn bad_from_args(args: &[String]) -> (Duration, Duration, f32) {
+        let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
         let ms = |name: &str| arg(name).and_then(|v| v.parse::<u64>().ok()).map_or(Duration::ZERO, Duration::from_millis);
         let loss = arg("--net-loss").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0) / 100.0;
-        Ok(Some(Self::udp(port, peer, local, (ms("--net-delay"), ms("--net-jitter"), loss))?))
+        (ms("--net-delay"), ms("--net-jitter"), loss)
     }
 
     pub fn synctest(check_distance: usize) -> Result<Self> {
@@ -258,7 +282,7 @@ impl NetPlay {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn udp(port: u16, peer: SocketAddr, local: usize, bad: (Duration, Duration, f32)) -> Result<Self> {
         let inner = ggrs::UdpNonBlockingSocket::bind_to_port(port).with_context(|| format!("UDP port {port}"))?;
-        let socket = LossySocket { inner, delay: bad.0, jitter: bad.1, loss: bad.2, queue: Vec::new(), rng: 0x1234_5678 ^ port as u32 };
+        let socket = LossySocket::new(inner, bad, port as u32);
         log::info!("netplay: player {} on UDP {port}, the other at {peer}; simulated delay {:?} jitter {:?} loss {}%", local + 1, bad.0, bad.1, bad.2 * 100.0);
         Self::p2p(socket, &[if local == 0 { None } else { Some(NetAddr::Udp(peer)) }, if local == 1 { None } else { Some(NetAddr::Udp(peer)) }])
     }
