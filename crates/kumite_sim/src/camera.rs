@@ -473,7 +473,7 @@ impl CameraData {
         Ok(serde_json::from_value(j)?)
     }
 
-    /// Missing tables are computed: the sine and the square root as Tekken 3's disc has them, the atan within 1.
+    /// Missing tables are computed: the sine and the square root as Tekken 3's disc has them, the atan as Tekken Tag's.
     fn from_json(j: Json) -> Result<Self> {
         use crate::detmath::DetMath;
         let (pi, tau) = (std::f64::consts::PI, std::f64::consts::TAU);
@@ -481,7 +481,8 @@ impl CameraData {
             Some(t) => (t.sin.values, t.atan.values),
             None => (
                 (0..5120).map(|i| (4096.0 * (i as f64 * tau / 4096.0).dsin()).round() as i64).collect(),
-                (0..=1024).map(|q| ((q as f64 / 1024.0).datan2(1.0) * 2048.0 / pi).round() as i64 - (q >> 1)).collect(),
+                // (Tekken Tag's table, 0x4FC680, is the atan cut down: floor(atan(q / 1024) x 2048 / pi))
+                (0..=1024).map(|q| ((q as f64 / 1024.0).datan2(1.0) * 2048.0 / pi + 1e-9).floor() as i64 - (q >> 1)).collect(),
             ),
         };
         let gsqrt_table: Vec<i64> = match j.gsqrt {
@@ -768,6 +769,8 @@ struct TagSamp {
     ease: [i64; 2],
     /// CAM+0xC0 (0x38C188, set after the sampler): the side on a move of camera id 0xAE last frame, side 0 first.
     odd: Option<usize>,
+    /// Each side's root (+0x51C) this frame: the yaw's point for a side on flags bits 20-21 = 2 (0x38F7F8).
+    root: [(i64, i64); 2],
 }
 
 /// Tekken Tag's director block (CAM 0x433330).
@@ -1594,7 +1597,7 @@ impl FightCamera {
     /// the screen (+0x628-0x62C in [21, 492)), then eases in over 4 frames (2 when they are off the 512 pixels); ids
     /// 0x17 / 0x18 / 0x1A (the run-off 0x18) ease the sample toward the other's by 6/128 a frame, 0x18 / 0x1A less
     /// when the pair is far apart. The side last on a move of camera id 0xAE (CAM+0xC0) samples on its odd frames only.
-    fn tag_sample(&mut self, p: [Sample; 2], last: [Sample; 2]) -> [Sample; 2] {
+    fn tag_sample(&mut self, p: [Sample; 2], mut last: [Sample; 2]) -> [Sample; 2] {
         let a = self.actors;
         let rng = a.map(|a| (0x17..=0x1A).contains(&a.cam));
         let mut follow = a.map(|a| a.follow);
@@ -1625,6 +1628,7 @@ impl FightCamera {
             }
         }
         (self.tag_samp.using, self.tag_samp.id) = (using, a.map(|a| a.cam));
+        self.tag_samp.root = p.map(|q| (q.x, q.z));
         let odd = self.tag_samp.odd;
         self.tag_samp.odd = a.iter().position(|a| a.cam == 0xAE);
         let mut s = last;
@@ -1667,8 +1671,9 @@ impl FightCamera {
                         (s[1].x, s[1].z) = (last[1].x + tdiv(s[1].x - last[1].x, 4), last[1].z + tdiv(s[1].z - last[1].z, 4));
                     }
                 }
-                s[i].x += s[o].x - last[o].x;
-                s[i].z += s[o].z - last[o].z;
+                // (the step goes on the last sample too, 0x38F2DC: a run-off's ease below starts from it)
+                let (dx, dz) = (s[o].x - last[o].x, s[o].z - last[o].z);
+                (s[i].x, s[i].z, last[i].x, last[i].z) = (s[i].x + dx, s[i].z + dz, last[i].x + dx, last[i].z + dz);
             }
             s[i].y = if follow[i] != 2 { p[i].y } else { last[i].y };
             s[i].side = p[i].side;
@@ -1696,7 +1701,15 @@ impl FightCamera {
         let d_ = self.data.clone();
         let key = self.keys[0];
         let st = &mut self.st[0];
-        let [a, b] = self.samp;
+        let [mut a, mut b] = self.samp;
+        if d_.director.is_some() {
+            // (Tekken Tag's: a side on flags bits 20-21 = 2, a run-off, from its root, not its eased sample)
+            for (s, i) in [(&mut a, 0), (&mut b, 1)] {
+                if self.actors[i].follow == 2 {
+                    (s.x, s.z) = self.tag_samp.root[i];
+                }
+            }
+        }
         let mut ang = d_.ratan2(b.x - a.x, b.z - a.z);
         if a.side >= b.side {
             ang = (ang + 0x800) & 0xFFF;
