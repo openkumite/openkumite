@@ -1671,13 +1671,15 @@ impl App {
                 scene.background = st.background;
                 (scene.camera_drum, scene.floor_patch, scene.floor_light, scene.floor_levels, scene.fog) = (st.camera_drum, st.floor_patch, st.floor_light, st.floor_levels, st.fog);
                 if let Some((m, at)) = st.strip.as_ref().filter(|(m, _)| !m.indices.is_empty()) {
-                    // the strip flat on the screen, as the original's sprites: x in its texels (three turns, u
-                    // repeating), y 0..1 its height (the stage's fill above it); `stage_view` places it
+                    // the strip flat on the screen, as the original's sprites: x in its texels, y 0..1 its height
+                    // (the stage's fill above it); `stage_view` places it. Four turns: two as the original repeats
+                    // them, one mirrored on each side for a window wider than 4:3 (the picture's ends do not meet)
                     let w = st.textures.get(m.texture).map_or(1024.0, |t| t.width as f32);
                     let template = m.vertices.first().map(|v| StaticVertex { pos: [0.0; 3], uv: [0.0; 2], color: v.color, cell: v.cell, normal: v.normal });
-                    let corners = [(-1.0, 0.0), (2.0, 0.0), (-1.0, 1.0), (2.0, 1.0)];
-                    let quad: Vec<StaticVertex> = template.into_iter().flat_map(|t| corners.map(|(u, y)| StaticVertex { pos: [u * w, y, 0.0], uv: [u, 1.0 - y], ..t })).collect();
-                    scene.sky = vec![r.sorted_mesh(&quad, &[0, 1, 2, 1, 3, 2], tex[m.texture].clone())];
+                    let quad: Vec<StaticVertex> =
+                        template.into_iter().flat_map(|t| STRIP_TURNS.into_iter().flat_map(move |(x, u)| [0.0, 1.0].map(|y| StaticVertex { pos: [x * w, y, 0.0], uv: [u, 1.0 - y], ..t }))).collect();
+                    let indices: Vec<u32> = (0..4).flat_map(|i| [0, 2, 1, 2, 3, 1].map(|k| 2 * i + k)).collect();
+                    scene.sky = vec![r.sorted_mesh(&quad, &indices, tex[m.texture].clone())];
                     // above it the original's fill (record 8 0x800B59AC)
                     scene.background = [0x21, 0x3A, 0x94];
                     scene.moving.clear();
@@ -7171,6 +7173,19 @@ fn scene_lighting(cam: &mut Camera, scene: &Scene) {
     cam.shadow = scene.shadow.filter(|_| shadows_shown(cam));
 }
 
+/// Ball's strip's turns: its x and u at each turn's edge (turns of the picture's width). The middle two
+/// repeat as the original's; the outer ones mirror them, so a window wider than 4:3 shows no join of the picture's ends.
+const STRIP_TURNS: [(f32, f32); 5] = [(-1.0, 1.0), (0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 1.0)];
+
+/// Where Ball's strip's x 0 goes, in texels from the screen's middle, for the texel scroll: the 4:3 picture's left
+/// edge (184 texels left of the middle) shows texel scroll + 64 in the first repeated turn, or in the second when the
+/// join of the turns lies outside the picture nearer its right edge than its left (the mirrored turn on that side).
+fn strip_x(scroll: f32) -> f32 {
+    let left = (scroll + 64.0).rem_euclid(1024.0);
+    let turn = if (328.0..=656.0).contains(&left) { 1024.0 } else { 0.0 };
+    -(left + turn + 184.0)
+}
+
 /// The shadows are drawn only while the camera looks no more than 0xEF (21 degrees) up (0x80048E9C's flag
 /// 0x800ADFD0: sin(pitch + 0xEF) > 0).
 fn shadows_shown(cam: &Camera) -> bool {
@@ -7203,7 +7218,7 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
         let scroll = ((cam.eye.z * f.x - cam.eye.x * f.y) * kumite_game::UNITS / 96.0 - yaw / 2.0).rem_euclid(1024.0);
         let t = (cam.fov_y * 0.5).tan();
         let (kx, ky) = (d * t * 4.0 / 3.0 / 184.0, px * d * t / 240.0);
-        let place = glam::Mat4::from_translation(glam::Vec3::new(-(scroll + 64.0 + 184.0) * kx, p.y, -d)) * glam::Mat4::from_scale(glam::Vec3::new(kx, ky, 1.0));
+        let place = glam::Mat4::from_translation(glam::Vec3::new(strip_x(scroll) * kx, p.y, -d)) * glam::Mat4::from_scale(glam::Vec3::new(kx, ky, 1.0));
         cam.sky = view.inverse() * place;
         // (no cut of the floor: the strip covers it far off, and the PS1 shows sand to the screen's foot from the
         // round's far opening shot)
@@ -9366,6 +9381,29 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Ball's strip in a 4:3 window shows the PS1's texels; beside it, out to 21:9, no join of the picture's ends.
+    #[test]
+    fn balls_strip_is_the_originals_in_4_3_and_has_no_join_beside_it() {
+        // the texel (0..1024) shown x texels right of the screen's middle
+        let texel = |scroll: f32, x: f32| {
+            let at = (x - super::strip_x(scroll)) / 1024.0;
+            let w = super::STRIP_TURNS.windows(2).find(|w| (w[0].0..=w[1].0).contains(&at)).expect("the strip covers the screen");
+            (w[0].1 + (w[1].1 - w[0].1) * (at - w[0].0)) * 1024.0
+        };
+        for scroll in (0..4096).map(|s| s as f32 / 4.0) {
+            // in the 4:3 picture as the PS1's sprites: texel scroll + 64 at its left edge, the turns repeating
+            for x in -184..184 {
+                let d = (texel(scroll, x as f32).rem_euclid(1024.0) - (x as f32 + 184.0 + scroll + 64.0).rem_euclid(1024.0)).abs();
+                assert!(d < 0.01 || d > 1023.99, "scroll {scroll} x {x}");
+            }
+            // beside it in 21:9, no join of the picture's ends (a mirrored turn comes back to the texels it left)
+            for x in (-322..-185).chain(184..322) {
+                let turn = |x: f32| (texel(scroll, x + 0.3) / 1024.0).floor();
+                assert_eq!(turn(x as f32), turn(x as f32 + 1.0), "scroll {scroll} x {x}");
+            }
+        }
+    }
+
     /// The lens flare's discs lie through the centre, the first three quarters of the way to the sun; none once the sun
     /// is 333 pixels from the centre; a fighter on the line to the sun puts them out.
     #[test]
