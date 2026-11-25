@@ -62,6 +62,7 @@ fn ttt_fighters_on_an_arena() {
         .enumerate()
         .map(|(i, t)| match (stage.filtered[i], stage.smooth[i], stage.tiled[i]) {
             (true, ..) => r.texture_filtered(t.width, t.height, &t.rgba),
+            _ if stage.clamped[i] => r.texture_smooth_clamped(t.width, t.height, &t.rgba),
             (_, true, _) => r.texture_smooth_tiled(t.width, t.height, &t.rgba),
             (.., true) => r.texture_tiled(t.width, t.height, &t.rgba),
             _ => r.texture(t.width, t.height, &t.rgba),

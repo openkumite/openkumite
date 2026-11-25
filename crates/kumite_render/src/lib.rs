@@ -563,6 +563,8 @@ pub struct Renderer {
     sampler_tiled: [wgpu::Sampler; 2],
     /// Trilinear, 16x anisotropic: the atlas's addressing, and tiling both ways.
     sampler_aniso: [wgpu::Sampler; 2],
+    /// Linear, and trilinear 16x anisotropic, both clamped both ways: Tekken Tag's pictures the GS clamps.
+    sampler_clamped: [wgpu::Sampler; 2],
     /// The scene's upscale (nearest: a lower resolution shows its pixels) and downscale (linear) to the window.
     blit_nearest: wgpu::Sampler,
     blit_linear: wgpu::Sampler,
@@ -774,6 +776,16 @@ impl Renderer {
                 min_filter: wgpu::FilterMode::Linear,
                 mipmap_filter: wgpu::MipmapFilterMode::Linear,
                 anisotropy_clamp: 16,
+                ..Default::default()
+            })
+        });
+        let sampler_clamped = [(wgpu::MipmapFilterMode::Nearest, 1), (wgpu::MipmapFilterMode::Linear, 16)].map(|(mipmap_filter, anisotropy_clamp)| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("clamped"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter,
+                anisotropy_clamp,
                 ..Default::default()
             })
         });
@@ -1022,6 +1034,7 @@ impl Renderer {
             sampler_smooth,
             sampler_tiled,
             sampler_aniso,
+            sampler_clamped,
             blit_nearest,
             blit_linear,
             blit_pipeline,
@@ -1267,6 +1280,12 @@ impl Renderer {
     /// the enhanced look's: as the PS2 draws Tekken Tag's arenas.
     pub fn texture_smooth_tiled(&self, width: u32, height: u32, rgba: &[u8]) -> Arc<Texture> {
         self.upload(width, height, rgba, [&self.sampler_tiled[1], &self.sampler_tiled[1], &self.sampler_aniso[1]])
+    }
+
+    /// Upload an RGBA8 texture clamped both ways, its texels filtered (linear, no mipmaps) whatever the setting, but
+    /// the enhanced look's: Tekken Tag's arena pictures the GS clamps (CLAMP REGION_CLAMP).
+    pub fn texture_smooth_clamped(&self, width: u32, height: u32, rgba: &[u8]) -> Arc<Texture> {
+        self.upload(width, height, rgba, [&self.sampler_clamped[0], &self.sampler_clamped[0], &self.sampler_clamped[1]])
     }
 
     /// Upload an RGBA8 texture that tiles both ways, its texels sharp (or smooth by the setting).
