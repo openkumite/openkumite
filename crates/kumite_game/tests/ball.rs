@@ -313,10 +313,10 @@ fn kumas_long_jump_drifts_as_on_the_ps1() {
     }
 }
 
-/// Tekken 3's pose ease turns the joints too (0x8003C270's deltas at P+0x15F0, added at the weight at 0x8003B0A0): Jin's
-/// (P2, against Paul) is on at the PS1's steps, and his chest and forearm are drawn as the PS1's (P+0x1390 + 32 j; ours
-/// in the PS1's axes, within the converted pose's precision: the clip's own were 565 and 1800 off). PS1 rows are our
-/// steps `row - 1`.
+/// Tekken 3's pose ease turns the joints too (0x8003C270's deltas at P+0x15F0, added at the weight at 0x8003B0A0, made
+/// orthonormal again at 0x80075FC8): Jin's (P2, against Paul) is on at the PS1's steps, and his chest and forearm are
+/// the PS1's (P+0x1390 + 32 j), each entry: the turns are the pose solver's of the frame's channels (they were within
+/// 16 and 40 of it from the converted pose, the clip's own 565 and 1800 off). PS1 rows are our steps `row - 1`.
 #[test]
 fn jins_joints_ease_between_moves_as_on_the_ps1() {
     let Some(a) = assets() else { return };
@@ -327,14 +327,11 @@ fn jins_joints_ease_between_moves_as_on_the_ps1() {
         assert_eq!(eased[row - 1].is_some(), on.iter().any(|r| r.contains(&row)), "PS1 row {row}");
     }
     let ps1 = [
-        (195, 1, [-80, -1872, 3647, -3213, 2291, 1106, -2542, -2837, -1514], 16),
-        (195, 5, [-1792, 3691, 0, -3685, -1796, 0, 0, 0, 4106], 40),
-        (229, 1, [-180, -2157, 3488, -2918, 2515, 1409, -2878, -2416, -1648], 16),
+        (195, 1, [-80, -1872, 3647, -3213, 2291, 1106, -2542, -2837, -1514]),
+        (195, 5, [-1792, 3691, 0, -3685, -1796, 0, 0, 0, 4106]),
+        (229, 1, [-180, -2157, 3488, -2918, 2515, 1409, -2878, -2416, -1648]),
     ];
-    // (OpenKumite's y and z are the PS1's negated)
-    let sign = |k: usize| if (k / 3 == 0) == k.is_multiple_of(3) { 1 } else { -1 };
-    for (row, slot, want, within) in ps1 {
-        let got = eased[row - 1].unwrap()[slot];
-        assert!((0..9).all(|k| (i32::from(got[k]) * sign(k) - want[k]).abs() <= within), "PS1 row {row}, slot {slot}: {got:?}, the PS1 {want:?}");
+    for (row, slot, want) in ps1 {
+        assert_eq!(eased[row - 1].unwrap()[slot], want, "PS1 row {row}, slot {slot}");
     }
 }

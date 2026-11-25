@@ -1,6 +1,7 @@
 //! Tekken 3's VS fights against the PS1 game (Tekken 3 USA in PCSX-Redux, both pads scripted, both fighters' roots
 //! P+0xF68, facings and health traced each fight step at the facing driver 0x8003F098). Needs Tekken 3's game data
-//! (OPENKUMITE_ASSETS); skips without.
+//! (OPENKUMITE_ASSETS); skips without. The fighters are their second costumes' models, as the PS1's VS select gave
+//! them (× picks costume 1, 0x8010DAB8): a few of them stand on joints a unit off the first costume's.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests: a failure stops them
 
 use kumite_assets::Assets;
@@ -13,8 +14,9 @@ fn assets() -> Option<Assets> {
 }
 
 /// A fight's rows: each step both fighters' root as the PS1 keeps it (x, height down, z negated), facing and basis
-/// in the PS1's angle (half a turn less OpenKumite's yaw), health (16.16), move and frame.
-type Row = [(i32, i32, i32, i16, i16, i32, String); 2];
+/// in the PS1's angle (half a turn less OpenKumite's yaw), health (16.16), move and frame, the push spheres' centres
+/// as the PS1 keeps them (P+0x324).
+type Row = [(i32, i32, i32, i16, i16, i32, String, Vec<[i32; 3]>); 2];
 
 /// A VS fight of `models` from the round's first fight step, the pads' scripts from there, `steps` of them.
 /// `lead`: steps P1's start move runs ahead of P2's (the PS1's round 2 starts them a step apart).
@@ -42,14 +44,15 @@ fn rows(a: &Assets, models: [usize; 2], lead: u32, p1: &str, p2: &str, steps: us
                 let f = &g.fight.fighters[i];
                 let r = f.root();
                 let m = format!("{}@{}", f.current_move(&g.fight.data).anim, f.frame);
-                (r.x.round() as i32, (-r.y - f.anim_root_y).round() as i32, (-r.z).round() as i32, angle(f.yaw), angle(f.root_yaw), f.health, m)
+                let push = g.spheres()[i].push.iter().map(|s| [s.centre.x, -s.centre.y, -s.centre.z].map(|v| v.round() as i32)).collect();
+                (r.x.round() as i32, (-r.y - f.anim_root_y).round() as i32, (-r.z).round() as i32, angle(f.yaw), angle(f.root_yaw), f.health, m, push)
             })
         })
         .collect()
 }
 
 /// Prints the rows (VS_TRACE=1; VS_MODELS=a,b, VS_P1 / VS_P2 the pads' scripts, VS_STEPS) as "step vs p1=x,y,z,2c,e,hp
-/// m1=move@frame p2=...".
+/// m1=move@frame p2=...", with VS_PUSH=1 each push sphere's centre after the step ("s10=x,y,z ...").
 #[test]
 fn print_vs_trace() {
     let Some(a) = assets() else { return };
@@ -60,8 +63,14 @@ fn print_vs_trace() {
     let models = env("VS_MODELS").split(',').filter_map(|m| m.parse().ok()).collect::<Vec<usize>>().try_into().unwrap_or([71, 79]);
     for (k, row) in rows(&a, models, env("VS_LEAD").parse().unwrap_or(0), &env("VS_P1"), &env("VS_P2"), env("VS_STEPS").parse().unwrap_or(600)).iter().enumerate() {
         let p = |i: usize| {
-            let (x, y, z, f, e, hp, m) = &row[i];
-            format!("p{}={x},{y},{z},{f},{e},{hp} m{}={m}", i + 1, i + 1)
+            let (x, y, z, f, e, hp, m, push) = &row[i];
+            let mut s = format!("p{}={x},{y},{z},{f},{e},{hp} m{}={m}", i + 1, i + 1);
+            if std::env::var_os("VS_PUSH").is_some() {
+                for (k, c) in push.iter().enumerate() {
+                    s += &format!(" s{}{k}={},{},{}", i + 1, c[0], c[1], c[2]);
+                }
+            }
+            s
         };
         eprintln!("{k} vs {} {}", p(0), p(1));
     }
@@ -69,7 +78,7 @@ fn print_vs_trace() {
 
 /// The PS1's rows of a case recorded in round 2 (vsync 1700 on): its step `row` is our step `row - first - 2` (the
 /// trace reads the roots before the step's update; P2 starts its round a step after P1, its pad a step later).
-fn at(rows: &[Row], first: usize, row: usize, i: usize) -> &(i32, i32, i32, i16, i16, i32, String) {
+fn at(rows: &[Row], first: usize, row: usize, i: usize) -> &(i32, i32, i32, i16, i16, i32, String, Vec<[i32; 3]>) {
     &rows[row - first - 2][i]
 }
 
@@ -79,7 +88,7 @@ fn at(rows: &[Row], first: usize, row: usize, i: usize) -> &(i32, i32, i32, i16,
 #[test]
 fn lei_sidesteps_out_of_the_round_start_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let t = rows(&a, [87, 151], 1, "n*196,u*2,n*40,d*2,n*40,u*2,n*6,u*2,n*40,d*30,n*96", "n*457", 300);
+    let t = rows(&a, [91, 155], 1, "n*196,u*2,n*40,d*2,n*40,u*2,n*6,u*2,n*40,d*30,n*96", "n*457", 300);
     for (row, want) in [(724, (-956, -953, -708, 15932)), (728, (-992, -956, -548, 14381)), (733, (-976, -816, -58, 18170)), (740, (-759, -828, 425, 22761))] {
         let r = at(&t, 525, row, 0);
         assert_eq!((r.0, r.1, r.2, r.3), want, "PS1 row {row}");
@@ -93,21 +102,60 @@ fn king_knocks_out_jin_as_on_the_ps1() {
     let Some(a) = assets() else { return };
     // (the PS1's presses every 27 vsyncs, on its steps)
     let p1 = "n*178,f*20,n+2*2,n*25,n+2*2,n*25,n+2*2,n*24,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*25,n+2*2,n*22";
-    let t = rows(&a, [95, 143], 1, p1, "n*179,b*556", 720);
+    let t = rows(&a, [99, 147], 1, p1, "n*179,b*556", 720);
     for (row, want) in [(882, 127), (994, 88), (1127, 49), (1260, 10), (1316, 0)] {
         assert_eq!(at(&t, 673, row, 1).5 >> 16, want, "PS1 row {row}");
     }
 }
 
 /// Paul runs into Law: the push (0x80046D34) shares the spheres' deepest overlap by how far each moved since the last
-/// step, each backing off along its basis, half a step: Paul's z stays within 10 of the PS1's (the sphere push swung it
-/// 124 off). The rest is the spheres' places: the converted joints are up to 75 units off the PS1's slots.
+/// step, each backing off along its basis, half a step, the spheres on the slots in the PS1's integers as this step's
+/// pose puts them: Paul's root is the PS1's (the sphere push swung z 124 off, the converted joints still 9 and x 51).
 #[test]
 fn paul_runs_into_law_and_is_pushed_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let t = rows(&a, [71, 79], 1, "n*202,f*57,n*28,b*60,n*30,f*150,n*120", "n*398,b*90,n*160", 440);
-    for (row, z) in [(840, 92), (860, 232), (900, 249), (940, 250)] {
+    let t = rows(&a, [75, 83], 1, "n*202,f*57,n*28,b*60,n*30,f*150,n*120", "n*398,b*90,n*160", 440);
+    for (row, want) in [(840, (141, 92)), (860, (400, 232)), (900, (202, 249)), (940, (-316, 250))] {
         let r = at(&t, 599, row, 0);
-        assert!((r.2 - z).abs() <= 10, "PS1 row {row}: z {} against {z}", r.2);
+        assert_eq!((r.0, r.2), want, "PS1 row {row}");
+    }
+}
+
+/// King dashes at Nina standing (her stand eases toward its loop's first frame): every push sphere of both as the
+/// PS1 places it (P+0x324, 0x80041F6C): the slots from the frame's channels by the pose solver (0x8003AD10, two-bone
+/// limbs on its own skeleton), eased (0x8003B0A0) and chained (0x8003AFCC) in the GTE's integers. The converted
+/// joints were up to 136 off.
+#[test]
+fn push_spheres_sit_on_the_ps1s_slots() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [99, 115], 1, "n*254,f*2,n*4,f*2,n*40,b*2,n*4,b*2,n*60,f*2,n*4,f*2,n*175", "n*554", 300);
+    let ps1: [(usize, [[[i32; 3]; 8]; 2]); 3] = [
+        (
+            735,
+            [
+                [[-800, -1512, -94], [-465, -1278, 216], [-791, -1285, -422], [-944, -1101, -41], [-558, -605, -83], [-973, -518, -323], [-564, -181, 113], [-1206, -167, -120]],
+                [[1016, -1375, 0], [625, -1180, -110], [938, -1043, 226], [1000, -996, 0], [548, -534, 53], [918, -413, 271], [548, -131, -177], [1241, -132, 96]],
+            ],
+        ),
+        (
+            878,
+            [
+                [[-613, -1413, -43], [-275, -1174, 246], [-585, -1157, -352], [-741, -997, 3], [-316, -551, -41], [-721, -448, -348], [-402, -124, 125], [-1066, -196, -162]],
+                [[1016, -1354, 0], [622, -1172, -116], [928, -1035, 223], [1000, -975, 0], [553, -515, 74], [907, -396, 270], [550, -125, -178], [1242, -128, 96]],
+            ],
+        ),
+        (
+            886,
+            [
+                [[-191, -1477, 1], [156, -1267, 210], [-154, -1233, -322], [-364, -1075, 3], [87, -660, 121], [-451, -493, -294], [146, -197, 180], [-847, -254, -226]],
+                [[1016, -1379, 0], [626, -1183, -108], [943, -1046, 225], [1000, -1000, 0], [549, -538, 49], [921, -418, 271], [550, -134, -177], [1241, -136, 95]],
+            ],
+        ),
+    ];
+    // (the PS1's row shows the spheres of the step before it, as at())
+    for (row, want) in ps1 {
+        for (i, w) in want.iter().enumerate() {
+            assert_eq!(at(&t, 622, row, i).7, w.to_vec(), "PS1 row {row}, P{}", i + 1);
+        }
     }
 }

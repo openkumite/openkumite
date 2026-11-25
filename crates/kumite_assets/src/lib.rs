@@ -145,6 +145,9 @@ pub struct Clip {
     /// Tekken Tag: each frame's 57 channels as the game keeps them (animation extras `angles`: the root's heading,
     /// height and distance, then the 18 joint slots' x, y, z, 65536 a turn); empty when the file has none.
     pub angles: Vec<[u16; 57]>,
+    /// Tekken 3: each frame's 49 channels as the PS1 decodes them (animation extras `channels`, 0x80038B4C: the root,
+    /// the hands' and feet's targets, their twists, ten joints' x, y, z); empty when the file has none.
+    pub channels: Vec<[i16; 49]>,
 }
 
 /// gamedata/shadows.json (export_shadows): the fighters' shadow meshes, each with the model records it serves.
@@ -233,6 +236,9 @@ pub struct Character {
     /// Tekken Tag's Mokujin's and Unknown's blades (the skin's extras `moveset`): each node and the moveset it is drawn
     /// with (0x34D108).
     pub blades: Vec<[usize; 2]>,
+    /// Tekken 3: the 18 joint slots' places on their parents in the PS1's units (the skin's extras `slots`, P+0xF74 +
+    /// 32 s + 0x14); empty when the file has none.
+    pub slots: Vec<[i32; 3]>,
 }
 
 impl Character {
@@ -335,6 +341,14 @@ impl Character {
                 let v: Vec<u16> = gltf::accessor::Iter::<u16>::new(acc, get).map(Iterator::collect).unwrap_or_default();
                 clip.angles = v.as_chunks::<57>().0.to_vec();
             }
+            if let Some(acc) = extras["channels"]
+                .as_u64()
+                .and_then(|i| doc.accessors().nth(i as usize))
+                .filter(|a| a.data_type() == gltf::accessor::DataType::I16 && a.dimensions() == gltf::accessor::Dimensions::Scalar)
+            {
+                let v: Vec<i16> = gltf::accessor::Iter::<i16>::new(acc, get).map(Iterator::collect).unwrap_or_default();
+                clip.channels = v.as_chunks::<49>().0.to_vec();
+            }
             for ch in a.channels() {
                 let r = ch.reader(get);
                 let node = ch.target().node().index();
@@ -387,9 +401,10 @@ impl Character {
         follow.sort_by_key(|&[n, _]| order.iter().position(|&o| o == n));
         let mut blades = pairs("moveset");
         blades.retain(|&[n, _]| n < nodes.len());
+        let slots: Vec<[i32; 3]> = extras.as_ref().and_then(|e| serde_json::from_value(e["slots"].clone()).ok()).filter(|s: &Vec<[i32; 3]>| s.len() == 18).unwrap_or_default();
         let cloth: Vec<ClothNode> = extras.and_then(|e| serde_json::from_value(e["cloth"].clone()).ok()).unwrap_or_default();
         let cloth = cloth.into_iter().filter(|c| nodes.get(c.node).is_some_and(|n| n.parent.is_some())).collect();
-        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, layers, texture, filtered, mark, wings, clips, clip_index, cloth, follow, blades })
+        Ok(Self { name, nodes, order, joints, inverse_bind, vertices, indices, blend_from, layers, texture, filtered, mark, wings, clips, clip_index, cloth, follow, blades, slots })
     }
 
     /// The wings at their track's `frame` (clamped to its end): each wing node turned and scaled so in its parent, its
@@ -541,6 +556,7 @@ impl Character {
             cloth: self.cloth.clone(),
             follow: self.follow.clone(),
             blades: self.blades.clone(),
+            slots: self.slots.clone(),
         }
     }
 
@@ -565,6 +581,7 @@ impl Character {
                     .collect(),
                 scales: from.iter().map(|j| j.and_then(|j| c.scales.get(j)?.clone())).collect(),
                 angles: c.angles.clone(),
+                channels: c.channels.clone(),
             })
             .collect()
     }

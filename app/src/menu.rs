@@ -611,6 +611,8 @@ pub struct Roster {
     pub ball_stage: usize,
     /// Its full health (`constants.max_health`: Tekken 3's default, 130).
     pub ball_health: Option<i32>,
+    /// VS MODE's full health per LIFE level (rules.json `health.life_options`, 0x800225EC[level]: 100 % is 140).
+    pub vs_life: Vec<i32>,
     pub ball_pool: Vec<usize>,
     pub ball_first: Option<usize>,
     /// The CPU's opponent is drawn from those picked at most this many times more than the least picked.
@@ -626,6 +628,11 @@ pub struct Roster {
 }
 
 impl Roster {
+    /// VS MODE's full health of a LIFE handicap (0x80051720: the life table at its level; None: the default's).
+    pub fn vs_max_health(&self, handicap: i32) -> Option<i32> {
+        self.grid.level_of(handicap).and_then(|l| self.vs_life.get(l).copied())
+    }
+
     pub fn load(gamedata: &std::path::Path) -> Self {
         let read = |name: &str| -> Value { kumite_fs::read(&gamedata.join(name)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default() };
         let roster = read("roster.json");
@@ -718,6 +725,7 @@ impl Roster {
             ball_hud: serde_json::json!({"gauges": ball["constants"]["gauges"], "texts": ball["constants"]["texts"], "court_lines": ball["constants"]["court_lines"]}),
             ball_stage: ball["constants"]["stage"].as_u64().unwrap_or(0) as usize,
             ball_health: ball["constants"]["max_health"].as_i64().and_then(|h| i32::try_from(h).ok()),
+            vs_life: read("rules.json")["health"]["life_options"].as_array().into_iter().flatten().filter_map(|h| i32::try_from(h.as_i64()?).ok()).collect(),
             ball_pool: ball["constants"]["cpu"]["pool"].as_array().into_iter().flatten().filter_map(|c| c.as_u64()).map(|c| c as usize).collect(),
             ball_first: ball["constants"]["cpu"]["first_ever"].as_u64().map(|c| c as usize),
             ball_spread: ball["constants"]["cpu"]["spread"].as_u64().unwrap_or(0) as u32,
