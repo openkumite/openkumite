@@ -295,10 +295,13 @@ impl TagGame {
     /// Node world matrices (metres) and placement of actor `i`, the head turned when it follows.
     pub fn pose(&self, i: usize) -> (Vec<Mat4>, Mat4) {
         let (mut pose, place) = self.pose_animated(i);
-        if let Some(local) = self.heads[i].local {
-            turn_head(&self.bodies[i], &mut pose, local);
-        }
         let b = &self.bodies[i];
+        if !b.bones.is_empty() && head::TagLook::fits(|n| b.character.nodes.get(n)?.parent) {
+            head::split_neck(&b.character.nodes, &mut pose);
+        }
+        if let Some(local) = self.heads[i].local {
+            turn_head(b, &mut pose, local);
+        }
         if let Some(p) = &b.face {
             self.tag_faces[i].apply(p, &b.character, &mut pose);
         }
@@ -571,7 +574,8 @@ impl TagGame {
             if !self.bodies[i].bones.is_empty() {
                 let nodes = &self.bodies[i].character.nodes;
                 if head::TagLook::fits(|n| nodes.get(n)?.parent) {
-                    let (pose, place) = self.pose_animated(i);
+                    let (mut pose, place) = self.pose_animated(i);
+                    head::split_neck(nodes, &mut pose);
                     let w: Vec<Mat4> = pose.iter().map(|m| place * *m).collect();
                     let (op, op_place) = self.pose_animated(o);
                     let target = op_place.transform_point3(op[self.bodies[o].chest].w_axis.truncate());
