@@ -3146,6 +3146,9 @@ impl Fight {
         let d = f.opponent.root - f.position;
         let a = PI - tag_atan(d.x as i32, -d.z as i32) as f32 * ANGLE;
         (f.yaw, f.root_yaw) = (a, a);
+        // the player block keeps the entrance's tracking mode (+0x11E, 8 in PCSX2): the body +0x3C turns on toward the
+        // opponent each frame, the basis +0x1A stays
+        (f.mode, f.since) = (out.mode, out.since);
         self.fighters[i] = f;
         let o = &mut self.fighters[1 - i];
         if o.air.is_some() || o.juggle != 0 {
