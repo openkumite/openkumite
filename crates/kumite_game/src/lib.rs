@@ -1754,7 +1754,8 @@ impl Game {
             if !self.bodies[i].bones.is_empty() {
                 let nodes = &self.bodies[i].character.nodes;
                 if head::TagLook::fits(|n| nodes.get(n)?.parent) {
-                    let (pose, place) = self.pose_animated(i);
+                    let (mut pose, place) = self.pose_animated(i);
+                    head::split_neck(nodes, &mut pose);
                     let w: Vec<Mat4> = pose.iter().map(|m| place * *m).collect();
                     let (o, o_place) = self.pose_animated(1 - i);
                     let target = o_place.transform_point3(o[self.bodies[1 - i].chest].w_axis.truncate());
@@ -1781,6 +1782,10 @@ impl Game {
     /// frame while one plays), the head turned to the opponent when it follows.
     pub fn pose(&self, i: usize) -> (Vec<Mat4>, Mat4) {
         let (mut pose, place) = self.pose_animated(i);
+        let nodes = &self.bodies[i].character.nodes;
+        if !self.bodies[i].bones.is_empty() && head::TagLook::fits(|n| nodes.get(n)?.parent) {
+            head::split_neck(nodes, &mut pose);
+        }
         if let (Some(at), Some(root)) = (self.wolves[i], pose.get(self.bodies[i].root).copied()) {
             let at = place.inverse().transform_point3(at).extend(1.0);
             self.bodies[i].character.pose_follow(&mut pose, Mat4::from_cols(root.x_axis, root.y_axis, root.z_axis, at));

@@ -133,7 +133,7 @@ impl HeadLook {
 /// the yaw stays on the side it went round. The eyes (nodes 21, 22) then look straight at it, sideways within ±35°,
 /// up and down within −7°..9°. On (fp) while the round is on or the K.O. time runs (gp-0x7268 1 or 2) and the move
 /// allows it (record +0x24 bit 22; an attack only from frame max(+0x2D, +0x18 − 17)); off, the angles follow a point
-/// 1 m ahead of the face at once, and the neck and head are still written from them. State per side
+/// 1 m ahead of the face at once and the motion's (split, [`split_neck`]) neck and head are drawn. State per side
 /// (gp-0x6100..0x60D8, radians), reset with the fighter (0x351E10). Node indices are the PS2 model's (every
 /// fighter's first 98 nodes are the same).
 #[derive(Clone, Copy, Debug, Default)]
@@ -169,19 +169,17 @@ impl TagLook {
             l.w_axis.x += rise;
             p * l
         };
-        // (aimed from the base, not the motion's neck: a stance's turned neck measures 40° on the PS2, as from the base)
+        // (aimed from the drawn neck, the +0x8910 copy at 0x3521CC: the motion's after the split, [`split_neck`])
         let base = Mat3::from_cols(Vec3::Y, Vec3::Z, Vec3::X);
-        let (yaw, pitch) = self.aim(0, on, k, eye_level(Mat4::from_mat3_translation(base, l5.w_axis.truncate())), target);
+        let (yaw, pitch) = self.aim(0, on, k, eye_level(l5), target);
         let r5 = Mat3::from_rotation_x(yaw) * Mat3::from_rotation_z(pitch) * base;
         let l5 = Mat4::from_mat3_translation(r5, l5.w_axis.truncate());
         // the head, from the turned neck: Rz(yaw) · Ry(pitch) (0x349D70 of 0, pitch, yaw)
         let (yaw, pitch) = self.aim(1, on, k, eye_level(l5), target);
         let r6 = Mat3::from_rotation_z(yaw) * Mat3::from_rotation_y(pitch);
         if !on {
-            // (off, the neck and head are written all the same, aimed at once at where the face looks, 0x352238; the
-            // eyes keep the motion's)
-            let keep = |n: usize| Mat3::from_mat4(w[head].inverse() * w[n]);
-            self.locals = Some([r5, r6, keep(eye_a), keep(eye_b)]);
+            // (off, the angles follow where the face looks but nothing is written back: 0x352D9C)
+            self.locals = None;
             return;
         }
         let w6 = p * l5 * Mat4::from_mat3_translation(r6, l6.w_axis.truncate());
@@ -227,6 +225,30 @@ impl TagLook {
         }
         (yaw, pitch)
     }
+}
+
+/// Tekken Tag's neck split (the pose solver 0x347E28 at 0x3480A0..0x3484B0, run by the drawing before the world
+/// matrices and the look): the motion turns the neck (node 5) alone; taken over its base as Rz(c) · Ry(b) · Rx(a)
+/// (of the two solutions the one nearer 0, x counted 8 times), the neck keeps Rz(0.4 c) · Ry(0.6 b) · Rx(0.2 a)
+/// and the head (node 6) the rest, so the head looks where the motion's neck did. `pose` is a skeleton that
+/// [`TagLook::fits`]; only what is drawn changes.
+pub fn split_neck(nodes: &[kumite_assets::Node], pose: &mut [Mat4]) {
+    let [neck, head, ..] = TAG_LOOK_NODES;
+    let (Some(&p), Some(&w5), Some(&w6)) = (pose.get(TAG_NECK_PARENT), pose.get(neck), pose.get(head)) else { return };
+    let (l5, l6) = (Mat3::from_mat4(p.inverse() * w5), Mat3::from_mat4(w5.inverse() * w6));
+    let base = Mat3::from_cols(Vec3::Y, Vec3::Z, Vec3::X);
+    let m = base.transpose() * l5;
+    let pi = std::f32::consts::PI;
+    let wrap = |a: f32| (a + pi).rem_euclid(2.0 * pi) - pi;
+    // shortcut: no gimbal branch (0x3481BC, |sin b| within 1e-5 of 1: the neck pitched a right angle), port it if a motion does
+    let (sb, cb) = (-m.x_axis.z, (m.x_axis.x * m.x_axis.x + m.x_axis.y * m.x_axis.y).sqrt());
+    let one = [m.y_axis.z.datan2(m.z_axis.z), sb.datan2(cb), m.x_axis.y.datan2(m.x_axis.x)];
+    let two = [(-m.y_axis.z).datan2(-m.z_axis.z), sb.datan2(-cb), (-m.x_axis.y).datan2(-m.x_axis.x)];
+    let cost = |s: [f32; 3]| wrap(s[0]).abs() * 8.0 + wrap(s[1]).abs() + wrap(s[2]).abs();
+    let [a, b, c] = if cost(one) < cost(two) { one } else { two };
+    let r5 = base * Mat3::from_rotation_z(0.4 * wrap(c)) * Mat3::from_rotation_y(0.6 * wrap(b)) * Mat3::from_rotation_x(0.2 * wrap(a));
+    set_local(nodes, pose, neck, r5);
+    set_local(nodes, pose, head, r5.transpose() * l5 * l6);
 }
 
 /// Set node `n`'s local rotation to `rot` (its offset kept), carrying everything hanging from it along.
@@ -279,6 +301,23 @@ mod tests {
             let back = rot_zyx(BASE) * rot_zyx(decompose(h));
             assert!((h - back).to_cols_array().iter().all(|v| v.abs() < 0.01), "{a:?}");
         }
+    }
+
+    #[test]
+    fn the_neck_split_is_pcsx2s() {
+        // Paul's 1+2, look off (PCSX2): slot 2's turn (s16 / 4096) and the drawn locals of nodes 5 and 6 (x1000)
+        let s = [810, 2, 4014, 1441, -3822, -291, 3747, 1470, -757].map(|v: i32| v as f32 / 4096.0);
+        let l5 = [119, 880, 460, 0, -463, 886, 993, -106, -55].map(|v: i32| v as f32 / 1000.0);
+        let l6 = [754, 648, 109, -656, 750, 79, -31, -131, 991].map(|v: i32| v as f32 / 1000.0);
+        let parents = [None, Some(0), Some(1), Some(2), Some(3), Some(2), Some(5)];
+        let nodes: Vec<_> = parents.iter().map(|&parent| kumite_assets::Node { name: String::new(), parent, translation: Vec3::ZERO, rotation: glam::Quat::IDENTITY }).collect();
+        let mut pose = vec![Mat4::IDENTITY; 7];
+        pose[5] = Mat4::from_mat3(Mat3::from_cols_array(&s).transpose());
+        pose[6] = pose[5] * Mat4::from_translation(Vec3::X);
+        split_neck(&nodes, &mut pose);
+        let near = |a: Mat3, b: [f32; 9]| (a - Mat3::from_cols_array(&b)).to_cols_array().iter().all(|d| d.abs() < 0.002);
+        assert!(near(Mat3::from_mat4(pose[5]), l5), "{:?}", pose[5]);
+        assert!(near(Mat3::from_mat4(pose[5].inverse() * pose[6]), l6), "{:?}", pose[6]);
     }
 
     #[test]
