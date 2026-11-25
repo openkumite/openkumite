@@ -60,6 +60,25 @@ const TRANSITION_GETUP: u32 = 0x1C;
 /// The game's angle unit (u16, 0x10000 = one turn) in radians.
 const ANGLE: f32 = std::f32::consts::TAU / 65536.0;
 
+/// An angle in the games' 16-bit units, and one back, wrapped to -pi..pi.
+fn a16(y: f32) -> i32 {
+    (y / ANGLE).round() as i32
+}
+fn of16(a: i32) -> f32 {
+    a as i16 as f32 * ANGLE
+}
+/// A facing as Tekken 3 keeps it, in its 16-bit angle (on OpenKumite's flipped z, half a turn less the yaw), and back.
+fn t3a(y: f32) -> i32 {
+    0x8000 - a16(y)
+}
+fn t3y(a: i32) -> f32 {
+    of16(0x8000 - a)
+}
+/// A 16-bit angle difference, -0x8000..0x8000.
+fn d16(a: i32) -> i32 {
+    a as i16 as i32
+}
+
 /// An angle wrapped to -pi..pi.
 fn wrap_pi(a: f32) -> f32 {
     let t = std::f32::consts::TAU;
@@ -936,6 +955,25 @@ impl Fighter {
         (a, off, if off < FRAC_PI_2 { a } else { a + PI })
     }
 
+    /// Tekken 3's facing geometry in its 16-bit angles (0x80043A94), from roots `me` and `opp`: the angle to the
+    /// opponent (+0x2A), the body's turn off it (+0x30: a negative difference's bits flipped) and the target (+0x34).
+    fn geometry16(&self, me: Vec3, opp: Vec3) -> (i32, i32, i32) {
+        let d = opp - me;
+        let a = t3_atan(d.x as i32, -d.z as i32);
+        let diff = (t3a(self.yaw) - a) & 0xFFFF;
+        let off = if diff & 0x8000 != 0 { !diff & 0xFFFF } else { diff };
+        (a, off, if off < 0x4000 { a } else { a + 0x8000 })
+    }
+
+    /// The facing geometry as the fighter's game keeps it: Tekken 3's in its integers, Tekken Tag's as `geometry`.
+    fn geometry_of(&self, gd: &GameData) -> (f32, f32, f32) {
+        if self.tag_rules(gd) {
+            return self.geometry();
+        }
+        let (a, off, target) = self.geometry16(self.root(), self.opponent.root);
+        (t3y(a), off as f32 * ANGLE, t3y(target))
+    }
+
     /// Ball: a hit on the ball puts actor slot 2 on the hitter's root and makes it the hitter's target that step
     /// (0x80045C18: +0xD1, +0x23 = 2), so the step's target facing (+0x34) comes out of ratan2(0, 0) = 0x2000, or its
     /// opposite while the body is more than 90° off it; a move committed in that step takes its root basis from it
@@ -1058,18 +1096,24 @@ impl Fighter {
             self.yaw += turn * ANGLE;
             self.root_yaw = self.yaw;
         }
-        let (a2a, off, target) = {
+        let t3 = !self.tag_rules(gd);
+        let (a2a, off, target) = if t3 {
+            let (a, off, target) = self.geometry16(root, self.opponent.root);
+            (t3y(a), off as f32 * ANGLE, t3y(target))
+        } else {
             let d = self.opponent.root - root;
             let live = (d.x * d.x + d.z * d.z > 1.0).then(|| d.x.datan2(d.z));
-            let a = self.seen.filter(|_| self.tag_rules(gd)).or(live).unwrap_or(self.yaw);
+            let a = self.seen.or(live).unwrap_or(self.yaw);
             let off = wrap_pi(self.yaw - a).abs();
             (a, off, if off < FRAC_PI_2 { a } else { a + PI })
         };
-        let near = off < 0x4FA4 as f32 * ANGLE; // 112°
+        // 112° (Tekken 3's type 4 takes it as near too, 0x8002FB44)
+        let near = off < if t3 && t == 4 { 0x4FA5 } else { 0x4FA4 } as f32 * ANGLE;
         let n_att = a0.saturating_sub(1).max(1);
         let n_b = if a0 != 0 { n_att } else { old_len.min(16) };
         let yaw = self.yaw;
-        let auto = |to: f32, n: u32| Some((wrap_pi(to - yaw) / n as f32, n));
+        // (Tekken 3's step is the 16-bit difference over the frames, cut toward zero: 0x8002FB90)
+        let auto = |to: f32, n: u32| Some((if t3 { of16(d16(a16(to) - a16(yaw)) / n as i32) } else { wrap_pi(to - yaw) / n as f32 }, n));
         match t {
             0 | 0x1F | 0x20 | 0x2C | dialect::TRANSITION_FACE if !self.locked => {
                 self.yaw = a2a;
@@ -1173,11 +1217,11 @@ impl Fighter {
     /// `seen`: both roots before this frame's root motion (mine, the opponent's): the angle between them is taken
     /// before the roots move (Tekken 3's 0x8003F0DC before 0x8003A818; Tekken Tag's +0x3A, 0x371330, before 0x34E748).
     fn track(&mut self, gd: &GameData, seen: Option<[Vec3; 2]>) {
+        if !self.tag_rules(gd) {
+            self.track_t3(gd, seen);
+            return;
+        }
         let (a2a, off, target) = match seen {
-            Some([me, opp]) if !self.tag_rules(gd) => {
-                let d = opp - me;
-                self.geometry_from((d.x * d.x + d.z * d.z > 1.0).then(|| d.x.datan2(d.z)))
-            }
             Some([me, opp]) => {
                 let d = opp - me;
                 self.seen = (d.x * d.x + d.z * d.z > 1.0).then(|| PI - tag_atan(d.x as i32, -d.z as i32) as f32 * ANGLE);
@@ -1320,13 +1364,7 @@ impl Fighter {
                 // (against the root's side but in the 0x71C case, in integers: 0x800400DC, 0x3706F4), the origin rebased
                 // as the basis turns (+0xBE, 0x80040108; Tekken Tag's +0x126): the step's path follows the facing round
                 // the opponent
-                let side = if self.tag_rules(gd) {
-                    self.lateral
-                } else if self.root_x[0] >= 0.0 {
-                    1.0
-                } else {
-                    -1.0
-                };
+                let side = self.lateral;
                 let lean = if o == 0x11C7 { -side } else { side };
                 self.yaw = target + lean * (o * frame as i32 / len as i32) as f32 * ANGLE;
                 self.rebase();
@@ -1334,6 +1372,156 @@ impl Fighter {
             }
             _ => {}
         }
+        self.evasive = self.evasive.saturating_sub(1);
+    }
+
+    /// Tekken 3's facing pass (`track`) in its 16-bit angles (0x8003F668, switch 0x8003F890): each step the
+    /// difference over the frames cut toward zero, held within a step's limit (0x800408C0) and the move's total turn
+    /// (+0x36, 0x80040904).
+    fn track_t3(&mut self, gd: &GameData, seen: Option<[Vec3; 2]>) {
+        let [me, opp] = seen.unwrap_or([self.root(), self.opponent.root]);
+        let (a2a, off, target) = self.geometry16(me, opp);
+        let (mut yaw, mut basis, mut acc) = (t3a(self.yaw), t3a(self.root_yaw), a16(self.acc));
+        // the auto-turn (+0x114 frames of +0x116; kept as the yaw's turn, which runs the other way)
+        if let Some((step, left)) = self.turn {
+            yaw -= a16(step);
+            if self.locked && !self.thrown {
+                basis = yaw;
+            }
+            self.turn = (left > 1).then_some((step, left - 1));
+        }
+        let mv = self.current_move(gd);
+        let (a0, a1, len) = (mv.active[0] as i32, mv.active[1] as i32, mv.frames as i32);
+        let attack = a0 != 0 && mv.attack.is_some();
+        let (j0, j1) = (mv.bytes_18.jump_start as i32, mv.bytes_18.jump_end as i32);
+        let frame = self.frame as i32;
+        let airborne = self.juggle != 0 || self.air.is_some() || (j0 != 0 && (j0..=j1).contains(&frame));
+        let n = (a0 + 1 - frame).max(1);
+        // degrees as the game's angles (k x 0xFFFF / 360, 0x8003FA08)
+        let deg = |k: i32| k * 0xFFFF / 360;
+        let clamp = |x: i32, l: i32| x.clamp(-l, l);
+        let opp_evasive = self.opponent.evasive != 0;
+        let homing = opp_evasive && attack && self.since < 9;
+        let to_opp = d16(a2a - yaw);
+        let to_target = d16(target - yaw);
+        let (since, mode) = (self.since as i32, self.mode);
+        // (a step and the move's total turn it is held within)
+        let step = match self.mode {
+            0 => {
+                yaw = basis;
+                None
+            }
+            1 => Some((clamp(to_target / n, 0x1555), 0x7FFF)),
+            // homing: an attack starting while the opponent has just started a sidestep (or another evasive move)
+            2 | 3 | 5 if homing => {
+                let m = (a0 - frame).max(1);
+                self.turn = Some((of16(-clamp(to_opp / m, 0x9F4)), m as u32));
+                self.mode = 0xC;
+                None
+            }
+            2 | 3 => {
+                let k = deg(if airborne {
+                    1
+                } else if since < 8 {
+                    3
+                } else {
+                    14
+                });
+                Some((clamp(to_opp / n, if self.mode == 3 { k >> 1 } else { k }), 0x5555))
+            }
+            // linear moves: no tracking while an auto-turn runs, or against a sidestep
+            4 if self.turn.is_none() && !(opp_evasive && attack) => {
+                let k = deg(if airborne {
+                    1
+                } else if since < 8 {
+                    2
+                } else {
+                    3
+                });
+                Some((clamp(to_opp / n, k), 0xE38))
+            }
+            5 => {
+                let k = deg(if airborne {
+                    4
+                } else if since < 8 {
+                    3
+                } else {
+                    100
+                });
+                Some((clamp(to_opp / n, k), 0x9554))
+            }
+            // after start-up: re-aim every 5 frames at ≤ 3°/frame (0x8003FD80)
+            6 => {
+                if self.connected && j0 != 0 && !airborne && frame >= a1 {
+                    self.turn = None;
+                } else if frame > a0 && (frame - a0) % 5 == 0 && off < 0x5556 {
+                    let m = if len - frame < 6 { 5 } else { len - frame };
+                    self.turn = Some((of16(-clamp(to_target / m, 0x222)), m as u32));
+                }
+                None
+            }
+            // guarding turns toward the attacker
+            7 => {
+                let t = if j1 != 0 { j1 } else { len };
+                if frame <= t {
+                    yaw += clamp(to_target * frame / t.max(1), 0x38E);
+                }
+                None
+            }
+            // walks and dashes track all the way
+            8 => {
+                yaw += clamp(to_target * since.min(8) / 8, 0x71C);
+                None
+            }
+            // ground rolls: the basis turns back toward where the opponent was at the commit (0x8003FFB0)
+            9 => {
+                let d = opp - me;
+                if d.x * d.x + d.z * d.z >= (0x4B0 * 0x4B0) as f32 {
+                    let d = self.commit_root - me;
+                    let mut a = t3_atan(d.x as i32, -d.z as i32);
+                    let diff = (basis - a) & 0xFFFF;
+                    if (if diff & 0x8000 != 0 { !diff & 0xFFFF } else { diff }) >= 0x4000 {
+                        a += 0x8000;
+                    }
+                    basis += clamp(d16(a - basis) * frame / len.max(1), 0x5B0);
+                    yaw = basis;
+                    // the origin is rebased as the basis turns (+0xBE, 0x80040070): the root stays and the roll goes
+                    // on from there, so its path curves instead of swinging round the start
+                    self.rebase();
+                }
+                None
+            }
+            // sidesteps (and get-ups): face the opponent's live direction every frame, leaning up to 25° into the
+            // step against the root's side as the step before left it (but in the 0x71C case, 0x800400DC), the origin
+            // rebased as the basis turns (+0xBE, 0x80040108): the step's path follows the facing round the opponent
+            0xA if frame <= len => {
+                let o = if self.character.is_some_and(|c| gd.characters.sidestep_lean.contains(&c)) && off >= 0x6000 { 0x71C } else { 0x11C7 };
+                let side = if self.root_x[0] >= 0.0 { 1 } else { -1 };
+                yaw = target + if o == 0x11C7 { side } else { -side } * (o * frame / len.max(1));
+                basis = yaw;
+                self.rebase();
+                None
+            }
+            _ => None,
+        };
+        if let Some((mut s, limit)) = step {
+            // 0x80040904: a step past the total is cut to what is left and ends the tracking (mode 6); with nothing
+            // left it goes on uncut
+            let total = d16(acc).abs();
+            let left = d16(limit - total);
+            if total + s.abs() > limit && left != 0 {
+                (s, self.mode) = (if s >= 0 { left } else { -left }, 6);
+            }
+            yaw += s;
+            acc += s;
+            if mode == 1 {
+                basis = yaw;
+            }
+            if frame >= a0 {
+                self.mode = 6;
+            }
+        }
+        (self.yaw, self.root_yaw, self.acc) = (t3y(yaw), t3y(basis), of16(acc));
         self.evasive = self.evasive.saturating_sub(1);
     }
 
@@ -1405,9 +1593,10 @@ impl Fighter {
             return;
         }
         // both games' sine is the 4096 table times 8 (Tekken 3's 0x8002A194, Tekken Tag's 0x357F18) over 0x7FFF
-        // (0x8003F40C, 0x36FE00); Tekken Tag's at its own angle +0x1A >> 4 and in its z (OpenKumite's negated), so a basis
-        // a hair off a quarter turn carries its z fraction the game's way round (its floor), Tekken 3's at its facing +0xE
-        let (g, zs) = if self.tag_rules(gd) { (((PI - self.root_yaw) / ANGLE).round() as i32 >> 4, -1.0) } else { ((self.yaw / ANGLE).round() as i32 >> 4, 1.0) };
+        // (0x8003F40C, 0x36FE00), at the game's own basis angle >> 4 (Tekken 3's +0xE, Tekken Tag's +0x1A) and in its z
+        // (OpenKumite's negated), so a basis a hair off a quarter turn carries its z fraction the game's way round (its
+        // floor)
+        let g = if self.tag_rules(gd) { ((PI - self.root_yaw) / ANGLE).round() as i32 } else { t3a(self.root_yaw) } >> 4;
         let t = [ball::sin12(g), ball::cos12(g)].map(|v| i64::from(v.clamp(-0xFFF, 0xFFF) * 8));
         for (k, t) in t.into_iter().enumerate() {
             // (v * t) / 0x7FFF truncated, then the whole units out and the fraction kept
@@ -1417,7 +1606,7 @@ impl Fighter {
             if k == 0 {
                 self.position.x -= whole as f32;
             } else {
-                self.position.z -= zs * whole as f32;
+                self.position.z += whole as f32;
             }
         }
     }
@@ -1853,7 +2042,7 @@ impl Fighter {
                                 // the body's turn off the opponent's direction (+0x2E, -180°..180°) and whether the
                                 // back is turned (+0x30 over 90°) (+0x2E in the game's angle sense: OpenKumite's z axis
                                 // is flipped, so the sign turns over)
-        let (a2a, _, _) = self.geometry();
+        let (a2a, _, _) = self.geometry_of(gd);
         let off = wrap_pi(a2a - self.yaw) / ANGLE;
         // Tekken Tag: +0x3E is an s16, so half a turn is -0x8000 (back turned right, 0x29)
         let off = if self.tag_rules(gd) { off.round() as i32 as i16 as f32 } else { off };
@@ -2801,9 +2990,23 @@ fn tag_sin_cos(a: f32) -> [i32; 2] {
 /// Tekken Tag's atan2 (0x357FA0) of the i16s `dx`, `dz`: the angle from +z toward +x in 16-bit units, from its
 /// 45° table 0x4FC680 (floor(atan(i / 1024) x 2048 / pi)) at the smaller over the larger x 4096 / 4, x 16.
 fn tag_atan(dx: i32, dz: i32) -> i32 {
+    atan16(dx, dz, |i| (f64::from(i).datan2(1024.0) * 2048.0 / std::f64::consts::PI) as i32)
+}
+
+/// Tekken 3's atan2 (0x8002A224): Tekken Tag's on Tekken 3's own table (0x8004B348: the bytes at 0x800210C8 plus half
+/// the index, gamedata/camera.json's atan), which is round(atan((i + 3/8) / 1024) x 2048 / pi).
+fn t3_atan(mut dx: i32, mut dz: i32) -> i32 {
+    // (OpenKumite's far targets, Force's way on, halved into the game's 16 bits)
+    while dx.abs() > 0x7FFF || dz.abs() > 0x7FFF {
+        (dx, dz) = (dx / 2, dz / 2);
+    }
+    atan16(dx, dz, |i| ((f64::from(i) + 0.375).datan2(1024.0) * 2048.0 / std::f64::consts::PI).round() as i32)
+}
+
+fn atan16(dx: i32, dz: i32, table: impl Fn(i32) -> i32) -> i32 {
     let (x, z) = (dx as i16 as i32, dz as i16 as i32);
     let (ax, az) = (x.abs(), z.abs());
-    let t = |r: i32| (f64::from(r >> 2).datan2(1024.0) * 2048.0 / std::f64::consts::PI) as i32;
+    let t = |r: i32| table(r >> 2);
     let v = if ax == az {
         0x200
     } else if ax < az {
@@ -4061,7 +4264,7 @@ impl Fight {
                         // body turning to it while it reels (mode 7); Tekken Tag's basis is the facing pass's target
                         // +0x44 (0x36B8FC), not one from the roots now
                         if blocked || counter {
-                            fv.root_yaw = fv.basis.filter(|_| pair).unwrap_or_else(|| fv.geometry().2);
+                            fv.root_yaw = fv.basis.filter(|_| pair).unwrap_or_else(|| fv.geometry_of(gd).2);
                             fv.mode = 7;
                         }
                         if !blocked && !lying && !counter && quadrant != 0 {
@@ -4223,7 +4426,7 @@ impl Fight {
         let target = air.target_height as f32;
         let Some(to) = f.resolve(air.alias) else { return false };
         let left_1000 = f.current_move(gd).flags24.raw & 0x1000 != 0;
-        let toward = f.geometry().2;
+        let toward = f.geometry_of(gd).2;
         f.start_reaction(to, air.alias);
         // the fall's root travel runs along the line to the attacker (0x80030A7C), turned by p0 after a 0x1000 move
         f.root_yaw = toward + if left_1000 { angle as f32 * std::f32::consts::TAU / 65536.0 } else { 0.0 };
@@ -4349,5 +4552,13 @@ mod tests {
         assert_eq!([(0, 100), (100, 0), (0, -100), (-100, 0), (50, 50)].map(|(x, z)| tag_atan(x, z)), [0, 0x4000, 0x7FFF, 0xBFFF, 0x2000]);
         assert_eq!(tag_atan(12, 4096), 16);
         assert_eq!(tag_atan(-12, 4096), 0xFFEF);
+    }
+
+    #[test]
+    fn tekken_3s_atan_takes_its_own_table() {
+        // the axes as Tekken Tag's; its table entry 3 is 2 (0x800210C8's byte 1 plus 3 / 2)
+        assert_eq!([(0, 100), (100, 0), (0, -100), (-100, 0), (50, 50)].map(|(x, z)| t3_atan(x, z)), [0, 0x4000, 0x7FFF, 0xBFFF, 0x2000]);
+        assert_eq!(t3_atan(12, 4096), 32);
+        assert_eq!(t3_atan(-12, 4096), 0xFFDF);
     }
 }

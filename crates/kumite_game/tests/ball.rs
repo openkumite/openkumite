@@ -89,6 +89,10 @@ fn roots_of(a: &Assets, models: [usize; 2], server: usize, p1: &str, p2: &str, f
                 ball.charge,
                 ball.cooldown
             );
+            // the facings in the PS1's angle (+0x2C, +0xE: half a turn less OpenKumite's yaw) and the health
+            let a = |y: f32| (0x8000 - (y / std::f32::consts::TAU * 65536.0).round() as i32) as i16;
+            let f = &b.game.fight.fighters;
+            eprintln!("{k} ang a1={},{},{} a2={},{},{}", a(f[0].yaw), a(f[0].root_yaw), f[0].health, a(f[1].yaw), a(f[1].root_yaw), f[1].health);
         }
         let root = |f: &kumite_sim::Fighter| [f.root().x, -f.root().y - f.anim_root_y, -f.root().z].map(|v| v.round() as i32);
         out.push(((ball.state, ball.pos, ball.vel, ball.g), b.game.fight.fighters.each_ref().map(root)));
@@ -269,10 +273,43 @@ fn doctor_bs_side_roll_holds_the_court_edge_as_on_the_ps1() {
     for (row, want) in [(526, [5120, -136, 2]), (530, [5120, -229, 89]), (533, [5120, -254, 184]), (536, [5119, -256, 256]), (537, [5119, -258, 256])] {
         assert_eq!(t[row - 1].1[1], want, "PS1 row {row}");
     }
-    // shortcut: the basis's turn is in floats (0x8003FFB0 turns it in integers on the arctan table): x runs up to 5
-    // units off the PS1's from row 534; port it to make the rows exact
     for row in 535..=575 {
         assert_eq!(t[row - 1].1[1][2], 256, "PS1 row {row}");
+    }
+}
+
+/// Tekken 3's facings are its 16-bit integers (0x8003F890; atan 0x8002A224 on its own table): Doctor B.'s side roll
+/// turns its basis (+0xE) as the PS1's step by step, toward where Paul's root was at the commit, from the roots before
+/// the step, so the roll's x along the court's edge is the PS1's (it ran up to 5 units off as floats, then 10 with the
+/// roots after the step). PS1 rows are our steps `row - 1`.
+#[test]
+fn doctor_bs_roll_turns_in_the_ps1s_integers() {
+    let Some(a) = assets() else { return };
+    let mut basis = Vec::new();
+    let mut x = Vec::new();
+    ball_match(&a, [127, 247], 0, "n*600", "n*285,u/b*3,n*60,u/b*19,n*70,u/f*19,n*69,u*20,n*67", 580, |_, b| {
+        let f = &b.game.fight.fighters[1];
+        // (the PS1's angle is half a turn less OpenKumite's yaw)
+        basis.push((0x8000 - (f.root_yaw / std::f32::consts::TAU * 65536.0).round() as i32) as i16);
+        x.push(f.root().x as i32);
+    });
+    for (row, want) in [(527, -16380), (530, -16375), (534, -16421), (540, -16543), (546, -16559), (558, -16559)] {
+        assert_eq!(basis[row - 1], want, "PS1 row {row}");
+    }
+    for (row, want) in [(538, 5119), (542, 5115), (550, 5110), (558, 5106), (566, 5101), (574, 5099)] {
+        assert_eq!(x[row - 1], want, "PS1 row {row}");
+    }
+}
+
+/// A jump's drift runs along the basis (+0xE, 0x8003F3F8) at the game's own angle's top 12 bits: Kuma's long u/b jump
+/// (common_046) lands where the PS1's does (its z was up to 6 off, the drift turned at the yaw's bits). PS1 rows are our
+/// steps `row - 1`.
+#[test]
+fn kumas_long_jump_drifts_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = roots_of(&a, [127, 159], 0, "n*400", "n*250,u/b*3,n*60,u/b*20,n*70", 400);
+    for (row, want) in [(340, [2967, -1800, 4]), (346, [2621, -1453, 5]), (352, [2332, -894, 6]), (359, [2332, -825, 6])] {
+        assert_eq!(t[row - 1].1[1], want, "PS1 row {row}");
     }
 }
 
