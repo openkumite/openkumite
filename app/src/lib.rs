@@ -3785,7 +3785,7 @@ impl App {
             });
         }
         // VS `--p2-cpu`: 2P the game's CPU, an AI seat like the others (so its replay has it)
-        if spec.mode == L::Versus && spec.p2_cpu && self.ai_seats[1].is_none() {
+        if matches!(spec.mode, L::Versus | L::TttVersus) && spec.p2_cpu && self.ai_seats[1].is_none() {
             self.ai_seats[1] = Some(replay::AiSeat { style: kumite_sim::ai::Style::Classic, difficulty: spec.difficulty, level: 5 });
         }
         log::info!("--ai: {:?}", self.ai_seats);
@@ -3951,6 +3951,18 @@ impl App {
                 self.tag_stage = spec.stage;
                 self.start_tag(setup);
                 self.tag_stage = None;
+            }
+            L::TttVersus => {
+                // Tekken Tag's VS as its select starts it: --fighters' four a tag battle (A & C vs B & D), else 1 ON 1
+                let Some(d) = roster.ttt.clone() else {
+                    log::error!("--mode ttt-vs: not Tekken Tag's game data");
+                    return;
+                };
+                let tag = spec.given[2] && spec.given[3];
+                let teams = if tag { [vec![p1, p3], vec![p2, p4]] } else { [vec![p1], vec![p2]] };
+                let mut run = ttt::Run::new(&d, roster, &ttt::progress(), if tag { ttt::VS } else { ttt::ONE_VS }, teams, &mut self.seed);
+                run.stage = spec.stage.unwrap_or(run.stage);
+                self.outcome(Outcome::TttFight(Box::new(run)));
             }
         }
     }
@@ -8817,7 +8829,7 @@ Game:
 
 Straight into a mode (debugging; past the menus):
   --mode NAME                  arcade, vs, practice, time-attack, survival, ball, force, tag-free, tag-teams,
-                               tag-arcade, levels
+                               tag-arcade, levels; ttt-vs: Tekken Tag's VS (--fighters A,B,C,D: A & C vs B & D)
   --player NAME|ID[:C]         P1 (a name as the roster has it, any case; PREFIX:NAME for one of the same name
   --opponent NAME|ID[:C]       with the roster's prefix; :C the costume 1..); P2: the opponent, Practice's dummy,
                                Force's 2P

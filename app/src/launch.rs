@@ -30,11 +30,12 @@ pub enum LaunchMode {
     TagTeams,
     TagArcade,
     ExtraLevels,
+    TttVersus,
 }
 
 impl LaunchMode {
     /// (flag value, mode)
-    pub const NAMES: [(&'static str, LaunchMode); 11] = [
+    pub const NAMES: [(&'static str, LaunchMode); 12] = [
         ("arcade", LaunchMode::Arcade),
         ("vs", LaunchMode::Versus),
         ("practice", LaunchMode::Practice),
@@ -46,6 +47,7 @@ impl LaunchMode {
         ("tag-teams", LaunchMode::TagTeams),
         ("tag-arcade", LaunchMode::TagArcade),
         ("levels", LaunchMode::ExtraLevels),
+        ("ttt-vs", LaunchMode::TttVersus),
     ];
 }
 
@@ -214,7 +216,7 @@ pub fn from_args(args: &[String], roster: &Roster) -> Result<Option<LaunchSpec>>
         None => 9,
     };
     let p2_cpu = match mode {
-        LaunchMode::Versus => flag("--p2-cpu") && !ai[1],
+        LaunchMode::Versus | LaunchMode::TttVersus => flag("--p2-cpu") && !ai[1],
         LaunchMode::TagArcade => flag("--p2-cpu"),
         _ => !flag("--p2-human"),
     };

@@ -109,6 +109,19 @@ fn a_vs_tag_match_replays_step_by_step() {
     let _ = std::fs::remove_dir_all(&save);
 }
 
+/// `--mode ttt-vs` with four fighters: Tekken Tag's VS tag battle (A & C vs B & D), the AI on both sides, recorded
+/// as the select's would be and replayed.
+#[test]
+fn a_ttt_vs_tag_battle_of_the_ai_replays() {
+    let Some(assets) = assets() else { return };
+    let args = ["--mode", "ttt-vs", "--fighters", "jin,paul,xiaoyu,king", "--ai", "1,2", "--round-time", "20", "--rounds", "1", "--frames", "6000"];
+    if let Some(save) = recorded_and_replayed(&assets, "ttt-vs", &args) {
+        let file = std::fs::read_to_string(save.join("replays").join(format!("{}.okreplay", replays(&save).pop().unwrap()))).unwrap();
+        assert!(file.contains("VS · Jin & Xiaoyu vs Paul & King"), "{}", &file[..300.min(file.len())]);
+        let _ = std::fs::remove_dir_all(&save);
+    }
+}
+
 #[test]
 fn a_tag_brawl_replays_step_by_step() {
     let Some(assets) = assets() else { return };
