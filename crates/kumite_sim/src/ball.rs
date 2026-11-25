@@ -493,17 +493,13 @@ impl Fight {
                         if self.link.is_none() {
                             // the forced hit, from the ball's spot, with the last hitter as the attacker
                             let attacker = b.p3.unwrap_or(self.ball_target(v));
-                            if v < 2 && attacker < 2 {
-                                // a juggle hit: the air table's reaction and its pop, whatever the loser plays (on the
-                                // PS1 Gon standing took alias 0xD56 through 0x8002F074, read in PCSX-Redux)
-                                let fv = &self.fighters[v];
-                                let quadrant = crate::direction_quadrant(fv.yaw, fv.root(), to_sim(b.pos));
+                            // a juggle hit: the air table's reaction and its pop, whatever the loser plays (on the PS1 Gon
+                            // standing took alias 0xD56 through 0x8002F074, read in PCSX-Redux); 2 ON 2's partners alike
+                            if let Some(quadrant) = self.actor(v).map(|fv| crate::direction_quadrant(fv.yaw, fv.root(), to_sim(b.pos))) {
                                 self.juggle_hit(gd, crate::AirHit { victim: v, attacker, damage: 0, quadrant, strike_down: 0.0, angle: 0 });
-                                (self.fighters[v].hit_flash, self.fighters[v].struck, self.fighters[v].struck_in_move) = (8, true, true);
-                            } else {
-                                // shortcut: 2 ON 2's partners take the hit's own reaction, not the juggle; upgrade with a
-                                // PS1 trace of a partner losing a point
-                                self.ball_strike(gd, v, attacker, 0, to_sim(b.pos), false);
+                            }
+                            if let Some(f) = self.actor_mut(v) {
+                                (f.hit_flash, f.struck, f.struck_in_move) = (8, true, true);
                             }
                         }
                     }
@@ -576,6 +572,7 @@ impl Fight {
         if let Some(fh) = self.actor_mut(h) {
             fh.connected = true;
             fh.landed = Some(true);
+            fh.ball_hit_target();
         }
         b.cooldown = 5;
         // (aimed at the receiver's root two steps back: Dr. B's hit flew at Gon's place then, read in PCSX-Redux)

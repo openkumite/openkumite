@@ -28,6 +28,14 @@ fn trace(a: &Assets, p1: &str, p2: &str, frames: usize) -> Vec<Frame> {
 
 /// A Ball match of `models`, `server` serving.
 fn trace_of(a: &Assets, models: [usize; 2], server: usize, p1: &str, p2: &str, frames: usize) -> Vec<Frame> {
+    roots_of(a, models, server, p1, p2, frames).into_iter().map(|(f, _)| f).collect()
+}
+
+/// The fighters' roots as the PS1 keeps them (P+0xF68: x, height down, z negated).
+type Roots = [[i32; 3]; 2];
+
+/// A Ball match of `models`, the ball and the roots each frame.
+fn roots_of(a: &Assets, models: [usize; 2], server: usize, p1: &str, p2: &str, frames: usize) -> Vec<(Frame, Roots)> {
     let mut g = Game::load(a, models).unwrap();
     let data = std::sync::Arc::new(kumite_sim::data::load(&a.root.join("gamedata/ball.json")).unwrap());
     g.ball = Some(kumite_game::BallSetup { data, kind: 0, server, rounds: 0 });
@@ -74,7 +82,8 @@ fn trace_of(a: &Assets, models: [usize; 2], server: usize, p1: &str, p2: &str, f
                 ball.cooldown
             );
         }
-        out.push((ball.state, ball.pos, ball.vel, ball.g));
+        let root = |f: &kumite_sim::Fighter| [f.root().x, -f.root().y - f.anim_root_y, -f.root().z].map(|v| v.round() as i32);
+        out.push(((ball.state, ball.pos, ball.vel, ball.g), b.game.fight.fighters.each_ref().map(root)));
     }
     out
 }
@@ -150,6 +159,19 @@ fn jins_jump_kick_flies_as_on_the_ps1() {
     }
 }
 
+/// Jin's uppercut (d/b+2) eases its root height in from the walk's over the frames to its active one and out to the
+/// stance's over its last 16 (Tekken 3's motion blend, 0x8003C270, on the root at 0x8003AB78): Jin's root as the PS1's
+/// (it went up to 117 units high).
+#[test]
+fn jins_uppercut_eases_its_root_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = roots_of(&a, [GON, JIN], 1, "n*469", "n*146,b*14,d/b,d/b+2*2,n*306", 220);
+    let ps1 = [(159, [4646, -965, 6]), (162, [4394, -918, 22]), (165, [4158, -874, 40]), (201, [4298, -1048, 2]), (204, [4312, -1035, 0])];
+    for (row, want) in ps1 {
+        assert_eq!(t[row + PS1_ROW].1[1], want, "PS1 row {row}");
+    }
+}
+
 /// Jin's low kick drops the ball on Gon's side: the point's forced hit throws Gon up as a juggle (the air table's
 /// alias 0xD56 and its pop), and the ball comes back at his place (it came back at his clip's root offset).
 #[test]
@@ -168,4 +190,48 @@ fn doctor_bs_hit_aims_as_on_the_ps1() {
     let p2 = "n*234,b*25,n+1*2,n*25,n+4*2,n*30,b*10,n+2*2,n*30,u/b*3,n*100";
     let t = trace_of(&a, [247, 239], 0, p1, p2, 290);
     assert_eq!(t[267 - 2], (2, [-3300, -1305, -3], [7168, -18432, -23], 512), "PS1 row 267");
+}
+
+/// 2 ON 2 (OpenKumite's own): a partner that loses a point takes the forced hit as the fighters do, thrown up as a
+/// juggle.
+#[test]
+fn a_partner_losing_a_point_is_juggled() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [GON, JIN]).unwrap();
+    let data = std::sync::Arc::new(kumite_sim::data::load(&a.root.join("gamedata/ball.json")).unwrap());
+    g.ball = Some(kumite_game::BallSetup { data, kind: 0, server: 1, rounds: 0 });
+    g.ball_team = Some([kumite_game::Actor::load(&a, 71).unwrap(), kumite_game::Actor::load(&a, 95).unwrap()]);
+    g.round_frames = u32::MAX / 2;
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    let mut juggled = 0;
+    for _ in 0..20000 {
+        let before = [2, 3].map(|i| b.game.fight.actor(i).map_or(0, |f| f.health));
+        b.step([Pad::default(); 2]);
+        for (k, i) in [2, 3].into_iter().enumerate() {
+            if let Some(f) = b.game.fight.actor(i).filter(|f| f.health < before[k] && b.game.fight.ball.as_ref().is_some_and(|x| x.state == 7)) {
+                assert!(f.air.is_some(), "partner {i} lost a point standing");
+                juggled += 1;
+            }
+        }
+        if juggled > 0 {
+            return;
+        }
+    }
+    panic!("no partner lost a point");
+}
+
+/// Doctor B.'s hit on the ball makes the ball's actor slot, put on his own root, his target that step: the target
+/// facing comes out of ratan2(0, 0), so motion_145 (committed on transition 0x18) runs its root 45° off the line to Gon,
+/// as on the PS1 (it ran along the line). PS1 rows are our steps `row - 2`; the roots within 1 unit (Tekken 3's scaled
+/// roots are floats here).
+#[test]
+fn doctor_bs_motion_145_runs_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let p1 = "n*203,f*20,n+1*2,n*20,f*10,n+4*2,n*30,u/f*3,n*10,n+3*2,n*100";
+    let p2 = "n*234,b*25,n+1*2,n*25,n+4*2,n*30,b*10,n+2*2,n*30,u/b*3,n*100";
+    let t = roots_of(&a, [247, 239], 0, p1, p2, 300);
+    for (row, want) in [(290, [-4153, -377, 48]), (296, [-4040, -641, 161]), (300, [-3943, -791, 256])] {
+        let got = t[row - 2].1[0];
+        assert!((0..3).all(|k| (got[k] - want[k]).abs() <= 1), "PS1 row {row}: {got:?}, the PS1 {want:?}");
+    }
 }
