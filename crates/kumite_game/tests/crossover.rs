@@ -580,3 +580,27 @@ fn gon_and_paul_push_apart() {
     eprintln!("walked in: Gon and Paul {gon}, Paul and Law {paul}");
     assert!(gon > paul * 2.0 / 3.0, "{gon} vs {paul}");
 }
+
+/// Gon walks, backs off and crouches in Tekken Tag: drawn as in Tekken 3, his head stays above his pelvis through the
+/// pose ease too (its turns are in the PS1's axes: drawn as Tekken Tag's, they turned him over).
+#[test]
+fn eased_poses_stay_upright() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [GON, PAUL]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let (mut eased, mut over) = (0, Vec::new());
+    for (k, pad) in parse_script(&"f*20,n*10,b*20,n*10,d*20,n*10,".repeat(3)).unwrap().into_iter().enumerate() {
+        b.step([pad, Pad::default()]);
+        eased += usize::from(b.game.fight.fighters[0].eased().is_some());
+        let (pose, place) = b.game.pose_animated_for_tests(0);
+        let body = &b.game.bodies[0];
+        let y = |n: usize| place.transform_point3(pose[n].w_axis.truncate()).y;
+        if y(body.chest) < y(body.pelvis) {
+            over.push(k);
+        }
+    }
+    assert!(eased > 0, "an ease");
+    assert!(over.is_empty(), "turned over on frames {over:?}");
+}

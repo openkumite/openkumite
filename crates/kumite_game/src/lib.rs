@@ -142,7 +142,9 @@ impl Animations for FighterAnims<'_> {
         if let Some(t) = angle_turns(clip, frame as usize) {
             return (self.own.slots.len() >= 18).then_some(t);
         }
-        if let Some(c) = channels(clip, frame as usize) {
+        // (Tekken 3's in its own axes; a Tekken 3 body in Tekken Tag, its joints turned to Tekken Tag's, takes its
+        // clip's turns below, as it is drawn)
+        if let Some(c) = channels(clip, frame as usize).filter(|_| self.own.bones.is_empty()) {
             return (self.own.character.slots.len() == 18).then(|| t3pose::locals(c));
         }
         let mut turns = [[0; 9]; 18];
