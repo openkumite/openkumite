@@ -35,6 +35,9 @@ pub struct Audio {
     /// shortcut: kept but not played by (the page's elements play their channels as they are); upgrade: a Web Audio
     /// graph with a mono down-mix
     pub mono: bool,
+    /// The music's level while paused and the steps it fades over (0: at once), and the level now (1: full).
+    pub pause_level: (f32, u32),
+    ducking: f32,
 }
 
 fn url(path: &Path) -> String {
@@ -55,7 +58,20 @@ fn allowed() -> bool {
 
 impl Audio {
     pub fn new() -> Option<Self> {
-        Some(Self { music: None, looper: None, pool: Vec::new(), next: 0, current: None, started: false, muted: false, music_volume: 0.55, sfx_volume: 0.9, mono: false })
+        Some(Self {
+            music: None,
+            looper: None,
+            pool: Vec::new(),
+            next: 0,
+            current: None,
+            started: false,
+            muted: false,
+            music_volume: 0.55,
+            sfx_volume: 0.9,
+            mono: false,
+            pause_level: (0.3, 0),
+            ducking: 1.0,
+        })
     }
 
     /// Play a track from its start, looped from its loop point or once, at its level; None stops the music.
@@ -75,12 +91,12 @@ impl Audio {
     }
 
     /// The music's volume: muted, ducked, the track's level.
-    fn level(&self, ducked: bool) -> f64 {
+    fn level(&self) -> f64 {
         let gain = self.current.as_ref().map_or(1.0, |t| t.gain);
         if self.muted {
             0.0
         } else {
-            (self.music_volume * gain * if ducked { 0.3 } else { 1.0 }).clamp(0.0, 1.0) as f64
+            (self.music_volume * gain * self.ducking).clamp(0.0, 1.0) as f64
         }
     }
 
@@ -105,7 +121,7 @@ impl Audio {
         let looper = page_elements().and_then(|_| js_sys::Reflect::get(&web_sys::window()?.into(), &"__okaudio".into()).ok());
         let looper = looper.and_then(|a| Some((js_sys::Reflect::get(&a, &"loop".into()).ok()?.dyn_into::<js_sys::Function>().ok()?, a)));
         if let (Some((f, a)), true) = (looper, t.start > 0.0 || (t.looped && t.loop_at > 0.0)) {
-            let args = js_sys::Array::of5(&url(path).into(), &t.start.into(), &t.loop_at.into(), &t.looped.into(), &self.level(false).into());
+            let args = js_sys::Array::of5(&url(path).into(), &t.start.into(), &t.loop_at.into(), &t.looped.into(), &self.level().into());
             self.looper = f.apply(&a, &args).ok();
             return;
         }
@@ -128,7 +144,7 @@ impl Audio {
             },
         };
         m.set_loop(t.looped);
-        m.set_volume(self.level(false));
+        m.set_volume(self.level());
         quiet(m.play());
         self.music = Some(m);
     }
@@ -165,13 +181,17 @@ impl Audio {
 
     pub fn toggle_mute(&mut self) -> bool {
         self.muted = !self.muted;
-        self.set_level(self.level(false));
+        self.set_level(self.level());
         self.muted
     }
 
-    /// Music quieter while paused.
+    /// Music quieter while paused (called every step: a fade moves a step each call).
     pub fn duck(&mut self, ducked: bool) {
-        self.set_level(self.level(ducked));
+        let (to, steps) = self.pause_level;
+        let target = if ducked { to } else { 1.0 };
+        let rate = (1.0 - to) / steps.max(1) as f32;
+        self.ducking = if (target - self.ducking).abs() <= rate + 1e-4 { target } else { self.ducking + rate.copysign(target - self.ducking) };
+        self.set_level(self.level());
     }
 }
 

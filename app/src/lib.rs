@@ -1988,6 +1988,13 @@ impl App {
         // Tekken Tag's BGM / SE VOLUME and SPEAKER OUT on OpenKumite's levels
         if let (Some((bgm, se, mono)), Some(audio)) = (self.roster.ttt.as_deref().and_then(|d| ttt::volumes(d, &ttt::progress())), self.audio.as_mut()) {
             (audio.music_volume, audio.sfx_volume, audio.mono) = (0.55 * bgm, 0.9 * se, mono);
+            // (paused: the music to half and back over 120 frames, 0x36E0F0)
+            audio.pause_level = (0.5, 120);
+        }
+        // a fight's pause or practice menu: the music quieter (one call a step: the fade goes on after it)
+        let ducked = self.game_paused() && self.bowl.is_none();
+        if let Some(audio) = self.audio.as_mut() {
+            audio.duck(ducked);
         }
         // the menus' sounds queued since the last step
         for code in menu::sfx::take() {
@@ -2191,27 +2198,16 @@ impl App {
         self.tapped.clear();
         let select = self.select_held();
         let Some(fight) = self.fight.as_mut() else { return };
-        if let Some(audio) = self.audio.as_mut() {
-            audio.duck(fight.pause.is_some());
-        }
         if fight.pause.is_some() {
             return;
         }
         // Tekken Tag's practice: its menu pauses the fight
-        if let Some(open) = fight.ttt_practice.as_ref().map(|p| p.open) {
-            if let Some(audio) = self.audio.as_mut() {
-                audio.duck(open);
-            }
-            if open {
-                return;
-            }
+        if fight.ttt_practice.as_ref().is_some_and(|p| p.open) {
+            return;
         }
         // practice: its menu pauses the fight (and opens by itself on the first fighting frame)
         if let Some(p) = fight.practice.as_mut() {
             p.step(fight.bout.phase == Phase::Fight);
-            if let Some(audio) = self.audio.as_mut() {
-                audio.duck(p.open);
-            }
             if p.open {
                 return;
             }
@@ -5138,9 +5134,6 @@ impl App {
         }
         self.tapped.clear();
         let Some(t) = self.tag.as_mut() else { return };
-        if let Some(audio) = self.audio.as_mut() {
-            audio.duck(t.pause.is_some());
-        }
         if t.pause.is_some() {
             return;
         }
@@ -8161,6 +8154,10 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
     r.set_settings(app.graphics.render());
     app.egui = Some(EguiLayer::new(r.device(), r.overlay_format(), None));
     app.debug.show_ui = ui;
+    // --sound-log: what the game asks to play, noted by step (nothing plays; RUST_LOG=sound=debug logs it)
+    if std::env::args().any(|a| a == "--sound-log") {
+        app.audio = Some(audio::Audio::capture());
+    }
     // who the previews show (screens.json `previews`: character ids)
     let pv = app.roster.screens["previews"].clone();
     let id = |v: &serde_json::Value| v.as_u64().map_or(0, |i| i as usize);
@@ -8621,6 +8618,9 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
         }
         // (a replay's seeks: at once, as each drawn frame does)
         app.replay_requests();
+        if let Some(c) = app.audio.as_mut().and_then(|a| a.capture.as_mut()) {
+            c.step = i;
+        }
         app.step();
         // (online: at the 60 Hz the other computers run at)
         if app.room.is_some() {
@@ -8847,6 +8847,7 @@ Debug and testing:
 Headless (no window; the save is not written):
   --shot FILE.png              render to a PNG and quit
   --frames N                   ... after N frames
+  --sound-log                  ... and log the music and sounds asked for, by step
   --screen NAME                ... of a screen: title, main-menu, options, keyconfig, keyboard, select, vs,
                                practice, versus, hud, tag, grid, force (--tally), force-results, presents, ending,
                                staff-roll, movie, embu, ttt-ending, ttt-theater, force-select, ...
