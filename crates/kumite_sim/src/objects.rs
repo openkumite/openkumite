@@ -29,8 +29,7 @@
 //!   frame, moving from its first frame; 21 frames, striking for its first 16 (0x80025688) while its owner is in a
 //!   move of its byte.
 //!
-//! shortcut: the breath's sparks and floor flames (objects 7 and 9) and the mist's two sprites are not drawn; port
-//! them in vfx.
+//! shortcut: the breath's sparks and floor flames (objects 7 and 9, drawn only) start nothing yet; port them here.
 
 use crate::detmath::DetMath;
 use glam::{Mat4, Vec3};
