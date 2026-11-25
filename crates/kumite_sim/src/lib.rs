@@ -1364,12 +1364,15 @@ impl Fighter {
         if j0 == 0 || v == 0 || self.frame + 1 < j0 || self.frame > j1 {
             return;
         }
-        // Tekken Tag's sine is its 4096 table times 8 (0x357F18) over 0x7FFF (0x36FE00), Tekken 3's 4096 over 32768
-        let (t, div) = if self.tag_rules(gd) {
-            (tag_sin_cos(self.root_yaw).map(i64::from), 32767)
+        // Tekken Tag's sine is its 4096 table times 8 (0x357F18) over 0x7FFF (0x36FE00), Tekken 3's 4096 over 32768;
+        // Tekken Tag's at its own angle +0x1A >> 4 and in its z (OpenKumite's negated), so a basis a hair off a quarter
+        // turn carries its z fraction the game's way round (its floor)
+        let (t, div, zs) = if self.tag_rules(gd) {
+            let g = ((PI - self.root_yaw) / ANGLE).round() as i32 >> 4;
+            ([ball::sin12(g), ball::cos12(g)].map(|v| i64::from(v.clamp(-0xFFF, 0xFFF) * 8)), 32767, -1.0)
         } else {
             let (s, c) = self.yaw.dsin_cos();
-            ([s, c].map(|x| (x * 4096.0).round() as i64), 32768)
+            ([s, c].map(|x| (x * 4096.0).round() as i64), 32768, 1.0)
         };
         for (k, t) in t.into_iter().enumerate() {
             // (v * t) / div truncated, then the whole units out and the fraction kept
@@ -1379,7 +1382,7 @@ impl Fighter {
             if k == 0 {
                 self.position.x -= whole as f32;
             } else {
-                self.position.z -= whole as f32;
+                self.position.z -= zs * whole as f32;
             }
         }
     }
@@ -3211,12 +3214,13 @@ impl Fight {
             };
             let f = &mut self.fighters[i];
             (f.opponent.root, f.opponent.evasive) = (root, evasive);
-            // Tekken Tag moves the pushback in the facing pass (0x36FEF0), from the frame the reaction is committed
+            // Tekken Tag moves the pushback and turns in the facing pass (0x36FEF0) from the frame the reaction is
+            // committed: a struck fighter starts turning to the attacker in its hit-stop frame
             // shortcut: also through a hit-stop longer than 1 frame, which was not seen in PCSX2; check one there
             if f.tag_rules(&gd) {
                 f.push_back();
             }
-            if !frozen {
+            if !frozen || f.tag_rules(&gd) {
                 f.track(&gd, idle.is_none().then_some([roots_before[i], roots_before[1 - i]]));
                 // (Tekken Tag turns the basis before the root's update of the frame: the rebase shows at once)
                 if f.rebase_root {
