@@ -843,9 +843,11 @@ impl StaffRoll {
                 x += space as f32;
                 continue;
             };
+            // (0x80104FA0: a glyph's quad is its advance wide, not its cell: the cells' last columns never show)
+            let w = (advance.get(g).copied().unwrap_or(space) as f32).min(cw);
             let (u, vv) = ((g % per_row) as f32 * cw, (g / per_row) as f32 * ch);
-            let uv = egui::Rect::from_min_max(Pos2::new(u / size[0] as f32, vv / size[1] as f32), Pos2::new((u + cw) / size[0] as f32, (vv + ch) / size[1] as f32));
-            painter.image(tex.id(), v.rect(x, y, cw, ch), uv, tint);
+            let uv = egui::Rect::from_min_max(Pos2::new(u / size[0] as f32, vv / size[1] as f32), Pos2::new((u + w) / size[0] as f32, (vv + ch) / size[1] as f32));
+            painter.image(tex.id(), v.rect(x, y, w, ch), uv, tint);
             x += advance.get(g).copied().unwrap_or(space) as f32;
         }
     }
