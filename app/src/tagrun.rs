@@ -612,6 +612,8 @@ pub struct TagRun {
     pub game_over: Option<u32>,
     /// START on the continue: the same pair again.
     pub retry: bool,
+    /// Each actor's swaying nodes (Tekken Tag's: [`kumite_game::Cloth`]).
+    pub cloth: std::cell::RefCell<Vec<kumite_game::Cloth>>,
 }
 
 /// What the app does when a match has ended.
@@ -658,6 +660,18 @@ impl TagRun {
             cont: None,
             game_over: None,
             retry: false,
+            cloth: Default::default(),
+        }
+    }
+
+    /// Actor `i`'s swaying nodes in `pose`, moved once a game frame (as a fight's, `Fight::sway`).
+    pub fn sway(&self, i: usize, pose: &mut [glam::Mat4], place: glam::Mat4) {
+        let mut cloth = self.cloth.borrow_mut();
+        if cloth.len() <= i {
+            cloth.resize_with(i + 1, Default::default);
+        }
+        if let (Some(c), Some(body)) = (cloth.get_mut(i), self.game.bodies.get(i)) {
+            c.apply(&body.character, self.game.melee.fight.frame, place, pose);
         }
     }
 

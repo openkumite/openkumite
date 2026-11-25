@@ -14,9 +14,14 @@ fn ttt_fighters_on_an_arena() {
         return;
     };
     let assets = kumite_assets::Assets::new(&root).unwrap();
-    let Ok(mut r) = Renderer::headless(960, 720).map_err(|e| eprintln!("skipping: {e:#}")) else { return };
     let index: serde_json::Value = assets.gamedata("movesets/index.json").unwrap();
     let models = index["models"].as_array().unwrap();
+    // every fighter skins below the last bone (its light 2): Lei's coat on joint 159 once took the light's matrix
+    for m in models {
+        let c = assets.character(m["model_record"].as_u64().unwrap() as usize).unwrap();
+        assert!(c.joints.len() < kumite_render::MAX_BONES, "model {} on {} joints", m["model_record"], c.joints.len());
+    }
+    let Ok(mut r) = Renderer::headless(960, 720).map_err(|e| eprintln!("skipping: {e:#}")) else { return };
     // the first two bodies' first costumes, each with its moveset's motions
     let picks = [&models[0], models.iter().find(|m| m["body"] != models[0]["body"]).unwrap()];
     let fighters: Vec<kumite_assets::Character> = picks

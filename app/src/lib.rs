@@ -1332,7 +1332,7 @@ impl App {
     fn replay_snapshot(&self) -> Option<replay_view::Snapshot> {
         use replay_view::Match as M;
         let arena = self.scene.as_ref().map(|s| {
-            let cloth = self.fight.as_ref().map(|f| f.cloth.borrow().clone()).unwrap_or_default();
+            let cloth = self.fight.as_ref().map(|f| f.cloth.borrow().clone()).or_else(|| self.tag.as_ref().map(|t| t.cloth.borrow().clone())).unwrap_or_default();
             Box::new(ArenaCopy { frame: s.frame, arena: s.arena, weather: s.weather.clone(), objects: s.objects.clone(), walkers: s.people.iter().map(|p| p.walker.clone()).collect(), cloth })
         });
         let game = if let Some(t) = self.tag.as_ref() {
@@ -1379,6 +1379,8 @@ impl App {
             }
             if let Some(f) = self.fight.as_ref() {
                 *f.cloth.borrow_mut() = a.cloth;
+            } else if let Some(t) = self.tag.as_ref() {
+                *t.cloth.borrow_mut() = a.cloth;
             }
         }
         if let Some(v) = self.vfx.as_mut() {
@@ -1898,6 +1900,12 @@ impl App {
             for i in 0..game.bodies.len() {
                 let (mut pose, place) = game.pose(i);
                 fight.sway(i, &mut pose, place);
+            }
+        }
+        if let Some(t) = self.tag.as_ref() {
+            for i in 0..t.game.bodies.len() {
+                let (mut pose, place) = t.game.pose(i);
+                t.sway(i, &mut pose, place);
             }
         }
         // (the fighters and the last frame's landings, for the arena's leaves)
@@ -5968,7 +5976,8 @@ impl App {
                 let Some(t) = self.tag.as_ref() else { return };
                 let game = &t.game;
                 for (i, model) in scene.models.iter().enumerate().take(4) {
-                    let (pose, mut place) = game.pose(i);
+                    let (mut pose, mut place) = game.pose(i);
+                    t.sway(i, &mut pose, place);
                     if !game.visible[i] {
                         place = glam::Mat4::from_scale(glam::Vec3::ZERO);
                     }

@@ -58,7 +58,7 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
-@group(2) @binding(0) var<uniform> bones: array<mat4x4<f32>, 160>;
+@group(2) @binding(0) var<uniform> bones: array<mat4x4<f32>, 161>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -131,7 +131,7 @@ fn ttt_light(o: VsOut, look: vec4<f32>) -> vec3<f32> {
     let hit = g.hit_colour.rgb * max(0.0, dot(n, normalize(g.hit_pos.xyz - o.world + vec3(0.0, 0.0001, 0.0))));
     // (light 2 the model's own when its last bone's y.w is set: an ending's actor, 0x353448)
     var l2 = mat2x4<f32>(g.lights[2], g.lights[3]);
-    if (bones[159][1].w > 0.5) { l2 = mat2x4<f32>(bones[159][0], bones[159][1]); }
+    if (bones[160][1].w > 0.5) { l2 = mat2x4<f32>(bones[160][0], bones[160][1]); }
     let l = g.ambient.rgb + g.key_color.rgb * (max(0.0, dot(n, g.light_dir.xyz)) + s)
         + g.lights[1].rgb * max(0.0, dot(n, g.lights[0].xyz)) + l2[1].rgb * max(0.0, dot(n, l2[0].xyz));
     return min(l, cap) + hit;
