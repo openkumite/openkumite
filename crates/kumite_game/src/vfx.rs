@@ -1055,6 +1055,18 @@ impl Vfx {
                         sheet: set.sheet,
                     })
                 }
+                // (Tekken Tag's mist (0x3A55E0): texture 2's (the dust's) at quad 0x400 x +0x54 0.35, colour 0x80, 0,
+                // 0x80, fading by +0x58 = its frames over 1.3 x its life)
+                (Kind::TagMist, 1..) => d.bursts.get("dust").map(|set| Sprite {
+                    pos,
+                    size: TAG_FIRE_SIZE * 0.35,
+                    cell: set.cell,
+                    color: [1.0, 0.0, 1.0, 1.0 - o.count as f32 / (kumite_sim::objects::TAG_MIST_LIFE as f32 * 1.3)],
+                    blend: Blend::Alpha,
+                    mirror: false,
+                    nearer: 0.0,
+                    sheet: set.sheet,
+                }),
                 (Kind::Gas, _) => sprite(&d.gas, o.count >> 1, pos, GAS_SIZE, Blend::Half, o.mirror),
                 _ => None,
             };

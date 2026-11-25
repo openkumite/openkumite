@@ -2344,7 +2344,7 @@ impl Fighter {
     /// Tekken Tag's strike this frame (0x34F288): each pair's segment from bone `start` to bone `end` of the pose, or
     /// from the end bone's place a frame before when `start` is 0.
     /// Ogre's (body 14) slot 0x13 is slot 6. True Ogre's slot 0x18 is his fire's (objects::TAG_FIRE).
-    /// shortcut: the other projectiles' slot 0x19 (0x3A5810) gives no segment; port it with them
+    /// Slot 0x19 is the mist's (objects::TAG_MIST).
     fn pair_segments(&self, gd: &GameData, bones: &[Vec3]) -> Vec<(Vec3, Vec3)> {
         let mv = self.current_move(gd);
         let Some(a) = mv.attack.as_ref().filter(|a| !a.pairs.is_empty()) else { return vec![] };
@@ -2364,8 +2364,8 @@ impl Fighter {
     /// Devil's laser (0x378150, body 29, a strike to slot 0x18): from the head (slot 2) at the move's place (table
     /// 0x506248: along the facing, up), growing each frame of the active window by its step (0x378810, move 4175: 200
     /// along the facing; 0x378A28, moves 4177 / 4179: 102 along it and 110 down; 0x378E70, move 4180: 300 at 15° up),
-    /// its end kept on the floor (0x378500); on the first active frame it is a point (0x3780C8).
-    /// shortcut: move 6728's sweep (0x378C48, drawn by the game's own random numbers) is left out
+    /// its end kept on the floor (0x378500); on the first active frame it is a point (0x3780C8). Move 6728 (his win
+    /// pose 0, alias 4770) sweeps it over the sky (0x378C48).
     pub fn laser(&self, gd: &GameData, bones: &[Vec3]) -> Option<(Vec3, Vec3)> {
         let mv = self.current_move(gd);
         let a = mv.attack.as_ref()?;
@@ -2375,6 +2375,7 @@ impl Fighter {
         let kind = match self.current.index {
             4175 => 1,
             4177 | 4179 => 2,
+            6728 => 3,
             4180 => 4,
             _ => return None,
         };
@@ -2382,10 +2383,13 @@ impl Fighter {
     }
 }
 
-/// Devil's beam of type `kind` (0x378248's: 1 0x378810, 2 0x378A28, 4 0x378E70; 3, 0x378C48's sweep, is none) from
-/// the head `head` heading `yaw`, `k` frames on: its start and end (game units; the end kept on the floor).
+/// Devil's beam of type `kind` (0x378248's: 1 0x378810, 2 0x378A28, 3 0x378C48, 4 0x378E70) from the head `head`
+/// heading `yaw`, `k` frames on: its start and end (game units; the end kept on the floor).
 pub fn laser_line(kind: u32, head: Vec3, yaw: f32, k: i32) -> Option<(Vec3, Vec3)> {
     let cut = |v: i32, t: i32| v * t / 0x8000;
+    if kind == 3 {
+        return Some(laser_sweep(head, yaw, k));
+    }
     let [up15, out15] = tag_sin_cos(-0xAAA as f32 * ANGLE);
     // (step along the facing and up; the place back along the facing and up)
     let (along, up, back, high) = match kind {
@@ -2399,6 +2403,34 @@ pub fn laser_line(kind: u32, head: Vec3, yaw: f32, k: i32) -> Option<(Vec3, Vec3
     let mut end = start + Vec3::new(cut(along, s) as f32, up as f32, cut(along, c) as f32) * k.max(0) as f32;
     end.y = end.y.max(0.0);
     Some((start, end))
+}
+
+/// Devil's sweep (0x378C48), `k` frames on: from 140 back and 160 over the head, 800 a frame straight up to 6400
+/// (k 1-9), then on from k 10 its top turns 0x200 a frame about the facing, back at ±0x3000 (gp-0x7194, -0x7192), and
+/// leans along that way by rand() & 0x3FF over 4096 of the sine.
+/// shortcut: the lean's rand() is a fixed stream from `k`, not the game's libc stream (0x40FBD0); share that stream
+/// to match its sway
+fn laser_sweep(head: Vec3, yaw: f32, k: i32) -> (Vec3, Vec3) {
+    let cut = |v: i32, t: i32| v * t / 0x8000;
+    let [s, c] = tag_sin_cos(yaw);
+    let start = head + Vec3::new(-cut(140, s) as f32, 160.0, -cut(140, c) as f32);
+    if k <= 0 {
+        return (start, start);
+    }
+    let up = (800 * k).min(6400) as f32;
+    let (mut angle, mut back) = (0i32, false);
+    for _ in 10..=k {
+        angle += if back { -0x200 } else { 0x200 };
+        back ^= (angle + 0x2FFF) as u16 >= 0x5FFF;
+    }
+    let lean = if k >= 10 {
+        let r = |n: u32| (n.wrapping_mul(0x41C6_4E6D).wrapping_add(12345) >> 16) as i32 & 0x3FF;
+        let [s, c] = tag_sin_cos(yaw - angle as f32 * ANGLE);
+        Vec3::new(cut(r(2 * k as u32), s) as f32, 0.0, cut(r(2 * k as u32 + 1), c) as f32)
+    } else {
+        Vec3::ZERO
+    };
+    (start, start + Vec3::new(lean.x, up, lean.z))
 }
 
 /// Segment against a hurt sphere, the game's way (0x8004770C): a height-band clip, then a horizontal
@@ -4136,8 +4168,14 @@ pub(crate) fn step_objects(objects: &mut objects::Objects, gd: &GameData, fighte
     for (i, f) in fighters.iter().enumerate() {
         let mv = f.current_move(gd);
         // (Tekken 3's descriptors: Tekken Tag's strikes run between bone pairs)
-        // (Tekken Tag's True Ogre: a strike to slot 0x18 is his fire, 0x3A6390)
-        let fire = mv.attack.as_ref().filter(|a| a.pairs.first().is_some_and(|p| p[1] == 0x18) && f.tag_rules(gd) && f.character == Some(20)).map(|_| objects::TAG_FIRE);
+        // (Tekken Tag's True Ogre: a strike to slot 0x18 is his fire, 0x3A6390; slot 0x19 the mist)
+        let to = |slot: u32| mv.attack.as_ref().is_some_and(|a| a.pairs.first().is_some_and(|p| p[1] == slot)) && f.tag_rules(gd);
+        let fire = match () {
+            _ if to(0x18) && f.character == Some(20) => Some(objects::TAG_FIRE),
+            // (any body's strike to slot 0x19 is the mist, 0x3A5810)
+            _ if to(0x19) => Some(objects::TAG_MIST),
+            _ => None,
+        };
         let byte = fire.or_else(|| mv.attack.as_ref().filter(|a| a.pairs.is_empty()).and_then(|a| a.header_bytes.first().copied()).filter(|&b| b >= 0x18));
         let (Some(byte), Some(&body), Some(anim)) = (byte.filter(|_| !f.inactive), bodies.get(i), anims.get(i)) else { continue };
         let key = (mv.active[0]..=mv.active[1]).contains(&f.frame).then_some((f.current.index, f.frame));
@@ -4188,6 +4226,23 @@ mod tests {
         assert_eq!((first, tip), (up, [128, -500, 0]));
         let (next, tip) = s.step(&up, [0, -500, 0], Some(tip));
         assert!(next != up && tip[1] > -500 && tip[0] > 120, "{next:?} {tip:?}");
+    }
+
+    /// Devil's sweep (move 6728) as PCSX2's block 0x8A7AD0 has it: 140 back and 160 over the head, 800 a frame up to
+    /// 6400, then from its 10th frame leaning at most 1023 along the facing turned 0x200 a frame.
+    #[test]
+    fn devils_sweep_rises_then_sways() {
+        let head = Vec3::new(0.0, 1900.0, 0.0);
+        let (start, end) = laser_sweep(head, 0.0, 0);
+        // (sines of 4095 x 8: 140 is 139 along)
+        assert_eq!((start, end), (head + Vec3::new(0.0, 160.0, -139.0), start));
+        let up: Vec<f32> = (1..=10).map(|k| (laser_sweep(head, 0.0, k).1 - start).y).collect();
+        assert_eq!(up, [800.0, 1600.0, 2400.0, 3200.0, 4000.0, 4800.0, 5600.0, 6400.0, 6400.0, 6400.0]);
+        assert_eq!(laser_sweep(head, 0.0, 9).1.x, start.x);
+        for k in 10..120 {
+            let d = laser_sweep(head, 0.0, k).1 - start;
+            assert!(d.x.abs() < 1024.0 && d.z.abs() < 1024.0 && d.y == 6400.0, "{k} {d}");
+        }
     }
 
     #[test]

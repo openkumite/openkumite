@@ -18,8 +18,13 @@
 //!   frame, held 5-8, 7 fading; on along the floor 216 over it. Each striking flame's travel is a strike of its
 //!   owner's (0x346230's segments, read by 0x3770E0); none strike once the opponent burns (+0xC04, 0x346378).
 //!
-//! shortcut: the breath's sparks and floor flames (objects 7 and 9, drawn only) and bytes 0x19 / 0x1C (object 10)
-//! start nothing yet; port them here.
+//! - Tekken Tag's moves striking to slot 0x19 ([`TAG_MIST`]; 0x3A6390 -> 0x3A5810 each active frame: Yoshimitsu's
+//!   2365, Nina's 2034 and the reactions 5428 / 5429 they give): a puff of mist (task 0x3A55E0) from 100 along the
+//!   head's heading towards 400, its pitch and yaw each turned by up to pi / 32, 48 units a frame for 21 frames; it
+//!   strikes its first 15 (table 0x5198C8) while its owner is still in the move.
+//!
+//! shortcut: the breath's sparks and floor flames (objects 7 and 9, drawn only) and Tekken 3's bytes 0x19 / 0x1C
+//! (object 10) start nothing yet; port them here.
 
 use crate::detmath::DetMath;
 use glam::{Mat4, Vec3};
@@ -30,6 +35,14 @@ pub const GAS: u32 = 0x1B;
 pub const BREATH: u32 = 0x18;
 /// Tekken Tag's True Ogre's fire: its moves' strike to slot 0x18 (no descriptor byte; this stands for it).
 pub const TAG_FIRE: u32 = 0x118;
+/// Tekken Tag's mist: its moves' strike to slot 0x19 (as [`TAG_FIRE`]).
+pub const TAG_MIST: u32 = 0x119;
+/// The mist's start and heading's second point (0x437C30, as `TAG_FIRE_AT`), speed (0x3A3518's 48), frames (+0x14)
+/// and striking frames (0x5198C8: 16 ones, its counter past its first move).
+const TAG_MIST_AT: [Vec3; 2] = [Vec3::new(100.0, 0.0, 0.0), Vec3::new(400.0, 0.0, 0.0)];
+const TAG_MIST_SPEED: f32 = 48.0;
+pub const TAG_MIST_LIFE: i32 = 21;
+const TAG_MIST_STRIKES: i32 = 16;
 /// The flame's start and its heading's second point (0x437BF0: z of the drawn head node +0x1770, the head slot's x).
 const TAG_FIRE_AT: [Vec3; 2] = [Vec3::new(200.0, 0.0, 0.0), Vec3::new(400.0, 0.0, 0.0)];
 /// The flame's speeds (0x3A3518's 160, then 256) and its height over the floor.
@@ -61,6 +74,7 @@ pub enum Kind {
     Fire,
     Breath,
     TagFire,
+    TagMist,
     /// The gas's source: its heading (sine, cosine of the yaw) and the next puff.
     GasSource {
         heading: [f32; 2],
@@ -112,6 +126,7 @@ impl Objects {
             // (a brawl's actors by their index's parity)
             BREATH => (slots[0], BREATH_AT[owner % 2], Kind::Breath),
             TAG_FIRE => (slots[0], TAG_FIRE_AT, Kind::TagFire),
+            TAG_MIST => (slots[0], TAG_MIST_AT, Kind::TagMist),
             GAS if first => (slots[1], GAS_AT, Kind::GasSource { heading: [0.0, 1.0], next: 0 }),
             _ => return,
         };
@@ -124,7 +139,7 @@ impl Objects {
         let vel = match kind {
             Kind::Fire => d.normalize_or_zero() * FIRE_SPEED,
             // (its heading: turned by rand() on its first frame)
-            Kind::Breath | Kind::TagFire => d.normalize_or_zero(),
+            Kind::Breath | Kind::TagFire | Kind::TagMist => d.normalize_or_zero(),
             _ => Vec3::ZERO,
         };
         self.list.push(Object { kind, owner, pos: p, prev: p, vel, strikes: false, state: 0, count: -1, frames: 0, left: 0, mirror: false });
@@ -154,6 +169,7 @@ impl Objects {
                     self.fire(&mut o, on(BREATH), hit)
                 }
                 Kind::TagFire => self.tag_fire(&mut o, on(TAG_FIRE)),
+                Kind::TagMist => self.tag_mist(&mut o, on(TAG_MIST)),
                 Kind::GasSource { heading, next } => {
                     o.count += 1;
                     if let Some(&[_, far, high]) = GAS_PUFFS.get(next).filter(|p| on(GAS) && o.count as f32 >= p[0]) {
@@ -294,6 +310,28 @@ impl Objects {
         true
     }
 
+    /// Tekken Tag's mist (0x3A55E0): false when it is gone. `count` its frames moved (+0x16).
+    fn tag_mist(&mut self, o: &mut Object, on: bool) -> bool {
+        o.strikes &= on;
+        o.prev = o.pos;
+        if o.state == 0 {
+            let mut unit = || {
+                self.seed = self.seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
+                ((self.seed & 0x7FFF_FFFF) as i32 & 0xFF_FFFF) as f32 / 16_777_216.0 * 2.0 - 1.0
+            };
+            let v = o.vel;
+            let (pitch, yaw) = (v.y.datan2(glam::Vec2::new(v.x, v.z).length()), v.x.datan2(v.z));
+            let (pitch, yaw) = (pitch + unit() * std::f32::consts::PI / 32.0, yaw + unit() * std::f32::consts::PI / 32.0);
+            o.vel = Vec3::new(yaw.dsin() * pitch.dcos(), pitch.dsin(), yaw.dcos() * pitch.dcos()) * TAG_MIST_SPEED;
+            (o.state, o.count, o.strikes) = (1, 0, on);
+            return true;
+        }
+        o.pos += o.vel;
+        o.count += 1;
+        o.strikes &= o.count < TAG_MIST_STRIKES;
+        o.count < TAG_MIST_LIFE
+    }
+
     /// Fighter `owner`'s strikes this frame: its striking objects' travel.
     pub fn strikes(&self, owner: usize) -> Vec<(Vec3, Vec3)> {
         self.list.iter().filter(|o| o.owner == owner && o.strikes).map(|o| (o.prev, o.pos)).collect()
@@ -330,5 +368,19 @@ mod tests {
         let puffs: Vec<_> = o.list.iter().filter(|p| p.kind == Kind::Gas).collect();
         assert!(puffs.len() == 8 && puffs.iter().all(|p| p.strikes && p.pos.y > 300.0));
         assert!(!o.strikes(1).is_empty() && o.strikes(0).is_empty());
+    }
+
+    /// Tekken Tag's mist moves 48 a frame for 21 frames, striking its first 15 moves while its owner is in the move.
+    #[test]
+    fn a_mist_puff_drifts_and_strikes_its_first_frames() {
+        let mut o = Objects::default();
+        o.start(0, TAG_MIST, true, &[Mat4::from_translation(Vec3::new(0.0, 1500.0, 0.0)), Mat4::IDENTITY]);
+        let mut strikes = Vec::new();
+        while !o.list.is_empty() && strikes.len() < 40 {
+            o.step(&[Some(TAG_MIST), None], &[false; 2]);
+            strikes.push(o.strikes(0).first().map(|(a, b)| (*b - *a).length()));
+        }
+        assert_eq!(strikes.len(), 22);
+        assert!(strikes[1..16].iter().all(|d| d.is_some_and(|d| (d - 48.0).abs() < 0.01)) && strikes[16..].iter().all(Option::is_none), "{strikes:?}");
     }
 }

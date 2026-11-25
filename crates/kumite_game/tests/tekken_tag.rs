@@ -539,6 +539,50 @@ fn devils_laser_strikes() {
     assert!(!drawn || (strips > 2 && flares == 15), "{strips} strips, {flares} frames of the flare");
 }
 
+/// True Ogre's arm A and slots 18 / 19 wave by their counter (0x3626B8), with each other's places: standing, his
+/// counter at 209 on the fight's first frame, the four slots stand where PCSX2's do (+0x630 + 0x50 k + 0x38, his
+/// position off: within 3).
+#[test]
+fn true_ogres_arm_waves_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [TRUE_OGRE, HWOARANG]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    b.game.flaps[0].count = 208;
+    b.step([Pad::default(); 2]);
+    let s = b.game.spheres();
+    let p = b.game.fight.fighters[0].position;
+    let ps2 = [(5, [20, -1235, -566]), (6, [19, -917, -691]), (18, [86, -767, -733]), (19, [331, -677, -797])];
+    for (slot, at) in ps2 {
+        let q = s[0].bones[slot] - p;
+        let ours = [q.x as i32, -q.y as i32, -q.z as i32];
+        assert!(ours.iter().zip(at).all(|(o, a)| (o - a).abs() <= 3), "slot {slot}: {ours:?}, PCSX2 {at:?}");
+    }
+}
+
+/// Yoshimitsu's b, b+1+2, b, 1 (move 2365) blows mist (slot 0x19, 0x3A5810) on each of its active frames 21-28:
+/// eight puffs, drawn magenta; from where he stands it misses Hwoarang, as in PCSX2.
+#[test]
+fn yoshimitsus_mist_puffs() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [YOSHIMITSU, HWOARANG]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let mut v = kumite_game::vfx::Vfx::new(&a);
+    let (mut puffs, mut drawn, mut hit) = (0, 0, false);
+    for pad in parse_script("n*20,b*3,b+1+2*2,b*12,1*2,n*100").unwrap() {
+        b.step([pad, Pad::default()]);
+        v.step(&b.game);
+        let mist = b.game.fight.objects.list.iter().filter(|o| o.kind == kumite_sim::objects::Kind::TagMist).count();
+        puffs = puffs.max(mist);
+        drawn = drawn.max(v.sprites().iter().filter(|s| s.color[0] == 1.0 && s.color[1] == 0.0).count());
+        hit |= b.game.fight.hits.iter().any(|h| h.attacker == 0);
+    }
+    assert_eq!((puffs, drawn, hit), (8, 8, false));
+}
+
 /// Jack-2 and Paul against Hwoarang and Paul, picked on the select (PCSX2): Jack walks in, his body pushes Hwoarang
 /// back as he comes, and his 1+3 (alias 3811) then misses from 850 away: no grab (alias 3924), as on the PS2 (the
 /// grab seen before came from a run that kept the select's models). The stance's phase is the PS2 run's (11 frames
