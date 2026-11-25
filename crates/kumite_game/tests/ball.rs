@@ -23,9 +23,14 @@ type Frame = (u8, [i32; 3], [i32; 3], i32);
 /// A Ball match of Gon (P1) against Jin, P2 serving (as the PS1's first round of VS Ball), the pads' scripts from the
 /// round's first frame; the ball each frame, `frames` of them.
 fn trace(a: &Assets, p1: &str, p2: &str, frames: usize) -> Vec<Frame> {
-    let mut g = Game::load(a, [GON, JIN]).unwrap();
+    trace_of(a, [GON, JIN], 1, p1, p2, frames)
+}
+
+/// A Ball match of `models`, `server` serving.
+fn trace_of(a: &Assets, models: [usize; 2], server: usize, p1: &str, p2: &str, frames: usize) -> Vec<Frame> {
+    let mut g = Game::load(a, models).unwrap();
     let data = std::sync::Arc::new(kumite_sim::data::load(&a.root.join("gamedata/ball.json")).unwrap());
-    g.ball = Some(kumite_game::BallSetup { data, kind: 0, server: 1, rounds: 0 });
+    g.ball = Some(kumite_game::BallSetup { data, kind: 0, server, rounds: 0 });
     g.round_frames = u32::MAX / 2;
     let mut b = Bout::new(g, kumite_game::ai_data(a).unwrap(), 2, false);
     let (s1, s2) = (parse_script(p1).unwrap(), parse_script(p2).unwrap());
@@ -39,7 +44,7 @@ fn trace(a: &Assets, p1: &str, p2: &str, frames: usize) -> Vec<Frame> {
             let q = |i: usize| b.game.fight.fighters[i].position;
             let m = |i: usize| b.game.fight.fighters[i].current_move(&b.game.fight.data).anim.clone();
             eprintln!(
-                "{k} st={} pos={},{},{} vel={},{},{} g={} p1={:.0},{:.0} p2={:.0},{:.0} q1={:.0},{:.0} q2={:.0},{:.0} m1={}@{} m2={}@{} speed={} heading={} power={} charge={:?} cool={}",
+                "{k} st={} pos={},{},{} vel={},{},{} g={} p1={:.0},{:.0},{:.0} p2={:.0},{:.0},{:.0} q1={:.0},{:.0} q2={:.0},{:.0} m1={}@{} m2={}@{} speed={} heading={} power={} charge={:?} cool={}",
                 ball.state,
                 ball.pos[0],
                 ball.pos[1],
@@ -49,8 +54,10 @@ fn trace(a: &Assets, p1: &str, p2: &str, frames: usize) -> Vec<Frame> {
                 ball.vel[2],
                 ball.g,
                 r(0).x,
+                -r(0).y - b.game.fight.fighters[0].anim_root_y,
                 -r(0).z,
                 r(1).x,
+                -r(1).y - b.game.fight.fighters[1].anim_root_y,
                 -r(1).z,
                 q(0).x,
                 -q(0).z,
@@ -72,7 +79,8 @@ fn trace(a: &Assets, p1: &str, p2: &str, frames: usize) -> Vec<Frame> {
     out
 }
 
-/// Prints the trace (BALL_TRACE=1, BALL_P1 / BALL_P2 the pads' scripts, BALL_FRAMES).
+/// Prints the trace (BALL_TRACE=1, BALL_P1 / BALL_P2 the pads' scripts, BALL_FRAMES; BALL_MODELS=a,b and BALL_SERVER
+/// for other fighters than Gon and Jin, P2 serving).
 #[test]
 fn print_trace() {
     let Some(a) = assets() else { return };
@@ -80,7 +88,8 @@ fn print_trace() {
         return;
     }
     let env = |k: &str| std::env::var(k).unwrap_or_default();
-    trace(&a, &env("BALL_P1"), &env("BALL_P2"), env("BALL_FRAMES").parse().unwrap_or(1800));
+    let models = env("BALL_MODELS").split(',').filter_map(|m| m.parse().ok()).collect::<Vec<usize>>().try_into().unwrap_or([GON, JIN]);
+    trace_of(&a, models, env("BALL_SERVER").parse().unwrap_or(1), &env("BALL_P1"), &env("BALL_P2"), env("BALL_FRAMES").parse().unwrap_or(1800));
 }
 
 /// The PS1 trace's rows (the ball as the step before left it) are our steps `row + 3` (its first hover frame, row
@@ -115,13 +124,48 @@ fn jins_punch_on_the_serve_flies_as_on_the_ps1() {
 fn the_ball_bumps_off_jin_as_on_the_ps1() {
     let Some(a) = assets() else { return };
     let t = trace(&a, "n*468", "n*146,b*14,n+4*2,n*306", 180);
-    let ps1: [(usize, Frame); 4] = [
+    let ps1: [(usize, Frame); 6] = [
         (167, (2, [3243, -1126, 0], [-21728, -23544, 0], 512)),
         (169, (2, [3074, -1312, 0], [-21466, -23101, 0], 512)),
         (172, (2, [2822, -1584, 0], [-21497, -22314, 0], 512)),
         (174, (2, [2654, -1760, 0], [-21348, -21712, 0], 512)),
+        // no bump in the step the kick's strike comes out (+0xE3 set); the kick meets it the step after
+        (175, (2, [2570, -1845, 0], [-21316, -21200, 0], 512)),
+        (176, (2, [2520, -1919, 0], [-12609, -18432, 0], 512)),
     ];
     for (row, want) in ps1 {
         assert_eq!(t[row + PS1_ROW], want, "PS1 row {row}");
     }
+}
+
+/// Jin jumps forward (u/b) and kicks the served ball in the air: his jump drifts as far as on the PS1 (the drift's
+/// sine is the 4096 table times 8, 0x8002A194: it went 8 times short).
+#[test]
+fn jins_jump_kick_flies_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = trace(&a, "n*468", "n*146,b*10,u/b*3,n*8,n+3*2,n*300", 200);
+    let ps1: [(usize, Frame); 2] = [(184, (2, [3163, -1214, 0], [-14080, -3368, 0], 256)), (186, (2, [3053, -1238, 0], [-14080, -1471, 0], 256))];
+    for (row, want) in ps1 {
+        assert_eq!(t[row + PS1_ROW], want, "PS1 row {row}");
+    }
+}
+
+/// Jin's low kick drops the ball on Gon's side: the point's forced hit throws Gon up as a juggle (the air table's
+/// alias 0xD56 and its pop), and the ball comes back at his place (it came back at his clip's root offset).
+#[test]
+fn the_points_forced_hit_juggles_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = trace(&a, "n*468", "n*146,b*14,n+3*2,n*307", 340);
+    assert_eq!(t[324 + PS1_ROW], (1, [0, -3648, 2], [0, 0, 0], 256), "PS1 row 324");
+}
+
+/// Doctor B. (P1, serving, as VS Ball from the 1P select) against Gon: his hit aims at Gon's root two steps back. The
+/// PS1 trace's rows are our steps `row - 2` here.
+#[test]
+fn doctor_bs_hit_aims_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let p1 = "n*203,f*20,n+1*2,n*20,f*10,n+4*2,n*30,u/f*3,n*10,n+3*2,n*100";
+    let p2 = "n*234,b*25,n+1*2,n*25,n+4*2,n*30,b*10,n+2*2,n*30,u/b*3,n*100";
+    let t = trace_of(&a, [247, 239], 0, p1, p2, 290);
+    assert_eq!(t[267 - 2], (2, [-3300, -1305, -3], [7168, -18432, -23], 512), "PS1 row 267");
 }

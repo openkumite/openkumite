@@ -9048,6 +9048,10 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
     // Tekken Tag with Tekken 3's HUD in its extras (Tekken Force, Tekken Ball): its layout, every fighter's name on its
     // plates in its font (Tekken 3 has no name pictures of Tekken Tag's fighters)
     let t3_screens: Option<serde_json::Value> = roster.ttt.as_ref().and_then(|_| serde_json::from_slice(&kumite_fs::read(&assets.root.join("t3/gamedata/screens.json")).ok()?).ok());
+    // (and its TEKKEN BALL over the human's bar: Tekken Tag's screens have none)
+    if let Some(m) = t3_screens.as_ref().map(modes::ModeData::load) {
+        (roster.modes.ball_label, roster.modes.label_colour) = (m.ball_label, m.label_colour);
+    }
     hud.t3 = t3_screens.map(|s| {
         let mut d = hud::HudData::load(&s, &roster.ball_hud);
         let r: serde_json::Value = assets.gamedata("roster.json").unwrap_or_default();

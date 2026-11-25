@@ -321,7 +321,7 @@ impl Fight {
             let zc = (self.pos_of(0)[2] + self.pos_of(1)[2]) / 2;
             (zc - 0x80, zc + 0x80)
         };
-        let ry = self.actor(receiver).map_or(0, |f| -(f.root().y as i32));
+        let ry = self.actor(receiver).map_or(0, |f| -((f.root().y + f.anim_root_y).round() as i32));
         CourtView { band, receiver: self.pos_of(receiver), receiver_y: ry }
     }
 
@@ -491,9 +491,20 @@ impl Fight {
                         (b.state, b.timer) = (7, 5);
                         b.events.push(BallEvent::Impact);
                         if self.link.is_none() {
-                            // the forced hit reaction, from the ball's spot, with the last hitter's move
+                            // the forced hit, from the ball's spot, with the last hitter as the attacker
                             let attacker = b.p3.unwrap_or(self.ball_target(v));
-                            self.ball_strike(gd, v, attacker, 0, to_sim(b.pos), false);
+                            if v < 2 && attacker < 2 {
+                                // a juggle hit: the air table's reaction and its pop, whatever the loser plays (on the
+                                // PS1 Gon standing took alias 0xD56 through 0x8002F074, read in PCSX-Redux)
+                                let fv = &self.fighters[v];
+                                let quadrant = crate::direction_quadrant(fv.yaw, fv.root(), to_sim(b.pos));
+                                self.juggle_hit(gd, crate::AirHit { victim: v, attacker, damage: 0, quadrant, strike_down: 0.0, angle: 0 });
+                                (self.fighters[v].hit_flash, self.fighters[v].struck, self.fighters[v].struck_in_move) = (8, true, true);
+                            } else {
+                                // shortcut: 2 ON 2's partners take the hit's own reaction, not the juggle; upgrade with a
+                                // PS1 trace of a partner losing a point
+                                self.ball_strike(gd, v, attacker, 0, to_sim(b.pos), false);
+                            }
                         }
                     }
                     b.move_on(&self.court_view(b.receiver), self.frame);
@@ -567,7 +578,8 @@ impl Fight {
             fh.landed = Some(true);
         }
         b.cooldown = 5;
-        let (p, q) = (self.pos_of(o), b.pos);
+        // (aimed at the receiver's root two steps back: Dr. B's hit flew at Gon's place then, read in PCSX-Redux)
+        let (p, q) = (self.past_root(b, o).map_or_else(|| self.pos_of(o), |r| [r.x.round() as i32, (-r.y).round() as i32, (-r.z).round() as i32]), b.pos);
         b.heading = atan2_12(p[0] - q[0], p[2] - q[2]);
         b.squash_axis = [0, atan2_12(d.x as i32, -d.z as i32), atan2_12(d.x as i32, -d.y as i32)];
         b.just_hit = true;
@@ -645,9 +657,13 @@ impl Fight {
     /// The distance between the fighters (P1+0xF8): with four, between the hitter and its foe.
     /// It is of the roots two steps back (the PS1's ball speeds off a bump follow them so, read in PCSX-Redux).
     fn ball_distance(&self, b: &Ball, a: usize, c: usize) -> i32 {
-        let root = |i: usize| b.past[1].iter().find(|r| r.0 == i).map(|r| r.1).or_else(|| self.actor(i).map(crate::Fighter::root));
-        let (Some(a), Some(c)) = (root(a), root(c)) else { return 0 };
+        let (Some(a), Some(c)) = (self.past_root(b, a), self.past_root(b, c)) else { return 0 };
         glam::Vec2::new(a.x - c.x, a.z - c.z).length() as i32
+    }
+
+    /// Actor `i`'s root two steps back (what the ball's speeds and aims take, P1+0xF8's copy).
+    fn past_root(&self, b: &Ball, i: usize) -> Option<Vec3> {
+        b.past[1].iter().find(|r| r.0 == i).map(|r| r.1).or_else(|| self.actor(i).map(crate::Fighter::root))
     }
 
     /// The ball's segments against the fighters' hurt spheres (0x80047F14).
@@ -655,6 +671,10 @@ impl Fight {
         let mut hit = None;
         for v in self.ball_actors() {
             let Some(body) = bodies.get(v) else { continue };
+            // a body striking this step (+0xE3 set) does not bump it (the PS1's kick met it a step later, no bump between)
+            if self.actor(v).is_some_and(|f| !f.attack_segments(gd).is_empty()) {
+                continue;
+            }
             // after the K.O. only the loser can be hit
             if self.state != crate::RoundState::Fighting {
                 if let crate::RoundState::Ko { winner } = self.state {
@@ -815,7 +835,7 @@ impl Ball {
             if self.speed > 0x1000 {
                 let d = isqrt(dx as i64 * dx as i64 + dz as i64 * dz as i64) as i32;
                 let t = (d / (self.speed >> 8)).max(1);
-                // the receiver's bone 1 height (y down)
+                // the receiver's root height (P+0xF6C, y down: the clip's root height in it)
                 let ry = court.receiver_y;
                 let e = (self.pos[1] + ((self.vel[1] + t * self.g) >> 8) - ry) << 8;
                 let c = (self.vel[1] - e) / t;

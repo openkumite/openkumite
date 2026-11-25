@@ -1364,7 +1364,7 @@ impl Fighter {
     }
 
     /// Jumps and hops drift (0x8003F3A8): from the frame before the jump window to its end, the move's +0x16
-    /// moves the fighter along its facing by drift · (sin, cos) / 2048 a frame (Tekken Tag's / 256 along the basis
+    /// moves the fighter along its facing by drift · (sin, cos) / 256 a frame (Tekken Tag's along the basis
     /// +0x1A, 0x36FDE0; negative: forward), the fractions carried over in 1/256 units.
     fn drift(&mut self, gd: &GameData) {
         let mv = self.current_move(gd);
@@ -1372,19 +1372,14 @@ impl Fighter {
         if j0 == 0 || v == 0 || self.frame + 1 < j0 || self.frame > j1 {
             return;
         }
-        // Tekken Tag's sine is its 4096 table times 8 (0x357F18) over 0x7FFF (0x36FE00), Tekken 3's 4096 over 32768;
-        // Tekken Tag's at its own angle +0x1A >> 4 and in its z (OpenKumite's negated), so a basis a hair off a quarter
-        // turn carries its z fraction the game's way round (its floor)
-        let (t, div, zs) = if self.tag_rules(gd) {
-            let g = ((PI - self.root_yaw) / ANGLE).round() as i32 >> 4;
-            ([ball::sin12(g), ball::cos12(g)].map(|v| i64::from(v.clamp(-0xFFF, 0xFFF) * 8)), 32767, -1.0)
-        } else {
-            let (s, c) = self.yaw.dsin_cos();
-            ([s, c].map(|x| (x * 4096.0).round() as i64), 32768, 1.0)
-        };
+        // both games' sine is the 4096 table times 8 (Tekken 3's 0x8002A194, Tekken Tag's 0x357F18) over 0x7FFF
+        // (0x8003F40C, 0x36FE00); Tekken Tag's at its own angle +0x1A >> 4 and in its z (OpenKumite's negated), so a basis
+        // a hair off a quarter turn carries its z fraction the game's way round (its floor), Tekken 3's at its facing +0xE
+        let (g, zs) = if self.tag_rules(gd) { (((PI - self.root_yaw) / ANGLE).round() as i32 >> 4, -1.0) } else { ((self.yaw / ANGLE).round() as i32 >> 4, 1.0) };
+        let t = [ball::sin12(g), ball::cos12(g)].map(|v| i64::from(v.clamp(-0xFFF, 0xFFF) * 8));
         for (k, t) in t.into_iter().enumerate() {
-            // (v * t) / div truncated, then the whole units out and the fraction kept
-            self.air_frac[k] += (v as i64 * t / div) as i32;
+            // (v * t) / 0x7FFF truncated, then the whole units out and the fraction kept
+            self.air_frac[k] += (v as i64 * t / 32767) as i32;
             let whole = self.air_frac[k] >> 8;
             self.air_frac[k] -= whole << 8;
             if k == 0 {
@@ -3952,7 +3947,7 @@ impl Fight {
             let mut pushback = None;
             if skip_reaction {
                 // (the survivor of a trade that killed the other: no reaction)
-            } else if airborne && !blocked && self.juggle_hit(gd, AirHit { victim: v, attacker: a, damage, quadrant, strike_down: strike_down[a], angle: param(0) }, anims[v]) {
+            } else if airborne && !blocked && self.juggle_hit(gd, AirHit { victim: v, attacker: a, damage, quadrant, strike_down: strike_down[a], angle: param(0) }) {
                 // a spike slides on its own
             } else if airborne && !blocked {
                 // air hits use the fixed air pushback curve, straight away from the attacker
@@ -4023,7 +4018,7 @@ impl Fight {
                             fv.freeze = 0;
                         }
                     } else if !self.ko_collapse && to_stance && !lying {
-                        self.juggle_hit(gd, AirHit { victim: v, attacker: a, damage, quadrant, strike_down: strike_down[a], angle: param(0) }, anims[v]);
+                        self.juggle_hit(gd, AirHit { victim: v, attacker: a, damage, quadrant, strike_down: strike_down[a], angle: param(0) });
                         pushback = None;
                     }
                 }
@@ -4084,7 +4079,7 @@ impl Fight {
     /// own), popped up again: vy = clamp(4·dmg + 40 − 7·n + falling speed / 8, ±100), at least up to the
     /// reaction's target height; the fall animation is phased so its hold frame comes at the landing.
     /// Returns whether it was a spike (straight into the floor, its own slide instead of the air pushback).
-    fn juggle_hit(&mut self, gd: &GameData, hit: AirHit, _anims: &dyn Animations) -> bool {
+    fn juggle_hit(&mut self, gd: &GameData, hit: AirHit) -> bool {
         let AirHit { victim: v, attacker: a, damage, quadrant, strike_down, angle } = hit;
         let table = &gd.reactions.air_reactions.entries;
         // the air reaction (0x8002EE94): a late fall (low, or already falling sideways), a spike (the striking limb
