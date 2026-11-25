@@ -55,6 +55,9 @@ pub struct Audio {
     pub sfx_volume: f32,
     /// Both speakers the same (Tekken Tag's SPEAKER OUT: MONO), from the next sound or track on.
     pub mono: bool,
+    /// The music's level while paused and the steps it fades over (0: at once), and the level now (1: full).
+    pub pause_level: (f32, u32),
+    ducking: f32,
 }
 
 impl Audio {
@@ -63,7 +66,19 @@ impl Audio {
         match rodio::DeviceSinkBuilder::open_default_sink() {
             Ok(mut sink) => {
                 sink.log_on_drop(false);
-                Some(Self { sink: Some(sink), capture: None, music: None, current: None, cache: HashMap::new(), muted: false, music_volume: 0.55, sfx_volume: 0.9, mono: false })
+                Some(Self {
+                    sink: Some(sink),
+                    capture: None,
+                    music: None,
+                    current: None,
+                    cache: HashMap::new(),
+                    muted: false,
+                    music_volume: 0.55,
+                    sfx_volume: 0.9,
+                    mono: false,
+                    pause_level: (0.3, 0),
+                    ducking: 1.0,
+                })
             }
             Err(e) => {
                 log::warn!("no audio output: {e}");
@@ -74,7 +89,19 @@ impl Audio {
 
     /// No device: what the game asks to play is noted ([`Capture`]).
     pub fn capture() -> Self {
-        Self { sink: None, capture: Some(Capture::default()), music: None, current: None, cache: HashMap::new(), muted: false, music_volume: 0.55, sfx_volume: 0.9, mono: false }
+        Self {
+            sink: None,
+            capture: Some(Capture::default()),
+            music: None,
+            current: None,
+            cache: HashMap::new(),
+            muted: false,
+            music_volume: 0.55,
+            sfx_volume: 0.9,
+            mono: false,
+            pause_level: (0.3, 0),
+            ducking: 1.0,
+        }
     }
 
     /// Play a track from its start, looped from its loop point or once, at its level (nothing changes when it is
@@ -95,7 +122,7 @@ impl Audio {
         match File::open(kumite_fs::resolve(&t.file)).map_err(anyhow::Error::from).and_then(|f| Decoder::try_from(f).map_err(anyhow::Error::from)) {
             Ok(src) => {
                 let player = Player::connect_new(sink.mixer());
-                player.set_volume(self.level(false));
+                player.set_volume(self.level());
                 let at = |s: f64| std::time::Duration::from_secs_f64(s.max(0.0));
                 let src = src.buffered();
                 let start = src.clone().skip_duration(at(t.start));
@@ -114,12 +141,12 @@ impl Audio {
     }
 
     /// The music's volume: muted, ducked, the track's level.
-    fn level(&self, ducked: bool) -> f32 {
+    fn level(&self) -> f32 {
         let gain = self.current.as_ref().map_or(1.0, |t| t.gain);
         if self.muted {
             0.0
         } else {
-            self.music_volume * gain * if ducked { 0.3 } else { 1.0 }
+            self.music_volume * gain * self.ducking
         }
     }
 
@@ -158,7 +185,7 @@ impl Audio {
     pub fn toggle_mute(&mut self) -> bool {
         self.muted = !self.muted;
         if let Some(p) = &self.music {
-            p.set_volume(self.level(false));
+            p.set_volume(self.level());
         }
         self.muted
     }
@@ -173,8 +200,12 @@ impl Audio {
         }
     }
 
-    /// Music quieter while paused.
+    /// Music quieter while paused (called every step: a fade moves a step each call).
     pub fn duck(&mut self, ducked: bool) {
+        let (to, steps) = self.pause_level;
+        let target = if ducked { to } else { 1.0 };
+        let rate = (1.0 - to) / steps.max(1) as f32;
+        self.ducking = if (target - self.ducking).abs() <= rate + 1e-4 { target } else { self.ducking + rate.copysign(target - self.ducking) };
         // (the game says it every step: noted when it changes)
         if let Some(c) = self.capture.as_mut() {
             let was = c.events.iter().rev().find_map(|e| if let Event::Duck(d) = e.1 { Some(d) } else { None }).unwrap_or(false);
@@ -183,7 +214,7 @@ impl Audio {
             }
         }
         if let Some(p) = &self.music {
-            p.set_volume(self.level(ducked));
+            p.set_volume(self.level());
         }
     }
 }
@@ -229,6 +260,23 @@ mod tests {
         }
         eprintln!("decoded {checked} files");
         assert!(checked > 800);
+    }
+
+    /// Tekken 3's pause: 0.3 at once; Tekken Tag's: to half over 120 steps and back the same way.
+    #[test]
+    fn the_pause_ducks_the_music() {
+        let mut a = Audio::capture();
+        a.duck(true);
+        assert_eq!(a.ducking, 0.3);
+        a.duck(false);
+        assert_eq!(a.ducking, 1.0);
+        a.pause_level = (0.5, 120);
+        (0..60).for_each(|_| a.duck(true));
+        assert!((a.ducking - 0.75).abs() < 1e-4, "{}", a.ducking);
+        (0..60).for_each(|_| a.duck(true));
+        assert_eq!(a.ducking, 0.5);
+        (0..120).for_each(|_| a.duck(false));
+        assert_eq!(a.ducking, 1.0);
     }
 
     #[test]

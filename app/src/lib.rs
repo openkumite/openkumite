@@ -1968,6 +1968,13 @@ impl App {
         // Tekken Tag's BGM / SE VOLUME and SPEAKER OUT on OpenKumite's levels
         if let (Some((bgm, se, mono)), Some(audio)) = (self.roster.ttt.as_deref().and_then(|d| ttt::volumes(d, &ttt::progress())), self.audio.as_mut()) {
             (audio.music_volume, audio.sfx_volume, audio.mono) = (0.55 * bgm, 0.9 * se, mono);
+            // (paused: the music to half and back over 120 frames, 0x36E0F0)
+            audio.pause_level = (0.5, 120);
+        }
+        // a fight's pause or practice menu: the music quieter (one call a step: the fade goes on after it)
+        let ducked = self.game_paused() && self.bowl.is_none();
+        if let Some(audio) = self.audio.as_mut() {
+            audio.duck(ducked);
         }
         // the menus' sounds queued since the last step
         for code in menu::sfx::take() {
@@ -2168,12 +2175,7 @@ impl App {
         let p2_script = (!self.p2_script.is_empty() && fighting).then(|| self.p2_script.remove(0));
         self.tapped.clear();
         let select = self.select_held();
-        // (the pause or a practice menu: one call a step, else the music's volume flips between them)
-        let ducked = self.game_paused();
         let Some(fight) = self.fight.as_mut() else { return };
-        if let Some(audio) = self.audio.as_mut() {
-            audio.duck(ducked);
-        }
         if fight.pause.is_some() {
             return;
         }
@@ -5099,9 +5101,6 @@ impl App {
         }
         self.tapped.clear();
         let Some(t) = self.tag.as_mut() else { return };
-        if let Some(audio) = self.audio.as_mut() {
-            audio.duck(t.pause.is_some());
-        }
         if t.pause.is_some() {
             return;
         }
