@@ -1766,6 +1766,10 @@ impl Front {
                 }
             }
             Page::Continue { countdown, .. } => {
+                // (its start: sound 0x1055 with BGM 8, 0x35AF1C)
+                if *countdown == CONTINUE {
+                    sfx::play(0x1055);
+                }
                 *countdown = countdown.saturating_sub(1);
                 // the announcer counts each digit below 9 as it comes (0x3BA6F4: sound 0x1047 + digit)
                 if *countdown % 100 == 99 && *countdown < 900 {
@@ -2016,6 +2020,11 @@ impl Front {
         match &self.page {
             Page::Music { playing, .. } => *playing,
             Page::Select(s) => d.map(|d| &d.raw["select"]["music"]).filter(|m| m.is_object() && s.frame >= int(&m["from"]) as u32).map(|m| int(&m["bgm"])),
+            // CONTINUE? (0x35AF14), SURVIVAL RESULTS (0x3C4AE0), a new record's name entry (0x3C8CD8); GAME OVER
+            // stops the music (0x35B170)
+            Page::Continue { .. } => Some(8),
+            Page::SurvivalResults { .. } => Some(2),
+            Page::NameEntry { .. } => Some(5),
             _ => None,
         }
     }
@@ -5129,6 +5138,11 @@ pub fn force_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, run: &c
     }
 }
 
+/// The select screen's BGM (0x3CBC98).
+pub fn select_bgm(d: &Data) -> Option<usize> {
+    d.raw["select"]["music"]["bgm"].as_u64().map(|b| b as usize)
+}
+
 /// A fighter's theme in Tekken Force (OpenKumite's: Tekken 3 plays the player's and the boss's, Tekken Tag's fighters
 /// have none): the music of the arena named after it (the name's first word), else the first arena's.
 pub fn theme<'a>(d: Option<&Data>, sound: &'a kumite_game::sound::SoundData, name: &str) -> Option<&'a kumite_game::sound::Track> {
@@ -6259,6 +6273,10 @@ mod tests {
         f.tick(&r2, &mut seed);
         f.tick(&r2, &mut seed);
         assert_eq!(sfx::take(), vec![0x1047 + 8]);
+        // ... its start: its voice and BGM 8
+        f.page = Page::Continue { run: Box::new(Run::new(&d, &r2, &p, ARCADE, [vec![(0, 0)], vec![]], &mut seed)), countdown: CONTINUE };
+        f.tick(&r2, &mut seed);
+        assert_eq!((sfx::take(), f.music(Some(&d))), (vec![0x1055], Some(8)));
         // 2400 frames: both picks on one frame, the cursor's character then RANDOM's (the cursor's is taken)
         let mut s = Select::new(ARCADE, &d, None);
         assert!((1..2400).all(|_| s.tick(&d, &r, &p, &mut seed).is_none()) && s.sides[0].picks.is_empty());
