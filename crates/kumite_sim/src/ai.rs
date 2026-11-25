@@ -1457,11 +1457,8 @@ impl Ai {
             }
             Style::Defensive => {
                 // guard nearly everything, punish whiffs, attack less
-                for g in [&mut p.guard_prob, &mut p.guard_prob_cap] {
-                    at_least(g, 2867);
-                }
-                for g in [&mut p.in_string_guard_prob, &mut p.in_string_guard_cap] {
-                    at_least(g, 3891);
+                for g in [&mut p.guard_prob, &mut p.guard_prob_cap, &mut p.in_string_guard_prob, &mut p.in_string_guard_cap] {
+                    *g = 4096;
                 }
                 for c in [&mut p.counter_attack_prob, &mut p.counter_attack_cap] {
                     at_least(c, 2048);
@@ -1471,7 +1468,7 @@ impl Ai {
                 at_least(&mut p.keep_walk_back_prob, 2048);
                 p.throw_attempt_prob /= 2;
                 for c in [&mut p.attack_cooldown_0, &mut p.attack_cooldown_1, &mut p.attack_cooldown_2, &mut p.attack_cooldown_3] {
-                    *c *= 2;
+                    *c *= 3;
                 }
             }
             Style::Counter => {
@@ -3218,7 +3215,7 @@ impl Ai {
             // in, never back
             Style::Rushdown if self.myzone > 2 => 4,
             Style::Rushdown if self.myzone > 1 && matches!(mode, 0 | 2 | 3 | 6 | 8) => 1,
-            Style::Thrower if self.myzone > 1 && matches!(mode, 0 | 3 | 6 | 8) => 2,
+            Style::Thrower if self.myzone > 1 && matches!(mode, 0 | 1 | 3 | 6 | 8) => 2,
             Style::Juggler if self.odown && self.myzone > 1 => 2,
             // at the edge of his reach: out of it when in, back in when out
             Style::Counter => match self.hiszone {
@@ -3226,7 +3223,7 @@ impl Ai {
                 3 | 4 if u < 1024 => 2,
                 _ => mode,
             },
-            Style::Evasive if (2..4).contains(&self.hiszone) && mode == 0 && u < 2048 => 8,
+            Style::Evasive if (2..4).contains(&self.hiszone) && mode == 0 && u < 3072 => 8,
             _ => mode,
         }
     }

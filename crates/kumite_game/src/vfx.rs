@@ -416,6 +416,9 @@ const FIRE_SIZE: f32 = 0.864;
 const TAG_FIRE_SIZE: f32 = 1024.0 / 400.0 * 0.6822;
 const BURN_SIZE: f32 = 0.690;
 const GAS_SIZE: f32 = 0.5;
+/// Doctor B.'s mist's cell by its frame (0x8002565C's u, v on sheet 008: the dust's cells, as the gas strip's from cell
+/// 9), in the gas's palette (0x800ADD80 entry 0, its byte 0x1C).
+const MIST_CELLS: [i32; 21] = [0, 2, 4, 6, 8, 9, 10, 11, 12, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26];
 const FIRE_LIGHT: [f32; 3] = [1.0, 128.0 / 255.0, 0.0];
 
 impl Vfx {
@@ -1068,6 +1071,9 @@ impl Vfx {
                     sheet: set.sheet,
                 }),
                 (Kind::Gas, _) => sprite(&d.gas, o.count >> 1, pos, GAS_SIZE, Blend::Half, o.mirror),
+                // shortcut: one quad of the two (0x80072B88), byte 0x19's palette (entry 8) drawn as 0x1C's; port them
+                // when a byte 0x19 move is seen
+                (Kind::Mist(_), 1..) => sprite(&d.gas, MIST_CELLS.get(usize::try_from(o.count).unwrap_or(0)).copied().unwrap_or(26), pos, GAS_SIZE, Blend::Half, false),
                 _ => None,
             };
             self.objects.extend(s);

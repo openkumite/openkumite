@@ -69,6 +69,8 @@ pub struct Body {
     pub face: Option<tagface::Poses>,
     /// Tekken Tag: its scale of the motions' root, 4096 = 1 (the moveset index's `motion_scale`).
     pub motion_scale: i32,
+    /// Tekken 3: its size, 4096 = 1 (P+0x4EC: the model's size percent x 4096 / 100, 0x80035C50).
+    pub size: i32,
     /// Tekken Tag: its spring slots ([`springs`]).
     pub springs: Vec<kumite_sim::Spring>,
     /// Tekken Tag's True Ogre: his arm A and slots 18 / 19 wave ([`step_flap`]).
@@ -123,11 +125,9 @@ type Spring = (kumite_sim::Turn, [i32; 3]);
 
 impl Animations for FighterAnims<'_> {
     fn root(&self, anim: &str, frame: u32, partner: bool) -> Option<Vec3> {
-        if partner {
-            self.other.root_of(anim, frame)
-        } else {
-            self.own.root_of(anim, frame)
-        }
+        let src = if partner { self.other } else { self.own };
+        let clip = src.character.clip(anim).and_then(|k| src.character.clips.get(k));
+        clip.and_then(|c| sized_root(c, frame as usize, self.own.size)).or_else(|| src.root_of(anim, frame))
     }
 
     fn root_scale(&self, other: bool) -> i32 {
@@ -531,6 +531,8 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let extra = if tag { strike_slots(id, entry.moveset_id) } else { Vec::new() };
     let joints = if tag { joint_places(&rules["joints"], record, id) } else { Vec::new() };
     let motion_scale = entry.motion_scale.unwrap_or(4096);
+    let size =
+        roster["models"].as_array().into_iter().flatten().find(|m| m["model_record"].as_u64() == Some(record as u64)).and_then(|m| m["size_percent"].as_i64()).map_or(4096, |p| p as i32 * 4096 / 100);
     let hidden = blades_hidden(&character, entry.moveset_id);
     let twins = character.nodes.iter().enumerate().filter_map(|(c, n)| Some((c, *bones.get(BONE_SLOTS.iter().position(|&j| Some(j) == n.name.split_once('.').map(|s| s.0))?)?))).collect();
     let body = Body {
@@ -550,6 +552,7 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
         hands,
         face,
         motion_scale,
+        size,
         springs: if tag { springs(id) } else { Vec::new() },
         flaps: tag && id == 20,
         twins,
@@ -676,6 +679,7 @@ fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
         hands: own.hands.clone(),
         face: own.face.clone(),
         motion_scale: own.motion_scale,
+        size: own.size,
         springs: Vec::new(),
         flaps: false,
         twins: own.twins.clone(),
@@ -1923,16 +1927,17 @@ pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Ma
         Some((clip, frame)) => body.character.pose(clip, frame, true),
         None => body.character.pose(0, 0, true),
     };
-    // (Tekken Tag: the root's height at the motion's scale, as the sim's root (0x363AB8))
+    // (Tekken Tag: the root's height at the motion's scale, as the sim's root (0x363AB8); Tekken 3's at the body's size)
     let scale = if shown.partner { other.motion_scale } else { body.motion_scale };
-    if let Some(y) = pose.get(body.root).map(|m| m.w_axis.y).filter(|_| scale != 4096) {
-        let lift = ((y * UNITS).round() as i32 * scale / 4096) as f32 / UNITS - y;
+    let owner = if shown.partner { &other.character } else { &body.character };
+    let sized = shown.clip.and_then(|(clip, frame)| sized_root(owner.clips.get(clip)?, frame, body.size));
+    if let Some(y) = pose.get(body.root).map(|m| m.w_axis.y).filter(|_| scale != 4096 || sized.is_some()) {
+        let lift = sized.map_or(((y * UNITS).round() as i32 * scale / 4096) as f32, |r| r.y) / UNITS - y;
         for m in &mut pose {
             *m = Mat4::from_translation(Vec3::Y * lift) * *m;
         }
     }
     // (Tekken Tag: the 18 slots at the game's turns of the motion's angles)
-    let owner = if shown.partner { &other.character } else { &body.character };
     if let Some(turns) = shown.clip.and_then(|(clip, frame)| angle_turns(owner.clips.get(clip)?, frame)) {
         for (t, &n) in turns.iter().zip(&body.bones) {
             head::set_local(&body.character.nodes, &mut pose, n, turn_mat(t));
@@ -1976,6 +1981,15 @@ pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Ma
 /// Tekken 3: a clip's channels at `frame` (clamped to its end), None without them.
 fn channels(clip: &kumite_assets::Clip, frame: usize) -> Option<&[i16; 49]> {
     clip.channels.get(frame.min(clip.channels.len().checked_sub(1)?))
+}
+
+/// Tekken 3: a clip's root at `frame` played by a body of `size` (0x80038970: each raw channel times the size >> 12,
+/// kept to 16 bits; glTF's y and z turned over): another's motion, or the copying character's donor's, plays at the
+/// body's own size.
+fn sized_root(clip: &kumite_assets::Clip, frame: usize, size: i32) -> Option<Vec3> {
+    let c = channels(clip, frame)?;
+    let s = |k: usize| ((i32::from(c[k]) * size) >> 12) as i16 as f32;
+    Some(Vec3::new(s(0), -s(1), -s(2)))
 }
 
 /// A slot's turn (rows, 4096 = 1) as a matrix.
