@@ -469,17 +469,19 @@ impl Hud {
     /// Per simulation step (0x8004E274's width rules, round-start latches).
     pub fn step(&mut self, bout: &Bout) {
         self.state.frame += 1;
+        // (Tekken Ball in Tekken Tag: Tekken 3's HUD)
+        let d = if bout.game.fight.ball.is_some() { self.t3.as_ref().unwrap_or(&self.data) } else { &self.data };
         if let Some(b) = &bout.game.fight.ball {
             let h = &mut self.state.ball;
             for (i, g) in h.gauges.iter_mut().enumerate() {
                 let v = b.charge[i];
-                let w = self.data.ball.w;
+                let w = d.ball.w;
                 if v != g.0 {
                     g.0 = v;
-                    g.1 = (v * w / self.data.ball.full).clamp(0, w.max(0));
+                    g.1 = (v * w / d.ball.full).clamp(0, w.max(0));
                 }
                 g.3 = if g.2 < g.3 { g.3 - ((g.3 - g.2 + 15) >> 4) } else { g.2 };
-                g.2 = if g.2 >= g.1 { g.1 } else { (g.2 + self.data.ball.grow).min(g.1) };
+                g.2 = if g.2 >= g.1 { g.1 } else { (g.2 + d.ball.grow).min(g.1) };
                 g.3 = g.3.max(g.2);
             }
             h.flash = (b.power != 0).then_some(b.owner);
@@ -489,8 +491,8 @@ impl Hud {
             h.texts.retain(|t| t.3 > 0);
             for e in &b.events {
                 if let kumite_sim::ball::BallEvent::Text(s, c) = e {
-                    if h.texts.len() < self.data.ball.text_max {
-                        h.texts.push((s.clone(), *c, b.position(), self.data.ball.text_frames));
+                    if h.texts.len() < d.ball.text_max {
+                        h.texts.push((s.clone(), *c, b.position(), d.ball.text_frames));
                     }
                 }
             }
@@ -513,7 +515,7 @@ impl Hud {
         }
         let fight = &bout.game.fight;
         // Tekken Tag (no Tekken 3 bar tables)
-        if self.data.bar_w == 0 {
+        if d.bar_w == 0 {
             self.state.tag.step(bout);
             if let Some(d) = self.state.ttt.as_deref() {
                 self.state.chicken.step(d, bout);
@@ -522,7 +524,7 @@ impl Hud {
         }
         for i in 0..2 {
             // the bar is its width in px of the fighter's own full health (the VS handicap changes it)
-            let bar_w = self.data.bar_w as i64;
+            let bar_w = d.bar_w as i64;
             let max = (fight.fighters[i].max_health * kumite_sim::ONE) as i64;
             let unit = (max / bar_w.max(1)).max(1);
             let hp = fight.fighters[i].health.max(0) as i64;
@@ -538,7 +540,11 @@ impl Hud {
         let painter = painter.with_clip_rect(v.clip());
         // (what is placed in the 3D scene: its 4:3 screen)
         let scene = View::fit(ctx.content_rect());
-        let d = &self.data;
+        // (Tekken Ball in Tekken Tag: Tekken 3's HUD from the extras)
+        let (d, art) = match (&self.t3, &art.t3) {
+            (Some(d), Some(a)) if bout.game.fight.ball.is_some() => (d, &**a),
+            _ => (&self.data, art),
+        };
         if d.bar_w == 0 {
             if let Some(t) = &info.ttt {
                 // (no HUD over the team intro)
@@ -550,15 +556,11 @@ impl Hud {
                 crate::ttt::hud(&painter, &v, art, t, bout, info, &self.state.tag, self.state.ko, self.state.frame, self.state.run_frames);
                 crate::ttt::chicken_marks(&painter, &v, art, t, &self.state.chicken);
                 crate::ttt::ball_partner_bars(&painter, &v, art, t, bout);
-                // (Tekken 3's gauges from the extras, else in Tekken Tag's bar strips)
+                // (no Tekken 3 HUD in the extras: the gauges in Tekken Tag's bar strips)
                 if bout.game.fight.ball.is_some() && !matches!(bout.phase, Phase::Replay { .. }) {
-                    if let (Some(a), Some(d)) = (art.t3.as_deref(), self.t3.as_ref()) {
-                        self.draw_ball(&painter, &v, a, &d.ball);
-                    } else {
-                        let w = self.data.ball.w.max(1) as f32;
-                        let gauges = self.state.ball.gauges.map(|(_, _, shown, trail)| [shown as f32 / w, trail as f32 / w]);
-                        crate::ttt::ball_hud(&painter, &v, art, t, gauges, self.state.ball.flash, &self.ball_texts(&self.data.ball), self.state.frame);
-                    }
+                    let w = d.ball.w.max(1) as f32;
+                    let gauges = self.state.ball.gauges.map(|(_, _, shown, trail)| [shown as f32 / w, trail as f32 / w]);
+                    crate::ttt::ball_hud(&painter, &v, art, t, gauges, self.state.ball.flash, &self.ball_texts(&d.ball), self.state.frame);
                 }
                 return;
             }
@@ -673,7 +675,7 @@ impl Hud {
             }
         }
         if bout.game.fight.ball.is_some() && !replay {
-            self.draw_ball(&painter, &v, art, &self.data.ball);
+            self.draw_ball(&painter, &v, art, &d.ball);
         }
         under(&painter, &scene);
         // everything above is drawn behind the fighters (the game's 2D list B); the round texts are in front
@@ -719,7 +721,7 @@ impl Hud {
                     };
                     t.draw(&painter, &v, art);
                 } else if !info.no_result {
-                    self.result(&painter, &v, art, winner, info);
+                    self.result(d, &painter, &v, art, winner, info);
                 }
             }
             _ => {}
@@ -727,8 +729,7 @@ impl Hud {
     }
 
     /// DRAW, YOU WIN! / YOU LOSE (one human player), or "<NAME> WINS!".
-    fn result(&self, painter: &egui::Painter, v: &View, art: &Art, winner: Option<usize>, info: &HudInfo) {
-        let d = &self.data;
+    fn result(&self, d: &HudData, painter: &egui::Painter, v: &View, art: &Art, winner: Option<usize>, info: &HudInfo) {
         let Some(w) = winner else {
             d.draw.draw(painter, v, art);
             return;

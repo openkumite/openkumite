@@ -108,6 +108,10 @@ pub struct Ball {
     just_hit: bool,
     /// Body-test segments: (previous, current) of position + offset.
     segs: [[[i32; 3]; 2]; 4],
+    /// Last step's strike segments of each actor on the court (what the ball meets this step).
+    strikes: Vec<(usize, Vec<(Vec3, Vec3)>)>,
+    /// The court's actors' roots after the last two steps, the newest first (the fighters' distance P1+0xF8 lags).
+    past: [Vec<(usize, Vec3)>; 2],
     pub owner: usize,
     pub receiver: usize,
     smash_target: usize,
@@ -154,6 +158,8 @@ impl Ball {
             cooldown: 0,
             just_hit: false,
             segs: [[[0; 3]; 2]; 4],
+            strikes: Vec::new(),
+            past: Default::default(),
             owner: server,
             receiver: 1 - server,
             smash_target: 1 - server,
@@ -356,6 +362,26 @@ impl Fight {
         }
         self.ball_machine(gd, bodies, &mut b);
         b.visual_state();
+        // the strike's segments the ball meets next step (the PS1 strikes the ball a step after the move's active
+        // frame: P+0x1AC read in the next step's hook, seen in PCSX-Redux): Tekken 3's paths, or Tekken Tag's bone
+        // pairs of the pose (the Tekken 3 slice's Ball)
+        // shortcut: the hit pass has made this pose the last, so a pair from the end bone's last place is its point
+        // now; keep the last pose for the ball too if Tekken Tag's fast strikes pass through it
+        // (a move that starts an effect object, Gon's fire and gas, strikes with the object's: 0x80047D98 reads
+        // 0x8006E51C's segments when the descriptor's byte 0 is 0x18 or more)
+        b.strikes = self
+            .ball_actors()
+            .into_iter()
+            .filter_map(|i| {
+                let f = self.actor(i)?;
+                let mut s = f.attack_segments(gd);
+                s.extend(bodies.get(i).map_or_else(Vec::new, |v| f.pair_segments(gd, &v.bones)));
+                s.extend(self.objects.strikes(i));
+                Some((i, s))
+            })
+            .collect();
+        let roots = self.ball_actors().into_iter().filter_map(|i| Some((i, self.actor(i)?.root()))).collect();
+        b.past = [roots, std::mem::take(&mut b.past[0])];
         self.ball = Some(b);
         self.ball_rules = rules;
     }
@@ -495,7 +521,7 @@ impl Fight {
             }
             if b.cooldown > 0 {
                 b.cooldown -= 1;
-            } else if !self.ball_attacked(gd, bodies, b) && !self.ball_actors().into_iter().any(|i| self.actor(i).is_some_and(|f| f.locked)) {
+            } else if !self.ball_attacked(gd, b) && !self.ball_actors().into_iter().any(|i| self.actor(i).is_some_and(|f| f.locked)) {
                 self.ball_body(gd, bodies, b);
             }
         }
@@ -516,23 +542,11 @@ impl Fight {
     }
 
     /// The fighters' attack segments against the ball (0x80047D98): returns whether one hit it.
-    fn ball_attacked(&mut self, gd: &GameData, bodies: &[&crate::BodyVolumes], b: &mut Ball) -> bool {
+    fn ball_attacked(&mut self, gd: &GameData, b: &mut Ball) -> bool {
         let centre = to_sim(b.pos);
         let sphere = Sphere { centre, radius: RADIUS, zone: 0 };
-        // the strike's segments: Tekken 3's paths, or Tekken Tag's bone pairs of the pose (the Tekken 3 slice's Ball)
-        // shortcut: the hit pass has made this pose the last, so a pair from the end bone's last place is its point
-        // now; keep the last pose for the ball too if Tekken Tag's fast strikes pass through it
-        // (a move that starts an effect object, Gon's fire and gas, strikes with the object's: 0x80047D98 reads
-        // 0x8006E51C's segments when the descriptor's byte 0 is 0x18 or more)
-        let segments = |i: usize, f: &crate::Fighter| {
-            let mut s = f.attack_segments(gd);
-            s.extend(bodies.get(i).map_or_else(Vec::new, |v| f.pair_segments(gd, &v.bones)));
-            s.extend(self.objects.strikes(i));
-            s
-        };
-        // who hit it this frame, the players' side first (with two: P1 before P2)
-        let hitters: Vec<(usize, Vec3)> =
-            self.ball_actors().into_iter().filter_map(|i| segments(i, self.actor(i)?).into_iter().find(|(p, q)| segment_hits(*p, *q, &sphere)).map(|(p, q)| (i, q - p))).collect();
+        // who hit it with last step's strikes, the players' side first (with two: P1 before P2)
+        let hitters: Vec<(usize, Vec3)> = b.strikes.iter().filter_map(|(i, s)| s.iter().find(|(p, q)| segment_hits(*p, *q, &sphere)).map(|(p, q)| (*i, *q - *p))).collect();
         let Some(&(h, d)) = hitters.first() else { return false };
         let both = hitters.iter().any(|&(i, _)| side_of(i) != side_of(h));
         let o = self.ball_target(h);
@@ -558,7 +572,7 @@ impl Fight {
         b.squash_axis = [0, atan2_12(d.x as i32, -d.z as i32), atan2_12(d.x as i32, -d.y as i32)];
         b.just_hit = true;
         b.squash = dmg * 8 + 0x140;
-        let dist = self.ball_distance(h, o);
+        let dist = self.ball_distance(b, h, o);
         let ox = q[0].abs();
         let target_z = p[2];
         if both {
@@ -629,9 +643,10 @@ impl Fight {
     }
 
     /// The distance between the fighters (P1+0xF8): with four, between the hitter and its foe.
-    fn ball_distance(&self, a: usize, c: usize) -> i32 {
-        let (Some(a), Some(c)) = (self.actor(a), self.actor(c)) else { return 0 };
-        let (a, c) = (a.root(), c.root());
+    /// It is of the roots two steps back (the PS1's ball speeds off a bump follow them so, read in PCSX-Redux).
+    fn ball_distance(&self, b: &Ball, a: usize, c: usize) -> i32 {
+        let root = |i: usize| b.past[1].iter().find(|r| r.0 == i).map(|r| r.1).or_else(|| self.actor(i).map(crate::Fighter::root));
+        let (Some(a), Some(c)) = (root(a), root(c)) else { return 0 };
         glam::Vec2::new(a.x - c.x, a.z - c.z).length() as i32
     }
 
@@ -671,7 +686,7 @@ impl Fight {
         }
         let (p, q) = (self.pos_of(o), b.pos);
         b.heading = atan2_12(p[0] - q[0], p[2] - q[2]);
-        let dist = self.ball_distance(v, o);
+        let dist = self.ball_distance(b, v, o);
         let t = (dist >> 7) + 12;
         b.vel[1] = ((-g * t) >> 1) - (q[1] + 0x1000);
         b.g = g;

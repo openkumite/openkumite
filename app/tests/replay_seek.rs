@@ -66,6 +66,11 @@ fn a_fight_replay_seeks_as_played_straight() {
 }
 
 #[test]
+fn a_ball_replay_seeks_as_played_straight() {
+    seeks_show_what_playing_straight_shows(&["--mode", "ball", "--player", "paul"], "ball");
+}
+
+#[test]
 fn a_tag_replay_seeks_as_played_straight() {
     seeks_show_what_playing_straight_shows(&["--mode", "tag-teams", "--fighters", "paul,law,king,lei"], "tag");
 }

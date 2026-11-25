@@ -587,7 +587,8 @@ impl Bout {
                 if self.phase_frame == 1 {
                     let aliases: [usize; 2] = std::array::from_fn(|i| {
                         let b = if self.cpu[i].is_some() { 0 } else { pads[i].buttons };
-                        let k = if self.round > 1 { 2 } else { self.round_one_pick(b, tag) };
+                        // (Ball, battle type 7: the later rounds' move from round 1, no intro and no coin flip)
+                        let k = if self.round > 1 || self.game.ball.is_some() { 2 } else { self.round_one_pick(b, tag) };
                         self.game.fight.fighters[i].moveset.fixed.round_start[k]
                     });
                     self.game.set_start_moves(aliases);

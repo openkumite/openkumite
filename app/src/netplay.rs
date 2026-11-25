@@ -570,9 +570,25 @@ mod tests {
     fn a_tekken_tag_ball_match_online_is_the_same_on_both_computers() {
         let Some(a) = ttt_slice_assets() else { return };
         let mut g = kumite_game::Game::load(&a, [TTT_MODELS[0], TTT_MODELS[3]]).unwrap();
+        g.load_camera(&a.root.join("gamedata/ball_camera.json")).unwrap();
         g.ball = Some(kumite_game::BallSetup { data: std::sync::Arc::new(a.gamedata("ball.json").unwrap()), kind: 0, server: 0, rounds: 0 });
         g.round_frames = u32::MAX / 2;
         (g.ko_collapse, g.fight.ko_collapse) = (false, false);
+        let bout = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+        let (sums, rollbacks) = play(bout, 2, 1500, &|b, p| b.step([p[0], p[1]]));
+        same_everywhere(&sums, rollbacks, 1500);
+    }
+
+    /// Tekken 3's TEKKEN BALL online: Gon against Jin, two computers.
+    #[test]
+    fn a_tekken_3_ball_match_online_is_the_same_on_both_computers() {
+        let Ok(a) = kumite_assets::Assets::new(crate::test_assets()) else {
+            eprintln!("skipped: no Tekken 3 assets");
+            return;
+        };
+        let mut g = kumite_game::Game::load(&a, [239, 143]).unwrap();
+        g.ball = Some(kumite_game::BallSetup { data: std::sync::Arc::new(a.gamedata("ball.json").unwrap()), kind: 0, server: 1, rounds: 0 });
+        g.round_frames = u32::MAX / 2;
         let bout = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
         let (sums, rollbacks) = play(bout, 2, 1500, &|b, p| b.step([p[0], p[1]]));
         same_everywhere(&sums, rollbacks, 1500);
