@@ -55,7 +55,8 @@ pub struct Audio {
     pub sfx_volume: f32,
     /// Both speakers the same (Tekken Tag's SPEAKER OUT: MONO), from the next sound or track on.
     pub mono: bool,
-    /// The music's level while paused and the steps it fades over (0: at once), and the level now (1: full).
+    /// The music's level while paused and the steps it fades over (0: at once), and the level now (1: full):
+    /// Tekken 3's XA to 30 of 127 over 20 frames (0x8002B940 -> 0x8006BC98), Tekken Tag's set by the app.
     pub pause_level: (f32, u32),
     ducking: f32,
 }
@@ -76,7 +77,7 @@ impl Audio {
                     music_volume: 0.55,
                     sfx_volume: 0.9,
                     mono: false,
-                    pause_level: (0.3, 0),
+                    pause_level: (30.0 / 127.0, 20),
                     ducking: 1.0,
                 })
             }
@@ -99,7 +100,7 @@ impl Audio {
             music_volume: 0.55,
             sfx_volume: 0.9,
             mono: false,
-            pause_level: (0.3, 0),
+            pause_level: (30.0 / 127.0, 20),
             ducking: 1.0,
         }
     }
@@ -110,6 +111,8 @@ impl Audio {
         if self.current.as_ref() == track {
             return;
         }
+        // (a new track at its full level: a fade out, Tekken Bowl's, ends with the music)
+        self.ducking = 1.0;
         if let Some(p) = self.music.take() {
             p.stop();
         }
@@ -262,13 +265,18 @@ mod tests {
         assert!(checked > 800);
     }
 
-    /// Tekken 3's pause: 0.3 at once; Tekken Tag's: to half over 120 steps and back the same way.
+    /// Tekken 3's pause: to 30 / 127 over 20 steps; Tekken Tag's: to half over 120 steps and back the same way; a
+    /// new track (or none) at its full level.
     #[test]
     fn the_pause_ducks_the_music() {
         let mut a = Audio::capture();
+        (0..19).for_each(|_| a.duck(true));
+        assert!(a.ducking > 30.0 / 127.0);
         a.duck(true);
-        assert_eq!(a.ducking, 0.3);
-        a.duck(false);
+        assert_eq!(a.ducking, 30.0 / 127.0);
+        a.music(None);
+        assert!(a.ducking == 30.0 / 127.0, "no change: the same (no) track");
+        a.music(Some(&Track::plain(Path::new("x.flac"), true)));
         assert_eq!(a.ducking, 1.0);
         a.pause_level = (0.5, 120);
         (0..60).for_each(|_| a.duck(true));

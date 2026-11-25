@@ -1993,8 +1993,13 @@ impl App {
         }
         // a fight's pause or practice menu: the music quieter (one call a step: the fade goes on after it)
         let ducked = self.game_paused() && self.bowl.is_none();
+        // Tekken Bowl's game over with nobody among TOP 5 BOWLERS: the music out over 240 frames (0x3F1764)
+        let faded = self.bowl.as_ref().is_some_and(|b| b.top.as_ref().is_some_and(|(_, placed)| placed.iter().all(Option::is_none)));
         if let Some(audio) = self.audio.as_mut() {
-            audio.duck(ducked);
+            if faded {
+                audio.pause_level = (0.0, 240);
+            }
+            audio.duck(ducked || faded);
         }
         // the menus' sounds queued since the last step
         for code in menu::sfx::take() {
@@ -4520,7 +4525,7 @@ impl App {
             audio.sfx(&s.file, s.volume, s.speed);
         }
         let lines = vec![sc.text("thanks", "THANKS FOR PLAYING MISHIMA LANE!")];
-        self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, title: false }, frame: 0 })));
+        self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, title: false, music: None }, frame: 0 })));
     }
 
     /// The attract demo fight (battle type 6, 0x800D2E3C): P1 the next of the demo list (unlocked only), P2 picked
@@ -7092,7 +7097,7 @@ fn scene_lights(gd: &Path) -> (std::collections::HashMap<usize, kumite_render::S
 
 /// Tekken Tag's message page (back to its main menu).
 fn ttt_message(lines: Vec<String>) -> Screen {
-    Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, title: false }, frame: 0 }))
+    Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, title: false, music: None }, frame: 0 }))
 }
 
 /// Tekken Force's end on Tekken Tag's message page: `head`, the run's score, each co-op player's.

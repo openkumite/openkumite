@@ -671,7 +671,9 @@ impl Run {
                 if up {
                     lines.push(unlocked(d, roster, progress.stage));
                 }
-                let mut page = Page::Message { lines, frame: 0, title: true };
+                // (TIME ATTACK cleared: BGM 2 "RESULT", state 0x11 at 0x35B2BC)
+                let music = (self.mode == TIME_ATTACK).then_some(2);
+                let mut page = Page::Message { lines, frame: 0, title: true, music };
                 let record = Record { score: self.frames, members: self.members(roster), name: String::new() };
                 if self.mode == TIME_ATTACK && progress.rank(d, false, &record).is_some() {
                     page = Page::NameEntry { survival: false, record, letter: 0, then: Box::new(page) };
@@ -736,7 +738,8 @@ impl Run {
                 } else {
                     "YOU LOSE".into()
                 };
-                Next::Screen(Page::Message { lines: vec!["TEAM BATTLE".into(), text], frame: 0, title: false })
+                // (BGM 2 "RESULT": state 0x14 at 0x35B340)
+                Next::Screen(Page::Message { lines: vec!["TEAM BATTLE".into(), text], frame: 0, title: false, music: Some(2) })
             }
             // VS BATTLE, 1 ON 1 VS: the tally, both pick again
             _ => {
@@ -922,11 +925,12 @@ pub enum Page {
     GameOver {
         frame: u32,
     },
-    /// A run's end (or GAME OVER): its lines, then the title or the main menu.
+    /// A run's end (or GAME OVER): its lines, then the title or the main menu; its BGM.
     Message {
         lines: Vec<String>,
         frame: u32,
         title: bool,
+        music: Option<usize>,
     },
     /// RECORDS (0x3B2978): the page (CHARACTER USAGE, GREATEST SURVIVORS, TIME ATTACK), the first row shown;
     /// `attract`: after GAME OVER, CHARACTER USAGE for a while, then the title.
@@ -2025,6 +2029,7 @@ impl Front {
             Page::Continue { .. } => Some(8),
             Page::SurvivalResults { .. } => Some(2),
             Page::NameEntry { .. } => Some(5),
+            Page::Message { music, .. } => *music,
             _ => None,
         }
     }
@@ -5909,7 +5914,7 @@ mod tests {
         let max = 140 * kumite_sim::ONE;
         let Next::Fight(next) = run.after(&d, &r, &mut Progress::default(), Some(0), [max / 2, 0], [max; 2], None, 0, &mut seed) else { panic!() };
         assert_eq!((next.health[0], next.member), (Some(max / 2 + max * 15 / 100), [0, 1]));
-        assert!(matches!(next.after(&d, &r, &mut Progress::default(), Some(0), [max, 0], [max; 2], None, 0, &mut seed), Next::Screen(Page::Message { .. })));
+        assert!(matches!(next.after(&d, &r, &mut Progress::default(), Some(0), [max, 0], [max; 2], None, 0, &mut seed), Next::Screen(Page::Message { music: Some(2), .. })), "the result's BGM 2");
     }
 
     /// SURVIVAL is a tag battle: a won match gives each of the player's members 15 % of its full health back, to its

@@ -35,7 +35,8 @@ pub struct Audio {
     /// shortcut: kept but not played by (the page's elements play their channels as they are); upgrade: a Web Audio
     /// graph with a mono down-mix
     pub mono: bool,
-    /// The music's level while paused and the steps it fades over (0: at once), and the level now (1: full).
+    /// The music's level while paused and the steps it fades over (0: at once), and the level now (1: full):
+    /// Tekken 3's XA to 30 of 127 over 20 frames (0x8002B940 -> 0x8006BC98), Tekken Tag's set by the app.
     pub pause_level: (f32, u32),
     ducking: f32,
 }
@@ -69,7 +70,7 @@ impl Audio {
             music_volume: 0.55,
             sfx_volume: 0.9,
             mono: false,
-            pause_level: (0.3, 0),
+            pause_level: (30.0 / 127.0, 20),
             ducking: 1.0,
         })
     }
@@ -79,6 +80,8 @@ impl Audio {
         if self.current.as_ref() == track {
             return;
         }
+        // (a new track at its full level: a fade out, Tekken Bowl's, ends with the music)
+        self.ducking = 1.0;
         if let Some(m) = &self.music {
             let _ = m.pause();
         }
