@@ -1515,7 +1515,9 @@ impl App {
             camera_walls: None,
             cutaway: false,
             near_cut: None,
-            light: self.stage_lights.get(&stage).and_then(|l| l.0),
+            // (Tekken Tag's fighters and actors lit by the scenes' table, 0x353E60 as the arena loads: in a fight
+            // too, both sides' blocks hold its entry, not 0x416288's (PCSX2, arenas 0, 3, 10 and 14))
+            light: self.scene_lights.0.get(&stage).copied().or_else(|| self.stage_lights.get(&stage).and_then(|l| l.0)),
             shadow: self.stage_lights.get(&stage).and_then(|l| l.1),
             blob: None,
             people: vec![],
@@ -4206,10 +4208,6 @@ impl App {
         stage.models.clear();
         if let (None, Some(w)) = (s.ending, stage.weather.as_mut()) {
             w.without_lightning();
-        }
-        // (an ending's actors lit by the scenes' table, 0x353E60)
-        if let (Some(_), Some(l)) = (s.ending, self.scene_lights.0.get(&s.arena)) {
-            stage.light = Some(*l);
         }
         // (the people the scene shows instead of the arena's, 0x3D85D8)
         stage.people = s.people.as_ref().map_or_else(Vec::new, |p| self.people(&r, s.arena, Some(p)));
@@ -7049,8 +7047,8 @@ fn ttt_light(ls: &serde_json::Value) -> Option<kumite_render::StageLight> {
     ls.is_object().then(|| kumite_render::StageLight { ambient: v(&ls["ambient"]) / 128.0, key: lit(0).0, toward: lit(0).1, material: glam::Vec3::ONE, more: Some([lit(1), lit(2)]) })
 }
 
-/// Tekken Tag's scenes' lights by arena (stages.json `scene_lights`, 0x455170: an ending's actors are lit with
-/// them, 0x353E60) and each character's grey for light 2 (`fill`, 0x4550C0); none in an older pack.
+/// Tekken Tag's scenes' lights by arena (stages.json `scene_lights`, 0x455170: a fight's fighters and an ending's
+/// actors are lit with them, 0x353E60) and each character's grey for light 2 (`fill`, 0x4550C0); none in an older pack.
 fn scene_lights(gd: &Path) -> (std::collections::HashMap<usize, kumite_render::StageLight>, Vec<f32>) {
     let json: serde_json::Value = kumite_fs::read(&gd.join("stages.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let lights = json["stages"].as_array().into_iter().flatten().filter_map(|s| Some((s["id"].as_u64()? as usize, ttt_light(&s["scene_lights"])?))).collect();

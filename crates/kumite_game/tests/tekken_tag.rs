@@ -2044,6 +2044,28 @@ fn grass_is_cut_and_blended() {
     assert!(eddy.meshes.iter().chain(&eddy.sky).filter(|m| m.blend == 4).all(|m| m.vertices.iter().any(|v| v.cell[3] > 0.0)));
 }
 
+/// Eddy's ground (arenas 10, 13): its sand, overlay and painted shadow run on across the floor's cells, as a GS dump
+/// has them (one map of the screen to s, t over every cell): where two cells meet, their texture coordinates agree
+/// (the pictures repeat)
+#[test]
+fn eddys_ground_runs_on_across_the_cells() {
+    let Some(a) = assets() else { return };
+    for arena in [10, 13] {
+        let st = a.stage(arena).unwrap();
+        let mut at = std::collections::BTreeMap::new();
+        for m in &st.meshes {
+            for v in m.vertices.iter().filter(|v| v.cell[3] > 0.0 && v.cell[2] == 0.0) {
+                let key = (m.texture, (v.pos[0] * 1000.0).round() as i32, (v.pos[2] * 1000.0).round() as i32);
+                let uv = v.uv.map(|c| c.rem_euclid(1.0));
+                let first = *at.entry(key).or_insert(uv);
+                let off = |a: f32, b: f32| ((a - b).abs() - (a - b).abs().round()).abs();
+                assert!(off(first[0], uv[0]) < 1e-3 && off(first[1], uv[1]) < 1e-3, "arena {arena}: a seam at {key:?}: {first:?} {uv:?}");
+            }
+        }
+        assert!(at.len() > 100, "arena {arena}: {} ground points", at.len());
+    }
+}
+
 /// Op 16 in ending 35: Devil's type-2 beams run along his head's heading, 204 along and 220 down a frame; their ends
 /// on the 13th frame where PCSX2 has them (the beam record 0x8A7AD0 + 0x50 read over PINE; mm, our axes).
 #[test]
