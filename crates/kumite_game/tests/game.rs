@@ -1578,7 +1578,8 @@ fn heads_follow_the_opponent() {
 }
 
 /// Jumps and hops drift along the facing over their jump window (record +0x16, 0x8003F3A8): Character 0's held u/f
-/// jump goes 7.2 units a frame forward, u/b 5.4 back, u straight up; a tapped u/f hops forward.
+/// jump goes 57.6 units a frame forward, u/b 43.2 back, u straight up; a tapped u/f hops forward (the scale of Jin's
+/// jump on the PS1, tests/ball.rs).
 #[test]
 fn jumps_drift_forward_and_back() {
     let Some(a) = assets() else { return };
@@ -1593,10 +1594,10 @@ fn jumps_drift_forward_and_back() {
     };
     let (f, b, u, hop) = (travel("n*60,u/f*40,n*30"), travel("n*60,u/b*40,n*30"), travel("n*60,u*40,n*30"), travel("n*60,u/f*3,n*60"));
     eprintln!("u/f {f}, u/b {b}, u {u}, hop {hop}");
-    assert!((200.0..250.0).contains(&f), "forward jump {f}");
-    assert!((-190.0..-150.0).contains(&b), "back jump {b}");
+    assert!((1700.0..1850.0).contains(&f), "forward jump {f}");
+    assert!((-1420.0..-1280.0).contains(&b), "back jump {b}");
     assert!(u.abs() < 10.0, "neutral jump {u}");
-    assert!((100.0..150.0).contains(&hop), "forward hop {hop}");
+    assert!((950.0..1050.0).contains(&hop), "forward hop {hop}");
 }
 
 /// Fighters blink (faces.json, 0x80034100): shut 4 frames at a time, open (rand & 0xFE) + 1 frames.

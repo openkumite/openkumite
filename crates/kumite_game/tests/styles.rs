@@ -101,7 +101,8 @@ fn each_style_does_its_thing_more_than_classic() {
     more(Style::Defensive, "guarded", total(Style::Defensive).guarded as f32, c.guarded as f32, 1.6);
     more(Style::Counter, "counter hits", total(Style::Counter).counters as f32, c.counters as f32, 1.15);
     more(Style::Thrower, "throws", total(Style::Thrower).throws as f32, c.throws as f32, 2.0);
-    more(Style::Evasive, "sidesteps", total(Style::Evasive).sidesteps as f32, c.sidesteps as f32, 1.6);
+    // (x1.4 since the jumps drift as far as the PS1's: 24 against Classic's 17)
+    more(Style::Evasive, "sidesteps", total(Style::Evasive).sidesteps as f32, c.sidesteps as f32, 1.4);
     more(Style::Juggler, "launches", total(Style::Juggler).launches as f32, c.launches as f32, 1.1);
 }
 
