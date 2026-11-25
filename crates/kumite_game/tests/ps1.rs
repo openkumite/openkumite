@@ -312,3 +312,14 @@ fn an_end_link_without_a_turn_sets_the_basis_as_on_the_ps1() {
     let t = rows(&a, [139, 131], None, 1, "n*219,f*40,d+4*2,n*20,n+4*2,n*20,n+3*2,n*19,d/f+4*2,n*127", "n*220,b*40,n+2*2,n*192", 320);
     assert_eq!((at(&t, 561, 862, 0).3, at(&t, 561, 862, 0).4), (26269, 26411), "PS1 row 862");
 }
+
+/// Lei's sidestep (transition 0x1C) 22 frames after his first, from an entry of a shared sub-list: the get-up lock
+/// (+0x128, 24 frames) skips the sub-list's entries too (one walk tests both, 0x8002E024), so he stays on his facing;
+/// he turned 2447 off it.
+#[test]
+fn the_get_up_lock_skips_a_sub_lists_entries_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [131, 91], None, 1, "n*156,f*40,n+2*2,n*10,n+4*2,n*30,b+4*2,n*30,d/f+2*2,n*162", "n*197,u*2,n*20,u*2,n*20,d*2,n*20,d*2,n*172", 300);
+    let r = at(&t, 663, 930, 1);
+    assert_eq!((r.0, r.1, r.2, r.3), (1722, -994, 344, -11203), "PS1 row 930");
+}

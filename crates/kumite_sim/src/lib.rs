@@ -1754,6 +1754,11 @@ impl Fighter {
                     let shared = &gd.shared.shared_cancels.entries;
                     let mut j = c.dest;
                     while j < shared.len() && shared[j].kind != CancelKind::Return {
+                        // (the get-up lock skips the sub-list's entries too: one walk tests both, 0x8002E024)
+                        if shared[j].transition & 0x3F == TRANSITION_GETUP && self.getup_lock > 0 {
+                            j += 1;
+                            continue;
+                        }
                         if let Some(h) = self.try_cancel(gd, &shared[j]) {
                             if shared[j].transition == TRANSITION_USE_END {
                                 skip = true;
