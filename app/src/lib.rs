@@ -499,6 +499,8 @@ struct Fight {
     partner: Option<(String, usize)>,
     /// Ball 2 ON 2: P2's partner's (actor 2) sound bank and character id.
     extra_voice: Option<(String, usize)>,
+    /// Force's 3P and 4P (actors 4, 5): their sound banks and character ids.
+    more_voices: [Option<(String, usize)>; 2],
     /// Ball 2 ON 2: who plays each actor (0, 1 the sides' first, 2 the other side's partner, 3 P1's side's).
     seats: Option<[Option<usize>; 4]>,
 }
@@ -531,7 +533,8 @@ impl Fight {
         let banks = [self.banks[0].as_str(), self.banks[1].as_str()];
         let partner = self.partner.as_ref().map(|(b, c)| (b.as_str(), *c));
         let extra = self.extra_voice.as_ref().map(|(b, c)| (b.as_str(), *c));
-        self.heard.step(sound, &self.bout, banks, self.voices, partner, extra)
+        let more = self.more_voices.each_ref().map(|v| v.as_ref().map(|(b, c)| (b.as_str(), *c)));
+        self.heard.step(sound, &self.bout, banks, self.voices, partner, extra, &more)
     }
 }
 
@@ -546,6 +549,7 @@ impl Heard {
         voices: [usize; 2],
         partner: Option<(&str, usize)>,
         extra: Option<(&str, usize)>,
+        more: &[Option<(&str, usize)>],
     ) -> Vec<kumite_game::sound::Sound> {
         let game = &bout.game;
         // the replay plays the sounds recorded with its frames, on each new frame (even half-frames)
@@ -559,7 +563,7 @@ impl Heard {
             }
             return replayed;
         }
-        let sounds = sound.step_with_partner(bout, &mut self.last_moves, banks, voices, partner, extra);
+        let sounds = sound.step_with_partner(bout, &mut self.last_moves, banks, voices, partner, extra, more);
         // log them with the frame the game just recorded (a new round starts the record again)
         if game.recorded_total < self.logged {
             self.log.clear();
@@ -1223,6 +1227,7 @@ impl App {
             cutscene: None,
             partner: None,
             extra_voice: None,
+            more_voices: Default::default(),
             seats: None,
             secondary: Default::default(),
             cloth: Default::default(),
@@ -4717,6 +4722,7 @@ impl App {
             cutscene: None,
             partner: None,
             extra_voice: None,
+            more_voices: Default::default(),
             seats: None,
             secondary: Default::default(),
             cloth: Default::default(),
@@ -4795,6 +4801,7 @@ impl App {
                     f.guard_input = false;
                 }
                 run.more_players[p - 2] = Some((ch, cos, self.roster.costume_of.get(&model).copied().unwrap_or(0)));
+                fight.more_voices[p - 2] = Some((format!("m{model:03}"), self.roster.voice_of.get(&model).copied().unwrap_or(c.id)));
                 if !self.replay_quiet {
                     menu::sfx::play(menu::sfx::start());
                 }
@@ -9312,7 +9319,7 @@ mod tests {
     fn step(bout: &mut Bout, hud: &mut hud::Hud, heard: &mut Heard, sound: &kumite_game::sound::SoundData) -> Vec<kumite_game::sound::Sound> {
         bout.step([Pad::default(); 2]);
         hud.step(bout);
-        heard.step(sound, bout, ["m131", "m071"], [0, 1], None, None)
+        heard.step(sound, bout, ["m131", "m071"], [0, 1], None, None, &[])
     }
 
     /// A seek starts from a copy of the match: the HUD and the sounds' log go on from it as when played straight (the

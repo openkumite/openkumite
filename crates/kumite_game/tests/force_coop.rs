@@ -137,9 +137,49 @@ fn the_sounds_and_effects_skip_opponents_past_the_four_bodies() {
         bout.game.fight.fighters[0].effects.push(kumite_sim::MoveEffect::AtBone { op: 7, slot: 0 });
         state.script = vec![Some((k, frame - 1)); 4];
         state.last.clear();
-        sound.step_with_partner(&bout, &mut state, ["m131", "m259"], [0, 1], Some(("m071", 2)), None);
+        sound.step_with_partner(&bout, &mut state, ["m131", "m259"], [0, 1], Some(("m071", 2)), None, &[]);
         vfx.step(&bout.game);
     }
+}
+
+/// Force for four: 3P's K.O. of a soldier of the widened melee (actors 4 and 6) is heard.
+#[test]
+fn the_widened_melees_hits_are_heard() {
+    let Some(a) = assets() else { return };
+    let data: Arc<ForceData> = Arc::new(kumite_sim::data::load(&a.root.join("gamedata/force.json")).unwrap());
+    let costumes = data.soldier_costumes[0];
+    let soldiers = [0, 1].map(|k| Actor::load(&a, 259 + 4 * costumes[k].min(3)).unwrap());
+    let game = Game::load(&a, [MODEL_131, 259 + 4 * costumes[0].min(3)]).unwrap();
+    let mut bout = Bout::new(game, kumite_game::ai_data(&a).unwrap(), 1, false);
+    bout.force = true;
+    let mut st = ForceStage::new(data, 0, soldiers, 7 * 4, 7, 0, 0, 0, 0);
+    st.setup(&mut bout.game);
+    st.widen(&mut bout.game);
+    bout.game.join_partner(&Actor::load(&a, MODEL_71).unwrap());
+    bout.game.join_player(2, &Actor::load(&a, MODEL_71).unwrap());
+    let sound = kumite_game::sound::SoundData::load(&a).unwrap();
+    let hit = kumite_sim::HitEvent {
+        attacker: 4,
+        anim: String::new(),
+        zone: 0,
+        damage: 10,
+        base_damage: 10,
+        mask: 0,
+        blocked: false,
+        counter: false,
+        clean: false,
+        strike: Default::default(),
+        limb: 0,
+        ki: false,
+        point: Default::default(),
+        victim: 6,
+        health: 0,
+        throw: false,
+    };
+    bout.game.fight.hits = vec![hit];
+    let mut state = kumite_game::sound::SoundState::default();
+    let heard = sound.step_with_partner(&bout, &mut state, ["m131", "m259"], [0, 1], Some(("m071", 2)), None, &[Some(("m071", 2)), None]);
+    assert!(!heard.is_empty(), "3P's K.O. makes no sound");
 }
 
 /// A soldier that went down held in a throw (still in its thrower's victim move, bank Partner) comes back as a fresh
