@@ -219,3 +219,19 @@ fn a_partner_losing_a_point_is_juggled() {
     }
     panic!("no partner lost a point");
 }
+
+/// Doctor B.'s hit on the ball makes the ball's actor slot, put on his own root, his target that step: the target
+/// facing comes out of ratan2(0, 0), so motion_145 (committed on transition 0x18) runs its root 45° off the line to Gon,
+/// as on the PS1 (it ran along the line). PS1 rows are our steps `row - 2`; the roots within 1 unit (Tekken 3's scaled
+/// roots are floats here).
+#[test]
+fn doctor_bs_motion_145_runs_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let p1 = "n*203,f*20,n+1*2,n*20,f*10,n+4*2,n*30,u/f*3,n*10,n+3*2,n*100";
+    let p2 = "n*234,b*25,n+1*2,n*25,n+4*2,n*30,b*10,n+2*2,n*30,u/b*3,n*100";
+    let t = roots_of(&a, [247, 239], 0, p1, p2, 300);
+    for (row, want) in [(290, [-4153, -377, 48]), (296, [-4040, -641, 161]), (300, [-3943, -791, 256])] {
+        let got = t[row - 2].1[0];
+        assert!((0..3).all(|k| (got[k] - want[k]).abs() <= 1), "PS1 row {row}: {got:?}, the PS1 {want:?}");
+    }
+}

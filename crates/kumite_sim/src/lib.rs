@@ -930,6 +930,23 @@ impl Fighter {
         (a, off, if off < FRAC_PI_2 { a } else { a + PI })
     }
 
+    /// Ball: a hit on the ball puts actor slot 2 on the hitter's root and makes it the hitter's target that step
+    /// (0x80045C18: +0xD1, +0x23 = 2), so the step's target facing (+0x34) comes out of ratan2(0, 0) = 0x2000, or its
+    /// opposite while the body is more than 90° off it; a move committed in that step takes its root basis from it
+    /// (Doctor B.'s motion_145 on transition 0x18 ran 45° off the line, read in PCSX-Redux).
+    pub(crate) fn ball_hit_target(&mut self) {
+        let Some(t) = self.started_with else { return };
+        // (the game's angle 0x2000 in OpenKumite's z, which is flipped)
+        let a = PI - 0x2000 as f32 * ANGLE;
+        let target = if wrap_pi(self.yaw - a).abs() < FRAC_PI_2 { a } else { a + PI };
+        let near = self.geometry().1 < 0x4FA4 as f32 * ANGLE;
+        match t & 0x3F {
+            9 | 0xB | 0xF | 0x18 | 0x1E | 0x23 | 0x24 | 0x26 => self.root_yaw = target,
+            0xC..=0xE if !near => self.root_yaw = target,
+            _ => {}
+        }
+    }
+
     /// Commit a cancel or END link with its transition type (0x8002F3AC, handlers 0x80019D40): where the new move
     /// starts (frame 1, the next frame, or backwards), the root kept in place, and its facing: the yaws at the
     /// commit, an auto-turn and the per-frame tracking mode (facing_re §2.2). `end`: an END link.
@@ -2178,8 +2195,8 @@ impl Fighter {
         let (m, frame, last) = (self.current_move(gd), self.frame as i32, self.ease_last);
         let (fl, frames, active, next) = (if tag { m.flags24.tag } else { m.flags24.raw >> 8 }, m.frames as i32, m.active.map(|a| a as i32), m.next.alias);
         let last_move = last.and_then(|c| self.moves(gd, c.bank).moves.get(c.index));
-        // +0x134: a new motion started (0x36A9A0)
-        let new_motion = self.started_with.is_some_and(|t| !tag || matches!(t & 0x3F, 1 | 3) || last_move.is_some_and(|l| l.anim != m.anim));
+        // +0x134: a new motion started (0x36A9A0; Tekken 3's +0xDA, 0x8002F900)
+        let new_motion = self.started_with.is_some_and(|t| matches!(t & 0x3F, 1 | 3) || last_move.is_some_and(|l| l.anim != m.anim));
         let last_fl = last_move.map_or(0, |l| l.flags24.tag);
         self.ease_last = Some(self.current);
         // (+0x131: down for the round)
@@ -2208,7 +2225,7 @@ impl Fighter {
         // +0xF8 is 3, which is not followed
         let left = (frames - frame).max(0);
         let n = match active[0] {
-            _ if cut || last.is_none_or(|l| l == self.current) || left == 0 => 0,
+            _ if cut || last.is_none_or(|l| l == self.current) || left == 0 || (!tag && !new_motion) => 0,
             // (Tekken 3's, 0x8003C8F0: to its first active frame, and 4 / 16 past it too; the same move again when
             // +0x8B is 3, likewise not followed)
             a if !tag && a != 0 && frame < a => (a - frame).min(16),

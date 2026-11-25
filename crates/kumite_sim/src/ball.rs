@@ -572,6 +572,7 @@ impl Fight {
         if let Some(fh) = self.actor_mut(h) {
             fh.connected = true;
             fh.landed = Some(true);
+            fh.ball_hit_target();
         }
         b.cooldown = 5;
         // (aimed at the receiver's root two steps back: Dr. B's hit flew at Gon's place then, read in PCSX-Redux)
