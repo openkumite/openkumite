@@ -282,7 +282,7 @@ impl TagGame {
 
     pub fn snapshot(&self, i: usize) -> Snapshot {
         let f = &self.melee.actors[i];
-        let partner = f.current.bank == kumite_sim::data::Bank::Partner;
+        let partner = f.shown_move().0.bank == kumite_sim::data::Bank::Partner;
         let (anim, frame) = f.animation(&self.melee.fight.data);
         let owner = if partner { &self.bodies[self.melee.facing(i)] } else { &self.bodies[i] };
         Snapshot { clip: owner.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw, ease: f.eased() }
