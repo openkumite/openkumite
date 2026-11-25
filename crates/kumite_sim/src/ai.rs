@@ -914,7 +914,7 @@ fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
     let standing = |i: usize| f.actor(i).filter(|a| !a.inactive && a.health > 0);
     let pos = |i: usize| f.actor(i).map_or(p, Fighter::root);
     // a chicken (+50) when 50 down: the lowest of the players hurt takes its nearest first
-    let hurt = |a: &Fighter| a.health <= (a.max_health - 50) * ONE;
+    let hurt = |a: &Fighter| a.health <= a.max_health - 50 * ONE;
     if hurt(me) {
         let mut players: Vec<usize> = (0..f.actor_count()).filter(|&i| Fight::is_player(i) && standing(i).is_some_and(hurt)).collect();
         players.sort_by_key(|&i| (standing(i).map_or(0, |a| a.health), i));
@@ -1614,7 +1614,7 @@ impl Ai {
             self.nostart = false;
         }
         self.now = std::mem::take(&mut self.now_n);
-        if cx.op.health <= cx.op.max_health * ONE / 10 {
+        if cx.op.health <= cx.op.max_health / 10 {
             // he is nearly out: no pokes, no counters
             (self.p.guard_aware_attack_prob, self.p.fast_poke_prob, self.p.counter_attack_prob, self.p.counter_attack_cap) = (0, 0, 0, 0);
         }
@@ -2617,7 +2617,7 @@ impl Ai {
         let mut n = n;
         if !to_pick {
             // desperation moves at 10 % HP
-            if n == 0 && self.hiszone > 2 && cx.me.ki == 0 && cx.me.health <= cx.me.max_health * ONE / 10 && cx.lcg() & 3 == 0 && cx.chance(self.p.counter_attack_prob) {
+            if n == 0 && self.hiszone > 2 && cx.me.ki == 0 && cx.me.health <= cx.me.max_health / 10 && cx.lcg() & 3 == 0 && cx.chance(self.p.counter_attack_prob) {
                 n = self.mark(|c| c.mv.f24 & 0x1_0000 != 0);
             }
             if n < 0 {
@@ -3587,7 +3587,7 @@ impl Ai {
             (self.tag_wanted, self.behind) = (false, false);
             return;
         };
-        let (mine, max) = (i64::from(cx.me.health), i64::from(cx.me.max_health) * i64::from(ONE));
+        let (mine, max) = (i64::from(cx.me.health), i64::from(cx.me.max_health));
         let (his, his_max) = (i64::from(his), i64::from(his_max));
         self.behind = mine < his;
         self.tag_wanted =

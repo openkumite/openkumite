@@ -389,7 +389,7 @@ impl Run {
                     s.rank = records.survival_rank(s.total());
                     // the human winner's health carries over, more for a quicker win (0x80051898)
                     let index = (frames / 300).min(7) as usize;
-                    self.start_health[0] = (health[0] > 0).then(|| ModeData::carry(&data.carry_survival, index, health[0], max[0] * kumite_sim::ONE));
+                    self.start_health[0] = (health[0] > 0).then(|| ModeData::carry(&data.carry_survival, index, health[0], max[0]));
                     return Next::Fight;
                 }
                 let id = roster.characters[s.player.0].id;
@@ -407,8 +407,8 @@ impl Run {
                 self.start_health = [None; 2];
                 if let Some(w) = winner {
                     // the winner keeps its health plus the team bonus: the less left, the more back (0x80051850)
-                    let index = ((health[w].max(0) as i64 * 8 / (max[w].max(1) as i64 * kumite_sim::ONE as i64)) as usize).min(7);
-                    self.start_health[w] = (health[w] > 0).then(|| ModeData::carry(&data.carry_team, index, health[w], max[w] * kumite_sim::ONE));
+                    let index = ((health[w].max(0) as i64 * 8 / max[w].max(kumite_sim::ONE) as i64) as usize).min(7);
+                    self.start_health[w] = (health[w] > 0).then(|| ModeData::carry(&data.carry_team, index, health[w], max[w]));
                 }
                 for &l in &losers {
                     t.teams[l].current += 1;

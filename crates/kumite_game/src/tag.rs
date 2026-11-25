@@ -162,8 +162,8 @@ impl TagGame {
             f.character = self.characters[i];
             f.guard_input = self.cpu[i].is_none();
             // (Tekken Tag's health by body)
-            f.max_health = data.max_health_of(f.character);
-            f.health = f.max_health * kumite_sim::ONE;
+            f.max_health = data.max_health_of(f.character, 100);
+            f.health = f.max_health;
         }
         // (Tekken Tag: the round's first moves turn to their foes, as a fight's two do)
         if self.melee.tag_pairs {
@@ -428,7 +428,7 @@ impl TagGame {
                     MeleeState::TimeUp { winner } => winner,
                 };
                 let time_up = matches!(self.melee.state, MeleeState::TimeUp { .. });
-                let full = |t: usize| self.members(t).all(|i| self.melee.actors[i].health >= self.melee.actors[i].max_health * kumite_sim::ONE);
+                let full = |t: usize| self.members(t).all(|i| self.melee.actors[i].health >= self.melee.actors[i].max_health);
                 self.events.push(match winner {
                     _ if time_up => Announcement::TimeUp,
                     Some(w) if full(w) => Announcement::Perfect,

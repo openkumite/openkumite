@@ -1477,7 +1477,7 @@ fn two_throws_on_the_same_frame_go_to_the_frame_parity() {
     // both Pauls press 1+3 together, close: one throws the other; one frame later the other one wins
     let winner = |wait: usize| {
         let (g, _) = duel(&a, [MODEL_71, MODEL_71], &format!("f*30,n*{wait},1+3,n*200"), &format!("n*30,n*{wait},1+3,n*200"), true, |_, _| {});
-        let thrown: Vec<bool> = g.fight.fighters.iter().map(|f| f.health < f.max_health * ONE).collect();
+        let thrown: Vec<bool> = g.fight.fighters.iter().map(|f| f.health < f.max_health).collect();
         thrown
     };
     let (w1, w2) = (winner(14), winner(15));

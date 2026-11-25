@@ -194,7 +194,7 @@ impl TagRules {
 pub struct TagMember {
     pub moveset: Arc<Moveset>,
     pub character: Option<i64>,
-    /// Full health (whole points), health and the recoverable cap (16.16; +0xC, +0x10), anger (+0x28).
+    /// Full health, health and the recoverable cap (16.16; +0x14, +0xC, +0x10), anger (+0x28).
     pub max_health: i32,
     pub health: i32,
     pub cap: i32,
@@ -203,7 +203,7 @@ pub struct TagMember {
 
 impl TagMember {
     pub fn new(moveset: Arc<Moveset>, character: Option<i64>, max_health: i32, rules: &TagRules) -> Self {
-        Self { moveset, character, max_health, health: max_health * ONE, cap: max_health * ONE, anger: rules.anger_start }
+        Self { moveset, character, max_health, health: max_health, cap: max_health, anger: rules.anger_start }
     }
 }
 
@@ -223,7 +223,7 @@ impl TagTeam {
     /// one's now.
     pub fn score(&self, health: i32) -> i64 {
         let h = |k: usize| if k == self.active { health } else { self.members[k].health };
-        (0..2).map(|k| i64::from(h(k).max(0)) * 4096 / (i64::from(self.members[k].max_health.max(1)) * i64::from(ONE))).sum::<i64>() / 2
+        (0..2).map(|k| i64::from(h(k).max(0)) * 4096 / i64::from(self.members[k].max_health.max(1))).sum::<i64>() / 2
     }
 }
 
@@ -364,10 +364,11 @@ impl GameData {
         })
     }
 
-    /// A body's full health (a character id; the percent table's, else `max_health`).
-    pub fn max_health_of(&self, body: Option<i64>) -> i32 {
+    /// A body's full health (16.16; a character id, a handicap in percent): `max_health` with the handicap in whole
+    /// points, then the body's percent in the game's 20.12 (0x3C1350: Lei's 108 % of 140 is 151.2).
+    pub fn max_health_of(&self, body: Option<i64>, handicap: i32) -> i32 {
         let pct = body.and_then(|b| self.health_percent.get(usize::try_from(b).ok()?)).copied().unwrap_or(100);
-        self.max_health * pct / 100
+        (((self.max_health * handicap / 100) << 12) * pct / 100) << 4
     }
 }
 
@@ -552,7 +553,7 @@ pub struct Fighter {
     /// nearer, it is kept).
     basis: Option<f32>,
     pub health: i32,
-    /// Full health in whole points (the VS handicap scales it: 70..140 %).
+    /// Full health (16.16; the VS handicap scales it: 70..140 %).
     pub max_health: i32,
     /// Character id (cancel `req` gates 0x46..; set by the game layer).
     pub character: Option<i64>,
@@ -701,6 +702,7 @@ pub struct Angles {
 }
 
 impl Fighter {
+    /// A fighter at full health, `max_health` (16.16).
     pub fn new(moveset: Arc<Moveset>, max_health: i32, position: Vec3, yaw: f32, side: i32) -> Self {
         let neutral = moveset.fixed.neutral;
         let mut f = Self {
@@ -723,7 +725,7 @@ impl Fighter {
             shown_root: Vec3::ZERO,
             seen: None,
             basis: None,
-            health: max_health * ONE,
+            health: max_health,
             max_health,
             character: None,
             queued: None,
@@ -2785,7 +2787,7 @@ fn sight_of(o: &Fighter, gd: &GameData) -> Opponent {
 
 impl Fight {
     pub fn new(data: Arc<GameData>, p1: Arc<Moveset>, p2: Arc<Moveset>) -> Self {
-        let h = data.max_health;
+        let h = data.max_health * ONE;
         let fighters = [
             // the start marks (0x8002BDB4): ∓1000 units
             Fighter::new(p1, h, Vec3::new(-1000.0, 0.0, 0.0), std::f32::consts::FRAC_PI_2, -100),
@@ -2883,8 +2885,9 @@ impl Fight {
             let (a, b) = (t.active, 1 - t.active);
             t.members[a].health = f.health;
             let p = &mut t.members[b];
+            // (max / 6000 in the game's 20.12)
             if fighting && p.health < p.cap {
-                p.health = (p.health + p.max_health * ONE / r.regen_divisor).min(p.cap);
+                p.health = (p.health + (((p.max_health >> 4) / r.regen_divisor) << 4)).min(p.cap);
             }
             // angry while at the level, losing 1 a frame; the partner's anger at the level resets this one's
             let partner_angry = p.anger >= r.angry;
@@ -3440,7 +3443,7 @@ impl Fight {
         if !self.ball_court() {
             for f in &mut self.fighters {
                 if f.self_damage != 0 {
-                    f.health = (f.health - f.self_damage * ONE).clamp(0, f.max_health * ONE);
+                    f.health = (f.health - f.self_damage * ONE).clamp(0, f.max_health);
                 }
             }
         }
@@ -3455,7 +3458,7 @@ impl Fight {
             let ball = self.ball_court();
             let v = &mut self.fighters[1 - i];
             if !ball {
-                v.health = (v.health - damage * ONE).clamp(0, v.max_health * ONE);
+                v.health = (v.health - damage * ONE).clamp(0, v.max_health);
             }
             v.hit_flash = 8;
             log::info!("P{} takes {damage} from P{} {anim} (throw) -> health {}", 2 - i, i + 1, v.health / ONE);
@@ -3906,7 +3909,7 @@ impl Fight {
             // Ball: the hit plays but takes no health (0x800446C0 gives it back); health stays within 0..max
             if !self.ball_court() {
                 let fv = &mut self.fighters[v];
-                fv.health = (fv.health - damage * ONE).clamp(0, fv.max_health * ONE);
+                fv.health = (fv.health - damage * ONE).clamp(0, fv.max_health);
             }
             if let Some(t) = self.teams.as_deref_mut().map(|t| &mut t[v]) {
                 // the recoverable cap loses 6 / 10 of the damage, a first air hit's 14 / 10 down to the health; a clean

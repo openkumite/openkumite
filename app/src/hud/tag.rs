@@ -63,7 +63,7 @@ impl TagHud {
             }
         }
         for (i, f) in g.melee.actors.iter().enumerate() {
-            let max = (f.max_health * kumite_sim::ONE) as i64;
+            let max = f.max_health as i64;
             let unit = (max / bar_w.max(1) as i64).max(1);
             let target = ((f.health.max(0) as i64 + unit - 1) / unit).min(bar_w as i64) as i32;
             (self.shown[i], self.trail[i]) = bar_step(self.shown[i], self.trail[i], target);
