@@ -1203,11 +1203,12 @@ impl Game {
                 root: s.root,
                 marks: [mark(0x0C), mark(0x0D)],
                 release: mv.posture.raw & 0x40_0000 != 0,
-                follow: i64::from(mv.flags24.raw >> 20 & 3),
+                follow: i64::from(mv.flags24.tag >> 20 & 3),
                 ko: f.health <= 0,
                 character: self.characters[i].unwrap_or(-1),
                 alias: f.alias as i64,
                 shot: self.fight.hits.iter().filter(|h| h.victim == i && !h.blocked).map(|h| if h.counter { 2 } else { usize::from(h.clean) }).max().unwrap_or(0),
+                points: f.screen_points.map(i64::from),
             }
         })
     }
@@ -1824,18 +1825,17 @@ fn project_side(f: &mut kumite_sim::Fighter, body: &Body, pose: &[Mat4], place: 
     if depth > 1e-3 {
         f.side = (d.dot(right) / depth * 10000.0).round() as i32;
     }
-    // off the screen (Tekken Tag's condition 0x5C, 0x369B98): the head's and both feet's x on its 512 pixels
-    // (0x34FD90: 256 + x * H / z, z at least 1000) all at 0x215 or more, or all below -0x14
-    let sx: Vec<f32> = [2, 14, 17]
+    // its head's and both feet's x on the 512 pixels (0x34FD90), for the off-screen test (0x5C) and the camera
+    let sx: Vec<i32> = [2, 14, 17]
         .iter()
         .filter_map(|&k| body.bones.get(k).and_then(|&n| pose.get(n)))
         .map(|m| {
             let d = (place.transform_point3(m.w_axis.truncate()) - eye) * UNITS;
-            256.0 + d.dot(right) * (v.h as f32 * 512.0 / 368.0) / d.dot(forward).max(1000.0)
+            (256.0 + d.dot(right) * (v.h as f32 * 512.0 / 368.0) / d.dot(forward).max(1000.0)) as i32
         })
         .collect();
-    if sx.len() == 3 {
-        f.off_screen = sx.iter().all(|&x| x >= 533.0) || sx.iter().all(|&x| x < -20.0);
+    if let Ok(p) = sx.try_into() {
+        f.screen_points = p;
     }
 }
 
