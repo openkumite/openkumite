@@ -34,18 +34,26 @@ fn trace_of(a: &Assets, models: [usize; 2], server: usize, p1: &str, p2: &str, f
 /// The fighters' roots as the PS1 keeps them (P+0xF68: x, height down, z negated).
 type Roots = [[i32; 3]; 2];
 
-/// A Ball match of `models`, the ball and the roots each frame.
-fn roots_of(a: &Assets, models: [usize; 2], server: usize, p1: &str, p2: &str, frames: usize) -> Vec<(Frame, Roots)> {
+/// A Ball match of `models`, `server` serving, the pads' scripts from the round's first frame: `each` sees the bout
+/// after each of `frames` steps.
+fn ball_match(a: &Assets, models: [usize; 2], server: usize, p1: &str, p2: &str, frames: usize, mut each: impl FnMut(usize, &Bout)) {
     let mut g = Game::load(a, models).unwrap();
     let data = std::sync::Arc::new(kumite_sim::data::load(&a.root.join("gamedata/ball.json")).unwrap());
     g.ball = Some(kumite_game::BallSetup { data, kind: 0, server, rounds: 0 });
     g.round_frames = u32::MAX / 2;
     let mut b = Bout::new(g, kumite_game::ai_data(a).unwrap(), 2, false);
     let (s1, s2) = (parse_script(p1).unwrap(), parse_script(p2).unwrap());
-    let mut out = Vec::new();
     for k in 0..frames {
         let pad = |s: &[Pad]| s.get(k).copied().unwrap_or_default();
         b.step([pad(&s1), pad(&s2)]);
+        each(k, &b);
+    }
+}
+
+/// A Ball match of `models`, the ball and the roots each frame.
+fn roots_of(a: &Assets, models: [usize; 2], server: usize, p1: &str, p2: &str, frames: usize) -> Vec<(Frame, Roots)> {
+    let mut out = Vec::new();
+    ball_match(a, models, server, p1, p2, frames, |k, b| {
         let ball = b.game.fight.ball.as_ref().unwrap();
         if std::env::var_os("BALL_TRACE").is_some() {
             let r = |i: usize| b.game.fight.fighters[i].root();
@@ -84,7 +92,7 @@ fn roots_of(a: &Assets, models: [usize; 2], server: usize, p1: &str, p2: &str, f
         }
         let root = |f: &kumite_sim::Fighter| [f.root().x, -f.root().y - f.anim_root_y, -f.root().z].map(|v| v.round() as i32);
         out.push(((ball.state, ball.pos, ball.vel, ball.g), b.game.fight.fighters.each_ref().map(root)));
-    }
+    });
     out
 }
 
@@ -222,8 +230,7 @@ fn a_partner_losing_a_point_is_juggled() {
 
 /// Doctor B.'s hit on the ball makes the ball's actor slot, put on his own root, his target that step: the target
 /// facing comes out of ratan2(0, 0), so motion_145 (committed on transition 0x18) runs its root 45° off the line to Gon,
-/// as on the PS1 (it ran along the line). PS1 rows are our steps `row - 2`; the roots within 1 unit (Tekken 3's scaled
-/// roots are floats here).
+/// as on the PS1 (it ran along the line). PS1 rows are our steps `row - 2`.
 #[test]
 fn doctor_bs_motion_145_runs_as_on_the_ps1() {
     let Some(a) = assets() else { return };
@@ -231,7 +238,66 @@ fn doctor_bs_motion_145_runs_as_on_the_ps1() {
     let p2 = "n*234,b*25,n+1*2,n*25,n+4*2,n*30,b*10,n+2*2,n*30,u/b*3,n*100";
     let t = roots_of(&a, [247, 239], 0, p1, p2, 300);
     for (row, want) in [(290, [-4153, -377, 48]), (296, [-4040, -641, 161]), (300, [-3943, -791, 256])] {
-        let got = t[row - 2].1[0];
-        assert!((0..3).all(|k| (got[k] - want[k]).abs() <= 1), "PS1 row {row}: {got:?}, the PS1 {want:?}");
+        assert_eq!(t[row - 2].1[0], want, "PS1 row {row}");
+    }
+}
+
+/// The round start of King (106 %) and Kuma (90 %) against Paul (P1 serving; PS1 rows are our steps `row - 1`): their
+/// roots scaled by the model's size in the game's integers (raw · ⌊size · 4096 / 100⌋ >> 12, 0x80038970) and turned
+/// on its sine table, each sum cut toward zero (0x8003AAF4), as on the PS1 (they were a unit off as floats).
+#[test]
+fn king_and_kumas_roots_are_the_ps1s_integers() {
+    let Some(a) = assets() else { return };
+    let king = roots_of(&a, [127, 95], 0, "n*20", "n*20", 20);
+    for (row, want) in [(1, [5111, -1137, -2]), (6, [5060, -1101, -29]), (10, [5024, -1031, -48]), (16, [4990, -956, -52])] {
+        assert_eq!(king[row - 1].1[1], want, "King, PS1 row {row}");
+    }
+    let kuma = roots_of(&a, [127, 159], 0, "n*10", "n*10", 10);
+    for (row, want) in [(1, [5120, -899, 0]), (3, [5120, -897, 0]), (8, [5120, -890, 0])] {
+        assert_eq!(kuma[row - 1].1[1], want, "Kuma, PS1 row {row}");
+    }
+}
+
+/// Doctor B.'s side roll (common_037, tracking mode 9) at the court's corner: the roll's basis turns toward where the
+/// opponent's root was at the commit (+0xAC, 0x8002F600) and the origin is rebased as it turns (+0xBE, 0x80040070), at
+/// the next step's root update (0x8003A9C8), so the court holds the root at z 256 as on the PS1 (it swung back to 0).
+/// PS1 rows are our steps `row - 1`.
+#[test]
+fn doctor_bs_side_roll_holds_the_court_edge_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = roots_of(&a, [127, 247], 0, "n*600", "n*285,u/b*3,n*60,u/b*19,n*70,u/f*19,n*69,u*20,n*67", 600);
+    for (row, want) in [(526, [5120, -136, 2]), (530, [5120, -229, 89]), (533, [5120, -254, 184]), (536, [5119, -256, 256]), (537, [5119, -258, 256])] {
+        assert_eq!(t[row - 1].1[1], want, "PS1 row {row}");
+    }
+    // shortcut: the basis's turn is in floats (0x8003FFB0 turns it in integers on the arctan table): x runs up to 5
+    // units off the PS1's from row 534; port it to make the rows exact
+    for row in 535..=575 {
+        assert_eq!(t[row - 1].1[1][2], 256, "PS1 row {row}");
+    }
+}
+
+/// Tekken 3's pose ease turns the joints too (0x8003C270's deltas at P+0x15F0, added at the weight at 0x8003B0A0): Jin's
+/// (P2, against Paul) is on at the PS1's steps, and his chest and forearm are drawn as the PS1's (P+0x1390 + 32 j; ours
+/// in the PS1's axes, within the converted pose's precision: the clip's own were 565 and 1800 off). PS1 rows are our
+/// steps `row - 1`.
+#[test]
+fn jins_joints_ease_between_moves_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let mut eased = Vec::new();
+    ball_match(&a, [127, JIN], 0, "n*300", "n*191,u/b*3,n*60,u/b*20,n*70", 300, |_, b| eased.push(b.game.fight.fighters[1].eased().map(|e| e.0)));
+    let on = [112..=128, 192..=198, 221..=240, 255..=258, 289..=300];
+    for row in 100..=300 {
+        assert_eq!(eased[row - 1].is_some(), on.iter().any(|r| r.contains(&row)), "PS1 row {row}");
+    }
+    let ps1 = [
+        (195, 1, [-80, -1872, 3647, -3213, 2291, 1106, -2542, -2837, -1514], 16),
+        (195, 5, [-1792, 3691, 0, -3685, -1796, 0, 0, 0, 4106], 40),
+        (229, 1, [-180, -2157, 3488, -2918, 2515, 1409, -2878, -2416, -1648], 16),
+    ];
+    // (OpenKumite's y and z are the PS1's negated)
+    let sign = |k: usize| if (k / 3 == 0) == k.is_multiple_of(3) { 1 } else { -1 };
+    for (row, slot, want, within) in ps1 {
+        let got = eased[row - 1].unwrap()[slot];
+        assert!((0..9).all(|k| (i32::from(got[k]) * sign(k) - want[k]).abs() <= within), "PS1 row {row}, slot {slot}: {got:?}, the PS1 {want:?}");
     }
 }

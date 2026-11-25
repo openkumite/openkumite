@@ -3953,7 +3953,7 @@ dependencies = [
 [[package]]
 name = "ok_tekken3_converter"
 version = "0.3.0"
-source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#1e993983fa2814f366c4ccf1b478874694f6bac4"
+source = "git+https://github.com/openkumite/ok_tekken3_converter?branch=main#029d0b2401bdd4015f3429bf124659b6ee0247d9"
 dependencies = [
  "anyhow",
  "chrono",

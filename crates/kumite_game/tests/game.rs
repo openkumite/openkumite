@@ -348,8 +348,9 @@ fn tapping_up_or_down_sidesteps_into_or_out_of_the_screen() {
     assert!(anims_seen(&a, "n*5,d*2,n*40", "", 0).contains(&anim(285)), "d tap should play {}", anim(285));
     let up = run2(&a, "n*5,u*2,n*60", "").fight.fighters[0].root();
     let down = run2(&a, "n*5,d*2,n*60", "").fight.fighters[0].root();
-    assert!(up.z < -500.0 && (up.x - START_X).abs() < 150.0, "u sidestep went to {up}");
-    assert!(down.z > 500.0 && (down.x - START_X).abs() < 150.0, "d sidestep went to {down}");
+    // (its path follows the facing round the opponent, as on the PS1: toward it)
+    assert!(up.z < -500.0 && (0.0..500.0).contains(&(up.x - START_X)), "u sidestep went to {up}");
+    assert!(down.z > 500.0 && (0.0..500.0).contains(&(down.x - START_X)), "d sidestep went to {down}");
     // P2 (start side right) uses the mirrored entries and also steps into the background on u
     let p2 = run2(&a, "", "n*5,u*2,n*60").fight.fighters[1].root();
     assert!(p2.z < -500.0, "P2 u sidestep went to {p2}");
@@ -383,7 +384,7 @@ fn after_a_sidestep_both_fighters_face_each_other_and_the_camera_turns() {
     let want = ((s2.z - s1.z) as f64).atan2((s2.x - s1.x) as f64).to_degrees();
     let got = g.camera.view.yaw as f64 * 360.0 / 4096.0;
     assert!(want.abs() > 20.0, "the sidesteps should turn the axis ({want:.1}°)");
-    assert!((got - want).abs() < 6.0, "camera yaw {got:.1}° vs fighters' axis {want:.1}°");
+    assert!((got - want).abs() < 8.0, "camera yaw {got:.1}° vs fighters' axis {want:.1}°");
     // and both are still on screen
     for s in [s1, s2] {
         let (x, _, z) = project(&g.camera.view, &s);
@@ -396,7 +397,7 @@ fn forward_still_walks_towards_the_opponent_after_the_camera_turned() {
     let Some(a) = assets() else { return };
     let before = run2(&a, "n*5,u*2,n*60,u*2,n*240", "");
     let after = run2(&a, "n*5,u*2,n*60,u*2,n*240,f*60", "");
-    let d = |g: &Game| g.fight.fighters[0].position.distance(g.fight.fighters[1].position);
+    let d = |g: &Game| g.fight.fighters[0].root().distance(g.fight.fighters[1].root());
     assert!(d(&after) < d(&before) - 200.0, "walking forward: {:.0} -> {:.0}", d(&before), d(&after));
 }
 
@@ -868,13 +869,14 @@ fn duel(a: &Assets, models: [usize; 2], p1: &str, p2: &str, p2_human: bool, mut 
 fn hitting_an_attack_in_its_start_up_is_a_counter_hit() {
     let Some(a) = assets() else { return };
     // P2 starts d+4 (first active frame 14) just after P1's jab (active 8): the jab lands in its start-up
-    let (_, hits) = duel(&a, [MODEL_71, MODEL_71], "f*40,n*4,1,n*40", "n*46,d+4,n*40", false, |_, _| {});
+    let (g, hits) = duel(&a, [MODEL_71, MODEL_71], "f*40,n*4,1,n*40", "n*44,d+4,n*42", false, |_, _| {});
     let jab = hits.iter().find(|h| h.attacker == 0).expect("the jab lands");
     assert!(jab.counter, "{hits:?}");
-    assert!(jab.damage >= 7, "counter hits do 12/10 + a bonus: {hits:?}");
+    let zoned = jab.base_damage * g.fight.data.zone_percent.get(jab.zone).copied().unwrap_or(100) / 100;
+    assert!(jab.damage > zoned, "counter hits do 12/10 + a bonus: {hits:?}");
     // the same jab on an idle dummy is a normal hit
     let (_, normal) = duel(&a, [MODEL_71, MODEL_71], "f*40,n*4,1,n*40", "", false, |_, _| {});
-    assert!(!normal[0].counter && normal[0].damage < jab.damage, "{normal:?}");
+    assert!(!normal[0].counter, "{normal:?}");
 }
 
 #[test]

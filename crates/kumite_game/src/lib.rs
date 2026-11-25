@@ -55,6 +55,8 @@ pub struct Body {
     pub hidden: Vec<usize>,
     /// Tekken Tag: the nodes of the 18 bone slots its strikes run between ([`BONE_SLOTS`]); empty for Tekken 3.
     pub bones: Vec<usize>,
+    /// The nodes of the 18 joint slots the pose ease turns ([`BONE_SLOTS`], both games); empty when one is missing.
+    pub slots: Vec<usize>,
     /// Tekken Tag: its strike slots past those ([`strike_slots`]).
     pub extra: Vec<(usize, usize, Vec3)>,
     /// Tekken Tag: each of those 18 slots' parent slot and its place in the parent's axes (metres), the game's
@@ -137,17 +139,17 @@ impl Animations for FighterAnims<'_> {
         let src = if partner { self.other } else { self.own };
         let (nodes, clip) = (&self.own.character.nodes, src.character.clips.get(src.character.clip(anim)?)?);
         if let Some(t) = angle_turns(clip, frame as usize) {
-            return (self.own.bones.len() >= 18).then_some(t);
+            return (self.own.slots.len() >= 18).then_some(t);
         }
         let mut turns = [[0; 9]; 18];
-        for (t, &n) in turns.iter_mut().zip(&self.own.bones) {
+        for (t, &n) in turns.iter_mut().zip(&self.own.slots) {
             let node = nodes.get(n)?;
             let j = if partner { src.character.nodes.iter().position(|o| o.name == node.name) } else { Some(n) };
             let r = j.and_then(|j| clip.rotations.get(j)?.as_ref()).and_then(|v| v.get((frame as usize).min(v.len().saturating_sub(1)))).copied().unwrap_or(node.rotation);
             let c = Mat3::from_quat(r).to_cols_array_2d();
             *t = std::array::from_fn(|k| fixed(c[k % 3][k / 3]) as i16);
         }
-        (self.own.bones.len() >= 18).then_some(turns)
+        (self.own.slots.len() >= 18).then_some(turns)
     }
 
     fn volumes(&self, f: &kumite_sim::Fighter, gd: &kumite_sim::GameData) -> Option<BodyVolumes> {
@@ -174,7 +176,7 @@ pub struct Snapshot {
     pub partner: bool,
     pub root: Vec3,
     pub yaw: f32,
-    /// Tekken Tag's pose ease: the joint slots' turns and the root's lift (game units) eased.
+    /// The pose ease: the joint slots' turns and the root's lift (game units) eased.
     pub ease: Option<(Turns, f32)>,
 }
 
@@ -497,6 +499,7 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
     let torso = character.nodes.iter().position(|n| n.name == "chest").context("no chest joint")?;
     let pelvis = character.nodes.iter().position(|n| n.name == "pelvis").unwrap_or(root);
     let bones = if tag { BONE_SLOTS.iter().map(|&j| character.nodes.iter().position(|n| n.name == j).with_context(|| format!("no joint {j}"))).collect::<Result<_>>()? } else { Vec::new() };
+    let slots = if tag { bones.clone() } else { BONE_SLOTS.iter().map(|&j| character.nodes.iter().position(|n| n.name == j)).collect::<Option<_>>().unwrap_or_default() };
     let extra = if tag { strike_slots(id, entry.moveset_id) } else { Vec::new() };
     let joints = if tag { joint_places(&rules["joints"], record, id) } else { Vec::new() };
     let motion_scale = entry.motion_scale.unwrap_or(4096);
@@ -512,6 +515,7 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
         pelvis,
         hidden,
         bones,
+        slots,
         extra,
         joints,
         hands,
@@ -636,6 +640,7 @@ fn copy_body(own: &Body, donor: &Character, id: i64) -> Body {
         pelvis: own.pelvis,
         hidden,
         bones: own.bones.clone(),
+        slots: own.slots.clone(),
         extra: if own.bones.is_empty() { Vec::new() } else { strike_slots(COPIER as u64, id) },
         joints: own.joints.clone(),
         hands: own.hands.clone(),
@@ -1891,7 +1896,7 @@ pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Ma
     }
     if let Some((turns, lift)) = shown.ease {
         // (the slots past the hips take the eased turns, rows of 4096; the body rises by the eased height)
-        for (t, &n) in turns.iter().zip(&body.bones).skip(1) {
+        for (t, &n) in turns.iter().zip(&body.slots).skip(1) {
             head::set_local(&body.character.nodes, &mut pose, n, turn_mat(t));
         }
         for m in &mut pose {
