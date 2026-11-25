@@ -2122,10 +2122,12 @@ impl App {
             }
             self.tapped.clear();
             // menu music (traced): none on the title, the main menu and OPTION (record 10 starts no BGM, and its
-            // load stops what played: the attract demo's BGM 0), the select screen BGM 1 (0x80110034)
+            // load stops what played: the attract demo's BGM 0), the select screen BGM 1 (0x80110034; Tekken Tag's
+            // select's, BGM 0: its BGM 1 is the EMBU's)
             if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
+                let select = self.roster.ttt.as_deref().map_or(Some(1), ttt::select_bgm);
                 let id = match screen {
-                    Screen::Select(_) | Screen::Grid(_) | Screen::Tag(_) => Some(1),
+                    Screen::Select(_) | Screen::Grid(_) | Screen::Tag(_) => select,
                     Screen::Results(r) => Some(r.music()),
                     Screen::ForceResults(_) => Some(6),
                     _ => None,
@@ -4466,6 +4468,12 @@ impl App {
             w.burst(at);
         }
         run.place();
+        // the game over with a player placed among TOP 5 BOWLERS: BGM 5, the name entry's (0x3F1754)
+        if !over && run.top.as_ref().is_some_and(|(_, placed)| placed.iter().any(Option::is_some)) {
+            if let (Some(a), Some(s)) = (self.audio.as_mut(), self.sound.as_ref()) {
+                a.music(s.music(5));
+            }
+        }
         // (a spectator the ball hit leaves the hall)
         if let Some(s) = self.scene.as_mut() {
             for q in run.scene.bowl.knocked.iter().filter_map(|&k| run.scene.bowl.people.get(k)) {
