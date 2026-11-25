@@ -404,7 +404,8 @@ fn forward_still_walks_towards_the_opponent_after_the_camera_turned() {
 #[test]
 fn a_jab_connects_on_a_turned_axis() {
     let Some(a) = assets() else { return };
-    let g = run2(&a, "n*5,u*2,n*60,u*2,n*240,f*120,n*18,1,n*42,1,n*42,1,n*30", "");
+    // (f*60: held longer, Paul's run shoves the dummy away, 0x80046D34)
+    let g = run2(&a, "n*5,u*2,n*60,u*2,n*240,f*60,n*18,1,n*42,1,n*42,1,n*30", "");
     let p = g.fight.fighters[1].position - g.fight.fighters[0].position;
     assert!(p.z.abs() > 500.0, "the axis should be turned: {p}");
     assert!(hp(&g, 1) < 130, "no jab connected (P2 health {})", hp(&g, 1));
