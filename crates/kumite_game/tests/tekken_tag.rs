@@ -372,6 +372,31 @@ fn the_struck_turn_in_the_hit_stop() {
     assert_eq!(x, 1739.0);
 }
 
+/// A throw's link (0x36B638): the thrower goes onto the victim's root as drawn last frame (+0x51C), faces the last
+/// facing pass's angle +0x3A by the quadrant, and turns over 16 frames to its old basis, which the victim takes; the
+/// victim's root takes the thrower's scale (0x363A80). Kunimitsu's 1+3 on Hwoarang after a long walk, frames 1 and 5
+/// of the throw, as in PCSX2.
+#[test]
+fn a_throw_links_as_the_game() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [654, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    let hold = Pad { buttons: 3, ..Pad::default() };
+    while b.phase != Phase::Fight {
+        b.step([hold; 2]);
+    }
+    let mut seen = Vec::new();
+    for pad in parse_script("n*61,f*60,n*2,1+3*2,n*30").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        if f[0].alias == 3812 && matches!(f[0].frame, 1 | 5) {
+            seen.push((f[0].root().x, -f[0].root().z, f[1].root().x));
+        }
+    }
+    assert_eq!(seen, [(492.0, 107.0, 1682.0), (657.0, 72.0, 1732.0)]);
+}
+
 /// Ogre's strike slot 0x13 is his slot 6 (0x34F2C0, body 14 only): his b+2 (alias 359, bones 0x13) reaches Lei from
 /// 1000 as in PCSX2.
 #[test]
@@ -1593,7 +1618,8 @@ fn cpus_tag_in_a_tag_battle() {
 #[test]
 fn strings_go_on_from_normal_level_4() {
     let Some(a) = assets() else { return };
-    let (l0, l4) = (cpu_run(&a, [Some((1, 0)), None], 8000), cpu_run(&a, [Some((1, 4)), None], 8000));
+    // (level 4 over a 4-round match: a short one can end before its first string)
+    let (l0, l4) = (cpu_run(&a, [Some((1, 0)), None], 8000), cpu_run_of(&a, [PAUL, LEI], [Some((1, 4)), None], 20000, 4));
     eprintln!("NORMAL L0 {:?}, L4 {:?}", l0.stats, l4.stats);
     assert_eq!(l0.stats[0], 0, "level 0: no follow-up");
     assert!(l4.stats[0] > 0, "level 4: follow-ups");

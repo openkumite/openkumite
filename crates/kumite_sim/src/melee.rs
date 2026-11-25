@@ -369,7 +369,7 @@ impl Melee {
             !both || self.actors[i].thrown || self.actors[j].thrown || (i < j) == even
         });
         for (i, j) in linking {
-            self.on_pair(i, j, |f| f.link(&gd, 0));
+            self.on_pair(i, j, |f| f.link(&gd, 0, None));
         }
         // facing, after every actor's logic, against where its opponent is now
         for (i, &frozen) in frozen.iter().enumerate() {

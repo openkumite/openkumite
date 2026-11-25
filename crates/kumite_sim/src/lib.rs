@@ -384,8 +384,8 @@ pub trait Animations {
     /// `partner`: the animation belongs to the opponent's character (a borrowed throw-victim move).
     fn root(&self, anim: &str, frame: u32, partner: bool) -> Option<Vec3>;
     /// Tekken Tag: the body's scale of its motions' root (player +0x4FC, 4096 = 1: its model's +0xC percent, 0x3AF7D0);
-    /// a borrowed move takes the opponent's (0x363A80).
-    fn root_scale(&self, _partner: bool) -> i32 {
+    /// `other`: the opponent's, which a thrown fighter (+0xE0 < 0) takes whatever it plays (0x363A80).
+    fn root_scale(&self, _other: bool) -> i32 {
         4096
     }
     /// Tekken Tag: `f`'s volumes in the pose of its frame now (its strikes and hurt spheres are posed before the
@@ -1101,7 +1101,7 @@ impl Fighter {
             let prev = (af as i32 - self.frame_step).max(0) as u32;
             let partner = self.current.bank == Bank::Partner;
             if let (Some(r), Some(rp)) = (anims.root(anim, af, partner), anims.root(anim, prev, partner)) {
-                let scale = self.tag_rules(gd).then(|| anims.root_scale(partner));
+                let scale = self.tag_rules(gd).then(|| anims.root_scale(self.thrown));
                 self.position = Vec3::new(root.x, self.position.y, root.z) - root_offset(rp, self.root_yaw, scale);
                 self.offset = root_offset(r, self.root_yaw, scale);
             }
@@ -2152,7 +2152,7 @@ impl Fighter {
         let (anim, f) = self.animation(gd);
         let partner = self.current.bank == Bank::Partner;
         if let Some(r) = anims.root(anim, f, partner) {
-            let scale = self.tag_rules(gd).then(|| anims.root_scale(partner));
+            let scale = self.tag_rules(gd).then(|| anims.root_scale(self.thrown));
             let prev = (f as i32 - self.frame_step).max(0) as u32;
             if let Some(rp) = anims.root(anim, prev, partner).filter(|_| std::mem::take(&mut self.rebase_root)) {
                 let root = self.shown_root;
@@ -2279,7 +2279,7 @@ impl Fighter {
     /// Tekken Tag: move `c`'s joint turns and scaled root height at `frame` (0x363BD8).
     fn pose_at(&self, gd: &GameData, anims: &dyn Animations, c: Current, frame: u32) -> Option<(Turns, i32)> {
         let (anim, partner) = (&self.moves(gd, c.bank).moves.get(c.index)?.anim, c.bank == Bank::Partner);
-        let y = anims.root(anim, frame, partner)?.y.round() as i32 * anims.root_scale(partner) / 4096;
+        let y = anims.root(anim, frame, partner)?.y.round() as i32 * anims.root_scale(self.thrown) / 4096;
         Some((anims.turns(anim, frame, partner)?, y))
     }
 
@@ -3195,8 +3195,9 @@ impl Fight {
         if linking.len() == 2 && !self.fighters.iter().any(|f| f.thrown) {
             linking = vec![(self.frame % 2) as usize];
         }
+        let linked = !linking.is_empty();
         for i in linking {
-            self.link(&gd, i);
+            self.link(&gd, i, Some(roots_before[1 - i]));
         }
         // facing, after both fighters' logic, against where the opponent is now
         let player = sight_of(&self.fighters[0], &gd);
@@ -3221,9 +3222,11 @@ impl Fight {
                 f.push_back();
             }
             if !frozen || f.tag_rules(&gd) {
+                let basis = f.root_yaw;
                 f.track(&gd, idle.is_none().then_some([roots_before[i], roots_before[1 - i]]));
-                // (Tekken Tag turns the basis before the root's update of the frame: the rebase shows at once)
-                if f.rebase_root {
+                // (Tekken Tag turns the basis before the root's update of the frame: the rebase and the basis's turn
+                // show at once, and a throw's pair shows its link frame's places)
+                if f.rebase_root || f.tag_rules(&gd) && (linked || f.root_yaw != basis) {
                     f.root_motion(&gd, anims[i]);
                 }
             }
@@ -3328,8 +3331,9 @@ impl Fight {
     /// thrower moves onto the victim's root and takes a facing set by the victim's orientation; the victim
     /// enters the alias the thrower's move names in the throw-victim table, at the same place and facing, so
     /// the two paired animations play from one origin. A thrown fighter that breaks free sends the thrower into
-    /// the matching break animation the same way.
-    fn link(&mut self, gd: &GameData, i: usize) {
+    /// the matching break animation the same way. `drawn`: the victim's root as drawn last frame, which Tekken Tag's
+    /// thrower goes onto (+0x51C).
+    fn link(&mut self, gd: &GameData, i: usize, drawn: Option<Vec3>) {
         let j = 1 - i;
         let mv = self.fighters[i].current_move(gd).clone();
         // the thrown fighter starting a link move is breaking free
@@ -3337,6 +3341,7 @@ impl Fight {
         // the next part of a chain throw (0x800306B8): a thrower already linked re-snaps onto the partner's root and
         // facing only when the part says so (flags24 0x80000); otherwise it keeps its place
         let relink = !breaking && self.link.is_some() && self.fighters[i].locked;
+        let (mut victim_yaw, mut tag_turn) = (None, None);
         if relink {
             if mv.flags24.raw & 0x80000 != 0 {
                 let (yaw, root) = (self.fighters[j].root_yaw, self.fighters[j].root());
@@ -3347,13 +3352,23 @@ impl Fight {
         } else if !breaking {
             let (fi, fj) = (&self.fighters[i], &self.fighters[j]);
             let quadrant = direction_quadrant(fj.yaw, fj.root(), fi.root());
-            let target = fj.root();
+            let target = drawn.filter(|_| fi.tag_rules(gd)).unwrap_or_else(|| fj.root());
             let to = target - fi.position;
-            let yaw = to.x.datan2(to.z) + [0.0, -FRAC_PI_2, PI, FRAC_PI_2][quadrant];
+            // Tekken Tag (0x36B638): the facing +0x3C is the last facing pass's angle +0x3A turned by the quadrant; the
+            // victim takes the thrower's basis from before, and over 16 frames the thrower turns to it, its basis with it
+            // (+0x15C / +0x15E, cut toward zero)
+            let game = |y: f32| ((PI - y) / ANGLE).round() as i32;
+            if fi.tag_rules(gd) {
+                let g = game(fi.seen.unwrap_or_else(|| fi.geometry().0)) + [0, 0x4000, -0x8000, -0x4000][quadrant];
+                victim_yaw = Some(fi.root_yaw);
+                tag_turn = Some((PI - g as f32 * ANGLE, -(((game(fi.root_yaw) - g) as i16 as i32) / 16) as f32 * ANGLE));
+            }
+            let yaw = tag_turn.map_or(to.x.datan2(to.z) + [0.0, -FRAC_PI_2, PI, FRAC_PI_2][quadrant], |t| t.0);
             let fi = &mut self.fighters[i];
             fi.position = Vec3::new(target.x, 0.0, target.z);
             fi.yaw = yaw;
             fi.root_yaw = yaw;
+            fi.turn = tag_turn.map(|t| (t.1, 16));
         } else {
             let (yaw, root) = (self.fighters[j].yaw, self.fighters[j].root());
             let fi = &mut self.fighters[i];
@@ -3362,7 +3377,7 @@ impl Fight {
             fi.position = Vec3::new(root.x, 0.0, root.z);
         }
         let victim_alias = mv.reaction.is_throw().then(|| gd.reactions.throw_victims.entries.get(mv.reaction.index).copied()).flatten();
-        let (yaw, position) = (self.fighters[i].yaw, self.fighters[i].position);
+        let (yaw, position) = (victim_yaw.unwrap_or(self.fighters[i].yaw), self.fighters[i].position);
         self.fighters[i].locked = true;
         self.fighters[i].thrown = false;
         // the linking move's victim alias is in its owner's table: the thrower's (or, for a break, the set the
@@ -3784,7 +3799,7 @@ impl Fight {
             } else {
                 fv.commit(gd, to, e.dest, t, false, anims[v]);
                 if t == TRANSITION_LINK {
-                    self.link(gd, v);
+                    self.link(gd, v, None);
                 }
             }
         }
