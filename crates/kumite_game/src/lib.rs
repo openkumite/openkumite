@@ -1214,6 +1214,7 @@ impl Game {
                 alias: f.alias as i64,
                 shot: self.fight.hits.iter().filter(|h| h.victim == i && !h.blocked).map(|h| if h.counter { 2 } else { usize::from(h.clean) }).max().unwrap_or(0),
                 points: f.screen_points.map(i64::from),
+                frame: i64::from(f.frame),
             }
         })
     }
@@ -2015,7 +2016,11 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
         let m = place * pose.get(n).copied().unwrap_or(Mat4::IDENTITY) * axes;
         Mat4::from_cols(m.x_axis, m.y_axis, m.z_axis, (m.w_axis.truncate() * UNITS).extend(1.0))
     };
-    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones, slots: [slot(body.chest), slot(body.pelvis)] }
+    // Tekken Tag's fire and mist start at the drawn node 13 on the head (player +0x1770 = +0xDB0 + 13 * 0xC0, 0x3A4EE8).
+    // shortcut: the game's mouth (nodes 7-13) opens as it breathes (PCSX2: node 13 up to 120 off ours); port its
+    // turns (0x351E98) when the fire must land to the unit
+    let head = if body.bones.is_empty() { None } else { body.character.nodes.iter().position(|n| n.name == "node_13") };
+    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones, slots: [slot(head.unwrap_or(body.chest)), slot(body.pelvis)] }
 }
 
 /// A turn's float entry as the game's 4096 = 1 (0x34ED90: times 4096, truncated; a float a hair off a whole number,
