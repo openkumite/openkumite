@@ -122,7 +122,7 @@ pub struct Move {
     pub next: Next,
     pub damage: i32,
     pub damage_type: u32,
-    /// Record +0x16: the drift along the facing over the jump window (0x8003F3A8), per frame / 2048 units.
+    /// Record +0x16: the drift along the facing over the jump window (0x8003F3A8), per frame / 256 units.
     #[serde(default)]
     pub air_drift: i32,
     /// First and last active frame (0, 0 = no attack).
