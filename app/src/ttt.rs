@@ -2653,10 +2653,20 @@ fn draw_menu(painter: &egui::Painter, v: &View, art: &Art, d: &Data, items: &[(u
     let colour_of = |mode: u32| m["items"].as_array().into_iter().flatten().find(|i| int(&i["mode"]) as u32 == mode).map(|i| int(&i["colour"]));
     for k in 0..rows {
         let Some((mode, label)) = items.get((cursor + n * rows + k - rows / 2) % n) else { continue };
-        // (the row's y is the text's foot; OpenKumite's entries take OPTIONS' colour)
+        // (the row's y is the text's foot; OpenKumite's entries take colours no entry of the game's has, near
+        // Tekken 3's: BALL pink, FORCE lavender, TAG BRAWL orange, ONLINE cyan, REPLAYS bronze, EXIT red)
         let y = num(&m["y"]) + num(&m["row_h"]) * k as f32 + scroll as f32 - TEXT_H;
         let new = *mode < 32 && entered >> mode & 1 == 0 && m["items"].as_array().into_iter().flatten().any(|i| int(&i["mode"]) as u32 == *mode && i["locked"] == true);
-        let colour = if new && frame / 4 % 2 == 1 { Some(9) } else { colour_of(*mode).or_else(|| colour_of(OPTIONS)) };
+        let own = match *mode {
+            BALL => Some(30),
+            FORCE => Some(26),
+            TAG_BRAWL => Some(7),
+            ONLINE => Some(27),
+            REPLAYS => Some(21),
+            u32::MAX => Some(12),
+            _ => colour_of(OPTIONS),
+        };
+        let colour = if new && frame / 4 % 2 == 1 { Some(9) } else { colour_of(*mode).or(own) };
         font_in(&clip, v, art, d, colour, label, W / 2.0, y, TEXT_SCALE, Color32::WHITE);
     }
     for (k, f) in m["fades"].as_array().into_iter().flatten().enumerate() {
