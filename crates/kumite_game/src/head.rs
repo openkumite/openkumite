@@ -133,8 +133,9 @@ impl HeadLook {
 /// the yaw stays on the side it went round. The eyes (nodes 21, 22) then look straight at it, sideways within ±35°,
 /// up and down within −7°..9°. On (fp) while the round is on or the K.O. time runs (gp-0x7268 1 or 2) and the move
 /// allows it (record +0x24 bit 22; an attack only from frame max(+0x2D, +0x18 − 17)); off, the angles follow a point
-/// 1 m ahead of the face at once and the motion's head is drawn. State per side (gp-0x6100..0x60D8, radians), reset
-/// with the fighter (0x351E10). Node indices are the PS2 model's (every fighter's first 98 nodes are the same).
+/// 1 m ahead of the face at once, and the neck and head are still written from them. State per side
+/// (gp-0x6100..0x60D8, radians), reset with the fighter (0x351E10). Node indices are the PS2 model's (every
+/// fighter's first 98 nodes are the same).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TagLook {
     /// Neck's and head's last (yaw, pitch) and the side the aim went behind on (0, 3 = past +160°, 4 = past −160°).
@@ -177,7 +178,10 @@ impl TagLook {
         let (yaw, pitch) = self.aim(1, on, k, eye_level(l5), target);
         let r6 = Mat3::from_rotation_z(yaw) * Mat3::from_rotation_y(pitch);
         if !on {
-            self.locals = None;
+            // (off, the neck and head are written all the same, aimed at once at where the face looks, 0x352238; the
+            // eyes keep the motion's)
+            let keep = |n: usize| Mat3::from_mat4(w[head].inverse() * w[n]);
+            self.locals = Some([r5, r6, keep(eye_a), keep(eye_b)]);
             return;
         }
         let w6 = p * l5 * Mat4::from_mat3_translation(r6, l6.w_axis.truncate());
