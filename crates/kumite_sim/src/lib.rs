@@ -1767,9 +1767,7 @@ impl Fighter {
             // own list is buffered and takes over at the window's first frame; inside the window that list is tried
             // with or without a press (0x8002DB74; Tekken Tag's 0x368F78)
             let early = self.early_end.is_some_and(|f| self.frame >= f);
-            // shortcut: Tekken 3's fighters under Tekken Tag (OpenKumite's crossover) keep the press; open it there too
-            // once a crossover case is checked (Doctor B.'s jabs on Paul stall in a loop with it)
-            let open = (self.tag_rules(gd) || !gd.tag_moves) && self.frame >= e.win_start;
+            let open = self.frame >= e.win_start;
             if (self.frame + 5 >= e.win_start || early) && self.frame <= e.win_end && (self.input.pressed != 0 || open) {
                 if let Some(dest) = self.resolve(e.dest) {
                     // the next list's back-turned conditions see the facing after this animation's net turn

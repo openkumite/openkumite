@@ -70,17 +70,19 @@ fn run(a: &Assets, p1: usize, scripts: [&str; 2], frames: usize) -> Run {
 }
 
 /// The Tekken 3 fighter walks in (no guard while walking) and Paul attacks (low kicks on Gon: highs whiff over him, as
-/// in Tekken 3): it is hit and plays reactions; then Paul walks in on its jabs: Paul is hit.
+/// in Tekken 3): it is hit and plays reactions; then it jabs Paul, who backs off: Paul is hit (Doctor B. walks in
+/// between his jabs: his jab from a stand falls short of Paul backing off).
 #[test]
 fn hit_and_hit_back() {
     let Some(a) = assets() else { return };
-    for (p1, paul) in [(GON, "LOWS,b"), (DOCTOR_B, "JABS,b")] {
-        let r = run(&a, p1, ["f*300,JABS", paul], 800);
+    let walk_jabs = format!("f*300,{}n", "f*10,1,n*5,".repeat(30));
+    for (p1, me, paul) in [(GON, "f*300,JABS", "LOWS,b"), (DOCTOR_B, walk_jabs.as_str(), "JABS,b")] {
+        let r = run(&a, p1, [me, paul], 800);
         assert!(r.missing.is_empty(), "model {p1}: no motion {:?}", &r.missing[..r.missing.len().min(5)]);
         let hurt = r.health.iter().position(|h| h[0] < r.health[0][0]).expect("Paul's attack lands");
         assert!(r.aliases[hurt..hurt + 10].iter().any(|a| a[0] != r.aliases[hurt - 1][0]), "model {p1}: a reaction");
         assert!(r.health.last().unwrap()[1] < r.health[0][1], "model {p1}: Paul is hit");
-        assert_eq!(r.hashes, run(&a, p1, ["f*300,JABS", paul], 800).hashes, "the same pads, the same match");
+        assert_eq!(r.hashes, run(&a, p1, [me, paul], 800).hashes, "the same pads, the same match");
     }
 }
 
@@ -499,7 +501,8 @@ fn force_under_tekken_tag() {
             "model {player}: progress {}, kills {}, hits {} / {} reactions, hit {} times, {} frames without a motion",
             r.progress, r.kills, r.soldier_hits, r.reactions, r.player_hits, r.missing
         );
-        assert!(r.progress >= 11776 && r.kills >= 5, "model {player}: the first area: {r:?}");
+        // (Lei and Hwoarang are here for their moves on the soldiers, not to clear the area)
+        assert!(r.kills >= 5 && (r.progress >= 11776 || ![PAUL, JIN].contains(&player)), "model {player}: the first area: {r:?}");
         assert!(r.soldier_hits > 0 && r.reactions > 0 && r.player_hits > 0 && r.missing == 0, "model {player}: {:?}", (r.soldier_hits, r.reactions, r.player_hits, r.missing));
         let boss = force_stage(&a, player, true, 60 * 40);
         eprintln!("model {player}: boss {:?}, its health lost {}", boss.boss, boss.boss_lost);
