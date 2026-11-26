@@ -234,11 +234,11 @@ fn a_partner_losing_a_point_is_juggled() {
     panic!("no partner lost a point");
 }
 
-/// Ball 2 ON 2's rules (OpenKumite's own; [`ball_doubles::rules`]) in Tekken 3: Gon and model 71 against Jin and model 95.
+/// Ball 2 ON 2's rules (OpenKumite's own; [`ball_doubles::rules`]) in Tekken 3: Gon and model 95 against Jin and model 71.
 #[test]
 fn ball_2_on_2_only_the_ball_hurts_and_a_side_falls_together() {
     let Some(a) = assets() else { return };
-    ball_doubles::rules(&a, [GON, JIN], [71, 95], None);
+    ball_doubles::rules(&a, [GON, JIN], [95, 71], None);
 }
 
 /// Doctor B.'s hit on the ball makes the ball's actor slot, put on his own root, his target that step: the target
