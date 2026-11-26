@@ -1479,7 +1479,7 @@ impl Ai {
             Style::Counter => {
                 // interrupt his attacks and strings, parry, rarely start anything
                 for c in [&mut p.counter_attack_prob, &mut p.counter_attack_cap] {
-                    at_least(c, 2048);
+                    at_least(c, 4096);
                 }
                 for c in [&mut p.in_string_interrupt_prob, &mut p.in_string_interrupt_cap] {
                     at_least(c, 3072);
@@ -1495,7 +1495,7 @@ impl Ai {
                 p.throw_attempt_prob = 4096;
                 p.throw_escape_prob = 4096;
                 p.string_continue_prob = 4096;
-                at_least(&mut p.throw_select_prob, 2867);
+                at_least(&mut p.throw_select_prob, 4096);
                 p.max_string_length += 2;
             }
             Style::Evasive => {
