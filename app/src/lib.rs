@@ -4848,9 +4848,10 @@ impl App {
         Ok(())
     }
 
-    /// Force for more than two (OpenKumite's own): TAG BRAWL's setup in its Force mode, `player` (3P, 4P) seated.
-    fn force_setup(&mut self, difficulty: usize, player: usize) {
-        let mut t = tagrun::TagSelect::new(&self.roster, difficulty, self.seed, tagrun::TagMode::Force);
+    /// Force or Ball 2 ON 2 for more than two (OpenKumite's own): TAG BRAWL's setup in `mode`, `player` (3P, 4P)
+    /// seated.
+    fn tag_setup(&mut self, difficulty: usize, player: usize, mode: tagrun::TagMode) {
+        let mut t = tagrun::TagSelect::new(&self.roster, difficulty, self.seed, mode);
         t.key(player, Key::Start, &self.roster);
         self.screen = Some(Screen::Tag(Box::new(t)));
     }
@@ -5400,13 +5401,19 @@ impl App {
                 // player picks a fighter (1P's slot first, 3P or 4P seated)
                 Some(Screen::Select(s)) if key == Key::Start && s.mode == Mode::Force => {
                     let d = s.difficulty;
-                    self.force_setup(d, player);
+                    self.tag_setup(d, player, tagrun::TagMode::Force);
                 }
+                // (TEKKEN FORCE's and TEKKEN BALL's select alike: Ball's setup is its 2 ON 2)
                 Some(Screen::Ttt(f)) if key == Key::Start => {
                     if let (ttt::Page::Select(s), Some(d)) = (&f.page, self.roster.ttt.as_deref()) {
-                        if s.mode == ttt::FORCE && s.online.is_none() {
+                        let mode = match s.mode {
+                            ttt::FORCE => Some(tagrun::TagMode::Force),
+                            ttt::BALL => Some(tagrun::TagMode::Ball),
+                            _ => None,
+                        };
+                        if let Some(mode) = mode.filter(|_| s.online.is_none()) {
                             let difficulty = ttt::progress().options(d)[0].min(2);
-                            self.force_setup(difficulty, player);
+                            self.tag_setup(difficulty, player, mode);
                         }
                     }
                 }

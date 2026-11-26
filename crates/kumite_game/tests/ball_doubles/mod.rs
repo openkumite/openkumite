@@ -11,7 +11,8 @@ use std::path::Path;
 /// A CPU 2 ON 2 round of `models` (the sides' first) and `team` (their partners), with `camera` (Tekken Tag: the slice's
 /// Ball camera): the four keep their own health; a point costs both of the side still standing and leaves the other
 /// side's alone; nothing but the ball takes health (a point, or the Attack Ball on the one it hits); one at no health
-/// is nobody's target; the round is lost when both of a side are out; the same round twice is the same.
+/// is nobody's target, nor framed by the camera (its standing partner is, in its place); the round is lost when both of
+/// a side are out; the same round twice is the same.
 pub fn rules(a: &Assets, models: [usize; 2], team: [usize; 2], camera: Option<&Path>) {
     let run = || {
         let mut g = Game::load(a, models).unwrap();
@@ -30,7 +31,7 @@ pub fn rules(a: &Assets, models: [usize; 2], team: [usize; 2], camera: Option<&P
         b.extra_cpu = Some(kumite_sim::ai::Ai::new(2, 9, 1));
         // (each side's two: actors 0, 3 and 1, 2)
         let order = [0, 3, 1, 2];
-        let (mut log, mut points, mut out_alone) = (Vec::new(), 0, 0);
+        let (mut log, mut points, mut out_alone, mut framed) = (Vec::new(), 0, 0, 0);
         for _ in 0..60000 {
             let f = &b.game.fight;
             let before = order.map(|i| f.actor(i).unwrap().health);
@@ -65,16 +66,24 @@ pub fn rules(a: &Assets, models: [usize; 2], team: [usize; 2], camera: Option<&P
                     }
                 }
             }
+            // (the samples the next step's camera takes)
+            for (i, s) in b.game.camera_samples().iter().enumerate() {
+                let (me, mate) = (f.actor(i).unwrap(), f.actor(3 - i).unwrap());
+                let out = me.health <= 0 && mate.health > 0;
+                framed += usize::from(out);
+                let at = if out { mate.root() } else { me.root() };
+                assert_eq!((s.x, s.z), (at.x.round() as i64, -(at.z.round() as i64)), "side {i}'s framed player");
+            }
             if let RoundState::Ko { winner } = f.state {
                 let lost = if winner == 0 { [2, 3] } else { [0, 1] };
                 assert!(lost.iter().all(|&k| after[k] <= 0) && after[2 * winner..2 * winner + 2].iter().any(|&h| h > 0), "K.O. for {winner} at {after:?}");
-                return (log, points, out_alone);
+                return (log, points, out_alone, framed);
             }
         }
         panic!("no K.O.");
     };
-    let (log, points, out_alone) = run();
-    eprintln!("{points} points, {out_alone} steps with one out alone, {} steps", log.len());
-    assert!(points >= 4 && out_alone > 0);
+    let (log, points, out_alone, framed) = run();
+    eprintln!("{points} points, {out_alone} steps with one out alone ({framed} framed in a first's place), {} steps", log.len());
+    assert!(points >= 4 && out_alone > 0 && framed > 0);
     assert!(run().0 == log, "the same round went another way");
 }

@@ -1524,6 +1524,8 @@ impl Screen {
                 }
             }
             Screen::Tag(t) => match t.key(player, key, roster) {
+                // (Tekken Tag's: back to its main menu on TEKKEN BALL)
+                Outcome::Quit if t.mode == crate::tagrun::TagMode::Ball && roster.ttt.is_some() => *self = Screen::Ttt(Box::new(crate::ttt::Front::menu_on(roster, crate::ttt::BALL))),
                 Outcome::Quit if t.mode == crate::tagrun::TagMode::Ball => {
                     *self = Screen::BallModes { frame: 0, cursor: 1, difficulty: t.difficulty };
                 }
