@@ -29,7 +29,8 @@ struct Globals {
     // the fighters' shadows: the light's x / y and z / y, the floor's height, w = 1 when on; their colour (a: alpha)
     shadow: vec4<f32>,
     shadow_colour: vec4<f32>,
-    // Tekken Tag's shadow picture: its centre's x, z (metres), 1 / its half size, the darkening (0: none)
+    // Tekken Tag's shadow picture: its centre's x, z (metres), 1 / its half size (in the light's axes), the darkening
+    // (0: none)
     shadow_map: vec4<f32>,
     // Tekken Tag's floor cells: the depth limits (metres); the half size of a cell's square (x, z), 1 when on, the
     // reach; the window (cells x, z; 0: none) and the cell's size; the window's centre (x, z), the picture's aspect
@@ -168,14 +169,27 @@ fn shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, joints: vec4<u32>, weights: vec4
 }
 
 // Tekken Tag's shadow picture (0x342390): a fighter's silhouette moved along the light onto the floor's plane,
-// seen from above: x, z about the picture's centre.
+// seen along the light.
 @vertex
 fn vs_shadow_map(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
                  @location(2) joints: vec4<u32>, @location(3) weights: vec4<f32>, @location(4) normal: vec3<f32>) -> VsOut {
     var o = shadow_vertex(pos, uv, joints, weights);
-    let k = g.shadow_map.z;
-    o.clip = vec4((o.world.x - g.shadow_map.x) * k, -(o.world.z - g.shadow_map.y) * k, 0.5, 1.0);
+    let q = shadow_picture_at(o.world);
+    o.clip = vec4(q.x, -q.y, 0.5, 1.0);
     return o;
+}
+
+// Where a point lies in the shadow picture (-1..1 across it), as the floor's point along the light from it:
+// 0x342128's projection, the light's axes (0x34A5D0: across it (z, 0, -x), then the light x that) about the
+// picture's centre, x 1 / its half size. Its square lies across the light, so on the floor it reaches 1 / the light's
+// sine further along the shadow than across: a low light's long shadow is not cut short (Jin-A's, at the wall's
+// reflection in the floor).
+fn shadow_picture_at(p: vec3<f32>) -> vec2<f32> {
+    let l = normalize(vec3(g.shadow.x, 1.0, g.shadow.y));
+    let across = vec3(l.z, 0.0, -l.x);
+    let a = select(vec3(1.0, 0.0, 0.0), normalize(across), dot(across, across) > 1e-12);
+    let d = p - vec3(g.shadow_map.x, g.shadow.z, g.shadow_map.y);
+    return vec2(dot(d, a), dot(d, cross(l, a))) * g.shadow_map.z;
 }
 
 @fragment
@@ -198,9 +212,7 @@ fn vs_floor_shadow(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @loc
 @fragment
 fn fs_floor_shadow(i: VsOut) -> @location(0) vec4<f32> {
     if (i.dropped > 0.0) { discard; }
-    let h = i.world.y - g.shadow.z;
-    let p = vec2(i.world.x - h * g.shadow.x, i.world.z - h * g.shadow.y);
-    let uv = vec2(0.5 + 0.5 * (p.x - g.shadow_map.x) * g.shadow_map.z, 0.5 + 0.5 * (p.y - g.shadow_map.y) * g.shadow_map.z);
+    let uv = 0.5 + 0.5 * shadow_picture_at(i.world);
     var f = shadow_at(uv);
     if (g.enhance.x > 0.5) {
         // (OpenKumite's soft shadows: the factor averaged over four filtered taps 3 cm apart)

@@ -529,11 +529,12 @@ fn blur(uv: vec2<f32>, dir: vec2<f32>, cut: f32) -> vec4<f32> {
 /// The glow's picture (its half-resolution targets).
 const GLOW: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-/// Tekken Tag's shadow picture: its texels a side, and the half size of the floor it covers (metres).
+/// Tekken Tag's shadow picture: its texels a side, and its half size across the light (metres: 0x342128's scale
+/// 1 / gp-0x67A4, 5800 mm a side).
 const SHADOW_MAP: u32 = 1024;
 /// ... with soft shadows ([`RenderSettings::soft_shadows`]).
 const SHADOW_MAP_SOFT: u32 = 2048;
-const SHADOW_HALF: f32 = 6.0;
+const SHADOW_HALF: f32 = 2.9;
 /// Mipmapped textures' levels: the texels and three halvings (more would blend an atlas's parts together).
 const MIPS: u32 = 4;
 
@@ -957,8 +958,10 @@ impl Renderer {
             let shadow_pipeline = make("shadows", &skinned_layout, "vs_shadow", "fs_shadow", &skin_vb, false, Less, tri, None);
             // the frame times a fragment's factor (the floor's shadow, the blobs)
             let times = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::Src, operation: wgpu::BlendOperation::Add };
-            // the floor again over itself (a hair nearer)
-            let floor_shadow_pipeline = make("floor shadow", &static_layout, "vs_floor_shadow", "fs_floor_shadow", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
+            // the floor again over itself (a hair nearer), its depth written: a strip on the same face (Jin-A's gloss,
+            // the wall's reflection in the floor) does not take the factor again, the floor darkened once
+            // (x 1 - alpha) as on the PS2
+            let floor_shadow_pipeline = make("floor shadow", &static_layout, "vs_floor_shadow", "fs_floor_shadow", &static_vb, true, Less, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
             // blobs: the frame times the fragment's factor
             let blob_pipeline = make("blob shadows", &static_layout, "vs_world", "fs_blob", &static_vb, false, Less, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
             // anti-aliased: the picture so far (with the HUD drawn under the fighters) back into the samples

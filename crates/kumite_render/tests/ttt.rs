@@ -104,3 +104,49 @@ fn ttt_fighters_on_an_arena() {
     eprintln!("wrote {}", path.display());
     assert!(img.rgba.chunks(4).any(|p| p != &img.rgba[..4]), "a blank frame");
 }
+
+/// A low light's long shadow on Jin-A's floor (arena 8) reaches as far as the PS2's picture lets it: 5.8 m a side
+/// across the light (0x342128), so 1 / the light's sine further along the floor. Lying flat on the floor, the picture
+/// once cut it 6 m from its centre, where the floor shows the wall's reflection.
+#[test]
+fn a_long_shadow_is_not_cut_short() {
+    let Some(root) = std::env::var_os("OK_TTT_ASSETS").map(PathBuf::from) else {
+        eprintln!("skipping: OK_TTT_ASSETS unset");
+        return;
+    };
+    let assets = kumite_assets::Assets::new(&root).unwrap();
+    let Ok(mut r) = Renderer::headless(960, 720).map_err(|e| eprintln!("skipping: {e:#}")) else { return };
+    let stage = assets.stage(8).unwrap();
+    let tex: Vec<_> = stage.textures.iter().map(|t| r.texture(t.width, t.height, &t.rgba)).collect();
+    let conv = |m: &kumite_assets::Mesh| -> Vec<StaticVertex> { m.vertices.iter().map(|v| StaticVertex { pos: v.pos, uv: v.uv, color: v.color, cell: v.cell, normal: v.normal }).collect() };
+    let statics: Vec<_> = stage.meshes.iter().map(|m| r.static_mesh(&conv(m), &m.indices, tex[m.texture].clone()).blended(m.blend)).collect();
+    // a fighter standing at the origin, its own mesh its shadow's
+    let index: serde_json::Value = assets.gamedata("movesets/index.json").unwrap();
+    let m = &index["models"][0];
+    let mut c = assets.character(m["model_record"].as_u64().unwrap() as usize).unwrap();
+    let set: serde_json::Value = assets.gamedata(&format!("movesets/motions_{:02}.json", m["moveset_id"].as_u64().unwrap())).unwrap();
+    for f in set["motions"].as_array().unwrap() {
+        c.add_motions(&std::fs::read(root.join("motions").join(f.as_str().unwrap())).unwrap()).unwrap();
+    }
+    let verts: Vec<SkinVertex> = c.vertices.iter().map(|v| SkinVertex { pos: v.pos, uv: v.uv, joints: v.joints, weights: v.weights, normal: v.normal, look: v.look }).collect();
+    let mut model = r.skinned(&verts, &c.indices, c.blend_from, c.layers, r.texture(c.texture.width, c.texture.height, &c.texture.rgba));
+    r.set_shadow(&mut model, &verts, &c.indices);
+    r.update_bones(&model, &c.skin_matrices(&c.pose(c.clip("motion_0000").unwrap(), 0, true), Mat4::IDENTITY));
+    // seen from high behind the shadow, which falls 8.6 m along -z (a light 11.5 degrees up)
+    let mut cam = Camera::new(Vec3::new(0.0, 10.0, -14.0), Vec3::ZERO, 0.8);
+    let mut shot = |shadow| {
+        cam.shadow = shadow;
+        r.render_with(&cam, &[], &statics.iter().collect::<Vec<_>>(), &[&model], None, &[], None).unwrap();
+        (r.capture().unwrap(), cam.projection(960.0 / 720.0) * cam.view())
+    };
+    let (lit, view_proj) = shot(None);
+    let (shaded, _) = shot(Some(kumite_render::Shadow { toward: Vec3::new(0.0, 0.2, 0.98), floor: 0.0, colour: Vec3::ZERO, alpha: Some(0.5) }));
+    // the screen's row through the floor 7 m out: some of it darkened, once (x 0.5: about 0.42 of its bytes; twice
+    // about 0.18), though the gloss lies on the same faces
+    let p = view_proj * Vec3::new(0.0, 0.0, -7.0).extend(1.0);
+    let row = (((1.0 - p.y / p.w) * 0.5 * lit.height as f32) as usize).min(lit.height as usize - 1);
+    let at = |img: &kumite_render::Image, x: usize| f32::from(img.rgba[(row * img.width as usize + x) * 4]);
+    let ratios: Vec<f32> = (0..lit.width as usize).filter(|&x| at(&lit, x) >= 40.0).map(|x| at(&shaded, x) / at(&lit, x)).collect();
+    assert!(ratios.iter().filter(|&&k| k < 0.7).count() > 3, "no shadow 7 m out (row {row})");
+    assert!(ratios.iter().all(|&k| k > 0.3), "darkened twice 7 m out (row {row})");
+}
