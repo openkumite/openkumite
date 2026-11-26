@@ -3878,11 +3878,11 @@ impl Fight {
             fi.root_yaw = yaw;
             fi.turn = tag_turn.map(|t| (t.1, 16));
         } else {
-            // Tekken 3: the thrower linked by the break turns round (0x80030858) and the breaker takes its new basis
-            // (0x80030784), on its root before this step's root motion (+0xF68 at the commit)
+            // the thrower linked by the break turns round (Tekken 3's 0x80030858) and the breaker takes its new basis
+            // (0x80030784), on its root before this step's root motion (+0xF68 at the commit); Tekken Tag's chicken
+            // the same in PCSX2 (the breaker 752 straight ahead of the turned thrower's root as drawn last frame)
             let t3 = !self.fighters[j].tag_rules(gd);
-            let turn = if t3 { PI } else { 0.0 };
-            let (yaw, root) = (self.fighters[j].yaw + turn, drawn.filter(|_| t3).unwrap_or_else(|| self.fighters[j].root()));
+            let (yaw, root) = (self.fighters[j].yaw + PI, drawn.unwrap_or_else(|| self.fighters[j].root()));
             victim_yaw = Some(yaw);
             let fi = &mut self.fighters[i];
             if t3 {

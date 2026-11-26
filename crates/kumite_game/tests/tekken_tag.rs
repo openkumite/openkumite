@@ -478,6 +478,30 @@ fn a_reversal_starts_the_frame_after_the_hit() {
     assert_eq!(rows, [(4769, 8, -65, -159, 852, 10, 927, -16), (4790, 1, -251, -187, 4791, 1, 928, -26)]);
 }
 
+/// A chicken (Hwoarang's b+2+4 on Paul's reversal): the reverser turns round and the breaker faces its new way,
+/// 752 straight ahead of its root as drawn last frame; the roots on frames 1 and 3, as in PCSX2.
+#[test]
+fn a_chicken_turns_the_reverser_round() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [PAUL, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let (p1, p2) = (parse_script("n*61,f*30,n*1,b+1+3*2,b*1,n*40").unwrap(), parse_script("n*91,2*2,n*11,b+2+4*2,b*1,n*20").unwrap());
+    let mut rows = Vec::new();
+    for (k, pad) in p1.into_iter().enumerate() {
+        b.step([pad, p2.get(k).copied().unwrap_or_default()]);
+        let f = &b.game.fight.fighters;
+        let ((m0, k0), (m1, k1)) = (f[0].shown_move(), f[1].shown_move());
+        if (m0.index, m1.index) == (6088, 6087) && matches!(k0, 1 | 3) && k0 == k1 {
+            rows.push((k0, f[0].root().x as i32, -f[0].root().z as i32, f[1].root().x as i32, -f[1].root().z as i32));
+        }
+    }
+    assert_eq!(rows, [(1, -160, -325, 592, -330), (3, -149, -325, 592, -325)]);
+}
+
 /// A throw's link (0x36B638): the thrower goes onto the victim's root as drawn last frame (+0x51C), faces the last
 /// facing pass's angle +0x3A by the quadrant, and turns over 16 frames to the victim's facing, which turns round
 /// (0x36B77C); the victim's root takes the thrower's scale (0x363A80). Kunimitsu's 1+3 on Hwoarang after a long walk,
