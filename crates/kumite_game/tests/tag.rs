@@ -51,6 +51,29 @@ fn four_cpus_play_a_match() {
     assert!(hit.iter().filter(|&&s| s).count() >= 3, "most fighters land hits: {hit:?}");
 }
 
+/// Each round's clock as set (Tekken Tag's ROUND TIME, `--round-time`): four idle humans' first and second rounds
+/// end on time at it.
+#[test]
+fn the_rounds_run_on_the_clock_set() {
+    let Some(a) = assets() else { return };
+    let slots = [MODEL_71, MODEL_79, MODEL_103, MODEL_87].map(|record| Slot { record, cpu: None });
+    let mut g = TagGame::load(&a, slots, vec![0, 0, 1, 1], kumite_game::ai_data(&a).unwrap(), 2).expect("load").with_round_frames(300);
+    for round in 1..=2 {
+        assert_eq!(g.melee.clock, 300);
+        let (mut fought, mut frames) = (0, 0);
+        while !matches!(g.phase, TagPhase::RoundOver { .. }) && frames < 2000 {
+            fought += u32::from(g.phase == TagPhase::Fight);
+            g.step([Pad::default(); 4]);
+            frames += 1;
+        }
+        assert!(matches!(g.melee.state, kumite_sim::melee::MeleeState::TimeUp { .. }) && fought == 300, "round {round}: {fought} frames fought, {:?}", g.melee.state);
+        while g.round == round && frames < 4000 {
+            g.step([Pad::default(); 4]);
+            frames += 1;
+        }
+    }
+}
+
 #[test]
 fn targets_are_the_cheapest_foes() {
     let Some(a) = assets() else { return };

@@ -2708,7 +2708,7 @@ impl App {
                 self.ttt_run = ttt;
                 self.load_fight(setup, ladder);
             }
-            replay::Match::Tag { setup, stage } => {
+            replay::Match::Tag { setup, stage, .. } => {
                 self.replay_tag_stage = Some(self.tag_stage);
                 self.tag_stage = Some(stage);
                 self.start_tag(setup);
@@ -5122,8 +5122,21 @@ impl App {
         // (the AI's seats: their own level, then their style)
         let seats = self.ai_seats();
         let slots: [_; 4] = std::array::from_fn(|k| kumite_game::tag::Slot { record: model(&picks[k]), cpu: seats[k].map(|a| (a.difficulty, a.level)).or(picks[k].player.is_none().then_some(level)) });
+        // each round's clock: a replay's as recorded; Tekken Tag's ROUND TIME (online: the default), as its fights'
+        // (0x36D640 at every round, whatever the mode); `--round-time` (testing, offline)
+        let recorded = self.replay_next.as_ref().and_then(|n| match &n.0.file.game {
+            replay::Match::Tag { round_frames, .. } => Some(round_frames.unwrap_or(kumite_sim::ROUND_FRAMES)),
+            _ => None,
+        });
+        let option = roster.ttt.as_deref().map(|d| {
+            let options = if self.room.is_some() { ttt::Progress::online().options(d) } else { ttt::progress().options(d) };
+            d.round_frames.get(options[2]).copied().unwrap_or(u32::MAX / 2)
+        });
+        let testing = self.round_time.filter(|_| self.room.is_none()).map(|t| t * 60);
+        let round_frames = recorded.or(testing).or(option).unwrap_or(kumite_sim::ROUND_FRAMES);
         match kumite_game::tag::TagGame::load(&self.assets, slots, setup.mode.teams(), self.ai.clone(), self.roster.modes.rounds_to_win) {
-            Ok(mut game) => {
+            Ok(game) => {
+                let mut game = game.with_round_frames(round_frames);
                 for (k, a) in seats.iter().enumerate() {
                     if let Some(a) = a {
                         game.cpu[k] = Some(a.ai(usize::from(k >= 2)));
@@ -5150,7 +5163,7 @@ impl App {
                 self.replay_rec = None;
                 if self.replay_next.is_none() {
                     game.tape = Some(Default::default());
-                    self.replay_rec = Some(ReplayRec { game: replay::Match::Tag { setup: setup.clone(), stage }, online: self.net.is_some() || self.room.is_some() });
+                    self.replay_rec = Some(ReplayRec { game: replay::Match::Tag { setup: setup.clone(), stage, round_frames: Some(round_frames) }, online: self.net.is_some() || self.room.is_some() });
                 }
                 let mut run = tagrun::TagRun::new(game, setup, &self.roster);
                 run.sound.arena = stage;

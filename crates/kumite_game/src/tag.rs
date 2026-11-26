@@ -68,6 +68,8 @@ pub struct TagGame {
     /// Each actor's team (two teams: 0, 0, 1, 1; each for themselves: 0, 1, 2, 3).
     pub teams: Vec<usize>,
     pub rounds_to_win: u32,
+    /// Each round's clock in frames (Tekken Tag's ROUND TIME option, as its fights'; untimed: `u32::MAX / 2`).
+    pub round_frames: u32,
     pub round: u32,
     pub phase: TagPhase,
     pub phase_frame: u32,
@@ -113,6 +115,7 @@ impl TagGame {
             wins: vec![0; teams.iter().max().map_or(1, |t| t + 1)],
             teams,
             rounds_to_win: rounds_to_win.max(1),
+            round_frames: kumite_sim::ROUND_FRAMES,
             round: 0,
             phase: TagPhase::Call,
             phase_frame: 0,
@@ -126,6 +129,12 @@ impl TagGame {
         };
         g.next_round();
         Ok(g)
+    }
+
+    /// The match with each round's clock `frames` (the first round's too).
+    pub fn with_round_frames(mut self, frames: u32) -> Self {
+        (self.round_frames, self.melee.clock) = (frames, frames);
+        self
     }
 
     fn random(&mut self, n: i64) -> i64 {
@@ -158,6 +167,7 @@ impl TagGame {
         self.melee = Melee::with_teams(data.clone(), sets, self.teams.clone());
         self.melee.tag_pairs = data.tag_moves;
         self.melee.fight.screen_right = screen_right;
+        self.melee.clock = self.round_frames;
         for (i, f) in self.melee.actors.iter_mut().enumerate() {
             f.character = self.characters[i];
             f.guard_input = self.cpu[i].is_none();
