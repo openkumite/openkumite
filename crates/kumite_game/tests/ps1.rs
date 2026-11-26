@@ -399,6 +399,19 @@ fn a_landed_jump_attack_stops_turning_as_on_the_ps1() {
     assert_eq!(f, [20395, 20370, 20370, 20370, 20370]);
 }
 
+/// Yoshimitsu's u+2 jumps toward Gun Jack (link 0x10 sets +0x82, 0x8002FF40): from the jump window's first frame the
+/// PS1 moves him the pair distance less 500 over the frames left (0x8003F104), 17 a frame; Gun Jack's hit ends it
+/// (0x8002F5F4). Ours kept that to Tekken Tag and stood still, 51 short.
+#[test]
+fn a_jump_goes_toward_the_opponent_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [107, 99], None, 1, "n*235,f*40,u+2*2,n*40,d/f+3*2,n*40,n+1+3*2,n*174", "n*236,b*40,n+4*2,n*30,n+2*2,n*226", 400);
+    for (row, want) in [(977, (-820, -1154, 23)), (979, (-786, -1389, 23)), (1030, (-2428, -249, 22))] {
+        let r = at(&t, 691, row, 0);
+        assert_eq!((r.0, r.1, r.2), want, "PS1 row {row}");
+    }
+}
+
 /// Law, juggled by Paul, is hit again in the air: the flight's next step still takes the drift found the frame
 /// before (+0x9A / +0x9E, 0x8003F268) on top of the new pop's. Ours started the new flight from none, 28 short.
 #[test]

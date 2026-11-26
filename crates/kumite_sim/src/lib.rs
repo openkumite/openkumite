@@ -1118,7 +1118,7 @@ impl Fighter {
         if t == TRANSITION_GETUP {
             self.getup_lock = 24;
         }
-        self.jump_home = (self.tag_rules(gd) && matches!(t, 0x10 | 0x12 | 0x13)).then_some(None);
+        self.jump_home = matches!(t, 0x10 | 0x12 | 0x13).then_some(None);
         // facing: bit 7 turns around first; END and buffered links add the old animation's net turn (+0x12)
         if t != 0x11 {
             self.turn = turn;
@@ -1606,6 +1606,9 @@ impl Fighter {
         self.landed = None;
         self.landed_counter = false;
         self.struck_in_move &= self.struck_last;
+        // any move switch ends a jump toward the opponent, a reaction's too (Tekken 3's +0x82 at 0x8002F5F4, Tekken
+        // Tag's +0xF0 at 0x36A808); a jump's link sets it again
+        self.jump_home = None;
     }
 
     /// Jumps and hops drift (0x8003F3A8): from the frame before the jump window to its end, the move's +0x16
@@ -1636,21 +1639,32 @@ impl Fighter {
         }
     }
 
-    /// Tekken Tag's jump toward the opponent (0x36FC04): from the jump window's first frame the fighter moves each frame
-    /// by the pair distance (at most 0xC00) less 500 over the frames left to the window's end, toward the opponent;
-    /// at the end the origin takes the root.
+    /// The jump toward the opponent (links 0x10 / 0x12 / 0x13; Tekken Tag's 0x36FC04, Tekken 3's +0x82 at 0x8003F104):
+    /// from the jump window's first frame the fighter moves each frame by the pair distance (at most 0xC00) less 500
+    /// over the frames left to the window's end, toward the opponent; at the end the origin takes the root.
     fn jump_toward(&mut self, gd: &GameData, before: Vec3) {
         let Some(step) = self.jump_home else { return };
         let b = &self.current_move(gd).bytes_18;
         let (j0, j1) = (b.jump_start, b.jump_end);
         match step {
-            None if self.frame >= j0 => {
+            None if self.frame >= j0 && self.tag_rules(gd) => {
                 // (the pair distance of the frame before, gp-0x74C8)
                 let d = self.opponent.root - before;
                 let dist = (d.x * d.x + d.z * d.z).sqrt().min(3072.0) as i32 - 500;
                 let speed = dist / (j1 as i32 - self.frame as i32).max(1);
                 let [s, c] = tag_sin_cos(d.x.datan2(d.z)).map(|t| (speed * t / 0x7FFF) as f32);
                 self.jump_home = Some(Some(Vec3::new(s, 0.0, c)));
+            }
+            None if self.frame >= j0 => {
+                // (the pair distance of the frame before, 0x800AFA3C; the speed an i16, at the angle to the opponent
+                // +0x2A, in the game's z)
+                let d = self.opponent.root - before;
+                let dist = camera::isqrt((d.x as i64).pow(2) + (d.z as i64).pow(2)).min(0xC00) as i32 - 500;
+                let left = j1 as i32 - self.frame as i32;
+                let speed = i32::from((dist / if left == 0 { 1 } else { left }) as i16);
+                let a = self.geometry16(before, self.opponent.root).0 >> 4;
+                let [s, c] = [ball::sin12(a), ball::cos12(a)].map(|t| (speed * t.clamp(-0xFFF, 0xFFF) * 8 / 0x7FFF) as f32);
+                self.jump_home = Some(Some(Vec3::new(s, 0.0, -c)));
             }
             Some(v) => {
                 self.position += v;
