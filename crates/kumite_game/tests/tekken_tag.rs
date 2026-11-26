@@ -454,7 +454,8 @@ fn a_reaction_starts_the_frame_after_the_hit() {
 }
 
 /// A reversal starts the frame after the reversed attack's hit, as a reaction does: Law's b+1+3 on Hwoarang's 2, the
-/// hit's frame and the reversal's frame 1 (the pair linked at the thrower's frame-1 root), as in PCSX2.
+/// hit's frame and the reversal's frame 1 (the pair linked at the thrower's frame-1 root); the victim's move eases in
+/// from the link's frame (0x373428), so the pair pushes in the poses PCSX2 shows on frames 1 and 5 of its END.
 #[test]
 fn a_reversal_starts_the_frame_after_the_hit() {
     let Some(a) = assets() else { return };
@@ -465,17 +466,17 @@ fn a_reversal_starts_the_frame_after_the_hit() {
     while b.phase != Phase::Fight {
         b.step([hold; 2]);
     }
-    let (p1, p2) = (parse_script("n*61,f*30,n*2,b+1+3*2,n*20").unwrap(), parse_script("n*91,2*2,n*22").unwrap());
+    let (p1, p2) = (parse_script("n*61,f*30,n*2,b+1+3*2,n*24").unwrap(), parse_script("n*91,2*2,n*22").unwrap());
     let mut rows = Vec::new();
     for (k, pad) in p1.into_iter().enumerate() {
         b.step([pad, p2.get(k).copied().unwrap_or_default()]);
         let f = &b.game.fight.fighters;
         let ((m0, k0), (m1, k1)) = (f[0].shown_move(), f[1].shown_move());
-        if (m1.index, k1) == (852, 10) || (m0.index, k0) == (4790, 1) {
+        if (m1.index, k1) == (852, 10) || (m0.index, k0) == (4790, 1) || m0.index == 4792 && matches!(k0, 1 | 5) {
             rows.push((m0.index, k0, f[0].root().x as i32, -f[0].root().z as i32, m1.index, k1, f[1].root().x as i32, -f[1].root().z as i32));
         }
     }
-    assert_eq!(rows, [(4769, 8, -65, -159, 852, 10, 927, -16), (4790, 1, -251, -187, 4791, 1, 928, -26)]);
+    assert_eq!(rows, [(4769, 8, -65, -159, 852, 10, 927, -16), (4790, 1, -251, -187, 4791, 1, 928, -26), (4792, 1, -183, -156, 4793, 1, 961, -102), (4792, 5, -231, -142, 4793, 5, 603, -475)]);
 }
 
 /// A chicken (Hwoarang's b+2+4 on Paul's reversal): the reverser turns round and the breaker faces its new way,
@@ -500,6 +501,53 @@ fn a_chicken_turns_the_reverser_round() {
         }
     }
     assert_eq!(rows, [(1, -160, -325, 592, -330), (3, -149, -325, 592, -325)]);
+}
+
+/// A chicken's reverser plays its move at the breaker's motion scale, as any fighter whose chain stage +0xE0 is below
+/// 0 (0x363A80): Nina's reversal (4300) chickened by Hwoarang (4096), frames 3 and 24, as in PCSX2.
+#[test]
+fn a_chickened_reverser_takes_the_breakers_scale() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [NINA, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let (p1, p2) = (parse_script("n*62,f*30,n*2,b+1+3*2,n*40").unwrap(), parse_script("n*92,2*2,n*11,b+2+4*2,n*20").unwrap());
+    let mut rows = Vec::new();
+    for (k, pad) in p1.into_iter().enumerate() {
+        b.step([pad, p2.get(k).copied().unwrap_or_default()]);
+        let f = &b.game.fight.fighters;
+        let (m, k0) = f[0].shown_move();
+        if m.index == 6088 && matches!(k0, 3 | 24) {
+            rows.push((k0, f[0].root().x as i32, -f[0].root().z as i32, f[1].root().x as i32, -f[1].root().z as i32));
+        }
+    }
+    assert_eq!(rows, [(3, 111, 500, 853, 500), (24, 529, 498, 1438, 660)]);
+}
+
+/// A chain throw's next part (0x36B638 on a linked thrower) keeps the pair's origin: the old part's commit bit is not
+/// read there. Nina's 2+4 chain, frame 1 of its second and third parts, as in PCSX2.
+#[test]
+fn a_chain_throw_part_keeps_the_origin() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [NINA, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let mut rows = Vec::new();
+    for pad in parse_script("n*61,f*60,n*2,2+4*2,n*14,1*2,n*2,2*2,n*2,1*2,n*24,2*2,n*2,1*2,n*2,2*2,n*2,1*2,n*2,3*2,n*90").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        let (m, k) = f[0].shown_move();
+        if matches!(m.index, 5758 | 5760) && k == 1 {
+            rows.push((m.index, f[0].root().x as i32, -f[0].root().z as i32, f[1].root().x as i32, -f[1].root().z as i32));
+        }
+    }
+    assert_eq!(rows, [(5758, 1433, 0, 1740, 0), (5760, 474, -177, 73, 0)]);
 }
 
 /// A throw's link (0x36B638): the thrower goes onto the victim's root as drawn last frame (+0x51C), faces the last
