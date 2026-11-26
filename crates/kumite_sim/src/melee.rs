@@ -49,7 +49,7 @@ pub struct Melee {
     /// Each actor's target is locked on with TARGET (OpenKumite's own): kept while it stands in play.
     pub locked: Vec<bool>,
     /// Each actor's TARGET held last step (a new press cycles).
-    pub target_held: Vec<bool>,
+    target_held: Vec<bool>,
     /// The throws / holds in progress: the pair and the moves that linked them.
     pub links: Vec<(usize, usize, [Current; 2])>,
     pub clock: u32,
