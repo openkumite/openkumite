@@ -473,7 +473,7 @@ impl Melee {
             // (the two's striking objects, owned by their slots)
             let own = |o: &crate::objects::Object| [a, b].iter().position(|&k| k == o.owner).filter(|_| o.strikes).map(|owner| crate::objects::Object { owner, ..o.clone() });
             self.fight.objects.list = self.objects.list.iter().filter_map(own).collect();
-            self.on_pair(a, b, |f| f.resolve_hits(&gd, pair, [anims[a], anims[b]]));
+            self.on_pair(a, b, |f| f.resolve_hits(&gd, pair));
         }
         self.fight.objects.list.clear();
         if self.state == MeleeState::Fighting && self.links.is_empty() {

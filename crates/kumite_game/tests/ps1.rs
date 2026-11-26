@@ -505,15 +505,58 @@ fn a_turning_basis_carries_the_root_of_its_frame_as_on_the_ps1() {
 
 /// Hwoarang breaks King's 1+3 with 1: the thrower linked by the break turns round (0x80030858) and the breaker takes
 /// his new basis on his root before the step's root motion (0x80030784). Ours kept both facings and put Hwoarang on
-/// the far side of King, 1960 off.
+/// the far side of King, 1960 off. The pair's root update runs after the link (0x8003AAF4): King's first row shows the
+/// break's height, not his throw's (175 off).
 #[test]
 fn a_throw_break_turns_the_thrower_round_as_on_the_ps1() {
     let Some(a) = assets() else { return };
     let p2 = "n*269,n+2*2,n*4,n+2*2,n*80,n+1*2,n*4,n+1*2,n*142";
     let t = rows(&a, [99, 123], None, 1, "n*206,f*60,n+2+4*2,n*80,d/f+1+3*2,n*80,n+1+3*2,n*74", p2, 400);
-    for (row, i, want) in [(1027, 0, (470, -1104, -16850)), (1026, 1, (1457, -888, -16850)), (1030, 1, (1507, -860, -16850))] {
+    for (row, i, want) in [(1026, 0, (553, -1104, -16850)), (1027, 0, (470, -1104, -16850)), (1026, 1, (1457, -888, -16850)), (1030, 1, (1507, -860, -16850))] {
         let r = at(&t, 661, row, i);
         assert_eq!((r.0, r.1, r.3), want, "PS1 row {row}, P{}", i + 1);
+    }
+}
+
+/// Law parries Paul's 1 (b+1+3): the PS1's hit pass only queues the parry (0x8002D8B4), which links in the next step's
+/// move logic: from the angle +0x2A and the root +0xF68 of the step before (0x800306D4, 0x80030794), the victim linked
+/// first, so Law takes Paul's new facing at once; both roots then take the new moves' frame 1 (the root update after
+/// the link, 0x8003AAF4), Paul's pose easing from the one shown (0x8003C270). The push after the link steps from the
+/// link's last places. Ours linked a step early, 1002 off, then 464 off in facing.
+#[test]
+fn a_parry_links_in_the_next_steps_move_logic_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [83, 75], None, 1, "n*337,b+1+3*2,n*20,b+1+3*2,n*20,b+1+3*2,n*20,b+2+4*2,n*98", "n*288,b*30,n+1*2,n*6,n+1*2,n*30,n+2*2,n*144", 420);
+    for (row, i, want) in
+        [(922, 0, (-1677, -956, -412, 13728)), (922, 1, (-524, -1109, -122, 13728)), (924, 1, (-504, -1038, -198, 13728)), (931, 0, (-1649, -972, -373, 13728)), (933, 1, (-982, -974, -919, -19039))]
+    {
+        let r = at(&t, 552, row, i);
+        assert_eq!((r.0, r.1, r.2, r.3), want, "PS1 row {row}, P{}", i + 1);
+    }
+}
+
+/// Jin blocks Bryan's b+3 (hit-stop 0): a move committed on the frame of a hit or a block eases none (+0x89 / +0x8A,
+/// 0x8003C87C), so his height drops to the block's at once. Ours eased it in from the pose shown, 75 off.
+#[test]
+fn a_reactions_pose_does_not_ease_in_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [171, 139], None, 1, "n*241,f*40,f+1*2,n*40,d/f+4*2,n*40,b+3*2,n*174", "n*242,b*40,n+3*2,n*29,d+1,d,n*227", 400);
+    for (row, want) in [(991, (1453, -1141, -1025)), (992, (1462, -1103, -1192)), (993, (1476, -1069, -1267))] {
+        let r = at(&t, 643, row, 1);
+        assert_eq!((r.0, r.1, r.2), want, "PS1 row {row}");
+    }
+}
+
+/// Hwoarang's 2+4 on Eddy (his 1+3 broken first): the thrown one's stun pool comes from the link move's damage word as
+/// the PS1 keeps it, the throw's damage (timed property 0x0B) added (0x80030970: 55 for 30). Ours took the word's 0
+/// (34), so Eddy got up 4 rows early.
+#[test]
+fn a_thrown_fighters_stun_pool_counts_the_throws_damage_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let p2 = "n*287,n+1*2,n*4,n+1*2,n*79,n+1*2,n*4,n+1*2,n*102";
+    let t = rows(&a, [123, 139], None, 1, "n*224,f*60,n+1+3*2,n*79,n+2+4*2,n*116", p2, 480);
+    for (row, want) in [(1148, -194), (1150, -192), (1152, -187)] {
+        assert_eq!(at(&t, 671, row, 1).1, want, "PS1 row {row}");
     }
 }
 
