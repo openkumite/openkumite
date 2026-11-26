@@ -4350,7 +4350,9 @@ impl Fight {
             fv.reversal_damage = Some(damage / 2 + 25);
             fv.exec_mark = e.exec;
             log::info!("P{} reverses P{}'s {anim} (cond {:#x})", v + 1, a + 1, e.cond);
-            if e.exec == 255 || fv.frame < e.exec {
+            // (Tekken Tag commits it in the next frame's moves, as a reaction: PCSX2 shows the reversed attack's hit
+            // frame first, the reversal's frame 1 on the next)
+            if e.exec == 255 || fv.frame < e.exec || fv.tag_rules(gd) {
                 fv.queued = Some((to, e.exec, t));
                 fv.queued_alias = e.dest;
                 fv.queued_buffered = false;
