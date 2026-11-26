@@ -71,6 +71,13 @@ impl RoundRules {
             team_lose: (at("/team_lose/alias")? as usize, at("/team_lose/frames")?),
         })
     }
+
+    /// Win pose `pick` of the fighter in model `record` (0x3685B8): slot 33's model (Xiaoyu's school uniform) never
+    /// plays pose 0, the handstand: pose 1 + the frame counter % 3 instead.
+    pub fn win_pose(&self, pick: usize, record: usize, frames: u64) -> usize {
+        let pick = if pick == 0 && record == 345 + 3 * 33 { 1 + (frames % 3) as usize } else { pick };
+        self.win_poses.get(pick).copied().unwrap_or(self.win_poses[0])
+    }
 }
 
 /// The fly-in variant counter (0x8009854C): never reset, so variants run on across rounds and matches
@@ -928,8 +935,9 @@ impl Bout {
                     (self.frames & 1) as usize
                 };
                 let win = tag.as_ref().map_or(motions.win, |r| r.win_poses.to_vec());
+                let alias = tag.as_ref().map_or(win.get(pick).copied().unwrap_or(WIN_POSES[0]), |r| r.win_pose(pick, self.game.bodies[w].model_record, self.frames));
                 let f = &mut self.game.fight.fighters[w];
-                if !f.play_alias(win.get(pick).copied().unwrap_or(WIN_POSES[0])) {
+                if !f.play_alias(alias) {
                     f.play_alias(win.first().copied().unwrap_or(WIN_POSES[0]));
                 }
                 let b_variant = self.count(WINNER).is_multiple_of(2);
@@ -939,9 +947,12 @@ impl Bout {
                 let cam = EndCam::winner(&data, &p, b_variant, turn, &mut rnd);
                 self.game.camera_mode = CameraMode::End { cam, who: w };
                 self.game.visible = [w == 0, w == 1];
-                // a tag battle: the winner's partner poses the same alias beside it (0x3B5DB0)
-                if tag.is_some() && self.game.pose_partner(w) {
-                    self.game.visible = [true; 2];
+                // a tag battle: the winner's partner poses the same pick beside it (0x3B5DB0), for its own model
+                if let Some(r) = &tag {
+                    if self.game.pose_partner(w) {
+                        self.game.fight.fighters[1 - w].play_alias(r.win_pose(pick, self.game.bodies[1 - w].model_record, self.frames));
+                        self.game.visible = [true; 2];
+                    }
                 }
                 self.result = ResultKind::Pose(w);
             }

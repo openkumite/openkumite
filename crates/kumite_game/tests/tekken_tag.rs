@@ -2155,6 +2155,20 @@ fn the_winner_poses_with_its_partner() {
     }
 }
 
+/// The win pose (0x3685B8, checked in PCSX2 holding square): Xiaoyu's school uniform (costume 4, model 444) never
+/// does pose 0, her handstand, but pose 1 + the frame counter % 3 (frame % 3 == 2: 4773); her other costumes do.
+#[test]
+fn xiaoyus_uniform_never_does_the_handstand() {
+    let Some(a) = assets() else { return };
+    let game = Game::load(&a, [444, PAUL]).unwrap();
+    let r = game.rounds.as_ref().unwrap();
+    assert_eq!([0, 1, 2].map(|f| r.win_pose(0, 444, f)), [4771, 4772, 4773]);
+    assert_eq!([1, 2, 3].map(|p| r.win_pose(p, 444, 0)), [4771, 4772, 4773]);
+    for record in [438, 441, XIAOYU, 435, 447, 717, PAUL] {
+        assert_eq!(r.win_pose(0, record, 2), 4770, "model {record}");
+    }
+}
+
 /// What a match of Paul against Lei did over `frames` steps, each side a CPU at (difficulty, level) or an idle pad:
 /// the state hashes, and per side its fight steps holding forward without a button (walks), its button presses
 /// (attacks), its steps in a guard, the hits it landed unblocked, and the rounds won.
