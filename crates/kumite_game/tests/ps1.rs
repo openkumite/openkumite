@@ -399,6 +399,22 @@ fn a_landed_jump_attack_stops_turning_as_on_the_ps1() {
     assert_eq!(f, [20395, 20370, 20370, 20370, 20370]);
 }
 
+/// Ogre's f+2+4 out of his landing, and Mokujin's d/b+4: the tracking's airborne step (1°) reads the jump window as
+/// the facing pass saw it last frame, as Tekken Tag's +0x135 does. Ours took this frame's, a step early at both ends
+/// (33 and 10 off).
+#[test]
+fn the_tracking_reads_last_frames_jump_window_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [187, 83], None, 1, "n*179,f*39,u+3*2,n*40,d/b+1*2,n*40,f+2+4*2,n*174", "n*180,b*39,n+4*2,n*30,d+1*2,n*226", 400);
+    for (row, want) in [(832, 15404), (835, 14858), (841, 13364)] {
+        assert_eq!(at(&t, 497, row, 0).3, want, "PS1 row {row}");
+    }
+    let t = rows(&a, [195, 123], Some(8), 1, "n*216,f*40,n+1+2*2,n*40,f+3*2,n*40,d/b+4*2,n*173", "n*217,b*40,n+4*2,n*30,n+3*2,n*225", 400);
+    for (row, want) in [(811, 27973), (818, 26881)] {
+        assert_eq!(at(&t, 500, row, 0).3, want, "PS1 row {row}");
+    }
+}
+
 /// Yoshimitsu's u+2 jumps toward Gun Jack (link 0x10 sets +0x82, 0x8002FF40): from the jump window's first frame the
 /// PS1 moves him the pair distance less 500 over the frames left (0x8003F104), 17 a frame; Gun Jack's hit ends it
 /// (0x8002F5F4). Ours kept that to Tekken Tag and stood still, 51 short.
