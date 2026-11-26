@@ -2424,6 +2424,10 @@ impl Ai {
                 return 2;
             }
         }
+        // Evasive: sidestep any attack in reach before guarding it
+        if self.playing == Style::Evasive && self.sidestep_ok() && self.hiszone < 4 && self.m4 & 1 == 0 && !cx.me_air && !self.atk && cx.chance(self.p.sidestep_prob) {
+            return 4;
+        }
         if self.he_attacks() {
             if self.safe || self.atk {
                 return 0;
@@ -2666,8 +2670,8 @@ impl Ai {
             self.cdash = -1;
             return n;
         }
-        // Juggler: a launcher, if one reaches, while he recovers from his attack
-        if self.playing == Style::Juggler && self.myzone < 3 && cx.h.as_ != 0 && cx.hf > cx.h.ae {
+        // Juggler: a launcher, if one reaches, unless his attack is coming
+        if self.playing == Style::Juggler && self.myzone < 3 && (cx.h.as_ == 0 || cx.hf > cx.h.ae) {
             let zm = cx.data.zm[self.myzone as usize];
             let n = self.mark(|c| c.mv.as_ != 0 && c.mv.rec8 & 0x40_0000 == 0 && c.mv.range_class() & zm != 0 && cx.launches(c.mv.id));
             if n > 0 {
@@ -2675,7 +2679,7 @@ impl Ai {
             }
         }
         // throws: P10, then P16 picks a command throw (else a button throw)
-        if cx.chance(throw_p) && self.myzone < 2 && cx.op_moveset != cx.data.rules.unthrown.moveset {
+        if cx.chance(throw_p) && self.myzone < 2 + (self.playing == Style::Thrower) as i32 && cx.op_moveset != cx.data.rules.unthrown.moveset {
             let mut n = 0;
             let button_throw = |c: &Cand| c.mv.rec8 & 0x40_0000 != 0 && c.e.cmd & 0xFFE0 == 0;
             if cx.chance(self.p.throw_select_prob) {

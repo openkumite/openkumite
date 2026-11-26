@@ -80,13 +80,14 @@ fn classic_is_the_games_cpu_and_every_style_plays_its_match_again() {
 #[test]
 fn each_style_does_its_thing_more_than_classic() {
     let Some(a) = assets() else { return };
-    // both seats of six pairs (one bout can be short), totals per style
-    let pairs = [[71, 79], [87, 95], [103, 111], [119, 127], [135, 143], [151, 159]];
+    // both seats of every fighter against the fifth after it, totals per style (46 matches: with fewer, a few
+    // sidesteps or throws more or less in one match moved a ratio past its bar)
+    let ids: Vec<usize> = (0..23).map(|k| 71 + 8 * k).collect();
     let total = |s: Style| {
         let mut t = Run::default();
-        for pair in pairs {
+        for k in 0..ids.len() {
             for seat in 0..2 {
-                let r = play(&a, pair, seat, Some(s));
+                let r = play(&a, [ids[k], ids[(k + 5) % ids.len()]], seat, Some(s));
                 (t.fight_frames, t.attacks, t.guarded, t.counters) = (t.fight_frames + r.fight_frames, t.attacks + r.attacks, t.guarded + r.guarded, t.counters + r.counters);
                 (t.throws, t.launches, t.sidesteps) = (t.throws + r.throws, t.launches + r.launches, t.sidesteps + r.sidesteps);
             }
