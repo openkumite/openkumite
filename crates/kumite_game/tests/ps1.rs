@@ -376,3 +376,14 @@ fn a_strike_is_placed_before_the_push_as_on_the_ps1() {
     let r = at(&t, 601, 885, 0);
     assert_eq!((r.0, r.1, r.2, r.5), (-264, -817, 1398, 9175040), "PS1 row 885");
 }
+
+/// Heihachi juggles Yoshimitsu, still sliding at 10 a frame from the hit before: the air hit's pushback (no constant
+/// part) leaves that slide (+0x106 frames at +0x108, 0x8003F798) running out in its own direction, on the sine table,
+/// through the flight. Ours stopped it, 9 short a frame (971 off by the landing).
+#[test]
+fn an_air_hit_keeps_the_slide_going_on_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [179, 107], None, 1, "n*151,f*40,d/f+2*2,n*40,f+1*2,n*40,d+4*2,n*172", "n*152,b*40,n+3*2,n*30,u+1*2,n*224", 300);
+    let r = at(&t, 455, 706, 1);
+    assert_eq!((r.0, r.1, r.2), (1334, -2170, 0), "PS1 row 706");
+}
