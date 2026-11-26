@@ -1480,9 +1480,10 @@ impl Fighter {
                 Some((clamp(to_opp / n, k), 0x9554))
             }
             // after start-up: re-aim every 5 frames at ≤ 3°/frame (0x8003FD80); a jumping attack (+0x5E, its damage)
-            // stops turning once landed past its active frames
+            // stops turning once landed past its active frames (landed: a frame after its jump window, as the PS1's
+            // turn of the landing step still goes on)
             6 => {
-                if self.current_move(gd).damage != 0 && self.current_move(gd).damage_type != 1 && j0 != 0 && !airborne && frame >= a1 {
+                if self.current_move(gd).damage != 0 && self.current_move(gd).damage_type != 1 && j0 != 0 && !airborne && frame > j1 + 1 && frame >= a1 {
                     self.turn = None;
                 } else if frame > a0 && (frame - a0) % 5 == 0 && off < 0x5556 {
                     let m = if len - frame < 6 { 5 } else { len - frame };
@@ -1719,7 +1720,9 @@ impl Fighter {
         // drift away from the attacker for the whole flight (0x8002F074)
         let drift = (damage.abs() + 7 * (n + 1) + 10 + extra_drift).clamp(0, 100) as f32;
         f.frame = start.max(1) as u32;
-        f.air = Some(Air { drift, y: y0, down: -vy as f32, target, spike, kind, step: [0; 2] });
+        // (a hit in the air keeps the drift found the frame before, +0x9A / +0x9E: the next step still takes it)
+        let step = f.air.as_ref().map_or([0; 2], |a| a.step);
+        f.air = Some(Air { drift, y: y0, down: -vy as f32, target, spike, kind, step });
         f.juggle += 1;
         // (Tekken 3's pushback of the launching hit goes on through the flight, 0x8003F820)
         if f.tag_rules(gd) {

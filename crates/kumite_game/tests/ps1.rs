@@ -389,12 +389,24 @@ fn an_air_hit_keeps_the_slide_going_on_as_on_the_ps1() {
 }
 
 /// Eddy's u+3 whiffs Lei: once landed past its active frames the jumping attack stops turning (0x8003FD80: by its
-/// damage +0x5E, not by a contact). Ours kept re-aiming, 563 off.
+/// damage +0x5E, not by a contact). Ours kept re-aiming, 563 off; then stopped a step early (the PS1's landing step,
+/// a frame past the jump window, still turns), 25 off.
 #[test]
 fn a_landed_jump_attack_stops_turning_as_on_the_ps1() {
     let Some(a) = assets() else { return };
     let t = rows(&a, [139, 123], None, 1, "n*246,f*37,d+4*2,n*40,u+3*2,n*40,f+1*2,n*174", "n*247,b*37,n+2*2,n*30,d+4*2,n*226", 400);
-    // (the PS1 holds 20370 from row 959; ours stops a turn step late, 25 off)
-    let f: Vec<i16> = [965, 975, 985].map(|row| at(&t, 598, row, 0).3).to_vec();
-    assert!(f.iter().all(|&y| (i32::from(y) - 20370).abs() <= 25), "{f:?}");
+    let f: Vec<i16> = [958, 959, 965, 975, 985].map(|row| at(&t, 598, row, 0).3).to_vec();
+    assert_eq!(f, [20395, 20370, 20370, 20370, 20370]);
+}
+
+/// Law, juggled by Paul, is hit again in the air: the flight's next step still takes the drift found the frame
+/// before (+0x9A / +0x9E, 0x8003F268) on top of the new pop's. Ours started the new flight from none, 28 short.
+#[test]
+fn an_air_hit_keeps_the_drift_found_the_frame_before_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [83, 211], None, 1, "n*149,f*40,u+3*2,n*40,d+1*2,n*40,f/f+4*2,n*173", "n*150,b*40,d+2*2,n*30,n+1*2,n*225", 300);
+    for (row, want) in [(894, (-1967, -678, -562)), (905, (-2388, -1426, -588))] {
+        let r = at(&t, 655, row, 0);
+        assert_eq!((r.0, r.1, r.2), want, "PS1 row {row}");
+    }
 }
