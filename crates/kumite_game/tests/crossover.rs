@@ -4,6 +4,8 @@
 //! a Tekken 3 game root (OPENKUMITE_ASSETS) and a Tekken Tag one (OK_TTT_ASSETS); skips without either.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests: a failure stops them
 
+mod ball_doubles;
+
 use kumite_assets::Assets;
 use kumite_game::bout::{Bout, Phase};
 use kumite_game::sound::{SoundData, SoundState};
@@ -702,6 +704,13 @@ fn his_flights_rise_as_in_tekken_3() {
     // (1.2: Tekken Tag's Paul hits harder, and the pop rises with the damage; with the queued commit's pushback the
     // CPU fights at levels 1 / 5 give 1181 against Tekken 3's 1048)
     assert!(r > 0.0 && r <= r3 * 1.2, "Gon's flights rise {r} units, Tekken 3's {r3}");
+}
+
+/// Ball 2 ON 2's rules (OpenKumite's own; [`ball_doubles::rules`]) in Tekken Tag: Julia and Xiaoyu against Paul and Jin.
+#[test]
+fn ball_2_on_2_only_the_ball_hurts_and_a_side_falls_together() {
+    let Some(a) = assets() else { return };
+    ball_doubles::rules(&a, [JULIA, XIAOYU], [PAUL, JIN], Some(&a.root.join("gamedata/ball_camera.json")));
 }
 
 /// Ball 2 ON 2 (OpenKumite's own) as the app sets it up in Tekken Tag (the slice's Ball camera), four CPUs, over whole
