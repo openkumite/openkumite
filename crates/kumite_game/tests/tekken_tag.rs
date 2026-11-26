@@ -547,6 +547,31 @@ fn the_camera_chases_a_run_off_as_the_game() {
     assert_eq!(seen, [-284, -292, -299, -306, -320, -326]);
 }
 
+/// After Wang's 2+4 throw the body push measures each one's step from where the pair left the throw (0x3772F0 keeps
+/// the roots only while no one is in a throw), not from before it: PCSX2's roots on his stance's first frame, x 1556
+/// and 3109 (from before the throw: 716 and 3503).
+#[test]
+fn the_push_after_a_throw_steps_from_its_end() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [624, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let mut thrown = false;
+    for pad in parse_script("n*61,f*60,n*2,2+4*2,n*119").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        thrown |= f[0].current.index == 5803;
+        if thrown && f[0].current.index == 30 {
+            assert_eq!((f[0].root().x, f[1].root().x), (1556.0, 3109.0));
+            return;
+        }
+    }
+    panic!("no stance after the throw");
+}
+
 /// The incoming partner keeps the entrance's tracking mode (+0x11E 8): Paul, tagged in for Wang, turns his body +0x3C
 /// toward Hwoarang each frame of his entrance (4936) while the basis +0x1A stays, as in PCSX2: +0x3C 16384, 16399,
 /// 16543 on its frames 1, 12, 25, +0x1A 16384 throughout.
