@@ -572,6 +572,30 @@ fn the_push_after_a_throw_steps_from_its_end() {
     panic!("no stance after the throw");
 }
 
+/// The tracking modes read the jump window (+0x135) as last frame's facing pass left it (0x370858): Heihachi's u/f+4
+/// (696, jump frames 9-33), blocked, re-aims once more on frame 34 before mode 6 stops turning him on 35. PCSX2's
+/// +0x3C on frames 34-36: 16944, 17064, 17064 (this frame's window: 16944 throughout).
+#[test]
+fn the_tracking_reads_last_frames_jump_window() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [516, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let u = |y: f32| ((std::f32::consts::PI - y) * 32768.0 / std::f32::consts::PI).round() as i32 & 0xFFFF;
+    let mut seen = Vec::new();
+    for pad in parse_script("n*60,f*31,n*2,u/f+4*2,n*69").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        if f.current.index == 696 && (34..=36).contains(&f.frame) {
+            seen.push(u(f.yaw));
+        }
+    }
+    assert_eq!(seen, [16944, 17064, 17064]);
+}
+
 /// The incoming partner keeps the entrance's tracking mode (+0x11E 8): Paul, tagged in for Wang, turns his body +0x3C
 /// toward Hwoarang each frame of his entrance (4936) while the basis +0x1A stays, as in PCSX2: +0x3C 16384, 16399,
 /// 16543 on its frames 1, 12, 25, +0x1A 16384 throughout.
