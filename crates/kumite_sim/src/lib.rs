@@ -1088,6 +1088,8 @@ impl Fighter {
         let commit_origin = match t {
             0 | 0x1F | 0x20 | 0x2C.. | 1 | 2 | 3 | 8 | 0x14 | 0x15 | 0x16 | 0x19 => true,
             4 | 5 => false,
+            // (Tekken Tag's link 0x36B638 skips the old move's commit bit: a chain throw's next part keeps the origin)
+            TRANSITION_LINK if self.tag_rules(gd) => false,
             _ => self.commits_root,
         };
         let rebase = matches!(t, 1 | 2 | 3 | 8 | 0x14 | 0x15 | 0x16 | 0x19);
@@ -1215,7 +1217,7 @@ impl Fighter {
             let prev = (af as i32 - self.frame_step).max(0) as u32;
             let partner = self.current.bank == Bank::Partner;
             if let (Some(r), Some(rp)) = (anims.root(anim, af, partner, self.chain < 0), anims.root(anim, prev, partner, self.chain < 0)) {
-                let scale = self.tag_rules(gd).then(|| anims.root_scale(self.thrown));
+                let scale = self.tag_rules(gd).then(|| anims.root_scale(self.chain < 0));
                 self.position = Vec3::new(root.x, self.position.y, root.z) - root_offset(rp, self.root_yaw, scale);
                 self.offset = root_offset(r, self.root_yaw, scale);
             }
@@ -2495,7 +2497,7 @@ impl Fighter {
         let (anim, f) = self.animation(gd);
         let partner = self.current.bank == Bank::Partner;
         if let Some(r) = anims.root(anim, f, partner, self.chain < 0) {
-            let scale = self.tag_rules(gd).then(|| anims.root_scale(self.thrown));
+            let scale = self.tag_rules(gd).then(|| anims.root_scale(self.chain < 0));
             let prev = (f as i32 - self.frame_step).max(0) as u32;
             if let Some(rp) = anims.root(anim, prev, partner, self.chain < 0).filter(|_| std::mem::take(&mut self.rebase_root)) {
                 let root = self.shown_root;
@@ -2658,7 +2660,7 @@ impl Fighter {
         if !self.tag_rules(gd) {
             return Some((anims.turns(anim, frame, partner).unwrap_or([[0; 9]; 18]), y));
         }
-        Some((anims.turns(anim, frame, partner)?, y * anims.root_scale(self.thrown) / 4096))
+        Some((anims.turns(anim, frame, partner)?, y * anims.root_scale(self.chain < 0) / 4096))
     }
 
     /// The joint turns and the root height eased, while an ease is on (for the pose drawn).
@@ -3691,8 +3693,9 @@ impl Fight {
             if f.rebase_root || f.root_yaw != basis || linked {
                 let y = f.anim_root_y;
                 f.root_motion(&gd, anims[i]);
-                if !f.tag_rules(&gd) && linked && f.chain < 0 {
-                    // (the victim's move starts in the link, 0x800307DC, before its root update and ease, 0x8003C270)
+                if linked && f.chain < 0 {
+                    // (the victim's move starts in the link, before its root update and ease: Tekken 3's 0x800307DC and
+                    // 0x8003C270, Tekken Tag's 0x36B638 and 0x373428, which PCSX2 shows easing on the link's frame)
                     (f.ease, f.ease_last, f.shown_turns, f.shown_height) = eased[i];
                     f.new_motion = true;
                     f.ease(&gd, anims[i]);
