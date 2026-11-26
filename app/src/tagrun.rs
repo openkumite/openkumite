@@ -643,7 +643,8 @@ impl TagRun {
             models,
             costumes: models.map(|m| roster.costume_of.get(&m).copied().unwrap_or(0)),
             labels: slots.map(|s| s.player.map_or("CPU".to_string(), |p| format!("{}P", p + 1))),
-            names: slots.map(|s| roster.characters[s.character].name.to_uppercase()),
+            // (Tekken Tag's own: PANDA, not "KUMA / PANDA")
+            names: std::array::from_fn(|i| roster.ttt.as_ref().and_then(|d| d.name(models[i])).unwrap_or_else(|| roster.characters[slots[i].character].name.to_uppercase())),
             humans,
             stage: setup.arcade.as_ref().map(|a| (a.level + 1, a.ladder.len())),
         };

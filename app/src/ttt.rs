@@ -140,6 +140,8 @@ pub struct Data {
     survival: Vec<[usize; 4]>,
     /// `--ttt-unlocks original`: characters, modes and extras unlocked over play as on the PS2 (else every one).
     pub original_unlocks: bool,
+    /// Model record -> its selection (character x 8 + costume: its record in 0x415840; roster.json `selections`).
+    selections: std::collections::HashMap<usize, usize>,
 }
 
 // (by name only: the HUD's state, logged by a replay's `--shot`, holds it; its maps print in no fixed order)
@@ -166,6 +168,7 @@ impl Data {
         let schedule = raw["unlocks"]["schedule"].as_array().into_iter().flatten().map(|e| (int(&e["stage"]) as u32, int(&e["kind"]) as u32, int(&e["character"]))).collect();
         let rivals = raw["arcade"]["rivals"].as_array().into_iter().flatten().map(|r| r.as_array().into_iter().flatten().map(opt).collect()).collect();
         let pairs = raw["arcade"]["pairs"].as_array().into_iter().flatten().map(|p| [int(&p[0]), int(&p[1])]).collect();
+        let selections = roster["selections"]["entries"].as_array().into_iter().flatten().filter_map(|e| Some((e["model_record"].as_u64()? as usize, e["selection"].as_u64()? as usize))).collect();
         Some(Arc::new(Self {
             slots,
             start: ints(&raw["select"]["selectable"]),
@@ -182,7 +185,20 @@ impl Data {
             survival: ai["survival"]["rows"].as_array().into_iter().flatten().map(|r| [int(&r["max_wins"]), int(&r["difficulty"]), int(&r["levels"][0]), int(&r["levels"][1])]).collect(),
             raw,
             original_unlocks: false,
+            selections,
         }))
+    }
+
+    /// Model record `model`'s body (its record's byte 4, 0x3CF230: Tiger, Panda, Tetsujin, Alex and Angel are bodies
+    /// 34-38 of their hosts' costumes), whose face, portrait and name plate it shows; `character` without one (an
+    /// extra fighter, an older pack).
+    pub fn body(&self, model: usize, character: usize) -> usize {
+        self.selections.get(&model).and_then(|&s| self.raw["select"]["quick"]["names"]["bodies"][s].as_u64()).map_or(character, |b| b as usize)
+    }
+
+    /// Model record `model`'s name as the PS2 writes it (its record's, 0x415840: PANDA, not Kuma's).
+    pub fn name(&self, model: usize) -> Option<String> {
+        self.selections.get(&model).and_then(|&s| self.raw["select"]["quick"]["names"]["texts"][s].as_str()).map(str::to_string)
     }
 
     /// SURVIVAL's CPU after `streak` wins (0x380120): the first row whose max wins reach it, its difficulty on an odd
@@ -769,7 +785,7 @@ pub enum Next {
 
 /// The next unlock's news.
 fn unlocked(d: &Data, roster: &Roster, stage: u32) -> String {
-    let names: Vec<String> = d.schedule.iter().filter(|e| e.0 == stage && e.1 == 1).filter_map(|e| roster.by_id(e.2)).map(|c| c.name.to_uppercase()).collect();
+    let names: Vec<String> = d.schedule.iter().filter(|e| e.0 == stage && e.1 == 1 && roster.by_id(e.2).is_some()).map(|e| body_name(d, e.2)).collect();
     if names.is_empty() {
         "NEW FEATURE AVAILABLE".into()
     } else {
@@ -2354,7 +2370,7 @@ fn draw_records(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: 
         }
         match page {
             0 => {
-                let n = members.first().and_then(|&c| roster.by_id(c)).map_or(String::new(), |c| c.name.to_uppercase());
+                let n = members.first().map_or(String::new(), |&c| Some(body_name(d, c)).filter(|n| !n.is_empty()).or_else(|| roster.by_id(c).map(|c| c.name.to_uppercase())).unwrap_or_default());
                 chrome(painter, v, art, d, &n, col(0, "x"), y + col(0, "dy"), colour(0), col(0, "size"));
                 chrome(painter, v, art, d, &format!("{:3}.{}%", score / 10, score % 10), col(1, "x"), y + col(1, "dy"), colour(1), col(1, "size"));
             }
@@ -2850,8 +2866,11 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
         let [x, y, w, h] = sv([0, 1, 2, 3].map(|k| num(&l["rect"][k])));
         painter.image(tex.id(), Rect::from_min_max(v.pos(x, y), v.pos(x + w, y + h)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), ps2(num(&l["level"])).0);
     }
-    let shown = |k: usize| -> Vec<usize> { s.shown(d, roster, p, k).into_iter().map(|q| q.0).collect() };
     let body = |i: usize| roster.characters.get(i).map_or(0, |c| c.id);
+    // (a pick's costume's: Kuma's PANDA; one under the cursor its character's)
+    let model = |(i, costume): (usize, usize)| roster.characters.get(i).and_then(|c| c.costumes.get(costume)).copied();
+    let picked = |q: (usize, usize)| model(q).map_or(body(q.0), |m| d.body(m, body(q.0)));
+    let shown = |k: usize| -> Vec<usize> { s.shown(d, roster, p, k).into_iter().map(|(i, c)| c.map_or(body(i), |c| picked((i, c)))).collect() };
     // (the 3D characters stand in front of the lightning, behind the rest)
     crate::debug::mark_under(painter);
     let frame = sel["frame"]["picture"].as_str().unwrap_or_default();
@@ -2876,7 +2895,7 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
             for m in 0..members {
                 let (x, y) = (num(&f["x"][2 * k + m]), num(&f["y"]));
                 let (file, level, grey) = match (side.picks.get(m), quick_hover(d, roster, p, s, k)) {
-                    (Some(q), _) => (d.picture(&["select", "faces", &body(q.0).to_string()]), 128.0, Some(num(&fr["picked"]))),
+                    (Some(q), _) => (d.picture(&["select", "faces", &picked(*q).to_string()]), 128.0, Some(num(&fr["picked"]))),
                     (None, Some(Some(c))) if m == n => {
                         let same = side.picks.first().is_some_and(|q| body(q.0) == c);
                         (d.picture(&["select", "faces", &c.to_string()]), if same { num(&fr["same"]) } else { 128.0 }, Some(pulse))
@@ -2926,18 +2945,18 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
             let (q, nm) = (&sel["quick"], &sel["quick"]["names"]);
             let side = &s.sides[k];
             let one = matches!(s.mode, ONE_ARCADE | ONE_VS);
-            let name = |c: usize, costume: usize| nm["texts"][c * 8 + (costume & 7)].as_str().unwrap_or_default().to_string();
+            let name = |c: usize| nm["texts"][c * 8].as_str().unwrap_or_default().to_string();
             let picking = if s.frame & int(&nm["blink"][0]) as u32 == 0 { int(&nm["blink"][1]) } else { int(&nm["colour"]) };
             for m in 0..if one { 1 } else { 2 } {
                 let next = m == side.picks.len();
                 let (text, colour) = match (side.picks.get(m), quick_hover(d, roster, p, s, k)) {
-                    (Some(q), _) => (name(body(q.0), q.1), int(&nm["colour"])),
+                    (Some(q), _) => (model(*q).and_then(|m| d.name(m)).unwrap_or_else(|| name(body(q.0))), int(&nm["colour"])),
                     (None, Some(Some(c))) if next && m == 1 && side.picks.first().is_some_and(|q| body(q.0) == c) => {
                         (nm["selected"][0].as_str().unwrap_or_default().to_string(), int(&nm["selected"][1]))
                     }
-                    (None, Some(Some(c))) if next => (name(c, 0), picking),
+                    (None, Some(Some(c))) if next => (name(c), picking),
                     (None, Some(None)) if next => match s.roll(d, roster, p, k) {
-                        Some(c) => (name(c, 0), picking),
+                        Some(c) => (name(c), picking),
                         None => continue,
                     },
                     _ => continue,
@@ -2950,9 +2969,9 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
             }
         }
         let plates = if quick { 0 } else { sel["plates"][k].as_array().map_or(0, Vec::len) };
-        for (j, &i) in list.iter().skip(list.len().saturating_sub(plates)).enumerate() {
+        for (j, &b) in list.iter().skip(list.len().saturating_sub(plates)).enumerate() {
             let at = &sel["plates"][k][j];
-            sprite(painter, v, art, &d.picture(&["hud", "plates", &body(i).to_string(), "picture"]), num(&at[0]), num(&at[1]), Color32::WHITE);
+            sprite(painter, v, art, &d.picture(&["hud", "plates", &b.to_string(), "picture"]), num(&at[0]), num(&at[1]), Color32::WHITE);
         }
         // "1ST" while the side has no pick (0x3CC660), "2ND" once `second_after` frames after a pick passed while
         // its partner's place stands nobody (0x3CB4B4); neither in 1 ON 1 (modes 5, 6; 1ST shows in 6); the number
@@ -3360,7 +3379,7 @@ pub fn draw_vs(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, se
     for k in 0..if extra.force.is_some() { 1 } else { 2 } {
         let team: Vec<(usize, usize)> = [Some(setup.players[k]), extra.bench.map(|b| b[k])].into_iter().flatten().collect();
         for (j, m) in team.iter().enumerate() {
-            let id = roster.characters.get(m.0).map_or(0, |c| c.id);
+            let id = roster.characters.get(m.0).map_or(0, |c| c.costumes.get(m.1).map_or(c.id, |&r| d.body(r, c.id)));
             let file = d.picture(&["select", "portraits", &id.to_string()]);
             let at = &vs["places"][k][j];
             if at.is_array() {
@@ -4829,7 +4848,13 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
                 let (y, inner) = (by - off, if i == 0 { bx[0] + bw - off } else { bx[1] + off });
                 if is_front {
                     // the name plate (0x3C1DA0) on its streak, added (draw mode 4)
-                    let body = fight.teams.as_deref().and_then(|t| t[i].members[k].character).or(fight.fighters[i].character).unwrap_or(0).max(0) as usize;
+                    let character = fight.teams.as_deref().and_then(|t| t[i].members[k].character).or(fight.fighters[i].character);
+                    // (its costume's: the benched partner's body when that is this member's, else the fighter's)
+                    let model = match &bout.game.tag_bench {
+                        Some(b) if b[i].character == character => b[i].body.model_record,
+                        _ => bout.game.bodies[i].model_record,
+                    };
+                    let body = d.body(model, character.unwrap_or(0).max(0) as usize);
                     let plate = &h["plates"][body];
                     let (px, py) = (num(&h["plate_x"][i]) + if i == 0 { -off } else { off }, num(&h["plate_y"]) - off);
                     let streak = h["streaks"][int(&plate["streak"])].as_str().unwrap_or_default();
@@ -4991,7 +5016,7 @@ pub fn tag_brawl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, g: 
             let (y, inner) = (by - off, if side == 0 { bx[0] + bw - off } else { bx[1] + off });
             // the name plate (the first row's on its streak, added; the second's under it, darker), who plays it on
             // its inner side
-            let body = g.melee.actors[i].character.unwrap_or(0).max(0) as usize;
+            let body = d.body(g.bodies[i].model_record, g.melee.actors[i].character.unwrap_or(0).max(0) as usize);
             let plate = &h["plates"][body];
             let file = plate["picture"].as_str().unwrap_or_default();
             let [pw, ph] = art.pic(file).map_or([0.0; 2], |p| p.1.map(|x| x as f32));
@@ -6552,6 +6577,22 @@ mod tests {
             .collect();
         assert_eq!(scrolls, [22, 18, 14, 10, 6, 2, 0, 0]);
         assert!(matches!(f.page, Page::Menu { cursor: 1, .. }));
+    }
+
+    /// A costume that is another fighter goes by its own name and body (PCSX2: Kuma's and Roger's costume 1 are PANDA
+    /// and ALEX, Eddy's and Devil's costume 4 TIGER and ANGEL, on the select's plates and the fight's). Needs
+    /// `OK_TTT_ASSETS` (format 85).
+    #[test]
+    fn costumes_that_are_other_fighters_have_their_names_and_plates() {
+        let Some(root) = std::env::var_os("OK_TTT_ASSETS").map(std::path::PathBuf::from) else { return };
+        let d = crate::menu::Roster::load(&root.join("gamedata")).ttt.unwrap();
+        // (model records: Kuma 498 / Panda 501, Roger 567 / Alex 570, Eddy 456 / Tiger 462, Devil 663 / Angel 666)
+        for (model, character, name, body) in
+            [(498, 11, "KUMA", 11), (501, 11, "PANDA", 35), (567, 17, "ROGER", 17), (570, 17, "ALEX", 37), (456, 8, "EDDY", 8), (462, 8, "TIGER", 34), (663, 29, "DEVIL", 29), (666, 29, "ANGEL", 38)]
+        {
+            assert_eq!((d.name(model).as_deref(), d.body(model, character)), (Some(name), body), "model {model}");
+        }
+        assert_eq!((d.name(1), d.body(1, 40)), (None, 40), "no record: the character's");
     }
 
     /// The select's 3D characters play the moves the PS2 plays (read in PCSX2 at the select's fighter +0xC0: [character,
