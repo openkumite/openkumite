@@ -337,8 +337,10 @@ struct BowlRun {
     select: bool,
     /// Each player's model record (its voices).
     records: Vec<usize>,
-    /// Each player's team (character ids: the bowler, its partner), for TOP 5 BOWLERS.
+    /// Each player's team (character ids: the bowler, its partner).
     teams: Vec<[usize; 2]>,
+    /// ... and its bodies, whose faces the results and TOP 5 BOWLERS show (PCSX2: Kuma's costume 1 PANDA's).
+    bodies: Vec<[usize; 2]>,
     /// The pause menu (state 9, START in the throw: Tekken Tag's with Bowl's entries): its cursor and player, RESET?
     /// open (YES chosen), TOP BOWLERS or BOWLING OPTIONS open (its cursor).
     pause: Option<(usize, usize)>,
@@ -365,7 +367,7 @@ impl BowlRun {
         let sc = &self.scene;
         let mut top = ttt::progress().bowlers.unwrap_or_else(|| sc.records.defaults.clone());
         let mut from = 0;
-        let placed = (sc.bowl.cards.iter().zip(&self.teams))
+        let placed = (sc.bowl.cards.iter().zip(&self.bodies))
             .map(|(card, team)| {
                 let place = sc.records.insert(&mut top, from, kumite_game::bowl::Record { name: String::new(), bodies: *team, score: card.total(), card: card.clone() });
                 from = place.map_or(from, |p| p + 1);
@@ -4450,6 +4452,8 @@ impl App {
             // (the effects' atlas, for the hall's smoke and SPECIAL EFFECTS' burst)
             self.vfx = Some(kumite_game::vfx::Vfx::new(&self.assets));
             let teams = players.iter().zip(&partners).map(|(p, m)| [p.1, m.map_or(p.1, |m| m.1)]).collect();
+            let body = |(model, id): (usize, usize)| self.roster.ttt.as_ref().map_or(id, |d| d.body(model, id));
+            let bodies = players.iter().zip(&partners).map(|(&p, m)| [body(p), body(m.unwrap_or(p))]).collect();
             self.bowl = Some(BowlRun {
                 scene,
                 models,
@@ -4460,6 +4464,7 @@ impl App {
                 select: false,
                 records: players.iter().map(|p| p.0).collect(),
                 teams,
+                bodies,
                 pause: None,
                 reset: None,
                 page: None,
@@ -6439,7 +6444,7 @@ impl App {
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("bowl_hud")));
                         // (state 9, the pause or the score card, draws no HUD of the throw's; the game over its results)
                         match (&b.top, b.page) {
-                            (Some((_, placed)), None) => ttt::bowl_results(&painter, &view, art, d, &b.scene, &b.teams, placed, (frames, b.scene.bowl.frame.saturating_sub(b.over_at))),
+                            (Some((_, placed)), None) => ttt::bowl_results(&painter, &view, art, d, &b.scene, &b.bodies, placed, (frames, b.scene.bowl.frame.saturating_sub(b.over_at))),
                             (_, None) if b.pause.is_none() => ttt::bowl_hud(&painter, &view, art, d, &b.scene, frames),
                             _ => {}
                         }
@@ -9118,7 +9123,9 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         let r: serde_json::Value = assets.gamedata("roster.json").unwrap_or_default();
         for e in r["selections"]["entries"].as_array().into_iter().flatten() {
             if let (Some(m), Some(n)) = (e["model_record"].as_u64(), e["name"].as_str()) {
-                d.extra_names.insert(m as usize, n.to_uppercase());
+                // (the costume's own name, the PS2's: PANDA, not "KUMA / PANDA")
+                let n = roster.ttt.as_ref().and_then(|t| t.name(m as usize)).unwrap_or_else(|| n.to_uppercase());
+                d.extra_names.insert(m as usize, n);
             }
         }
         d
