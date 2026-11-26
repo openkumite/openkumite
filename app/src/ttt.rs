@@ -2867,10 +2867,10 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
         painter.image(tex.id(), Rect::from_min_max(v.pos(x, y), v.pos(x + w, y + h)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), ps2(num(&l["level"])).0);
     }
     let body = |i: usize| roster.characters.get(i).map_or(0, |c| c.id);
-    // (a pick's costume's: Kuma's PANDA; one under the cursor its character's)
+    // (a pick's costume's: Kuma's PANDA; one under the cursor its costume 0's)
     let model = |(i, costume): (usize, usize)| roster.characters.get(i).and_then(|c| c.costumes.get(costume)).copied();
     let picked = |q: (usize, usize)| model(q).map_or(body(q.0), |m| d.body(m, body(q.0)));
-    let shown = |k: usize| -> Vec<usize> { s.shown(d, roster, p, k).into_iter().map(|(i, c)| c.map_or(body(i), |c| picked((i, c)))).collect() };
+    let shown = |k: usize| -> Vec<usize> { s.shown(d, roster, p, k).into_iter().map(|(i, c)| c.map_or(first_body(d, body(i)), |c| picked((i, c)))).collect() };
     // (the 3D characters stand in front of the lightning, behind the rest)
     crate::debug::mark_under(painter);
     let frame = sel["frame"]["picture"].as_str().unwrap_or_default();
@@ -2898,7 +2898,7 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
                     (Some(q), _) => (d.picture(&["select", "faces", &picked(*q).to_string()]), 128.0, Some(num(&fr["picked"]))),
                     (None, Some(Some(c))) if m == n => {
                         let same = side.picks.first().is_some_and(|q| body(q.0) == c);
-                        (d.picture(&["select", "faces", &c.to_string()]), if same { num(&fr["same"]) } else { 128.0 }, Some(pulse))
+                        (d.picture(&["select", "faces", &first_body(d, c).to_string()]), if same { num(&fr["same"]) } else { 128.0 }, Some(pulse))
                     }
                     (None, Some(None)) if m == n => (d.picture(&["select", "random_face"]), 128.0, Some(pulse)),
                     _ => (d.picture(&["select", "random_face"]), 128.0, None),
@@ -2922,7 +2922,7 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
         }
         let mut face = match slot.character {
             None => d.picture(&["select", "random_face"]),
-            Some(c) if d.selectable(p.stage, c) && roster.by_id(c).is_some() => d.picture(&["select", "faces", &c.to_string()]),
+            Some(c) if d.selectable(p.stage, c) && roster.by_id(c).is_some() => d.picture(&["select", "faces", &first_body(d, c).to_string()]),
             Some(_) => d.picture(&["select", "locked_face"]),
         };
         let mut l = level("normal");
@@ -2932,7 +2932,7 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
                 l = level("picked");
             }
             if let (None, Some(c)) = (slot.character, s.roll(d, roster, p, j)) {
-                face = d.picture(&["select", "faces", &c.to_string()]);
+                face = d.picture(&["select", "faces", &first_body(d, c).to_string()]);
             }
         }
         lit(painter, v, art, &face, [slot.x, slot.y + dy, size, size], l);
@@ -4509,6 +4509,11 @@ fn body_name(d: &Data, body: usize) -> String {
     d.raw["select"]["quick"]["names"]["texts"][body * 8].as_str().unwrap_or_default().to_string()
 }
 
+/// Character `c`'s costume 0 body, the one a cursor on it loads (PCSX2: Mokujin's slot shows TETSUJIN's face).
+fn first_body(d: &Data, c: usize) -> usize {
+    d.raw["select"]["quick"]["names"]["bodies"][c * 8].as_u64().map_or(c, |b| b as usize)
+}
+
 /// A PS2 RGBA `[r, g, b, a]` (alpha 0x80 opaque).
 fn rgba(c: &Value) -> Color32 {
     let k = |i: usize| int(&c[i]).min(255) as u8;
@@ -4820,7 +4825,7 @@ pub fn draw_pause(painter: &egui::Painter, v: &View, art: &Art, d: &Data, items:
 /// member's name plate on its streak; the round lamps; the timer's digits; in the ladder modes the player's STAGE and
 /// the run's time (`run`, frames), the other side's INSERT COIN (Time Attack's label); the round's texts by its state
 /// (0x36EA88): ROUND n and READY! in the call, the result while it ends and its replay plays, YOU WIN! / YOU LOSE in
-/// the pose.
+/// the pose (two players: YOU WIN! and WINNERS / LOSERS).
 #[allow(clippy::too_many_arguments)]
 pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, info: &crate::hud::HudInfo, tag: &TagHud, result: Option<Announcement>, frame: u32, run: u32) {
     let h = &d.raw["hud"];
@@ -4963,8 +4968,22 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
         }
         Phase::Result { winner } => match winner {
             None => banner(painter, v, art, d, "draw", 0),
-            // (two players: the winner's name, not done)
             Some(w) if info.humans[w] != info.humans[1 - w] => banner(painter, v, art, d, if info.humans[w] { "you_win" } else { "you_lose" }, 0),
+            // two players: YOU WIN!, and once the match is decided (settings +0x1F), but in TIME ATTACK, each side's
+            // WINNER(S) / LOSER(S) (a side alone: the singular), the left one ending at `right`
+            Some(w) if info.humans[w] => {
+                banner(painter, v, art, d, "you_win", 0);
+                let r = &h["winners"];
+                if (bout.decided() || bout.is_final_round()) && info.time_base.is_none() {
+                    for k in 0..2 {
+                        let lost = usize::from(k != w);
+                        let text = r["texts"][lost + 2 * usize::from(TagHud::members(bout, k).len() < 2)].as_str().unwrap_or_default();
+                        let size = num(&r["size"]);
+                        let x = if k == 0 { num(&r["right"]) - chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, text, 0.0, 0.0, None, size) } else { num(&r["x"]) };
+                        chrome(painter, v, art, d, text, x, num(&r["y"]), Some(int(&r["colours"][lost])), size);
+                    }
+                }
+            }
             _ => {}
         },
         _ => {}
@@ -6593,6 +6612,8 @@ mod tests {
             assert_eq!((d.name(model).as_deref(), d.body(model, character)), (Some(name), body), "model {model}");
         }
         assert_eq!((d.name(1), d.body(1, 40)), (None, 40), "no record: the character's");
+        // (PCSX2, QUICK SELECT: Mokujin's slot shows TETSUJIN's face and name, his costume 1 MOKUJIN's)
+        assert_eq!((first_body(&d, 15), body_name(&d, 15), d.name(549).as_deref(), d.body(549, 15)), (36, "TETSUJIN".to_string(), Some("MOKUJIN"), 15));
     }
 
     /// The select's 3D characters play the moves the PS2 plays (read in PCSX2 at the select's fighter +0xC0: [character,

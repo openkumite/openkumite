@@ -739,7 +739,8 @@ impl Hud {
             (if human_won { &d.you_win } else { &d.you_lose }).draw(painter, v, art);
             return;
         }
-        let name = info.names[w].to_uppercase();
+        // (a fighter named on its plate by `extra_names`, by that name: Tekken Tag's PANDA, not "KUMA / PANDA")
+        let name = d.extra_names.get(&info.models[w]).unwrap_or(&info.names[w]).to_uppercase();
         let mut t = d.wins.clone();
         t.text = t.text.replace("%s", &name);
         let [centre, per_char, offset] = d.wins_x;

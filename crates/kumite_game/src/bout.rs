@@ -472,7 +472,7 @@ impl Bout {
     }
 
     /// The match is decided (someone has the wins it needs).
-    fn decided(&self) -> bool {
+    pub fn decided(&self) -> bool {
         self.wins.iter().any(|&w| w >= self.rounds_to_win)
     }
 
