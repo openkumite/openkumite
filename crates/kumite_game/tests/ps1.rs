@@ -50,13 +50,15 @@ fn sound(a: &Assets, models: [usize; 2]) -> Option<Box<FightSound>> {
 /// `lead`: steps P1's start move runs ahead of P2's (the PS1's round 2 starts them a step apart); `copy`: the copying
 /// character P1's draw for the round (its pool's entry).
 fn rows(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize) -> Vec<Row> {
-    rows_at(a, models, copy, lead, p1, p2, steps, &std::env::var("VS_RAND").unwrap_or_default()).0
+    rows_at(a, models, copy, lead, p1, p2, steps, &std::env::var("VS_RAND").unwrap_or_default(), false).0
 }
 
 /// [`rows`] from the PS1's rand() and blinks ([`start_rand`]), and rand()'s state after each step; VS_RAND_LOG=1
-/// prints each step's state ("step rs seed g=count objects").
+/// prints each step's state ("step rs seed g=count objects"). `intro`: the fighters stand where round 1's intros
+/// (alias 0, the coin flip's neutral pads) left them, not on the start marks.
 #[allow(clippy::too_many_arguments)]
-fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize, start: &str) -> (Vec<Row>, Vec<u32>) {
+fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize, start: &str, intro: bool) -> (Vec<Row>, Vec<u32>) {
+    let at = intro.then(|| intro_ends(a, models));
     let mut g = Game::load(a, models).unwrap();
     g.sound = sound(a, models);
     // (the PS1's VS LIFE level 3, "100 %", is the life table's 140, 0x800225EC; round 1's intro ends on a commit facing
@@ -75,6 +77,9 @@ fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &
     f.yaw = (0x8000 - 0xBFFF) as f32 * std::f32::consts::TAU / 65536.0;
     f.root_yaw = f.yaw;
     g.fight.fighters[0].frame += lead;
+    for (f, p) in g.fight.fighters.iter_mut().zip(at.into_iter().flatten()) {
+        f.position = p;
+    }
     start_rand(&mut g, start);
     let log = std::env::var_os("VS_RAND_LOG").is_some();
     let (s1, s2) = (parse_script(p1).unwrap(), parse_script(p2).unwrap());
@@ -104,6 +109,16 @@ fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &
         })
         .collect();
     (rows, seeds)
+}
+
+/// Where round 1's intros leave the fighters (a bout's call with neutral pads: alias 0 each, as the PS1's case had).
+fn intro_ends(a: &Assets, models: [usize; 2]) -> [glam::Vec3; 2] {
+    use kumite_game::bout::{Bout, Phase};
+    let mut b = Bout::new(Game::load(a, models).unwrap(), kumite_game::ai_data(a).unwrap(), 2, true);
+    while b.phase != Phase::Fight {
+        b.step(Default::default());
+    }
+    b.game.fight.fighters.each_ref().map(|f| f.position)
 }
 
 /// Prints the rows (VS_TRACE=1; VS_MODELS=a,b, VS_P1 / VS_P2 the pads' scripts, VS_STEPS, VS_COPY P1's copy draw) as
@@ -145,7 +160,7 @@ fn at(rows: &[Row], first: usize, row: usize, i: usize) -> &(i32, i32, i32, i16,
 #[test]
 fn the_breath_turns_on_the_one_rand_stream_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let (t, seeds) = rows_at(&a, [203, 99], None, 1, "n*245,f*40,n+1+2*2,n*218", "n*246,b*80,n*180", 503, "a71000eb,57,0,0,1,1");
+    let (t, seeds) = rows_at(&a, [203, 99], None, 1, "n*245,f*40,n+1+2*2,n*218", "n*246,b*80,n*180", 503, "a71000eb,57,0,0,1,1", false);
     for (row, want) in [(1026, (-286, -999, -24, 9_175_040)), (1027, (-282, -1018, -19, 6_619_136)), (1060, (401, -997, -133, 6_619_136)), (1150, (-410, -170, -32, 6_619_136))] {
         let r = at(&t, 676, row, 1);
         assert_eq!((r.0, r.1, r.2, r.5), want, "PS1 row {row}");
@@ -164,7 +179,7 @@ fn the_breath_turns_on_the_one_rand_stream_as_on_the_ps1() {
 fn heavy_hits_throw_their_particles_off_as_on_the_ps1() {
     let Some(a) = assets() else { return };
     let start = "d06f2765,137,0,0,1,1,0:1442,91:1532,104:1544,145:1584,164:1602,199:1636,224:1660,253:1688,284:1718,307:1740,344:1776,361:1792,363:1793,450:1879,480:1908,494:1921,496:1922,546:1971,556:1980,562:1985,600:2022,607:2028,654:2074";
-    let (t, seeds) = rows_at(&a, [75, 99], None, 1, "n*407,d/f+1*2,n*40,n+4*2,n*50,n+3*2,n*154", "n*358,b*300", 656, start);
+    let (t, seeds) = rows_at(&a, [75, 99], None, 1, "n*407,d/f+1*2,n*40,n+4*2,n*50,n+3*2,n*154", "n*358,b*300", 656, start, false);
     // (rs.lua's state and count after the PS1's steps 1011, 1067 and 1150: the hits' particles and their ends)
     assert_eq!([seeds[461], seeds[517], seeds[600]], [0x0ecd_4125, 0x3e7a_a644, 0xfb37_3062]);
     assert_eq!(at(&t, 549, 1012, 1).5, 6_553_600, "PS1 row 1012: King's health");
@@ -177,7 +192,7 @@ fn heavy_hits_throw_their_particles_off_as_on_the_ps1() {
 fn a_ki_charge_glows_and_kicks_as_on_the_ps1() {
     let Some(a) = assets() else { return };
     let start = "d06f2765,137,0,0,1,1,0:1442,91:1532,104:1544,145:1584,164:1602,199:1636,224:1660,253:1688,284:1718,307:1740,344:1776,361:1792,363:1793,452:1881,463:1891,468:1895,519:1945,575:2000,623:2047,637:2060,639:2061";
-    let (t, seeds) = rows_at(&a, [75, 99], None, 1, "n*407,1+2+3+4*2,n*79,n+4*2,n*40,n+3*2,n*60,n+4*2,n*120", "n*358,b*300", 655, start);
+    let (t, seeds) = rows_at(&a, [75, 99], None, 1, "n*407,1+2+3+4*2,n*79,n+4*2,n*40,n+3*2,n*60,n+4*2,n*120", "n*358,b*300", 655, start, false);
     assert_eq!([seeds[470], seeds[500], seeds[600], seeds[652]], [0x2aba_01bf, 0x678c_be36, 0x325e_87c2, 0x17de_4cff]);
     let r = at(&t, 549, 1151, 1);
     assert_eq!((r.0, r.1, r.2, r.5), (-2002, -916, 405, 7_143_424), "PS1 row 1151: King");
@@ -202,16 +217,21 @@ fn kings_grounded_throw_takes_jin_lying_as_on_the_ps1() {
 
 /// Gon's 1+3 on Paul: the victim's alias comes from Paul's own merged table (0x8002D75C -> 0x8002D178), his own
 /// common move (common_140, Paul's height at Gon's size); Gon's own victim move (motion_047) put Paul up to 862 off.
-/// The heights are the PS1's (t3sim42's g2gon re-recording); its x and z stay 40 and 4 off from the fight's start.
+/// The heights are the PS1's (t3sim42's g2gon re-recording), from where round 1's intros left them; x stays 19 off.
 #[test]
 fn gons_throw_takes_pauls_own_victim_move_as_on_the_ps1() {
     let Some(a) = assets() else { return };
     let p1 = "n*223,f*40,n+1+3*2,n*255,d/b+1+3*2,n*64,d/b+1+3*2,n*120";
-    let t = rows(&a, [239, 71], None, 1, p1, "n*800", 360);
+    let t = rows_at(&a, [239, 71], None, 1, p1, "n*800", 360, "", true).0;
     for (row, y) in [(1235, -858), (1249, -3093), (1259, -3345), (1281, -1313)] {
         assert_eq!(at(&t, 938, row, 1).1, y, "PS1 row {row}");
     }
     assert!(at(&t, 938, 1249, 1).6.starts_with("common_140@"));
+    // (from where the intros left them, Paul at z 4: both fighters' z and Gon's basis toward him, 16352, the PS1's)
+    for (row, z) in [(1200, [1, 4]), (1230, [99, -23]), (1259, [5, -44]), (1281, [-14, -64])] {
+        assert_eq!([0, 1].map(|i| at(&t, 938, row, i).2), z, "PS1 row {row}");
+    }
+    assert_eq!(at(&t, 938, 1200, 0).4, 16352);
 }
 
 /// Lei (P1) taps up near the end of the later rounds' start move (240 frames from frame 1, 0x8002D3DC; it kept the
@@ -279,7 +299,7 @@ fn king_knocks_out_jin_as_on_the_ps1() {
 #[test]
 fn doctor_bs_mist_strikes_gon_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let t = rows_at(&a, [251, 243], None, 1, "n*155,f*40,n+2*2,n*30,d+4*2,n*40,b+3*2,n*144", "n*156,b*40,n+4*2,n*40,n+1+2*2,n*176", 260, "d06f2765,60,0,0,1,0").0;
+    let t = rows_at(&a, [251, 243], None, 1, "n*155,f*40,n+2*2,n*30,d+4*2,n*40,b+3*2,n*144", "n*156,b*40,n+4*2,n*40,n+1+2*2,n*176", 260, "d06f2765,60,0,0,1,0", false).0;
     for (row, want) in [(917, (439, -16416)), (920, (500, -16414)), (922, (521, -16412))] {
         let r = at(&t, 739, row, 1);
         assert_eq!((r.0, r.3), want, "PS1 row {row}");
