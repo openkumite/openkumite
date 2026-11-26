@@ -738,3 +738,30 @@ fn an_air_hit_keeps_the_drift_found_the_frame_before_as_on_the_ps1() {
         assert_eq!((r.0, r.1, r.2), want, "PS1 row {row}");
     }
 }
+
+/// True Ogre standing (t3sim44's ogre2 recording, P+0x20C each step): his hand's hurt sphere 3 (slot 6) follows his
+/// arm's wave (0x80033A00), as the PS1's hurt spheres read the skeleton's matrices (P+0x8F4, 0x80041F6C): all 14 were
+/// the PS1's on its rows 164 to 1060 (sphere 3 was on the motion's hand, 326 off at row 220). The wave's counter P+0x1294 runs from the fight's
+/// load, step n's n - 1, on into round 2 (t3sim44's ogre recording: 2861 at round 2's first step).
+#[test]
+fn true_ogres_hand_is_hit_where_his_wave_puts_it_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [203, 99]).unwrap();
+    g.reset_round();
+    g.set_start_moves(g.fight.fighters.each_ref().map(|f| f.moveset.fixed.round_start[2]));
+    // (the PS1's row 161: his stance on frame 10, the counter 160; ours a step before)
+    (g.fight.fighters[0].frame, g.flaps[0].count) = (9, 159);
+    let mut hand = std::collections::BTreeMap::new();
+    for row in 161..=1000 {
+        g.step(Default::default());
+        let f = &g.fight.fighters[0];
+        let (r, s) = (f.root(), g.spheres()[0].hurt[3].centre);
+        hand.insert(row, [s.x - r.x, -s.y + r.y + f.anim_root_y, -s.z + r.z].map(|v| v.round() as i32));
+    }
+    for (row, want) in [(220, [87, 167, -673]), (520, [57, 134, -752]), (880, [256, 76, -663]), (1000, [220, 109, -661])] {
+        assert_eq!(hand[&row], want, "PS1 row {row}");
+    }
+    let count = g.flaps[0].count;
+    g.reset_round();
+    assert_eq!(g.flaps[0].count, count, "the wave's counter runs on into the next round");
+}
