@@ -8618,7 +8618,7 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
             }
             return Ok(());
         }
-        // TAG BRAWL: its modes; a mode's setup (--variant 0 free for all, 1 two on two, 2 tag arcade); tag: a match
+        // TAG BRAWL: its modes; a mode's setup (--variant 0 free for all, 1 two on two, 2 tag arcade, 3 Ball 2 ON 2); tag: a match
         // of four CPUs (--variant 1: slot 1 is 1P; 2: free for all; 3: tag arcade, --level N its pair)
         // ONLINE's screen (--variant N: the way, --code: the room code or address)
         Some("online") => {
@@ -8632,7 +8632,7 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
         Some("ball-modes") => app.screen = Some(Screen::BallModes { frame: 20, cursor: 0, difficulty: 1 }),
         Some("tag-setup") => {
             let variant = std::env::args().skip_while(|a| a != "--variant").nth(1).and_then(|v| v.parse().ok()).unwrap_or(1usize);
-            let mode = tagrun::TagMode::ALL[variant.min(2)];
+            let mode = [tagrun::TagMode::Free, tagrun::TagMode::Teams, tagrun::TagMode::Arcade, tagrun::TagMode::Ball][variant.min(3)];
             app.screen = Some(Screen::Tag(Box::new(tagrun::TagSelect::new(&app.roster, 1, 1, mode))));
         }
         Some("tag") => {

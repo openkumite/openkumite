@@ -2621,6 +2621,46 @@ pub fn face_in(painter: &egui::Painter, v: &View, art: &Art, d: &Data, id: Optio
     }
 }
 
+/// OpenKumite's four-slot setup (TAG BRAWL, Ball 2 ON 2: [`crate::tagrun::TagSelect`]) in Tekken Tag's look, its places
+/// Tekken 3's 368 x 480 ones: the select's lightning over the whole screen, a picture a frame.
+pub fn setup_backdrop(painter: &egui::Painter, v: &View, art: &Art, d: &Data, frame: u32) {
+    let l = &d.raw["select"]["lightning"];
+    let pics: Vec<&str> = l["pictures"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
+    if let Some((tex, _)) = pics.get(frame as usize % pics.len().max(1)).and_then(|file| art.pic_linear(file)) {
+        painter.image(tex.id(), v.rect(0.0, 0.0, SCREEN_W, SCREEN_H), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), ps2(num(&l["level"])).0);
+    }
+}
+
+/// The setup's text centred on `cx`, its top at `y`: in the chrome font at `size` (shrunk to `max_w` wide), or in the
+/// small font (`size` 0).
+#[allow(clippy::too_many_arguments)]
+pub fn setup_text(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, [cx, y]: [f32; 2], size: f32, colour: Option<usize>, max_w: f32) {
+    let (x, y) = (cx * W / SCREEN_W, y * H / SCREEN_H);
+    if size == 0.0 {
+        small_in(painter, v, art, d, colour, text, x - small_width(d, text) / 2.0, y, Color32::WHITE);
+        return;
+    }
+    let w = chrome(&painter.with_clip_rect(Rect::NOTHING), v, art, d, text, 0.0, 0.0, None, size).max(1.0);
+    let fit = (max_w * W / SCREEN_W / w).min(1.0);
+    // (the chrome font's glyphs start `foot_dy` above its y, whatever its size)
+    chrome(painter, v, art, d, text, x - w * fit / 2.0, y - num(&d.raw["fonts"]["big"]["foot_dy"]), colour, size * fit);
+}
+
+/// The select's cursor (`select.cursors`: 1P's, else 2P's) about a face at [x, y, w, h], pulsing by `frame`.
+pub fn setup_cursor(painter: &egui::Painter, v: &View, art: &Art, d: &Data, [x, y, w, h]: [f32; 4], frame: u32, second: bool) {
+    let file = d.raw["select"]["cursors"][usize::from(second)].as_str().unwrap_or_default();
+    lit(painter, v, art, file, [x * W / SCREEN_W, y * H / SCREEN_H, w * W / SCREEN_W, h * H / SCREEN_H], cursor_level(d, frame));
+}
+
+/// The select cursors' level at `frame`: between `low` and `high`, `step` a frame up and down (`select.cursor_pulse`).
+fn cursor_level(d: &Data, frame: u32) -> f32 {
+    let pulse = &d.raw["select"]["cursor_pulse"];
+    let (low, high, step) = (num(&pulse["low"]), num(&pulse["high"]), num(&pulse["step"]).max(1.0));
+    let span = (high - low).max(1.0);
+    let at = (frame as f32 * step) % (2.0 * span);
+    low + if at < span { at } else { 2.0 * span - at }
+}
+
 /// A picture (pictures/`file`) at [x, y, w, h] of the 640 x 448 screen (a negative w mirrors it, to the left of x).
 fn image(painter: &egui::Painter, v: &View, art: &Art, file: &str, r: [f32; 4], tint: Color32) {
     let Some((tex, _)) = art.pic(file) else { return };
@@ -3005,11 +3045,7 @@ fn draw_select(painter: &egui::Painter, v: &View, art: &Art, d: &Data, roster: &
         }
     }
     // the cursors, 2P's under 1P's: a level between `low` and `high`, `step` a frame up and down
-    let pulse = &sel["cursor_pulse"];
-    let (low, high, step) = (num(&pulse["low"]), num(&pulse["high"]), num(&pulse["step"]).max(1.0));
-    let span = (high - low).max(1.0);
-    let at = (s.frame as f32 * step) % (2.0 * span);
-    let level = low + if at < span { at } else { 2.0 * span - at };
+    let level = cursor_level(d, s.frame);
     let r = &sel["cursor_rect"];
     for (k, side) in s.sides.iter().enumerate().rev() {
         let (Some(player), false, Some(slot)) = (side.player, side.done, d.slots.get(side.cursor)) else { continue };
