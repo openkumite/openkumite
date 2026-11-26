@@ -13,7 +13,7 @@ pub struct Pad {
     pub down: bool,
     pub left: bool,
     pub right: bool,
-    /// Buttons 1..4 as bits 0..3; Tekken Tag's tag button as bit 4 ([`TAG`]).
+    /// Buttons 1..4 as bits 0..3; Tekken Tag's tag button as bit 4 ([`TAG`]); the target button as bit 5 ([`TARGET`]).
     pub buttons: u8,
     /// START, pressed this frame (online only, where it goes through the rollback's pads: it skips a replay or a
     /// win pose on every computer at once; the fight itself never reads it).
@@ -27,6 +27,9 @@ pub const HISTORY: usize = 60;
 pub const TAG: u8 = 0x10;
 /// A plain command's tag-button bit (Tekken Tag's command bit 14; Tekken 3's commands never have it).
 pub const TAG_COMMAND: u32 = 0x4000;
+/// The target button's bit in [`Pad::buttons`] (OpenKumite's own): with more than two on the stage, a press locks on
+/// to the next foe ([`crate::melee::Melee::cycle_target`]); no move reads it.
+pub const TARGET: u8 = 0x20;
 
 #[derive(Clone, Debug)]
 pub struct InputState {

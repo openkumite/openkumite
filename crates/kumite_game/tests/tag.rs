@@ -193,3 +193,69 @@ fn fire_and_breath_strike_across_teams() {
         assert!(hits.first().is_some_and(|&h| h == (0, 1, byte)), "the one in the way: {hits:?}");
     }
 }
+
+/// TARGET through the step (each for themselves, 1P on the pad): a press locks on to the foe fought, the next ones move
+/// on; no other foe is taken while the one locked on stands. The match from its tape, and saved, run on other pads
+/// and put back (a rollback), is the same match frame by frame.
+#[test]
+fn target_presses_lock_on_and_play_again_alike() {
+    let Some(a) = assets() else { return };
+    let mut slots = [MODEL_71, MODEL_79, MODEL_103, MODEL_87].map(|record| Slot { record, cpu: Some((2, 9)) });
+    slots[0].cpu = None;
+    let load = || TagGame::load(&a, slots, vec![0, 1, 2, 3], kumite_game::ai_data(&a).unwrap(), 2).expect("load");
+    // a press every 2 s, and some moves between
+    let pad = |f: usize| Pad {
+        right: f % 50 < 20,
+        buttons: if f.is_multiple_of(120) {
+            kumite_sim::input::TARGET
+        } else if f.is_multiple_of(37) {
+            1
+        } else {
+            0
+        },
+        ..Pad::default()
+    };
+    let mut g = load();
+    g.tape = Some(Default::default());
+    let (mut presses, mut held) = (0, 0);
+    let mut seen = Vec::new();
+    for f in 0..3000 {
+        let before = (g.melee.target[0], g.melee.locked[0], g.phase == TagPhase::Fight);
+        g.step([pad(f), Pad::default(), Pad::default(), Pad::default()]);
+        seen.push((g.state_hash(), g.melee.target.clone(), g.melee.locked.clone()));
+        let m = &g.melee;
+        if g.phase != TagPhase::Fight || !before.2 || m.linked_with(0).is_some() {
+            continue;
+        }
+        if f.is_multiple_of(120) {
+            presses += 1;
+            assert!(m.locked[0] && m.lockable(0, m.target[0]), "frame {f}: locked on to a foe in play");
+            assert!(!before.1 || m.target[0] != before.0 || (0..4).filter(|&j| m.lockable(0, j)).count() == 1, "frame {f}: the next foe");
+        } else if before.1 && m.lockable(0, before.0) {
+            held += 1;
+            assert_eq!((m.target[0], m.locked[0]), (before.0, true), "frame {f}: the lock holds");
+        }
+    }
+    println!("{presses} presses, {held} frames held");
+    assert!(presses >= 5 && held >= 500);
+    // its tape played again
+    let mut r = load();
+    r.play(g.tape.as_ref().unwrap().to_vec().into());
+    for (f, s) in seen.iter().enumerate() {
+        r.step([Pad::default(); 4]);
+        assert_eq!(&(r.state_hash(), r.melee.target.clone(), r.melee.locked.clone()), s, "replay frame {f}");
+    }
+    // rolled back every 5th frame after 7 frames of other pads (TARGET pressed in them too)
+    let mut r = load();
+    for (f, s) in seen.iter().enumerate() {
+        if f.is_multiple_of(5) {
+            let saved = r.clone();
+            for k in 0..7 {
+                r.step([pad(f + k + 60), Pad::default(), Pad::default(), Pad::default()]);
+            }
+            r = saved;
+        }
+        r.step([pad(f), Pad::default(), Pad::default(), Pad::default()]);
+        assert_eq!(&(r.state_hash(), r.melee.target.clone(), r.melee.locked.clone()), s, "rollback frame {f}");
+    }
+}

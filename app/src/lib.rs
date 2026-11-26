@@ -4908,6 +4908,45 @@ impl App {
         }
     }
 
+    /// TARGET's markers (more than two on the stage, while the round is fought): each human player (0..3), the point
+    /// over the head of the foe it fights (metres), and whether it is locked on.
+    fn target_marks(&self) -> Vec<(usize, glam::Vec3, bool)> {
+        // (at a fixed height over the floor: steady through jumps, throws and bows)
+        let over = |f: &kumite_sim::Fighter| (!f.inactive && f.health > 0).then(|| glam::Vec3::new(f.root().x / kumite_game::UNITS, 2.0, f.root().z / kumite_game::UNITS));
+        if let Some(t) = self.tag.as_ref().filter(|t| t.game.phase == kumite_game::tag::TagPhase::Fight) {
+            let (m, slots) = (&t.game.melee, t.setup.match_slots());
+            return (0..m.actors.len()).filter_map(|i| Some((slots.get(i)?.player?, over(&m.actors[m.facing(i)])?, m.locked[i]))).collect();
+        }
+        let Some(f) = self.fight.as_ref().filter(|f| f.bout.phase == Phase::Fight) else { return Vec::new() };
+        let (b, g) = (&f.bout, &f.bout.game.fight);
+        // (actor, player): Ball 2 ON 2's by its seats, Force's players in the fight (1P..4P: actors 0, 3, 4, 5)
+        let players: Vec<(usize, usize)> = match f.seats {
+            Some(s) => (0..4).filter_map(|k| Some((k, s[k]?))).collect(),
+            None if self.force_fight() => b.game.players().into_iter().filter_map(|k| Some((k, [0, 3, 4, 5].iter().position(|&a| a == k)?))).collect(),
+            None => return Vec::new(),
+        };
+        let human = |k: usize| match k {
+            0 | 1 => b.cpu[k].is_none(),
+            2 => b.extra_cpu.is_none(),
+            3 => b.partner_cpu.is_none(),
+            _ => b.more_cpu.get(k - 4).is_some_and(Option::is_none),
+        };
+        let lone = self.force.as_ref().and_then(|r| r.stage.as_ref()).is_some_and(|s| s.locked);
+        players
+            .into_iter()
+            .filter(|&(k, _)| human(k))
+            .filter_map(|(k, p)| {
+                // (no co-op melee: Force's one player, its target in position 1)
+                let (o, locked) = match &g.coop {
+                    Some(m) => (m.facing(k), m.locked.get(k).copied().unwrap_or(false)),
+                    None if k == 0 && self.force_fight() => (1, lone),
+                    None => return None,
+                };
+                Some((p, over(g.actor(o)?)?, locked))
+            })
+            .collect()
+    }
+
     /// The fight on is a Force stage.
     fn force_fight(&self) -> bool {
         self.force.is_some() && self.fight.as_ref().is_some_and(|f| f.setup.as_ref().is_some_and(|s| s.mode == Mode::Force))
@@ -5796,6 +5835,10 @@ impl App {
         self.debug.frame_tick();
         let page_full = self.page_full_screen();
         let held = self.debug.paused || self.game_paused();
+        // (TARGET with more than two on the stage: TAG BRAWL, Ball 2 ON 2, Force: the touch pads' button; its markers)
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+        let multi = self.tag.is_some() || self.fight.as_ref().is_some_and(|f| f.bout.game.fight.coop.is_some()) || self.force_fight();
+        let marks = self.target_marks();
         let Some(r) = self.renderer.as_mut() else { return };
         // (paused: the step itself)
         let k = if held { 1.0 } else { self.lag.as_secs_f32() / STEP.as_secs_f32() };
@@ -6342,9 +6385,12 @@ impl App {
         let (mut dialog_action, mut status_action) = (None, None);
         // Android: the on-screen pad over it all (or its editor, the panel's changes to it); the Game data and Touch
         // controls buttons on the title and the main menu, Touch controls in a fight's pause; TAG with Tekken Tag
+        #[cfg(target_arch = "wasm32")]
+        gamepad::show_target(multi);
         #[cfg(target_os = "android")]
         if let Some(g) = self.gamepads.as_mut() {
             g.touch.tag = self.roster.ttt.is_some();
+            g.touch.target = multi;
         }
         #[cfg(target_os = "android")]
         let mut touch = self.gamepads.as_ref().map(|g| g.touch.clone()).filter(|t| t.shown || t.edit.is_some());
@@ -6495,6 +6541,9 @@ impl App {
                             }
                             (true, None) => t.hud.draw(ctx, art, &hud.data, &t.game, &t.info, wide_hud),
                         }
+                        if replay_view.as_ref().is_none_or(|v| v.hud) {
+                            draw_target_marks(ctx, &cam, size, &marks);
+                        }
                         if let Some((c, player)) = t.pause {
                             draw_pause(ctx, art, &hud.data.pause_items, c, player, frames, false);
                         }
@@ -6524,6 +6573,7 @@ impl App {
                         };
                         if replay_view.as_ref().is_none_or(|v| v.hud) {
                             hud.draw_with(ctx, art, &f.bout, &f.info, wide_hud, &pickups);
+                            draw_target_marks(ctx, &cam, size, &marks);
                         }
                         if let Some(run) = force {
                             let view = art::Screen::fit(ctx.content_rect());
@@ -6978,6 +7028,25 @@ fn project_point(cam: &Camera, size: [u32; 2], window: egui::Rect, view: &art::S
     Some(((px - view.rect.left()) / view.rect.width() * art::SCREEN_W, (py - view.rect.top()) / view.rect.height() * art::SCREEN_H))
 }
 
+/// TARGET's markers (OpenKumite's own, more than two on the stage): a small triangle pointing down over each human
+/// player's foe in the player's colour, filled when locked on, an outline when the game picked it; several over one
+/// foe side by side.
+fn draw_target_marks(ctx: &egui::Context, cam: &Camera, size: [u32; 2], marks: &[(usize, glam::Vec3, bool)]) {
+    let view = art::Screen::fit(ctx.content_rect());
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("target_marks"))).with_clip_rect(view.rect);
+    for (k, &(p, at, locked)) in marks.iter().enumerate() {
+        let Some((x, y)) = project_point(cam, size, ctx.content_rect(), &view, at) else { continue };
+        let (j, n) = (marks[..k].iter().filter(|m| m.1 == at).count(), marks.iter().filter(|m| m.1 == at).count());
+        let x = x + 12.0 * (j as f32 - (n - 1) as f32 / 2.0);
+        // (below the bars and names: a close camera puts a foe's head up among them)
+        let y = y.max(125.0);
+        let c = tagrun::PLAYER_COLOURS[p.min(3)];
+        let tri = vec![view.pos(x - 5.0, y - 10.0), view.pos(x + 5.0, y - 10.0), view.pos(x, y)];
+        let (fill, edge) = if locked { (c, egui::Color32::BLACK) } else { (egui::Color32::TRANSPARENT, c) };
+        painter.add(egui::Shape::convex_polygon(tri, fill, egui::Stroke::new(1.5, edge)));
+    }
+}
+
 /// What a Force stage's step needs of its run (the same on every computer online).
 struct ForceCtx {
     difficulty: usize,
@@ -7049,6 +7118,7 @@ fn force_sim(
     if ko_boss && st.boss_phase && fighting {
         bout.game.fight.fighters[1].health = 0;
     }
+    st.target_held = fighting && bout.cpu[0].is_none() && bout.last_pads[0].buttons & kumite_sim::input::TARGET != 0;
     st.step(&mut bout.game, fighting, won);
     let model_of = |c: usize, k: usize| roster.by_id(c).and_then(|r| r.costumes.get(k.min(r.costumes.len().saturating_sub(1))).copied());
     let (d, l) = (ctx.difficulty, st.data.ai_level(ctx.index));

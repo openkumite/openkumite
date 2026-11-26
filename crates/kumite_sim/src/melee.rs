@@ -46,6 +46,10 @@ pub struct Melee {
     pub team: Vec<usize>,
     /// Each actor's target (an actor of the other team).
     pub target: Vec<usize>,
+    /// Each actor's target is locked on with TARGET (OpenKumite's own): kept while it stands in play.
+    pub locked: Vec<bool>,
+    /// Each actor's TARGET held last step (a new press cycles).
+    pub target_held: Vec<bool>,
     /// The throws / holds in progress: the pair and the moves that linked them.
     pub links: Vec<(usize, usize, [Current; 2])>,
     pub clock: u32,
@@ -98,6 +102,8 @@ impl Melee {
             actors,
             team,
             target,
+            locked: vec![false; 4],
+            target_held: vec![false; 4],
             links: Vec::new(),
             clock: ROUND_FRAMES,
             state: MeleeState::Fighting,
@@ -120,11 +126,14 @@ impl Melee {
     pub fn with_actors(data: Arc<GameData>, actors: Vec<Fighter>, team: Vec<usize>) -> Self {
         let fight = Fight::new(data, actors[0].moveset.clone(), actors[1].moveset.clone());
         let target = (0..actors.len()).map(|i| (0..actors.len()).find(|&j| team[j] != team[i]).unwrap_or(i)).collect();
+        let n = actors.len();
         let mut m = Self {
             fight,
             actors,
             team,
             target,
+            locked: vec![false; n],
+            target_held: vec![false; n],
             links: Vec::new(),
             clock: ROUND_FRAMES,
             state: MeleeState::Fighting,
@@ -145,6 +154,8 @@ impl Melee {
         self.team.push(team);
         let i = self.actors.len() - 1;
         self.target.push((0..i).find(|&j| self.team[j] != team).unwrap_or(i));
+        self.locked.push(false);
+        self.target_held.push(false);
     }
 
     /// Actors `a` and `b` trade places (and with them their targets, the targets on them and their links).
@@ -152,6 +163,8 @@ impl Melee {
         self.actors.swap(a, b);
         self.team.swap(a, b);
         self.target.swap(a, b);
+        self.locked.swap(a, b);
+        self.target_held.swap(a, b);
         let map = |i: usize| {
             if i == a {
                 b
@@ -239,10 +252,32 @@ impl Melee {
         len + self.behind_cost * behind
     }
 
+    /// Actor `j` is a foe of actor `i` standing in play: one a lock holds on to.
+    pub fn lockable(&self, i: usize, j: usize) -> bool {
+        self.team[j] != self.team[i] && !self.actors[j].inactive && self.standing(j)
+    }
+
+    /// TARGET pressed by actor `i`: the target locked on (the one it fights, not yet locked), else the next foe in
+    /// play by actor order.
+    pub fn cycle_target(&mut self, i: usize) {
+        let n = self.actors.len();
+        let (cur, from) = (self.target[i], usize::from(self.locked[i]));
+        if let Some(j) = (from..from + n).map(|d| (cur + d) % n).find(|&j| self.lockable(i, j)) {
+            (self.target[i], self.locked[i]) = (j, true);
+        }
+    }
+
     fn retarget(&mut self) {
         for i in 0..self.actors.len() {
             if self.linked_with(i).is_some() {
                 continue;
+            }
+            // (a lock holds while its foe stands in play; then the picks again, until TARGET again)
+            if self.locked[i] {
+                if self.lockable(i, self.target[i]) {
+                    continue;
+                }
+                self.locked[i] = false;
             }
             let dist = |j: usize| self.pick_cost(i, j);
             // (actors out of play are nobody's target)
@@ -303,6 +338,13 @@ impl Melee {
         let landed: Vec<bool> = (0..n).map(|k| self.hits.iter().any(|h| h.attacker == k)).collect();
         self.hits.clear();
         let gd = self.fight.data.clone();
+        for i in 0..n {
+            let held = pads.get(i).is_some_and(|p| p.buttons & crate::input::TARGET != 0);
+            if held && !self.target_held[i] {
+                self.cycle_target(i);
+            }
+            self.target_held[i] = held;
+        }
         self.retarget();
         // Tekken Tag's pair distance limit (0x1D00) on each pair in play, before the moves as its fight's
         if self.tag_pairs {
@@ -539,5 +581,46 @@ mod tests {
         face(&mut m, 3, Vec3::new(500.0, 0.0, 0.0), -east);
         assert!(m.retarget_now().contains(&0));
         assert_eq!(m.target[0], 3);
+    }
+
+    #[test]
+    fn target_locks_cycles_by_actor_and_lets_go() {
+        let Some(m) = melee() else { return };
+        let sets = std::array::from_fn(|i| m.actors[i].moveset.clone());
+        // each for themselves, all three foes in front of actor 0 in a row
+        let mut m = Melee::with_teams(m.fight.data.clone(), sets, vec![0, 1, 2, 3]);
+        let east = std::f32::consts::FRAC_PI_2;
+        for (i, f) in m.actors.iter_mut().enumerate() {
+            (f.position, f.yaw, f.root_yaw) = (Vec3::new(1000.0 * i as f32, 0.0, 0.0), east, east);
+        }
+        m.retarget_now();
+        assert_eq!((m.target[0], m.locked[0]), (1, false), "the nearest, picked");
+        // the first press locks the one fought; the next ones go round the others by actor
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            m.cycle_target(0);
+            seen.push(m.target[0]);
+        }
+        assert_eq!(seen, [1, 2, 3, 1]);
+        assert!(m.locked[0]);
+        // held while it stands, however near another comes
+        m.cycle_target(0);
+        m.actors[1].position.x = 100.0;
+        m.retarget_now();
+        assert_eq!((m.target[0], m.locked[0]), (2, true));
+        // down: the picks again (the nearest), until TARGET again; one out of play is passed over
+        m.actors[2].health = 0;
+        m.retarget_now();
+        assert_eq!((m.target[0], m.locked[0]), (1, false));
+        m.actors[3].inactive = true;
+        m.cycle_target(0);
+        m.cycle_target(0);
+        assert_eq!((m.target[0], m.locked[0]), (1, true), "the only foe left in play");
+        // two teams: never a team mate
+        let mut t = Melee::with_teams(m.fight.data.clone(), std::array::from_fn(|i| m.actors[i].moveset.clone()), vec![0, 0, 1, 1]);
+        for _ in 0..4 {
+            t.cycle_target(0);
+            assert_eq!(t.team[t.target[0]], 1);
+        }
     }
 }

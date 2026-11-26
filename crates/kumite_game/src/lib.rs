@@ -2275,7 +2275,7 @@ pub fn format_pad(p: &Pad) -> String {
     } else if p.left {
         dir.push("b");
     }
-    let buttons: Vec<String> = (0..5).filter(|b| p.buttons & (1 << b) != 0).map(|b| (b + 1).to_string()).collect();
+    let buttons: Vec<String> = (0..6).filter(|b| p.buttons & (1 << b) != 0).map(|b| (b + 1).to_string()).collect();
     match (dir.is_empty(), buttons.is_empty()) {
         (true, true) => "n".into(),
         (false, true) => dir.join("/"),
@@ -2301,7 +2301,8 @@ pub fn format_script(pads: &[Pad]) -> String {
 /// The longest pad script: ten hours of frames (a bigger count is a typo, not memory to ask for).
 pub const MAX_SCRIPT_FRAMES: usize = 10 * 60 * 60 * 60;
 
-/// Parse an input script like "f*30,n*5,1,d/f+1,n*40" into one pad per frame (the player on the left).
+/// Parse an input script like "f*30,n*5,1,d/f+1,n*40" into one pad per frame (the player on the left; buttons 1-4, 5
+/// tag, 6 target).
 pub fn parse_script(s: &str) -> Result<Vec<Pad>> {
     let mut out = Vec::new();
     for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
@@ -2321,7 +2322,7 @@ pub fn parse_script(s: &str) -> Result<Vec<Pad>> {
         }
         for b in buttons.split('+').filter(|b| !b.is_empty()) {
             let k: u8 = b.parse().with_context(|| format!("bad button in {tok:?}"))?;
-            anyhow::ensure!((1..=5).contains(&k), "button {k} out of range in {tok:?}");
+            anyhow::ensure!((1..=6).contains(&k), "button {k} out of range in {tok:?}");
             p.buttons |= 1 << (k - 1);
         }
         anyhow::ensure!(n <= MAX_SCRIPT_FRAMES - out.len(), "the script is longer than {MAX_SCRIPT_FRAMES} frames");

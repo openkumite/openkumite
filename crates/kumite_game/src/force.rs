@@ -341,6 +341,11 @@ pub struct ForceStage {
     arena: (i32, i32),
     /// Target switching cooldown.
     target_cd: i32,
+    /// TARGET (OpenKumite's own; one player, no co-op melee): held this step (set before [`ForceStage::step`]), last
+    /// step, and the soldier in position 1 locked on: no swap while it stands.
+    pub target_held: bool,
+    target_was: bool,
+    pub locked: bool,
     pub score: u32,
     /// Co-op (OpenKumite's own): each player's own points (1P, 2P, 3P, 4P: actors 0, 3, 4, 5); `score` is the total.
     pub player_scores: [u32; 4],
@@ -393,6 +398,9 @@ impl ForceStage {
             margins: [0, 1],
             arena: (0, 0),
             target_cd: 0,
+            target_held: false,
+            target_was: false,
+            locked: false,
             score,
             player_scores: [0; 4],
             hiscore,
@@ -886,7 +894,7 @@ impl ForceStage {
         };
         // the target is in position 1; the other in 2
         let (a_on, b_on) = (active(game, 1), active(game, 2));
-        let swap = if !a_on {
+        let mut swap = if !a_on {
             b_on
         } else if !b_on || self.target_cd > 0 {
             false
@@ -900,6 +908,19 @@ impl ForceStage {
                 (da - db).abs() >= 400.0 && db < da
             }
         };
+        // TARGET (the co-op melee has its own): a press takes the other soldier standing (none: locks on to this one);
+        // while the one locked on stands no swap, then the game's picks again
+        if game.fight.coop.is_none() {
+            let standing = |f: Option<&kumite_sim::Fighter>| f.is_some_and(|f| !f.inactive && f.health > 0);
+            let (a_up, b_up) = (standing(Some(&game.fight.fighters[1])), standing(game.fight.extra.as_deref()));
+            self.locked &= a_up;
+            if self.target_held && !self.target_was && (a_up || b_up) {
+                (swap, self.locked) = (b_up, true);
+            } else if self.locked {
+                swap = false;
+            }
+        }
+        self.target_was = self.target_held;
         if swap {
             game.swap_target();
             self.at = [self.at[1], self.at[0]];

@@ -1,12 +1,12 @@
 //! The controls, kept in the save: each player's gamepad (OPTION > KEY CONFIGURATION, the original's screen:
 //! the eight buttons L2 R2 L1 R1 triangle circle cross square each give one of 13 commands) and keyboard
 //! (OPTION > KEYBOARD, OpenKumite's). A command is what the game reads: a direction, a set of the four buttons
-//! (LP 1, RP 2, LK 3, RK 4; two at once as LP+RP and so on), Tekken Tag's TAG, a sidestep (STEP up / down), START or
-//! BACK. The
+//! (LP 1, RP 2, LK 3, RK 4; two at once as LP+RP and so on), Tekken Tag's TAG, TARGET (more than two on the stage:
+//! lock on to the next foe), a sidestep (STEP up / down), START or BACK. The
 //! gamepads (native and in a browser) are read by their buttons' places, named as on the original pad.
 
 use crate::menu::Key;
-use kumite_sim::input::{Pad, TAG};
+use kumite_sim::input::{Pad, TAG, TARGET};
 use serde::{Deserialize, Serialize};
 use winit::keyboard::KeyCode;
 
@@ -18,7 +18,7 @@ pub enum Command {
     Down,
     Left,
     Right,
-    /// Buttons 1..4 as bits 0..3 (several: pressed together); TAG as bit 4 ([`TAG`]).
+    /// Buttons 1..4 as bits 0..3 (several: pressed together); TAG as bit 4 ([`TAG`]), TARGET as bit 5 ([`TARGET`]).
     Buttons(u8),
     /// A sidestep: a new press taps up (down); held, the directions rest (0x8002C154 / 0x8002C278).
     StepUp,
@@ -59,6 +59,7 @@ impl Command {
             Command::Left => "LEFT".into(),
             Command::Right => "RIGHT".into(),
             Command::Buttons(TAG) => "TAG".into(),
+            Command::Buttons(TARGET) => "TARGET".into(),
             Command::Buttons(b) => (0..4).filter(|i| b & (1 << i) != 0).map(name).collect::<Vec<_>>().join("+"),
             Command::Start => "START".into(),
             Command::Back => "BACK".into(),
@@ -86,7 +87,7 @@ impl Command {
             Command::Down => Key::Down,
             Command::Left => Key::Left,
             Command::Right => Key::Right,
-            Command::Buttons(b) if b.count_ones() == 1 && b != TAG => Key::Button(b.trailing_zeros() as usize),
+            Command::Buttons(b) if b.count_ones() == 1 && b & (TAG | TARGET) == 0 => Key::Button(b.trailing_zeros() as usize),
             Command::Start => Key::Start,
             Command::Back => Key::Back,
             _ => return None,
@@ -159,7 +160,7 @@ pub struct PadLayout {
 
 impl Default for PadLayout {
     /// The original's (0x800B94FC): square LP, triangle RP, cross LK, circle RK, the shoulders NO USE (but R1:
-    /// Tekken Tag's TAG); no vibration.
+    /// Tekken Tag's TAG); no vibration. (R3, outside KEY CONFIGURATION: TARGET.)
     fn default() -> Self {
         use PadButton as B;
         let buttons = vec![
@@ -186,7 +187,8 @@ impl PadLayout {
             PadButton::Right => Command::Right,
             PadButton::Select | PadButton::Home => Command::Back,
             PadButton::Start => Command::Start,
-            PadButton::L3 | PadButton::R3 => Command::None,
+            PadButton::L3 => Command::None,
+            PadButton::R3 => Command::Buttons(TARGET),
             b => self.buttons.iter().find(|(x, _)| *x == b).map_or(Command::None, |(_, c)| *c),
         }
     }
@@ -246,7 +248,7 @@ impl Step {
 }
 
 /// The keyboard's commands, in KEY CONFIG's order.
-pub const KEY_COMMANDS: [Command; 16] = [
+pub const KEY_COMMANDS: [Command; 17] = [
     Command::Up,
     Command::Down,
     Command::Left,
@@ -262,6 +264,7 @@ pub const KEY_COMMANDS: [Command; 16] = [
     Command::Buttons(9),
     Command::Buttons(6),
     Command::Buttons(TAG),
+    Command::Buttons(TARGET),
     Command::Start,
 ];
 
@@ -279,7 +282,7 @@ impl KeyLayout {
         Self { keys: keys.iter().map(|(c, k)| (*c, k.to_vec())).collect() }
     }
 
-    /// P1: WASD, F G V B (and U I J K), H (and L) tag, Space start.
+    /// P1: WASD, F G V B (and U I J K), H (and L) tag, Tab (and O) target, Space start.
     pub fn p1() -> Self {
         use KeyCode as K;
         Self::new(&[
@@ -298,12 +301,13 @@ impl KeyLayout {
             (Command::Buttons(9), &[]),
             (Command::Buttons(6), &[]),
             (Command::Buttons(TAG), &[K::KeyH, K::KeyL]),
+            (Command::Buttons(TARGET), &[K::Tab, K::KeyO]),
             (Command::Start, &[K::Space]),
         ])
     }
 
-    /// P2: the arrows, ; ' . / (numpad 4 5 1 2), backslash (numpad 6) tag, numpad Enter / right Shift start (Enter
-    /// is always P1's).
+    /// P2: the arrows, ; ' . / (numpad 4 5 1 2), backslash (numpad 6) tag, comma (numpad 3) target, numpad Enter /
+    /// right Shift start (Enter is always P1's).
     pub fn p2() -> Self {
         use KeyCode as K;
         Self::new(&[
@@ -322,6 +326,7 @@ impl KeyLayout {
             (Command::Buttons(9), &[]),
             (Command::Buttons(6), &[]),
             (Command::Buttons(TAG), &[K::Backslash, K::Numpad6]),
+            (Command::Buttons(TARGET), &[K::Comma, K::Numpad3]),
             (Command::Start, &[K::NumpadEnter, K::ShiftRight]),
         ])
     }
@@ -371,11 +376,13 @@ impl KeyLayout {
         }
     }
 
-    /// Every command of KEY CONFIG present (a save from before a command was added).
+    /// Every command of KEY CONFIG present (a save from before a command was added: its default keys this layout
+    /// does not use already).
     fn complete(&mut self, defaults: &KeyLayout) {
         for c in KEY_COMMANDS {
             if !self.keys.iter().any(|(x, _)| *x == c) {
-                self.keys.push((c, defaults.keys_of(c).to_vec()));
+                let free = defaults.keys_of(c).iter().copied().filter(|&k| self.commands_of(k).next().is_none()).collect();
+                self.keys.push((c, free));
             }
         }
     }
@@ -521,6 +528,27 @@ mod tests {
         assert_eq!(c.menu_key(KeyCode::ArrowDown), Some((1, Key::Down)));
         assert_eq!(c.menu_key(KeyCode::KeyF), Some((0, Key::Button(0))));
         assert_eq!(c.menu_key(KeyCode::Escape), Some((0, Key::Back)));
+    }
+
+    #[test]
+    fn target_bindings_saved_and_added_to_old_saves() {
+        let c = Controls::default();
+        assert_eq!(c.keyboard[0].pad(|k| k == KeyCode::Tab).buttons, TARGET);
+        assert_eq!(c.keyboard[1].pad(|k| k == KeyCode::Numpad3).buttons, TARGET);
+        assert_eq!(c.pad(2).pad([PadButton::R3].into_iter(), (0.0, 0.0)).0.buttons, TARGET, "R3, 3P's too");
+        assert_eq!(Command::Buttons(TARGET).menu_key(), None);
+        // a layout changed and saved keeps it
+        let mut k = c.clone();
+        k.keyboard[0].bind(Command::Buttons(TARGET), 0, KeyCode::KeyQ);
+        let back = serde_json::from_str::<Controls>(&serde_json::to_string(&k).unwrap()).unwrap().complete();
+        assert_eq!(back.keyboard[0].keys_of(Command::Buttons(TARGET)), &[KeyCode::KeyQ, KeyCode::KeyO]);
+        // a save from before TARGET: its default keys, but for one the save gave to another command
+        let mut old = Controls::default();
+        old.keyboard[0].keys.retain(|(c, _)| *c != Command::Buttons(TARGET));
+        old.keyboard[0].bind(Command::Buttons(3), 0, KeyCode::KeyO);
+        let done = old.complete();
+        assert_eq!(done.keyboard[0].keys_of(Command::Buttons(TARGET)), &[KeyCode::Tab]);
+        assert_eq!(done.keyboard[0].pad(|k| k == KeyCode::KeyO).buttons, 3);
     }
 
     #[test]

@@ -581,10 +581,9 @@ impl TagSelect {
             }
         }
         // the other players' cursors, in their colours, with their number
-        let colours = [Color32::from_rgb(0xF0, 0x40, 0x40), Color32::from_rgb(0x40, 0xE0, 0x60), Color32::from_rgb(0xF0, 0xE0, 0x40)];
         for (p, cursor) in self.guests.iter().enumerate().skip(1) {
             let (Some(cursor), Some(seat)) = (cursor, self.seat_of(p)) else { continue };
-            let c = colours[(p - 1).min(2)];
+            let c = PLAYER_COLOURS[p.min(3)];
             let c = if blink { c } else { c.gamma_multiply(0.6) };
             match (*cursor, tt) {
                 (Cursor::Face(f), Some(d)) => {
@@ -626,6 +625,9 @@ impl TagSelect {
 }
 
 /// A tag match in progress.
+/// The players' colours (1P..4P): the setup's cursors, TARGET's markers.
+pub const PLAYER_COLOURS: [Color32; 4] = [Color32::from_rgb(0xF0, 0xC0, 0x20), Color32::from_rgb(0xF0, 0x40, 0x40), Color32::from_rgb(0x40, 0xE0, 0x60), Color32::from_rgb(0xF0, 0xE0, 0x40)];
+
 pub struct TagRun {
     pub game: TagGame,
     pub setup: TagSetup,
