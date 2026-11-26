@@ -301,10 +301,14 @@ jobs:
           name: android
           path: openkumite-*-android-arm64.apk
 
+  # the checks and the tests on Linux, Windows and macOS (ci.yml): pull requests test on Linux alone
+  tests:
+    uses: ./.github/workflows/ci.yml
+
   release:
     # (a tag only: a run by hand keeps its files as the run's artifacts)
     if: github.ref_type == 'tag'
-    needs: [version, linux, alpine, windows, macos, wasm, android]
+    needs: [version, tests, linux, alpine, windows, macos, wasm, android]
     env:
       TAG: ${{ needs.version.outputs.tag }}
     runs-on: ubuntu-latest

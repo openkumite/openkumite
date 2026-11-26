@@ -1,13 +1,8 @@
 # The Nix flake (flake.nix, Linux only): it evaluates for both systems, and builds (with the tests that run without the
-# game data) on x86-64. Only when what it builds from changes.
+# game data) on x86-64. By hand only (Actions, nix, Run workflow).
 name: nix
 
 on:
-  pull_request:
-    paths: [flake.nix, flake.lock, Cargo.lock, "**/Cargo.toml", .github/workflows/nix.yml]
-  push:
-    branches: [main]
-    paths: [flake.nix, flake.lock, Cargo.lock, "**/Cargo.toml", .github/workflows/nix.yml]
   workflow_dispatch:
 
 permissions:
