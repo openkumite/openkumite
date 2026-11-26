@@ -95,7 +95,7 @@ skeleton, the 18 bone slots (`BONE_SLOTS`) for the strikes, the motions' root tr
 <pack>/assets --fight --models 345,372 --stage 0` (or Tekken Tag the main game) plays a match of rounds for two
 pads, with a plain HUD (`hud::plain`: no screens.json); `--models 345,372,357,465` a tag battle (Paul and Law against
 Lei and Jin: the third and fourth are the partners), the HUD with each side's partner bar and its recoverable part
-(red). The tag button: keyboard H / L (P2 backslash / numpad 6), gamepad R1, button 5 in pad scripts. Test: `OK_TTT_ASSETS=<pack>/assets cargo test --release -p
+(red). The tag button: keyboard H / L (P2 backslash / numpad 6), gamepad R1, button 5 in pad scripts (TARGET, OpenKumite's own lock-on with more than two on the stage: button 6, bit 5). Test: `OK_TTT_ASSETS=<pack>/assets cargo test --release -p
 kumite_game --test tekken_tag`.
 
 Provisional: the camera (`CameraData::provisional`, Tekken 3's constants; no camera.json), two rounds to win, the heads

@@ -1,7 +1,8 @@
 //! OPTION > KEY CONFIGURATION, the original's screen (record 10, 0x800DF014): a panel for each player (P1 at
 //! x 0, P2 at 184) with the pad's picture, a label box on each of the eight buttons it sets (L2 R2 L1 R1 and the
 //! four faces) led to the button, and the rows SETTING, VIBRATION, DEFAULT, EXIT. On SETTING, holding one of the
-//! eight buttons opens its list of 13 commands; up / down picks, releasing closes. (With a keyboard, OpenKumite's
+//! eight buttons opens its list of 13 commands (and TARGET under them, OpenKumite's own); up / down picks, releasing
+//! closes. (With a keyboard, OpenKumite's
 //! way: left / right opens the next button's list.) OPTION > KEYBOARD is OpenKumite's: each player's keys.
 //! Every change applies at once and is kept in the save.
 
@@ -19,6 +20,11 @@ const BUTTONS: [PadButton; 8] = [PadButton::L2, PadButton::R2, PadButton::L1, Pa
 
 /// The list opens over this many frames.
 const OPEN_FRAMES: u32 = 8;
+
+/// A list's commands: the original's 13, then TARGET.
+fn choices() -> Vec<Command> {
+    Command::PAD.into_iter().chain([Command::Buttons(kumite_sim::input::TARGET)]).collect()
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Panel {
@@ -89,7 +95,7 @@ impl KeyConfig {
             let b = BUTTONS[i];
             match key {
                 Key::Up | Key::Down => {
-                    let cmds = &Command::PAD;
+                    let cmds = choices();
                     let n = cmds.len();
                     let at = cmds.iter().position(|c| *c == self.controls.pads[p].command(b)).unwrap_or(n - 1);
                     let next = if key == Key::Down { (at + 1) % n } else { (at + n - 1) % n };
@@ -191,7 +197,7 @@ impl KeyConfig {
             // open: from the box to the list's column, the box growing to the whole list
             let x = ox + lerp(num(&place["boxed"][0]), num(&place["list"][0]));
             let y = lerp(num(&place["boxed"][1]), num(&place["list"][1]));
-            let h = box_h + open_h * t;
+            let h = box_h + (open_h + row_h) * t;
             // the leader: a line from the box to the button's tip, and a small triangle on it
             if !open {
                 let from = [x + num(&place["lead"][0]), y + num(&place["lead"][1])];
@@ -206,8 +212,8 @@ impl KeyConfig {
             if open {
                 // the commands, a row each: the button's red on a pulsing bar, ones other buttons have dim
                 let used: Vec<Command> = BUTTONS.iter().filter(|&&q| q != button).map(|&q| layout.command(q)).collect();
-                let shown = ((t * rows as f32).ceil() as usize).min(rows);
-                for (k, c) in Command::PAD.iter().enumerate().take(shown) {
+                let shown = ((t * (rows + 1) as f32).ceil() as usize).min(rows + 1);
+                for (k, c) in choices().iter().enumerate().take(shown) {
                     let ry = y + 2.0 + row_h * k as f32;
                     let colour = if *c == cmd {
                         bar(x + edge, ry, inner, row_h, if panel.t >= OPEN_FRAMES { pulse(self.frame << 4) } else { 1.0 });
@@ -398,7 +404,7 @@ impl KeyboardConfig {
         }
         let layout = &self.controls.keyboard[self.player];
         for (k, row) in rows.iter().enumerate().skip(1) {
-            let y = 96.0 + 19.0 * (k - 1) as f32 + if matches!(row, Row::Default | Row::Exit) { 8.0 } else { 0.0 };
+            let y = 96.0 + 18.0 * (k - 1) as f32 + if matches!(row, Row::Default | Row::Exit) { 8.0 } else { 0.0 };
             match row {
                 Row::Command(c) => {
                     art.text(painter, v, 0, colour(k), 24.0, y, &c.label(&art.screens["key_config"]["texts"]["commands"]), Color32::WHITE);

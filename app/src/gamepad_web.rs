@@ -88,6 +88,13 @@ fn touch_pad() -> Option<Vec<PadButton>> {
     Some(STANDARD.iter().enumerate().filter(|(i, _)| a.get(*i as u32).as_bool() == Some(true)).map(|(_, b)| *b).collect())
 }
 
+/// The page's on-screen pad shows TARGET (more than two on the stage): `window.__oktarget`.
+pub fn show_target(on: bool) {
+    if let Some(w) = web_sys::window() {
+        let _ = js_sys::Reflect::set(&w, &"__oktarget".into(), &on.into());
+    }
+}
+
 impl Gamepads {
     pub fn new() -> Self {
         Self { order: Vec::new(), last: Default::default(), tapped: [Pad::default(); 4], steps: [Step::default(); 4], rumble: [(0, 0.0, None); 4] }

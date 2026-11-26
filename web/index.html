@@ -248,7 +248,7 @@
 
   // ---- the on-screen pad: window.__oktouch, the standard gamepad layout's 17 buttons held, read by the game as a
   // gamepad (gamepad_web.rs). Shown on touch screens (or with #touch).
-  const B = { cross: 0, circle: 1, square: 2, triangle: 3, r1: 5, select: 8, start: 9, up: 12, down: 13, left: 14, right: 15 };
+  const B = { cross: 0, circle: 1, square: 2, triangle: 3, r1: 5, select: 8, start: 9, r3: 11, up: 12, down: 13, left: 14, right: 15 };
   const held = new Array(17).fill(false);
   function setupPad() {
     if (document.body.classList.contains('touch')) return;
@@ -270,6 +270,9 @@
     ];
     // Tekken Tag Tournament the main game (the page reloads into it): its TAG, R1 (controls.rs), in the free corner
     try { if (localStorage.getItem('openkumite_game') === 'ttt') pairs.push({ label: 'TAG', b: [B.r1], dx: 1.15, dy: -1.15 }); } catch {}
+    // TARGET, R3 (controls.rs), in the last corner: shown while the game has more than two on the stage (window.__oktarget)
+    const target = { label: 'TARGET', b: [B.r3], dx: -1.15, dy: 1.15, off: true };
+    pairs.push(target);
     const els = [];
     const make = (spec, cls) => {
       const e = document.createElement('div');
@@ -279,6 +282,9 @@
     };
     faces.forEach((f) => make(f, ''));
     pairs.forEach((p) => make(p, 'small'));
+    const targetEl = els[els.length - 1].e;
+    targetEl.style.fontSize = '10px';
+    setInterval(() => { targetEl.style.display = window.__oktarget ? '' : 'none'; target.off = !window.__oktarget; }, 250);
     const sys = [['SELECT', B.select], ['START', B.start]].map(([label, b], k) => {
       const e = document.createElement('div');
       // SELECT top left, START top right: in the margins beside the picture, clear of the HUD's timer
@@ -348,7 +354,7 @@
     }
     // a finger on the buttons: the button(s) under it (a pair, or two faces when between them)
     function under(x, y) {
-      const hit = els.filter(({ spec }) => Math.hypot(x - spec.cx, y - spec.cy) < spec.r);
+      const hit = els.filter(({ spec }) => !spec.off && Math.hypot(x - spec.cx, y - spec.cy) < spec.r);
       return [...new Set(hit.flatMap(({ spec }) => spec.b))];
     }
     const down = (kind) => (ev) => {

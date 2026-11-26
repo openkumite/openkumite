@@ -137,6 +137,9 @@ if the game reports no GPU, start it through [nixGL](https://github.com/nix-comm
 | Gamepad | d-pad or stick | Square Triangle Cross Circle | Start (Select = back) |
 
 Tap up/down to sidestep. Standing still or holding back guards highs and mids; crouching guards lows. Esc pauses.
+With more than two on the stage (TAG BRAWL, Force, Ball 2 ON 2) TARGET locks on to the foe you fight and each press
+moves on to the next one: Tab or O (player 2: comma or numpad 3), R3 on a gamepad, the TARGET button on a touch screen.
+The marker over that foe is filled while locked on; the lock lets go when the foe goes down.
 Keys and pad buttons can be changed under OPTION (KEYBOARD, KEY CONFIGURATION).
 
 ### Debug and testing
