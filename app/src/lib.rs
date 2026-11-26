@@ -234,7 +234,7 @@ fn tag_vfx(v: &mut kumite_game::vfx::Vfx, g: &kumite_game::tag::TagGame) {
     };
     let node = |i: usize, name: &str| g.bodies[i].character.nodes.iter().position(|n| n.name == name);
     v.step_actors(&g.melee.hits, &models, &actors, eye, &at, &node);
-    v.objects(&g.melee.objects.list, &models);
+    v.objects(&g.melee.objects, &models);
 }
 
 /// Tekken Tag's lens flare (0x3A1C78): its sun (m, the arena's axes), its strength, its nine discs (picture, size,

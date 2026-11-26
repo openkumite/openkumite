@@ -417,6 +417,8 @@ const FIRE_SIZE: f32 = 0.864;
 /// hits' projection, as [`TAG_HEAVY`]).
 const TAG_FIRE_SIZE: f32 = 1024.0 / 400.0 * 0.6822;
 const BURN_SIZE: f32 = 0.690;
+/// A limb glow's quad (0x80025310: 280).
+const GLOW_SIZE: f32 = 0.280;
 const GAS_SIZE: f32 = 0.5;
 /// Doctor B.'s mist's cell by its frame (0x8002565C's u, v on sheet 008: the dust's cells, as the gas strip's from cell
 /// 9), byte 0x1C's in the gas's palette (0x800ADD80 entry 0), byte 0x19's in entry 8 (+0x4C 0, 0x80072B88).
@@ -517,12 +519,6 @@ impl Vfx {
         let size = TAG_FIRE_SIZE * (self.unit() * 0.3 + 0.2);
         let pos = Vec3::new(at.x, 366.0 / UNITS, at.z);
         self.embers.push(Ember { attacker, pos, vel: Vec3::ZERO, age: 0, life, frame, size, fade: 0.0, ground: true, out: false });
-    }
-
-    /// Two rand()s as one 30-bit value (R = r1 | r2 << 16).
-    fn rand2(&mut self) -> u32 {
-        let a = self.rand();
-        a | self.rand() << 16
     }
 
     /// The camera pitch offset of the running shake (4096 units per turn), added to the view.
@@ -665,68 +661,35 @@ impl Vfx {
         self.flares.clear();
     }
 
-    /// The heavy-hit particles along the strike (0x8006DF34): 6 easing ones and 20 fast straight ones.
+    /// Tekken Tag's heavy-hit particles along the strike (Tekken 3's are the sim's objects, types 1 / 2).
     fn heavy(&mut self, at: Vec3, strike: Vec3, ki: bool) {
         let d = strike.normalize_or_zero();
         let (yaw, pitch) = (d.x.datan2(d.z), d.y.datan2(glam::Vec2::new(d.x, d.z).length()));
         let heading = |yaw: f32, pitch: f32| Vec3::new(pitch.dcos() * yaw.dsin(), pitch.dsin(), pitch.dcos() * yaw.dcos());
         let ramp = usize::from(ki);
-        if self.data.as_ref().is_some_and(|d| !d.bursts.is_empty()) {
-            // Tekken Tag's (0x3A6110 kinds 0x81 / 0x80, the charged 0x8C / 0x8B: file 8's orange or blue frames): 10
-            // easing ones (0x3A35C8: turned by up to pi / 3, from r x 512 to r x 512 + 1664, 10-41 frames) and 18
-            // straight ones (0x3A3928: up to 127 mm aside, turned by up to pi / 32, r x 159 mm a frame, an eighth of
-            // it at once, 20-51 frames)
-            let unit = |v: &mut Self| v.rand() as f32 / 32768.0;
-            for _ in 0..10 {
-                let dp = (2.0 * unit(self) - 1.0) * std::f32::consts::FRAC_PI_3;
-                let dy = (2.0 * unit(self) - 1.0) * std::f32::consts::FRAC_PI_3;
-                let v0 = unit(self) * 512.0;
-                let v1 = unit(self) * 512.0 + 1664.0;
-                let life = (self.rand() & 31) + 10;
-                self.particles.push(Particle { pos: at, dir: heading(yaw + dy, pitch + dp), v0, v1, easing: true, age: 0, life, ramp, size: TAG_HEAVY, tag: true });
-            }
-            for _ in 0..18 {
-                let mut aside = || ((self.rand() & 0xFF) as f32 - 127.0) / UNITS;
-                let jitter = Vec3::new(aside(), aside(), aside());
-                let dp = (2.0 * unit(self) - 1.0) * std::f32::consts::PI / 32.0;
-                let dy = (2.0 * unit(self) - 1.0) * std::f32::consts::PI / 32.0;
-                let speed = unit(self) * 159.0;
-                let dir = heading(yaw + dy, pitch + dp);
-                let life = (self.rand() & 31) + 20;
-                let pos = at + jitter + dir * speed * 0.125 / UNITS;
-                self.particles.push(Particle { pos, dir, v0: speed, v1: speed, easing: false, age: 0, life, ramp, size: TAG_HEAVY, tag: true });
-            }
-            return;
+        // Tekken Tag's (0x3A6110 kinds 0x81 / 0x80, the charged 0x8C / 0x8B: file 8's orange or blue frames): 10
+        // easing ones (0x3A35C8: turned by up to pi / 3, from r x 512 to r x 512 + 1664, 10-41 frames) and 18
+        // straight ones (0x3A3928: up to 127 mm aside, turned by up to pi / 32, r x 159 mm a frame, an eighth of
+        // it at once, 20-51 frames)
+        let unit = |v: &mut Self| v.rand() as f32 / 32768.0;
+        for _ in 0..10 {
+            let dp = (2.0 * unit(self) - 1.0) * std::f32::consts::FRAC_PI_3;
+            let dy = (2.0 * unit(self) - 1.0) * std::f32::consts::FRAC_PI_3;
+            let v0 = unit(self) * 512.0;
+            let v1 = unit(self) * 512.0 + 1664.0;
+            let life = (self.rand() & 31) + 10;
+            self.particles.push(Particle { pos: at, dir: heading(yaw + dy, pitch + dp), v0, v1, easing: true, age: 0, life, ramp, size: TAG_HEAVY, tag: true });
         }
-        let unit = std::f32::consts::TAU / 4096.0;
-        let size = if ki { 0.070 } else { 0.110 };
-        for _ in 0..6 {
-            let r = self.rand2();
-            let dy = ((r & 0x7FF) as f32 - 0x3FF as f32) * 2.0 / 3.0 * unit;
-            let r2 = self.rand2();
-            let dp = ((r2 & 0x7FF) as f32 - 0x3FF as f32) * 2.0 / 3.0 * unit;
-            let v0 = ((r >> 6) & 0x1FF) as f32;
-            let v1 = ((r >> 8) & 0x1FF) as f32 + 0x680 as f32;
-            let life = ((r >> 4) & 31) + 10;
-            self.particles.push(Particle { pos: at, dir: heading(yaw + dy, pitch + dp), v0, v1, easing: true, age: 0, life, ramp, size, tag: false });
-        }
-        for _ in 0..20 {
-            let r = self.rand2();
-            let off = |s: u32| ((r >> s) & 0xFF) as f32 - 127.0;
-            let jitter = Vec3::new(off(0), off(8), off(16)) / UNITS;
-            let r2 = self.rand2();
-            let dy = ((r2 & 0x7F) as f32 - 63.0) * unit;
-            let dp = (((r2 >> 7) & 0x7F) as f32 - 63.0) * unit;
-            let speed = ((r2 >> 12) & 0x7FF) as f32 * 5.0 / 4.0;
-            let life = ((r2 >> 10) & 31) + 20;
+        for _ in 0..18 {
+            let mut aside = || ((self.rand() & 0xFF) as f32 - 127.0) / UNITS;
+            let jitter = Vec3::new(aside(), aside(), aside());
+            let dp = (2.0 * unit(self) - 1.0) * std::f32::consts::PI / 32.0;
+            let dy = (2.0 * unit(self) - 1.0) * std::f32::consts::PI / 32.0;
+            let speed = unit(self) * 159.0;
             let dir = heading(yaw + dy, pitch + dp);
-            // the first frame jumps about 8 frames of travel
-            let pos = at + jitter + dir * speed / 16.0 / UNITS * 8.0;
-            self.particles.push(Particle { pos, dir, v0: speed, v1: speed, easing: false, age: 0, life, ramp, size, tag: false });
-        }
-        if self.particles.len() > 80 {
-            let extra = self.particles.len() - 80;
-            self.particles.drain(..extra); // the pool holds 80
+            let life = (self.rand() & 31) + 20;
+            let pos = at + jitter + dir * speed * 0.125 / UNITS;
+            self.particles.push(Particle { pos, dir, v0: speed, v1: speed, easing: false, age: 0, life, ramp, size: TAG_HEAVY, tag: true });
         }
     }
 
@@ -752,7 +715,7 @@ impl Vfx {
             },
             &|i, name| game.body_of(i)?.character.nodes.iter().position(|n| n.name == name),
         );
-        self.objects(&fight.objects.list, &models);
+        self.objects(&fight.objects, &models);
         self.auras.clear();
         for &(_, i, _) in &actors {
             let Some((pose, place)) = game.pose_actor(i) else { continue };
@@ -892,7 +855,7 @@ impl Vfx {
                         let at = self.drawn.get(h.victim).copied().flatten().unwrap_or(f.root() / UNITS);
                         self.floor_fire(h.attacker, at);
                     }
-                } else if matches!(h.limb, 0x18 | 0x1A) {
+                } else if matches!(h.limb, 0x18 | 0x1A) && !data.bursts.is_empty() {
                     for slot in kumite_sim::objects::BURN_SLOTS {
                         let r = self.rand() as i32;
                         self.burns.push(Burn { victim: h.victim, attacker: h.attacker, slot, pos, state: 1, count: r >> 4, left: (r & 15) + 60, rise: 0.0, mirror: r & 1 != 0, tag: false });
@@ -900,8 +863,9 @@ impl Vfx {
                 }
                 if h.damage.max(h.base_damage) >= HEAVY {
                     self.char_spark(models.get(h.attacker).copied().unwrap_or(0), pos, Some(strike), eye);
-                    // fire / projectile attacks (limb bytes 0x18..0x1C) have their own effects instead
-                    if !(0x18..=0x1C).contains(&h.limb) {
+                    // fire / projectile attacks (limb bytes 0x18..0x1C) have their own effects instead (Tekken 3's are the
+                    // sim's objects, [`Vfx::objects`])
+                    if !(0x18..=0x1C).contains(&h.limb) && !data.bursts.is_empty() {
                         self.heavy(pos, strike, h.ki);
                     }
                 }
@@ -1011,9 +975,13 @@ impl Vfx {
     }
 
     /// The effect objects' pictures (drawn after their move, 0x8006FC84): the fire's growing, looped and ending
-    /// cells, 2 frames each, lighting the fighters now and then (0x800720EC); the gas puff's.
-    pub fn objects(&mut self, list: &[kumite_sim::objects::Object], models: &[usize]) {
+    /// cells, 2 frames each, lighting the fighters now and then (0x800720EC); the gas puff's; Tekken 3's burns, heavy
+    /// hits' particles and limb glows with their trails on their palette steps.
+    /// shortcut: Tekken 3's sparks (type 7) and floor flames (type 9) are not drawn, nor a glow's light (0x80039F0C);
+    /// upgrade with their cells (0x80025564, 0x8002561C) in effects.json
+    pub fn objects(&mut self, objects: &kumite_sim::objects::Objects, models: &[usize]) {
         use kumite_sim::objects::Kind;
+        let list = &objects.list;
         self.objects.clear();
         let Some(d) = self.data.clone() else { return };
         let sprite = |strip: &Strip, k: i32, pos: Vec3, size: f32, blend: Blend, mirror: bool| {
@@ -1021,6 +989,16 @@ impl Vfx {
             let a = if blend == Blend::Half { 0.5 } else { 1.0 };
             Some(Sprite { pos, size, cell, color: [1.0, 1.0, 1.0, a], blend, mirror, nearer: 0.0, sheet: d.objects_sheet })
         };
+        // (the PS1's integers and axes, y down and z negated)
+        let ps1 = |at: [i32; 3]| Vec3::new(at[0] as f32, -at[1] as f32, -at[2] as f32) / UNITS;
+        let step = |cells: &Arc<Vec<u32>>, k: i32, pos: Vec3, size: f32| {
+            let cell = *cells.get(usize::try_from(k).ok()?)?;
+            Some(Sprite { pos, size, cell, color: [1.0; 4], blend: Blend::Add, mirror: false, nearer: 0.0, sheet: 0 })
+        };
+        // (the glows: 0x80025310's 280 quad, a palette step every 2 frames of 8)
+        for &(at, _, count) in objects.glows.iter().filter(|g| g.1) {
+            self.objects.extend(step(&d.heavy[1], (count >> 1) & 7, ps1(at), GLOW_SIZE));
+        }
         for o in list {
             let pos = o.pos / UNITS;
             // (Tekken Tag's flame: a spark along it one frame in 64, a fire where it is at the floor one in 63, 0x3A4810)
@@ -1073,6 +1051,17 @@ impl Vfx {
                     sheet: set.sheet,
                 }),
                 (Kind::Gas, _) => sprite(&d.gas, o.count >> 1, pos, GAS_SIZE, Blend::Half, o.mirror),
+                // (Tekken 3's burns on the struck one's joints, 0x80073054: the looped fire cells at its phase, then
+                // rising, then the end's)
+                (Kind::Burn { .. }, 1) => sprite(&d.fire, 4 + ((o.left & 6) >> 1), ps1(o.at), BURN_SIZE, Blend::Add, o.mirror),
+                (Kind::Burn { .. }, 2) => sprite(&d.fire, 4 + (o.frames >> 1), ps1(o.at), BURN_SIZE, Blend::Add, o.mirror),
+                (Kind::Burn { .. }, 3) => sprite(&d.fire_end, o.frames >> 1, ps1(o.at), BURN_SIZE, Blend::Add, o.mirror),
+                // (a heavy hit's particles: 0x800252F0's 110 quad, a ki-charged one's 0x800256E0's 70, on the palette
+                // step of their age over their life, 0x80070508)
+                (Kind::Particle { ki } | Kind::Streak { ki, .. }, 1) => step(&d.heavy[usize::from(ki)], o.frames * 16 / o.left.max(1), ps1(o.at), if ki { 0.070 } else { 0.110 }),
+                // (a glow's trail, 0x80025484's 160 quad, and its spark, 0x800254A4's 60, 0x80070E08 / 0x80071110)
+                (Kind::Trail, 1) => step(&d.heavy[1], o.frames, ps1(o.at), 0.160),
+                (Kind::TrailSpark, 1) => step(&d.heavy[1], o.frames >> 1, ps1(o.at), 0.060),
                 // (one quad: the object's two are the two frame buffers' copies, 0x80072D5C; a pack before format 13,
                 // without the mist's palette, draws it as the gas)
                 (Kind::Mist(b), 1..) => sprite(
@@ -1088,6 +1077,9 @@ impl Vfx {
             self.objects.extend(s);
             if matches!(o.kind, Kind::Fire | Kind::Breath) && self.rand() >> 8 & 15 == 0 {
                 self.light = Some((FIRE_LIGHT, LIGHT_FRAMES, pos, LIGHT_FRAMES));
+            }
+            if matches!((o.kind, o.state), (Kind::Burn { .. }, 1)) && self.rand() >> 8 & 15 == 0 {
+                self.light = Some((FIRE_LIGHT, LIGHT_FRAMES, ps1(o.at), LIGHT_FRAMES));
             }
         }
         for b in &self.burns {

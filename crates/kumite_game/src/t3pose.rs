@@ -5,7 +5,7 @@
 use kumite_sim::ball::sin12;
 use kumite_sim::{gte_sqrt, Turns};
 
-type M = [[i32; 3]; 3];
+pub type M = [[i32; 3]; 3];
 
 const I: M = [[4096, 0, 0], [0, 4096, 0], [0, 0, 4096]];
 /// Each slot's parent (slot 0 hangs on the root's matrix, P+0xF54).
@@ -153,7 +153,7 @@ pub fn locals(c: &[i16; 49]) -> Turns {
 
 /// The slots' places in the world (0x8003B5C0 down the chain, from the root's matrix P+0xF54: the facing `facing`,
 /// +0x2C, as Rz Ry Rx of (0, facing - 0x8000, 0), at `root`, P+0xF68) for their turns and the body's slot places.
-pub fn places(turns: &Turns, slots: &[[i32; 3]], facing: i32, root: [i32; 3]) -> [[i32; 3]; 18] {
+pub fn places(turns: &Turns, slots: &[[i32; 3]], facing: i32, root: [i32; 3]) -> [(M, [i32; 3]); 18] {
     let mut world = [(I, [0; 3]); 18];
     let top = (euler(0, facing - 0x8000, 0), root);
     for s in 0..18 {
@@ -162,7 +162,7 @@ pub fn places(turns: &Turns, slots: &[[i32; 3]], facing: i32, root: [i32; 3]) ->
         let at = mv(&pr, slots.get(s).copied().unwrap_or_default());
         world[s] = (mul(&pr, &l), std::array::from_fn(|k| at[k] + pt[k]));
     }
-    world.map(|w| w.1)
+    world
 }
 
 #[cfg(test)]

@@ -141,6 +141,8 @@ pub struct BodyVolumes {
     pub slots: [glam::Mat4; 2],
     /// Tekken 3: the 18 joint slots where the PS1 keeps them (+0x908, its integers; y down, z negated), its burns'.
     pub joints: Vec<[i32; 3]>,
+    /// Tekken 3: the head's matrix as the PS1 keeps it (+0x97C: rows of 4096 = 1, its place), where the breath starts.
+    pub head: Option<([[i32; 3]; 3], [i32; 3])>,
 }
 /// Round clock for the default option (40 s).
 pub const ROUND_FRAMES: u32 = 40 * 60;
@@ -3205,7 +3207,13 @@ fn t3_atan(mut dx: i32, mut dz: i32) -> i32 {
     while dx.abs() > 0x7FFF || dz.abs() > 0x7FFF {
         (dx, dz) = (dx / 2, dz / 2);
     }
-    atan16(dx, dz, |i| ((f64::from(i) + 0.375).datan2(1024.0) * 2048.0 / std::f64::consts::PI).round() as i32)
+    atan16(dx, dz, |i| t3_atan_table(i.into()) as i32)
+}
+
+/// Tekken 3's atan table's angle at `q` (0x800210C8's byte plus half the index): round(atan((q + 3/8) / 1024) x
+/// 2048 / pi).
+pub(crate) fn t3_atan_table(q: i64) -> i64 {
+    ((q as f64 + 0.375).datan2(1024.0) * 2048.0 / std::f64::consts::PI).round() as i64
 }
 
 fn atan16(dx: i32, dz: i32, table: impl Fn(i32) -> i32) -> i32 {
@@ -3818,13 +3826,9 @@ impl Fight {
                 }
             }
         }
-        // (Tekken 3: a clean hit of the breath or the fire sets the struck one burning, 0x80076D24 -> 0x8006EF60)
         if !gd.tag_moves {
-            let burns: Vec<usize> = self.hits.iter().filter(|h| !h.blocked && h.base_damage != 0 && matches!(h.limb, 0x18 | 0x1A)).map(|h| h.victim).collect();
-            for v in burns {
-                let gon = self.actor(v).is_some_and(|f| f.character == Some(17));
-                self.objects.burn(v, gon);
-            }
+            let gon: Vec<bool> = (0..3).map(|v| self.actor(v).is_some_and(|f| f.character == Some(17))).collect();
+            self.objects.on_hits(&self.hits, &gon);
         }
         // the ball after the hit pass (it keeps flying after the K.O.)
         self.ball_step(&gd, &[&bodies[0], &bodies[1]]);
@@ -4857,16 +4861,28 @@ pub(crate) fn step_objects(objects: &mut objects::Objects, gd: &GameData, fighte
             _ => None,
         };
         let byte = fire.or_else(|| mv.attack.as_ref().filter(|a| a.pairs.is_empty()).and_then(|a| a.header_bytes.first().copied()).filter(|&b| b >= 0x18));
-        // (Tekken 3's burns on the fighter: where its joints are this frame)
-        if t3 && objects.list.iter().any(|o| matches!(o.kind, objects::Kind::Burn { victim, .. } if victim == i)) {
+        // (0x8006F2F0: a ki-charged fighter's hands glow; in a move with limb bytes, up to its active window's end, the
+        // limbs it strikes with instead, which leave trails; Gon's hands always)
+        let bytes = mv.attack.as_ref().map_or(&[][..], |a| &a.header_bytes[..a.header_bytes.len().min(4)]);
+        let mask = match () {
+            _ if !t3 || f.ki == 0 => 0,
+            _ if f.character == Some(17) || bytes.iter().all(|&b| b == 0) => 0x440,
+            _ if f.frame <= mv.active[1] => bytes.iter().filter_map(|&b| objects::LIMB_GLOWS.get(b as usize).filter(|&&s| s != 0)).fold(0, |m, s| m | 1 << s | 1 << 31),
+            _ => 0,
+        };
+        objects.glow_mask.resize(fighters.len(), 0);
+        objects.glow_mask[i] = mask;
+        // (Tekken 3's burns and glows on the fighter: where its joints are this frame)
+        if t3 && (mask != 0 || objects.list.iter().any(|o| matches!(o.kind, objects::Kind::Burn { victim, .. } if victim == i))) {
             objects.joints.resize(fighters.len(), Vec::new());
             objects.joints[i] = anims.get(i).and_then(|a| a.volumes(f, gd)).map(|v| v.joints).unwrap_or_default();
         }
         let (Some(byte), Some(&body), Some(anim)) = (byte.filter(|_| !f.inactive), bodies.get(i), anims.get(i)) else { continue };
         let key = (mv.active[0]..=mv.active[1]).contains(&f.frame).then_some((f.current.index, f.frame));
         if key.is_some() && objects.started[i] != key {
-            let slots = anim.volumes(f, gd).map_or(body.slots, |v| v.slots);
-            objects.start(i, byte, f.frame == mv.active[0], &slots);
+            let v = anim.volumes(f, gd);
+            let slots = v.as_ref().map_or(body.slots, |v| v.slots);
+            objects.start(i, byte, f.frame == mv.active[0], &slots, v.and_then(|v| v.head));
         }
         objects.started[i] = key;
         striking[i] = (f.frame >= mv.active[0]).then_some(byte);

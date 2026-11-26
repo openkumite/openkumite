@@ -34,9 +34,8 @@
 //!   let out, the flames on the floor under the breath (type 9, 0x800725EC), the fires on a fighter the breath or the
 //!   fire struck (type 11, 0x80072E74), each object's slot held two passes after it is over (type 0, 0x8006FD64).
 //!
-//! shortcut: the hit sparks (types 1, 2, 12, 13, 0x80076884) and the limb glows' trails (types 4, 5) are not run
-//! (their draws and their slots), and the sparks, floor flames and burns here are not drawn from these (vfx has its own
-//! burns); port them with a PS1 trace of a hit (t3sim37's rs.lua).
+//! - Tekken 3's heavy hits' particles (types 1, 2 and the ki-charged 12, 13, 0x80076D40) and the limb glows (type 3,
+//!   the pool's first eight) with their trails (types 4, 5), run as these: their draws, their slots, where they are.
 
 use crate::detmath::DetMath;
 use glam::{Mat4, Vec3};
@@ -93,6 +92,10 @@ const PUFF_RISE: f32 = 0x3999 as f32 / 65536.0;
 /// (0x8006F678) among them.
 const POOL: usize = 80;
 pub const GLOWS: i32 = 8;
+/// The joint slots each fighter's glows sit on (0x8006F678's +0x40).
+pub const GLOW_SLOTS: [usize; 4] = [6, 10, 14, 17];
+/// The joint slot a descriptor's limb byte glows on (0x800251C4; 0 none).
+pub const LIMB_GLOWS: [u32; 26] = [0, 0, 0, 0, 6, 6, 6, 0, 10, 10, 10, 0, 14, 14, 14, 17, 17, 17, 10, 10, 0, 0, 0, 0, 0, 0];
 /// The bone slots a struck fighter burns on (0x80025180), one for Gon (character 17, +0x18 0x11).
 pub const BURN_SLOTS: [usize; 10] = [1, 2, 4, 8, 5, 9, 12, 13, 15, 16];
 
@@ -119,6 +122,20 @@ pub enum Kind {
         victim: usize,
         slot: usize,
     },
+    /// A hit's particle thrown off where it struck (type 2, 0x800701F0; type 13, 0x800738AC, for a ki-charged
+    /// attacker).
+    Particle {
+        ki: bool,
+    },
+    /// A hit's particle easing along the strike (type 1, 0x8006FE04; 12, 0x800734B4): its speed from the first to the
+    /// second (16ths of a unit a frame).
+    Streak {
+        ki: bool,
+        speed: [i32; 2],
+    },
+    /// A limb glow's trail (type 4, 0x80070B74) and its spark (type 5, 0x80070EA0), rising off.
+    Trail,
+    TrailSpark,
     /// An object over (type 0): its slot held for `count` more passes.
     Done,
 }
@@ -167,6 +184,13 @@ pub struct Objects {
     pub started: Vec<Option<(usize, u32)>>,
     /// Tekken Tag: each fighter's opponent burns from its fire (+0xC04): its new flames do not strike.
     pub burned: Vec<bool>,
+    /// Tekken 3: each fighter's limb glows this frame (0x8006F2F0: bit k for joint slot k, bit 31 an attack's, whose
+    /// glows leave trails), set before the pass.
+    pub glow_mask: Vec<u32>,
+    /// Tekken 3: the eight limb glows (type 3, 0x800705C8; P1's on [`GLOW_SLOTS`], then P2's), the pool's first
+    /// objects: where each is (its joint slot this frame, [`Objects::joints`]), whether it shows and its frames shown
+    /// (+0x44, its palette step).
+    pub glows: [([i32; 3], bool, i32); 8],
 }
 
 impl Objects {
@@ -203,6 +227,32 @@ impl Objects {
         }
     }
 
+    /// Tekken 3's objects of a frame's clean hits (0x80076C28): the breath's or the fire's sets the struck one burning
+    /// (0x80076D24; `gon[k]` whether fighter k is Gon), one of 21 or more but the objects' bytes' throws its particles
+    /// off ([`Objects::heavy`]).
+    pub fn on_hits(&mut self, hits: &[crate::HitEvent], gon: &[bool]) {
+        let ps1 = |v: Vec3| [v.x, -v.y, -v.z].map(|c| c.round() as i32);
+        for h in hits.iter().filter(|h| !h.blocked && h.base_damage != 0 && !h.throw) {
+            if matches!(h.limb, 0x18 | 0x1A) {
+                self.burn(h.victim, gon.get(h.victim).copied().unwrap_or(false));
+            } else if h.damage.max(h.base_damage) >= 21 && !(0x18..=0x1C).contains(&h.limb) {
+                self.heavy(h.attacker, ps1(h.point), ps1(h.strike), h.ki);
+            }
+        }
+    }
+
+    /// Tekken 3: fighter `owner`'s hit of 21 or more (0x80076D40) at `at` along `strike` (the PS1's integers and axes)
+    /// throws off 20 particles (type 2; 13 when it is ki-charged), then 6 easing along the strike (type 1; 12).
+    pub fn heavy(&mut self, owner: usize, at: [i32; 3], strike: [i32; 3], ki: bool) {
+        let angles = heading_angles(strike);
+        for _ in 0..20 {
+            self.let_out(owner, Kind::Particle { ki }, at, angles);
+        }
+        for _ in 0..6 {
+            self.let_out(owner, Kind::Streak { ki, speed: [0; 2] }, at, angles);
+        }
+    }
+
     /// Tekken 3: fighter `victim`, struck by the breath or the fire, burns (0x8006EF60): on ten bone slots, Gon on one.
     pub fn burn(&mut self, victim: usize, gon: bool) {
         for &slot in &BURN_SLOTS[..if gon { 1 } else { 10 }] {
@@ -211,8 +261,9 @@ impl Objects {
     }
 
     /// Fighter `owner`'s move of descriptor byte `byte` on a frame of its active window (`first`: the window's first
-    /// frame) starts its object at bone slots `slots` (head, pelvis: world, game units).
-    pub fn start(&mut self, owner: usize, byte: u32, first: bool, slots: &[Mat4; 2]) {
+    /// frame) starts its object at bone slots `slots` (head, pelvis: world, game units); Tekken 3's breath on `head`,
+    /// the head's matrix in the PS1's integers ([`crate::BodyVolumes::head`]).
+    pub fn start(&mut self, owner: usize, byte: u32, first: bool, slots: &[Mat4; 2], head: Option<([[i32; 3]; 3], [i32; 3])>) {
         let (m, at, kind) = match byte {
             FIRE => (slots[0], FIRE_AT, Kind::Fire),
             // (a brawl's actors by their index's parity)
@@ -223,14 +274,31 @@ impl Objects {
             GAS if first => (slots[1], GAS_AT, Kind::GasSource { heading: [0.0, 1.0], next: 0 }),
             _ => return,
         };
-        let (p, q) = (m.transform_point3(at[0]), m.transform_point3(at[1]));
+        let (mut p, q) = (m.transform_point3(at[0]), m.transform_point3(at[1]));
         let d = q - p;
-        // (0x8006DF34: the yaw and the pitch of the way it heads, a quarter turn less, in the PS1's integers and axes)
         let ps1 = |v: Vec3| [v.x, -v.y, -v.z].map(|c| c.round() as i32);
-        let (at, b) = (ps1(p), ps1(q));
-        let e = [b[0] - at[0], b[1] - at[1], b[2] - at[2]].map(|c| c as f32);
-        let a12 = |r: f32| ((r * 4096.0 / std::f32::consts::TAU).round() as i32 - 0x400) & 0xFFF;
-        let angles = [a12(glam::Vec2::new(e[0], e[2]).length().datan2(e[1])), a12(e[2].datan2(e[0]))];
+        let head = head.filter(|_| kind == Kind::Breath);
+        let (at, b) = match head {
+            // (0x8006E99C: ApplyRotMatrix of 0x80098800's points on the head's matrix, plus its place)
+            Some((r, t)) => {
+                let on = |v: Vec3| -> [i32; 3] {
+                    let v = ps1(v);
+                    std::array::from_fn(|k| ((0..3).map(|c| i64::from(r[k][c]) * i64::from(v[c])).sum::<i64>() >> 12) as i32 + t[k])
+                };
+                (on(at[0]), on(at[1]))
+            }
+            None => (ps1(p), ps1(q)),
+        };
+        // (0x8006DF34: the yaw and the pitch of the way it heads, a quarter turn less, in the PS1's integers and axes)
+        let e = [b[0] - at[0], b[1] - at[1], b[2] - at[2]];
+        let angles = if head.is_some() {
+            p = Vec3::new(at[0] as f32, -at[1] as f32, -at[2] as f32);
+            heading_angles(e)
+        } else {
+            let e = e.map(|c| c as f32);
+            let a12 = |r: f32| ((r * 4096.0 / std::f32::consts::TAU).round() as i32 - 0x400) & 0xFFF;
+            [a12(glam::Vec2::new(e[0], e[2]).length().datan2(e[1])), a12(e[2].datan2(e[0]))]
+        };
         let kind = match kind {
             Kind::GasSource { next, .. } => Kind::GasSource { heading: glam::Vec2::new(d.x, d.z).normalize_or(glam::Vec2::Y).to_array(), next },
             k => k,
@@ -253,10 +321,12 @@ impl Objects {
         for (k, b) in self.burned.iter_mut().enumerate() {
             *b = striking[k] == Some(TAG_FIRE) && (*b || struck.get(k).copied().unwrap_or(false));
         }
+        // (the glows first: the last one's offspring are not run when it ran as the newest)
+        let newest_glow = t3 && self.glow();
         let (mut i, mut ran) = (0, 0);
         // (puffs let out this frame move this frame too: the pool's list runs on to its end; Tekken 3's stops at the
         // object newest as it ran, 0x8006F95C)
-        while i < self.list.len() {
+        while i < self.list.len() && !newest_glow {
             let newest = t3 && i + 1 == self.list.len();
             let mut o = self.list[i].clone();
             let own = striking.get(o.owner).copied().flatten();
@@ -272,6 +342,9 @@ impl Objects {
                     self.fire(&mut o, on(BREATH), hit, t3)
                 }
                 Kind::Spark => self.spark(&mut o),
+                Kind::Particle { .. } => self.particle(&mut o),
+                Kind::Streak { .. } => self.streak(&mut o),
+                Kind::Trail | Kind::TrailSpark => self.trail(&mut o),
                 Kind::FloorFlame => self.floor_flame(&mut o),
                 Kind::Burn { .. } => self.burning(&mut o),
                 Kind::Done => {
@@ -453,6 +526,112 @@ impl Objects {
         !over && at[1] < 0
     }
 
+    /// The limb glows (0x800707F4): one showing on its fighter's mask is at its joint, lets out a trail in an attack
+    /// and a spark one draw in the odds (0x80070AA8). True when the last glow ran as the pool's newest object.
+    fn glow(&mut self) -> bool {
+        let mut newest = false;
+        for g in 0..8 {
+            newest = self.list.is_empty();
+            let (k, slot) = (g / 4, GLOW_SLOTS[g % 4]);
+            let mask = self.glow_mask.get(k).copied().unwrap_or(0);
+            self.glows[g].1 = mask >> slot & 1 != 0;
+            if !self.glows[g].1 {
+                continue;
+            }
+            // shortcut: the hands' glows sit on their joints, the PS1's 80 to 100 further along the hand's matrix
+            // (0x80025334 by character); upgrade with the slots' matrices in BodyVolumes
+            if let Some(&p) = self.joints.get(k).and_then(|j| j.get(slot)) {
+                self.glows[g].0 = p;
+            }
+            self.glows[g].2 += 1;
+            let at = self.glows[g].0;
+            if mask & 0x8000_0000 != 0 {
+                self.let_out(k, Kind::Trail, at, [0; 2]);
+            }
+            if self.rand() < self.odds(50) {
+                self.let_out(k, Kind::TrailSpark, at, [0; 2]);
+            }
+        }
+        newest
+    }
+
+    /// A hit's thrown particle (0x80070244): two draws spread it off where it struck, turn its heading and set its
+    /// speed and its 20-51 frames; it jumps 8 frames of its travel at once, then moves on until the floor.
+    fn particle(&mut self, o: &mut Object) -> bool {
+        if o.state == 0 {
+            let r = self.rand();
+            let r = r | self.rand() << 16;
+            (o.left, o.frames, o.state) = (((r >> 10) & 0x1F) + 0x14, 0, 1);
+            for (k, a) in o.at.iter_mut().enumerate() {
+                *a += ((r >> (2 * k)) & 0xFF) - 0x7F;
+            }
+            o.angles = [o.angles[0] + ((r >> 6) & 0x7F) - 0x3F, o.angles[1] + ((r >> 8) & 0x7F) - 0x3F];
+            o.travel = heading(o.angles, ((r >> 12) & 0x7FF) * 5 / 4);
+            for k in 0..3 {
+                o.at[k] += o.travel[k] >> 13;
+            }
+        }
+        // (0x80070508)
+        o.frames += 1;
+        if o.frames >= o.left {
+            return false;
+        }
+        for k in 0..3 {
+            o.at[k] += o.travel[k] >> 16;
+        }
+        o.at[1] < 0
+    }
+
+    /// A hit's easing particle (0x8006FE58): two draws turn its heading by up to a sixth of a turn and set its speeds
+    /// and its 10-41 frames; its speed eases on a quarter cosine of its life (0x800700BC) until the floor.
+    fn streak(&mut self, o: &mut Object) -> bool {
+        let Kind::Streak { ki, mut speed } = o.kind else { return false };
+        if o.state == 0 {
+            let r = self.rand();
+            let r = r | self.rand() << 16;
+            let turn = |v: i32| (((v & 0x7FF) - 0x3FF) * 2) / 3;
+            o.angles = [o.angles[0] + turn(r), o.angles[1] + turn(r >> 2)];
+            (o.left, o.frames, o.state) = (((r >> 4) & 0x1F) + 10, 0, 1);
+            speed = [(r >> 6) & 0x1FF, ((r >> 8) & 0x1FF) + 0x680];
+            o.kind = Kind::Streak { ki, speed };
+        }
+        o.frames += 1;
+        if o.frames >= o.left {
+            return false;
+        }
+        let c = crate::ball::cos12((o.frames * 0x3FF / o.left) & 0x3FF);
+        o.travel = heading(o.angles, (speed[0] + (((speed[1] - speed[0]) * (c * 4 + 0x2000)) >> 15)) as i16 as i32);
+        for k in 0..3 {
+            o.at[k] += o.travel[k] >> 16;
+        }
+        o.at[1] < 0
+    }
+
+    /// A glow's trail (0x80070BC8) or its spark (0x80070EF4): two draws spread it about where it came out (the
+    /// spark not in height), then it rises faster each frame, 16 frames (the spark 32).
+    fn trail(&mut self, o: &mut Object) -> bool {
+        let spark = o.kind == Kind::TrailSpark;
+        if o.state == 0 {
+            let r = self.rand();
+            let r = r | self.rand() << 16;
+            if spark {
+                (o.at[0], o.at[2]) = (o.at[0] + (r & 0xFF) - 0x7F, o.at[2] + ((r >> 4) & 0xFF) - 0x7F);
+            } else {
+                for (k, a) in o.at.iter_mut().enumerate() {
+                    *a += ((r >> (2 * k)) & 0x7F) - 0x3F;
+                }
+            }
+            (o.frames, o.travel[1], o.state) = (-1, 0, 1);
+        }
+        o.frames += 1;
+        if o.frames >= if spark { 0x20 } else { 0x10 } {
+            return false;
+        }
+        o.travel[1] += 0x12000;
+        o.at[1] -= o.travel[1] >> 16;
+        true
+    }
+
     /// A flame on the floor (0x800725EC): 60-91 frames, then 16 rising off; a spark one draw in the odds each frame.
     fn floor_flame(&mut self, o: &mut Object) -> bool {
         let (mut at, mut rise) = (o.at, o.travel[1]);
@@ -493,7 +672,7 @@ impl Objects {
         if o.state == 0 {
             // 0x80072F38
             let r = self.rand();
-            (o.frames, o.left, o.state) = ((r & 0xF) + 0x3C, r >> 4, 1);
+            (o.frames, o.left, o.state, o.mirror) = ((r & 0xF) + 0x3C, r >> 4, 1, r & 1 != 0);
         }
         match o.state {
             1 => {
@@ -624,6 +803,27 @@ impl Objects {
     }
 }
 
+/// 0x8006DF34: the pitch and the yaw of `e`, a quarter turn less (4096 a turn).
+fn heading_angles(e: [i32; 3]) -> [i32; 2] {
+    let yaw = (ratan2(e[0], e[2]) - 0x400) & 0xFFF;
+    [(ratan2(e[1], reach(e[0], e[2], yaw)) - 0x400) & 0xFFF, yaw]
+}
+
+/// 0x8004B39C on Tekken 3's table (0x800210C8).
+fn ratan2(x: i32, y: i32) -> i32 {
+    crate::camera::ratan2_on(crate::t3_atan_table, x.into(), y.into()) as i32
+}
+
+/// 0x8006DFC4: the length along `yaw` of (dx, dz), the larger over the yaw's sine or cosine (x 8 in 16 bits, 0 as 1).
+fn reach(dx: i32, dz: i32, yaw: i32) -> i32 {
+    let (v, t) = if dz.abs() < dx.abs() { (dx, crate::ball::sin12(yaw)) } else { (dz, crate::ball::cos12(yaw)) };
+    let t = match (t << 3) as i16 {
+        0 => 1,
+        t => i32::from(t),
+    };
+    (v.wrapping_shl(16).wrapping_div(t) >> 1).wrapping_abs()
+}
+
 /// The travel a frame of `speed` (16ths of a unit) at `angles` (0x8006E120: 16.16, on the 4096 sine table).
 fn heading(angles: [i32; 2], speed: i32) -> [i32; 3] {
     let (p, y) = (-angles[0], -angles[1]);
@@ -642,7 +842,7 @@ mod tests {
         let mut o = Objects::default();
         // a head 900 up, its x axis pointing forward (+z) and down
         let head = Mat4::from_cols(Vec3::new(0.0, -0.5, 0.8).extend(0.0), Vec3::Y.extend(0.0), Vec3::X.extend(0.0), Vec3::new(0.0, 900.0, 0.0).extend(1.0));
-        o.start(0, FIRE, true, &[head, Mat4::IDENTITY]);
+        o.start(0, FIRE, true, &[head, Mat4::IDENTITY], None);
         let mut frames = 0;
         let mut floor = false;
         while !o.list.is_empty() && frames < 40 {
@@ -654,7 +854,7 @@ mod tests {
             }
         }
         assert!(floor && (20..=26).contains(&frames), "{frames}");
-        o.start(1, GAS, true, &[Mat4::IDENTITY, Mat4::from_translation(Vec3::new(0.0, 300.0, 0.0))]);
+        o.start(1, GAS, true, &[Mat4::IDENTITY, Mat4::from_translation(Vec3::new(0.0, 300.0, 0.0))], None);
         for _ in 0..16 {
             o.step(&[None, Some(GAS)], &[false; 2], true);
         }
@@ -663,11 +863,39 @@ mod tests {
         assert!(!o.strikes(1).is_empty() && o.strikes(0).is_empty());
     }
 
+    /// A heavy hit's 26 particles each draw twice on their first pass (20 thrown off, then 6 easing) and are over by
+    /// the end of their lives (20-51 and 10-41 frames); a ki-charged fighter's glowing limbs draw once a pass each,
+    /// an attack's lets out a trail, which draws twice on its first pass.
+    #[test]
+    fn heavy_hits_and_glows_draw_as_on_the_ps1() {
+        let draws = |o: &Objects, n: usize| {
+            let mut p = o.clone();
+            (0..n).for_each(|_| _ = p.rand());
+            p.seed
+        };
+        let mut o = Objects { seed: 1, ..Default::default() };
+        o.heavy(0, [0, -900, 0], [100, 0, 0], false);
+        assert_eq!(o.list.len(), 26);
+        let want = draws(&o, 52);
+        o.step(&[None, None], &[false; 2], true);
+        assert_eq!(o.seed, want);
+        for _ in 0..60 {
+            o.step(&[None, None], &[false; 2], true);
+        }
+        assert!(o.list.is_empty());
+        let mut o = Objects { seed: 1, glow_mask: vec![0x440, 1 << 14 | 1 << 31], joints: vec![vec![[0; 3]; 18]; 2], ..Default::default() };
+        let start = o.clone();
+        o.step(&[None, None], &[false; 2], true);
+        assert!(o.list.iter().any(|x| x.kind == Kind::Trail) && o.list.iter().all(|x| x.state == 1));
+        assert_eq!(o.seed, draws(&start, 3 + 2 * o.list.len()));
+        assert_eq!(o.glows.iter().filter(|g| g.1).count(), 3);
+    }
+
     /// Tekken Tag's mist moves 48 a frame for 21 frames, striking its first 15 moves while its owner is in the move.
     #[test]
     fn a_mist_puff_drifts_and_strikes_its_first_frames() {
         let mut o = Objects::default();
-        o.start(0, TAG_MIST, true, &[Mat4::from_translation(Vec3::new(0.0, 1500.0, 0.0)), Mat4::IDENTITY]);
+        o.start(0, TAG_MIST, true, &[Mat4::from_translation(Vec3::new(0.0, 1500.0, 0.0)), Mat4::IDENTITY], None);
         let mut strikes = Vec::new();
         while !o.list.is_empty() && strikes.len() < 40 {
             o.step(&[Some(TAG_MIST), None], &[false; 2], false);
