@@ -762,6 +762,19 @@ impl Roster {
         self.bgm_of.get(c.costumes.get(costume).or(c.costumes.first())?).copied()
     }
 
+    /// The name model record `model` goes by outside the fight (replays, records): its costume's own (Tekken Tag's
+    /// record, 0x415840; Tekken 3's selection: Kuma's costume 1 Panda, not "Kuma / Panda"), else its character's.
+    pub fn model_name(&self, model: usize) -> String {
+        let Some(c) = self.characters.iter().find(|c| c.costumes.contains(&model)) else { return "?".into() };
+        let own = match &self.ttt {
+            Some(d) => d.name(model),
+            None => self.costume_of.get(&model).and_then(|&k| self.ui.selection_names.get(c.id * 4 + k)).cloned(),
+        };
+        // (the record's in capitals, as the roster's names are written: TETSUJIN -> Tetsujin)
+        let title = |w: &str| w.chars().enumerate().map(|(i, ch)| if i == 0 { ch } else { ch.to_ascii_lowercase() }).collect::<String>();
+        own.filter(|n| !n.is_empty() && !n.eq_ignore_ascii_case(&c.name)).map_or_else(|| c.name.clone(), |n| n.split(' ').map(title).collect::<Vec<_>>().join(" "))
+    }
+
     pub fn by_id(&self, id: usize) -> Option<&Character> {
         self.characters.iter().find(|c| c.id == id)
     }
@@ -2855,6 +2868,8 @@ mod tests {
             assert_eq!((file(0).as_deref(), file(1).as_deref()), (Some(arranged), Some(arcade)), "BGM {bgm}");
         }
         assert_eq!(r.costume_of.get(&71), Some(&0), "character 0's first model is his costume 0");
+        // (replays and records: Kuma's costume 1 by its selection's name)
+        assert_eq!([159, 163, 71].map(|m| r.model_name(m)), ["Kuma", "Panda", "Paul"]);
     }
 
     #[test]

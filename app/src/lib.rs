@@ -337,9 +337,7 @@ struct BowlRun {
     select: bool,
     /// Each player's model record (its voices).
     records: Vec<usize>,
-    /// Each player's team (character ids: the bowler, its partner).
-    teams: Vec<[usize; 2]>,
-    /// ... and its bodies, whose faces the results and TOP 5 BOWLERS show (PCSX2: Kuma's costume 1 PANDA's).
+    /// Each player's team's bodies (the bowler, its partner), whose faces the results and TOP 5 BOWLERS show (PCSX2: Kuma's costume 1 PANDA's).
     bodies: Vec<[usize; 2]>,
     /// The pause menu (state 9, START in the throw: Tekken Tag's with Bowl's entries): its cursor and player, RESET?
     /// open (YES chosen), TOP BOWLERS or BOWLING OPTIONS open (its cursor).
@@ -2592,12 +2590,12 @@ impl App {
     /// The match just over, saved as a replay (its tape and what made it): a fight, a tag brawl, a Force stage.
     fn save_replay(&mut self) {
         let Some(rec) = self.replay_rec.take() else { return };
-        let name = |c: usize| self.roster.characters.get(c).map_or_else(|| "?".to_string(), |c| c.name.clone());
-        let name_of = |id: usize| self.roster.by_id(id).map_or_else(|| "?".to_string(), |c| c.name.clone());
+        // (a costume's own name: Panda, not "Kuma / Panda")
+        let name = |(c, k): (usize, usize)| self.roster.characters.get(c).and_then(|c| c.costumes.get(k)).map_or_else(|| "?".to_string(), |&m| self.roster.model_name(m));
         let (tape, title, result) = if let Some(t) = self.tag.as_mut() {
             let Some(tape) = t.game.tape.take() else { return };
             let s = t.setup.match_slots();
-            let names: Vec<String> = s.iter().map(|p| name(p.character)).collect();
+            let names: Vec<String> = s.iter().map(|p| name((p.character, p.costume))).collect();
             let title = if t.game.teams == [0, 0, 1, 1] { format!("TAG BRAWL · {} & {} vs {} & {}", names[0], names[1], names[2], names[3]) } else { format!("TAG BRAWL · {}", names.join(", ")) };
             let winner = match t.game.phase {
                 kumite_game::tag::TagPhase::MatchOver { winner } => winner,
@@ -2616,7 +2614,7 @@ impl App {
                 replay::Match::Force { start, .. } => {
                     let number = self.force.as_ref().and_then(|r| r.card().0);
                     let stage = number.map_or_else(|| "FINAL STAGE".to_string(), |n| format!("STAGE {}", n + 1));
-                    (tape, format!("FORCE · {} · {}", name(start.player.0), stage), if winner == Some(0) { "STAGE CLEAR".into() } else { "GAME OVER".into() })
+                    (tape, format!("FORCE · {} · {}", name(start.player), stage), if winner == Some(0) { "STAGE CLEAR".into() } else { "GAME OVER".into() })
                 }
                 replay::Match::Fight { setup, ttt, .. } => {
                     let mode = match setup.mode {
@@ -2631,16 +2629,17 @@ impl App {
                     };
                     let online = if rec.online { "ONLINE " } else { "" };
                     let score = format!("{}–{}", f.bout.wins[0], f.bout.wins[1]);
-                    let result = winner.map_or_else(|| format!("DRAW {score}"), |w| format!("{} WINS {score}", f.names[w.min(1)]));
+                    let names = setup.players.map(name);
+                    let result = winner.map_or_else(|| format!("DRAW {score}"), |w| format!("{} WINS {score}", names[w.min(1)]));
                     // (a Tekken Tag tag battle: each side's pair)
                     let bench = ttt.as_ref().and_then(ttt::Run::bench);
-                    let side = |k: usize| bench.map_or_else(|| f.names[k].clone(), |b| format!("{} & {}", f.names[k], name(b[k].0)));
+                    let side = |k: usize| bench.map_or_else(|| names[k].clone(), |b| format!("{} & {}", names[k], name(b[k])));
                     (tape, format!("{online}{mode} · {} vs {}", side(0), side(1)), result)
                 }
                 replay::Match::Tag { .. } | replay::Match::Bowl { .. } => return,
             }
         } else if let Some(b) = self.bowl.as_ref() {
-            let names: Vec<String> = b.teams.iter().map(|t| name_of(t[0])).collect();
+            let names: Vec<String> = b.records.iter().map(|&m| self.roster.model_name(m)).collect();
             let result = match b.scene.bowl.winner() {
                 Some(w) if names.len() > 1 => format!("{} WINS {}", names.get(w).map_or("?", String::as_str), b.scene.bowl.cards.get(w).map_or(0, |c| c.total())),
                 _ => b.scene.bowl.cards.iter().map(|c| c.total().to_string()).collect::<Vec<_>>().join("–"),
@@ -4451,7 +4450,6 @@ impl App {
             self.scene = Some(stage);
             // (the effects' atlas, for the hall's smoke and SPECIAL EFFECTS' burst)
             self.vfx = Some(kumite_game::vfx::Vfx::new(&self.assets));
-            let teams = players.iter().zip(&partners).map(|(p, m)| [p.1, m.map_or(p.1, |m| m.1)]).collect();
             let body = |(model, id): (usize, usize)| self.roster.ttt.as_ref().map_or(id, |d| d.body(model, id));
             let bodies = players.iter().zip(&partners).map(|(&p, m)| [body(p), body(m.unwrap_or(p))]).collect();
             self.bowl = Some(BowlRun {
@@ -4463,7 +4461,6 @@ impl App {
                 start: false,
                 select: false,
                 records: players.iter().map(|p| p.0).collect(),
-                teams,
                 bodies,
                 pause: None,
                 reset: None,
@@ -4572,11 +4569,11 @@ impl App {
         if let Some((mut top, placed)) = run.top {
             let mut progress = ttt::progress();
             let bonus = &sc.records.bonus;
-            for ((card, place), team) in sc.bowl.cards.iter().zip(&placed).zip(&run.teams) {
+            for ((card, place), &model) in sc.bowl.cards.iter().zip(&placed).zip(&run.records) {
                 let Some(r) = place.and_then(|k| top.get_mut(k)) else { continue };
-                // (a name left unentered: the bowler's three letters)
+                // (a name left unentered: the bowler's three letters, its costume's: PAN for Panda)
                 if r.name.is_empty() {
-                    r.name = self.roster.by_id(team[0]).map_or("?".into(), |c| c.name.to_uppercase().chars().take(3).collect());
+                    r.name = self.roster.model_name(model).to_uppercase().chars().take(3).collect();
                 }
                 progress.bowl_bonus[0] |= card.total() >= bonus.jukebox;
                 perfect |= card.total() >= bonus.perfect;

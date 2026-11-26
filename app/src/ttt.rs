@@ -6604,7 +6604,10 @@ mod tests {
     #[test]
     fn costumes_that_are_other_fighters_have_their_names_and_plates() {
         let Some(root) = std::env::var_os("OK_TTT_ASSETS").map(std::path::PathBuf::from) else { return };
-        let d = crate::menu::Roster::load(&root.join("gamedata")).ttt.unwrap();
+        let r = crate::menu::Roster::load(&root.join("gamedata"));
+        // (and outside the fight, in replays' titles and records: the costume's name)
+        assert_eq!([498, 501, 570, 546, 549, 666, 351].map(|m| r.model_name(m)), ["Kuma", "Panda", "Alex", "Tetsujin", "Mokujin", "Angel", "Paul"]);
+        let d = r.ttt.unwrap();
         // (model records: Kuma 498 / Panda 501, Roger 567 / Alex 570, Eddy 456 / Tiger 462, Devil 663 / Angel 666)
         for (model, character, name, body) in
             [(498, 11, "KUMA", 11), (501, 11, "PANDA", 35), (567, 17, "ROGER", 17), (570, 17, "ALEX", 37), (456, 8, "EDDY", 8), (462, 8, "TIGER", 34), (663, 29, "DEVIL", 29), (666, 29, "ANGEL", 38)]
