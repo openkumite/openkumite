@@ -1973,6 +1973,9 @@ impl Fighter {
     pub fn posture(&self, gd: &GameData) -> u32 {
         let mv = self.current_move(gd);
         let raw = mv.posture.raw & 0xFFFF;
+        // Tekken 3: an airborne state (9) counts as lying from its jump window's first frame on (0x800409A0)
+        let j0 = mv.bytes_18.jump_start;
+        let raw = if !self.tag_rules(gd) && (raw >> 11) & 0x1F == 9 && j0 != 0 && self.frame >= j0 { raw | posture::LYING } else { raw };
         if mv.flags24.raw & 0x4000 != 0 && self.ki == 0 {
             if let Some(g) = self.guard_posture(gd) {
                 return g;

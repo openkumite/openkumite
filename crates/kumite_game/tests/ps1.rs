@@ -412,6 +412,19 @@ fn a_jump_goes_toward_the_opponent_as_on_the_ps1() {
     }
 }
 
+/// Heihachi's d+4 on Yoshimitsu falling from a juggle: an airborne move (state 9) counts as lying from its jump
+/// window's first frame (+0x60 | 4, 0x800409A0), so the kick's frame-1 cancel on a lying opponent (cond 0x35) takes
+/// the ground kick (motion_073). Ours read the move's posture alone and kept the standing kick, 426 off.
+#[test]
+fn an_airborne_opponent_counts_as_lying_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [179, 107], None, 1, "n*151,f*40,d/f+2*2,n*40,f+1*2,n*40,d+4*2,n*172", "n*152,b*40,n+3*2,n*30,u+1*2,n*224", 300);
+    for (row, want) in [(736, (-329, -999, -65)), (746, (173, -1106, -101))] {
+        let r = at(&t, 455, row, 0);
+        assert_eq!((r.0, r.1, r.2), want, "PS1 row {row}");
+    }
+}
+
 /// Law, juggled by Paul, is hit again in the air: the flight's next step still takes the drift found the frame
 /// before (+0x9A / +0x9E, 0x8003F268) on top of the new pop's. Ours started the new flight from none, 28 short.
 #[test]
