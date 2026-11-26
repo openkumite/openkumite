@@ -1860,6 +1860,56 @@ fn extra_fighters_attacks_cry_random_voices_and_throws_play_their_scripts() {
     assert!(throw.iter().any(|f| f.starts_with("m071/")), "victim's voice: {throw:?}");
 }
 
+/// The Tekken 2 fighters' throws (Kazuya's, Jun's) from either side: the victim plays the move of the thrower's
+/// install entry (throw_victims, kept in install order: it once played another fighter's alias and was never let go),
+/// loses health and is let go. And out of their own walks they throw, guard walking back and sidestep, as out of
+/// Tekken 3's.
+#[test]
+fn extra_fighters_throw_guard_and_sidestep_out_of_a_walk() {
+    let Some(a) = assets() else { return };
+    let index: MovesetIndex = kumite_sim::data::load(&a.root.join("gamedata/movesets/index.json")).unwrap();
+    for model in [900, 938].into_iter().filter(|m| index.models.iter().any(|x| x.model_record == *m)) {
+        for (seat, throw) in [(0, "1+3"), (1, "1+3"), (0, "2+4"), (1, "2+4")] {
+            let mut g = Game::load(&a, if seat == 0 { [model, MODEL_71] } else { [MODEL_71, model] }).unwrap();
+            g.fight.fighters[1 - seat].guard_input = false;
+            // (in throwing range: 1000 apart)
+            let to = g.fight.fighters[1 - seat].position;
+            g.fight.fighters[seat].position = to + (g.fight.fighters[seat].position - to).normalize() * 1000.0;
+            let (mut linked, hp) = (false, g.fight.fighters[1 - seat].health);
+            for pad in parse_script(&format!("n*2,{throw},n*400")).unwrap() {
+                let mut pads = [Pad::default(); 2];
+                pads[seat] = pad;
+                g.step(pads);
+                linked |= g.fight.link.is_some();
+            }
+            let victim = &g.fight.fighters[1 - seat];
+            assert!(
+                linked && g.fight.link.is_none() && victim.health < hp,
+                "model {model} {throw} from P{}: linked {linked}, let go {}, health {} of {hp}",
+                seat + 1,
+                g.fight.link.is_none(),
+                victim.health
+            );
+        }
+        let walk = |script: &str, p2: &str| {
+            let mut g = Game::load(&a, [model, MODEL_71]).unwrap();
+            let (pads, p2) = (parse_script(script).unwrap(), parse_script(p2).unwrap());
+            let mut anims = Vec::new();
+            for (k, &pad) in pads.iter().enumerate() {
+                g.step([pad, p2.get(k).copied().unwrap_or_default()]);
+                anims.push(g.fight.fighters[0].animation(&g.fight.data).0.to_string());
+            }
+            (g, anims)
+        };
+        let (g, _) = walk("f*30,b*60", "n*40,1,n*14,1,n*14,1,n*30");
+        assert_eq!(g.fight.fighters[0].health, g.fight.fighters[0].max_health, "model {model}: walking back guards");
+        let (g, _) = walk("f*30,1+3,n*200", "");
+        assert!(g.fight.fighters[1].health < g.fight.fighters[1].max_health, "model {model}: a throw out of the walk");
+        let (_, anims) = walk("f*12,u,n*30", "");
+        assert!(anims.iter().any(|a| a == "common_313"), "model {model}: a sidestep out of the walk: {anims:?}");
+    }
+}
+
 /// An extra level's walls hold the fighters: walking back stops at the wall (a blocked column 3 m behind
 /// P1 here), and the arena's own walk grid keeps its stage-40 fight spot free.
 #[test]
