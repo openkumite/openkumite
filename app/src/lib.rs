@@ -1211,6 +1211,12 @@ impl App {
         };
         let mut info = info;
         info.ttt = self.roster.ttt.clone();
+        info.ball_partners = setup.as_ref().and_then(|s| s.partners).map(|d| {
+            d.partners.map(|(c, k)| {
+                let m = self.roster.characters.get(c).and_then(|ch| ch.costumes.get(k).or(ch.costumes.last())).copied().unwrap_or(0);
+                (m, self.roster.costume_of.get(&m).copied().unwrap_or(0))
+            })
+        });
         if let Some(run) = &ttt {
             info.stage = run.stage_number();
             info.time_base = run.timed().then_some(run.frames);

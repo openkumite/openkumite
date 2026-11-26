@@ -3449,7 +3449,13 @@ impl Fight {
             } else if self.ko_rule == KoRule::Both && others_down {
                 self.state = RoundState::Ko { winner: 0 };
             } else if self.clock == 0 {
-                let (a, b) = (players.iter().map(|p| p.health).max().unwrap_or(0), self.fighters[1].health);
+                // (Ball 2 ON 2: each side's total health)
+                let (a, b) = if self.ball_doubles() {
+                    let total = |s: [usize; 2]| s.into_iter().filter_map(|i| self.actor(i)).map(|f| i64::from(f.health.max(0))).sum::<i64>();
+                    (total([0, 3]), total([1, 2]))
+                } else {
+                    (players.iter().map(|p| i64::from(p.health)).max().unwrap_or(0), i64::from(self.fighters[1].health))
+                };
                 self.state = RoundState::TimeUp { winner: if a == b { None } else { Some(if a > b { 0 } else { 1 }) } };
             }
         }

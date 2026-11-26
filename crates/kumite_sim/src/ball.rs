@@ -6,7 +6,9 @@
 //!
 //! 2 ON 2 (OpenKumite's own): the four of [`Fight`]'s co-op melee on the court, the players' side actors 0 and 3,
 //! the other 1 and 2 ([`side_of`]). Each side keeps its one gauge; whoever hits the ball aims it at the foe it
-//! faces; a point costs the side's nearest standing player. With two (actors 0, 1) everything is as the original.
+//! faces; a point costs both of the side still standing, and only the ball deals damage (as in 1 ON 1); one at no
+//! health is out of the round (nobody's target, the ball passes it); the round is lost when both of a side are out.
+//! With two (actors 0, 1) everything is as the original.
 
 use crate::detmath::DetMath;
 use crate::{posture, segment_hits, BallPush, Fight, GameData, Sphere, ONE};
@@ -484,13 +486,15 @@ impl Fight {
                     } else {
                         let side = usize::from(b.pos[0] >= 0);
                         b.charge[side] = 0;
-                        let v = self.point_loser(side, b.pos);
-                        if let Some(f) = self.actor_mut(v) {
-                            f.health = (f.health - 30 * ONE).max(0);
-                        }
                         (b.state, b.timer) = (7, 5);
                         b.events.push(BallEvent::Impact);
-                        if self.link.is_none() {
+                        for v in self.point_losers(side) {
+                            if let Some(f) = self.actor_mut(v) {
+                                f.health = (f.health - 30 * ONE).max(0);
+                            }
+                            if self.link.is_some() {
+                                continue;
+                            }
                             // the forced hit, from the ball's spot, with the last hitter as the attacker
                             let attacker = b.p3.unwrap_or(self.ball_target(v));
                             // a juggle hit: the air table's reaction and its pop, whatever the loser plays (on the PS1 Gon
@@ -535,17 +539,15 @@ impl Fight {
         b.move_on(&self.court_view(b.receiver), self.frame);
     }
 
-    /// Who a point on `side` costs: its fighter, or (2 ON 2) the one of its two standing nearest the ball.
-    fn point_loser(&self, side: usize, at: [i32; 3]) -> usize {
+    /// Who a point on `side` costs: its fighter, or (2 ON 2) both of its two still standing.
+    fn point_losers(&self, side: usize) -> Vec<usize> {
         let members: Vec<usize> = self.ball_actors().into_iter().filter(|&i| side_of(i) == side).collect();
         let standing: Vec<usize> = members.iter().copied().filter(|&i| self.actor(i).is_some_and(|f| f.health > 0)).collect();
-        let pool = if standing.is_empty() { &members } else { &standing };
-        let d = |i: usize| {
-            let p = self.pos_of(i);
-            let (dx, dz) = ((p[0] - at[0]) as i64, (p[2] - at[2]) as i64);
-            dx * dx + dz * dz
-        };
-        pool.iter().copied().min_by_key(|&i| d(i)).unwrap_or(side)
+        if standing.is_empty() {
+            members
+        } else {
+            standing
+        }
     }
 
     /// The fighters' attack segments against the ball (0x80047D98): returns whether one hit it.
@@ -670,6 +672,10 @@ impl Fight {
             let Some(body) = bodies.get(v) else { continue };
             // a body striking this step (+0xE3 set) does not bump it (the PS1's kick met it a step later, no bump between)
             if self.actor(v).is_some_and(|f| !f.attack_segments(gd).is_empty()) {
+                continue;
+            }
+            // 2 ON 2: one out of the round is not hit
+            if self.state == crate::RoundState::Fighting && self.ball_doubles() && self.actor(v).is_some_and(|f| f.health <= 0) {
                 continue;
             }
             // after the K.O. only the loser can be hit

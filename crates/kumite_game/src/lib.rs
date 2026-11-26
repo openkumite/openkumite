@@ -1464,19 +1464,21 @@ impl Game {
     /// Ball 2 ON 2: each side's two on its back line, apart in depth; the partners (CPU) join the fight as
     /// actors 3 (the players' side) and 2, and from then the four play as the co-op melee.
     fn ball_doubles(&mut self, partner: &Actor, extra: &Actor) {
-        let max = self.fight.data.max_health * kumite_sim::ONE;
+        // (each side's leader's health when the mode sets it: Tekken Tag's Ball takes Tekken 3's 130)
+        let max = |k: usize| self.max_health[k].unwrap_or(self.fight.data.max_health) * kumite_sim::ONE;
         let depth = kumite_sim::ball::COURT_Z_DOUBLES / 2.0;
         for f in &mut self.fight.fighters {
             f.position.z = -depth;
         }
-        let beside = |leader: &kumite_sim::Fighter, a: &Actor, human: bool| {
-            let mut f = kumite_sim::Fighter::new(a.moveset.clone(), max, Vec3::new(leader.position.x, leader.position.y, depth), leader.yaw, leader.side);
+        let beside = |k: usize, a: &Actor, human: bool| {
+            let leader = &self.fight.fighters[k];
+            let mut f = kumite_sim::Fighter::new(a.moveset.clone(), max(k), Vec3::new(leader.position.x, leader.position.y, depth), leader.yaw, leader.side);
             f.character = a.character;
             f.guard_input = human;
             f
         };
         let human = self.ball_team_human;
-        let (p, e) = (beside(&self.fight.fighters[0], partner, human[0]), beside(&self.fight.fighters[1], extra, human[1]));
+        let (p, e) = (beside(0, partner, human[0]), beside(1, extra, human[1]));
         self.extra_body = Some(extra.body.clone());
         self.partner_body = Some(partner.body.clone());
         self.fight.extra = Some(Box::new(e));

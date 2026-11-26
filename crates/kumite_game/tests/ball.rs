@@ -3,6 +3,8 @@
 //! (OPENKUMITE_ASSETS); skips without.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests: a failure stops them
 
+mod ball_doubles;
+
 use kumite_assets::Assets;
 use kumite_game::bout::Bout;
 use kumite_game::{parse_script, Game};
@@ -230,6 +232,13 @@ fn a_partner_losing_a_point_is_juggled() {
         }
     }
     panic!("no partner lost a point");
+}
+
+/// Ball 2 ON 2's rules (OpenKumite's own; [`ball_doubles::rules`]) in Tekken 3: Gon and model 71 against Jin and model 95.
+#[test]
+fn ball_2_on_2_only_the_ball_hurts_and_a_side_falls_together() {
+    let Some(a) = assets() else { return };
+    ball_doubles::rules(&a, [GON, JIN], [71, 95], None);
 }
 
 /// Doctor B.'s hit on the ball makes the ball's actor slot, put on his own root, his target that step: the target

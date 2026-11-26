@@ -37,11 +37,16 @@ pub struct HudInfo {
     pub team: Option<[(usize, usize, bool); 2]>,
     /// Force: no result text after the K.O. (STAGE CLEAR!! and the tally instead).
     pub no_result: bool,
+    /// Ball 2 ON 2: each side's partner's model record and costume (its bar and name under its side's).
+    pub ball_partners: Option<[(usize, usize); 2]>,
     /// A tag battle: the partners' names (members 1; `names` are members 0).
     pub partners: Option<[String; 2]>,
     /// Tekken Tag's front end: its HUD drawn from its pictures (else the plain one).
     pub ttt: Option<std::sync::Arc<crate::ttt::Data>>,
 }
+
+/// Ball 2 ON 2: how far below its side's bar and name a partner's are (a bar and a name plate, 368x480 px).
+const PARTNER_DY: f32 = 48.0;
 
 /// An under-bar text kind (0x8004EB54).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -343,9 +348,10 @@ pub struct Hud {
 /// What the HUD counts step by step (a replay's seek copies keep it: the bars and the run's time as they were).
 #[derive(Clone, Debug, Default)]
 pub struct HudState {
-    /// Per player: shown width (grows 3 px a frame at round start, drops at once) and the trail edge.
-    shown: [i32; 2],
-    trail: [i32; 2],
+    /// Per player: shown width (grows 3 px a frame at round start, drops at once) and the trail edge (Ball 2 ON 2:
+    /// 2, 3 the partners' of P1's side and the other's).
+    shown: [i32; 4],
+    trail: [i32; 4],
     /// The K.O. text of this round.
     ko: Option<Announcement>,
     /// Wins at the start of the round (the newest gem blinks until the next round).
@@ -391,8 +397,8 @@ impl Hud {
         } else if info.stage.is_none_or(|s| s <= 1) {
             self.state.run_frames = 0;
         }
-        self.state.shown = [0; 2];
-        self.state.trail = [0; 2];
+        self.state.shown = [0; 4];
+        self.state.trail = [0; 4];
         self.state.tag = Default::default();
         self.state.chicken = info.ttt.as_deref().map(|d| crate::ttt::Chicken::new(d, info.humans)).unwrap_or_default();
         self.state.ttt = info.ttt.clone();
@@ -502,8 +508,8 @@ impl Hud {
         }
         if bout.round != self.state.round {
             self.state.round = bout.round;
-            self.state.shown = [0; 2];
-            self.state.trail = [0; 2];
+            self.state.shown = [0; 4];
+            self.state.trail = [0; 4];
             self.state.tag = Default::default();
             self.state.ko = None;
             self.state.wins_at_start = bout.wins;
@@ -522,12 +528,14 @@ impl Hud {
             }
             return;
         }
-        for i in 0..2 {
+        // (Ball 2 ON 2: the partners' bars too, actors 3 and 2)
+        for (i, actor) in [0, 1, 3, 2].into_iter().enumerate().take(if fight.ball_doubles() { 4 } else { 2 }) {
+            let Some(f) = fight.actor(actor) else { continue };
             // the bar is its width in px of the fighter's own full health (the VS handicap changes it)
             let bar_w = d.bar_w as i64;
-            let max = fight.fighters[i].max_health as i64;
+            let max = f.max_health as i64;
             let unit = (max / bar_w.max(1)).max(1);
-            let hp = fight.fighters[i].health.max(0) as i64;
+            let hp = f.health.max(0) as i64;
             let target = ((hp + unit - 1) / unit).min(bar_w) as i32;
             (self.state.shown[i], self.state.trail[i]) = bar_step(self.state.shown[i], self.state.trail[i], target);
         }
@@ -575,16 +583,14 @@ impl Hud {
                 let [x, y] = d.bar_xy[i];
                 draw_bar(d, &painter, &v, art, [x, y], i, self.state.shown[i], self.state.trail[i]);
             }
-            // Ball 2 ON 2 (OpenKumite's own): each partner's health, a thin bar under its side's
-            if bout.game.fight.ball_doubles() {
+            // Ball 2 ON 2 (OpenKumite's own): each partner's own bar and name under its side's
+            if let (Some(partners), true) = (info.ball_partners, bout.game.fight.ball_doubles()) {
+                let dy = PARTNER_DY;
                 for i in 0..2 {
-                    let Some(f) = bout.game.fight.actor([3, 2][i]) else { continue };
                     let [x, y] = d.bar_xy[i];
-                    let full = f.max_health.max(1) as f32;
-                    let w = 150.0 * (f.health.max(0) as f32 / full).clamp(0.0, 1.0);
-                    let x0 = if i == 0 { x + 154.0 - w } else { x + 2.0 };
-                    Art::shade(&painter, &v, [x + 2.0, y + 25.0, 152.0, 5.0], [Color32::from_rgb(30, 30, 40); 4]);
-                    Art::shade(&painter, &v, [x0, y + 26.0, w, 3.0], [Color32::from_rgb(250, 210, 60); 4]);
+                    draw_bar(d, &painter, &v, art, [x, y + dy], i, self.state.shown[2 + i], self.state.trail[2 + i]);
+                    let (model, costume) = partners[i];
+                    name_plate(d, &painter, &v, art, model, costume, d.name_x[i], d.name_y + dy, i == 1);
                 }
             }
             // timer: two 16x46 digits, infinity when the clock is off
