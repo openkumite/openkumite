@@ -456,8 +456,13 @@ impl Art {
     /// `text` in font `font`, colour `colour` (the printf `%c`), top-left at screen (x, y).
     #[allow(clippy::too_many_arguments)]
     pub fn text(&self, painter: &egui::Painter, screen: &Screen, font: usize, colour: u32, x: f32, y: f32, text: &str, tint: Color32) {
+        self.text_clut(painter, screen, font, self.font_clut(font, colour), x, y, text, tint);
+    }
+
+    /// `text` in font `font` through the CLUT at `clut` (a name plate's colours).
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_clut(&self, painter: &egui::Painter, screen: &Screen, font: usize, clut: [u32; 2], x: f32, y: f32, text: &str, tint: Color32) {
         let Some(f) = self.fonts.get(font) else { return };
-        let clut = f.clut(colour);
         // (a line moves as one)
         let screen = &screen.side(x + self.text_w(font, text) / 2.0);
         let mut cx = x;
