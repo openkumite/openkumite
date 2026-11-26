@@ -478,32 +478,53 @@ impl TagSelect {
     }
 
     pub fn draw(&self, painter: &egui::Painter, v: &View, art: &Art, roster: &Roster) {
-        // (Tekken Tag: Tekken 3's screen from its extras, the faces Tekken Tag's: its 40 x 42 in Tekken 3's 32 x 58 place)
-        let ttt = roster.ttt.as_deref().map(|d| (art, d));
-        let art = ttt.and(art.t3.as_deref()).unwrap_or(art);
-        let face = |id: usize, x: f32, y: f32, scale: f32| match ttt {
-            Some((a, d)) => crate::ttt::face_in(painter, v, a, d, Some(id), [x, y + 12.0 * scale, 32.0 * scale, 34.0 * scale]),
+        // (Tekken Tag: Tekken 3's layout in Tekken Tag's look: the select's lightning, fonts, faces (its 40 x 42 in
+        // Tekken 3's 32 x 58 place) and cursors)
+        let (own, tt) = (art, roster.ttt.as_deref());
+        let art = tt.and(art.t3.as_deref()).unwrap_or(art);
+        let face = |id: usize, x: f32, y: f32, scale: f32| match tt {
+            Some(d) => crate::ttt::face_in(painter, v, own, d, Some(id), [x, y + 12.0 * scale, 32.0 * scale, 34.0 * scale]),
             None => crate::modes::face_sized(painter, v, art, roster, id, x, y, 0, scale),
         };
-        // the two team halves, shaded in their colours
-        let (blue, red) = (Color32::from_rgb(0x10, 0x20, 0x60), Color32::from_rgb(0x60, 0x10, 0x18));
-        let centred = |font: usize, colour: u32, cx: f32, y: f32, t: &str| art.text(painter, v, font, colour, cx - art.text_w(font, t) / 2.0, y, t, Color32::WHITE);
+        if let Some(d) = tt {
+            crate::ttt::setup_backdrop(painter, v, own, d, self.frame);
+        }
+        // the two team halves, shaded in their colours (Tekken Tag: over the lightning)
+        let see = |c: Color32| if tt.is_some() { c.gamma_multiply(0.5) } else { c };
+        let (blue, red) = (see(Color32::from_rgb(0x10, 0x20, 0x60)), see(Color32::from_rgb(0x60, 0x10, 0x18)));
+        let black = see(Color32::BLACK);
+        // (Tekken Tag: font 1 its chrome font at half size, font 0 its small one; Tekken 3's colour 5 its 9, 7 its 2)
+        let centred = |font: usize, colour: u32, cx: f32, y: f32, t: &str| match tt {
+            Some(d) => crate::ttt::setup_text(painter, v, own, d, t, [cx, y], [0.0, 5.0][font.min(1)], [None, Some(9), None, Some(2)][(colour as usize).saturating_sub(4).min(3)], 360.0),
+            None => art.text(painter, v, font, colour, cx - art.text_w(font, t) / 2.0, y, t, Color32::WHITE),
+        };
+        // (Tekken Tag: its own name, PANDA, not "KUMA / PANDA")
+        let name_of = |character: usize, costume: usize| {
+            let c = &roster.characters[character];
+            let model = c.costumes.get(costume).copied().unwrap_or(0);
+            let cos = roster.costume_of.get(&model).copied().unwrap_or(0);
+            match tt {
+                Some(d) => d.name(model).unwrap_or_else(|| c.name.to_uppercase()),
+                None => roster.ui.selection_names.get(c.id * 4 + cos).cloned().unwrap_or_else(|| c.name.to_uppercase()),
+            }
+        };
         if self.mode == TagMode::Free {
             // each for themselves: a colour per fighter
             let colours = [blue, red, Color32::from_rgb(0x10, 0x48, 0x18), Color32::from_rgb(0x58, 0x48, 0x08)];
             for (k, c) in colours.into_iter().enumerate() {
-                Art::shade(painter, v, [92.0 * k as f32, 0.0, 92.0, crate::art::SCREEN_H], [c, Color32::BLACK, c, Color32::BLACK]);
+                let c = see(c);
+                Art::shade(painter, v, [92.0 * k as f32, 0.0, 92.0, crate::art::SCREEN_H], [c, black, c, black]);
             }
             for (k, cx) in COLUMNS.iter().enumerate() {
                 centred(0, 6, *cx, 32.0, &format!("SLOT {}", k + 1));
             }
         } else if self.mode == TagMode::Force {
             // Force online: all on one side
-            Art::shade(painter, v, crate::art::FULL, [blue, Color32::BLACK, blue, Color32::BLACK]);
+            Art::shade(painter, v, crate::art::FULL, [blue, black, blue, black]);
             centred(0, 6, crate::art::CENTRE, 32.0, "PLAYERS");
         } else {
-            Art::shade(painter, v, [0.0, 0.0, crate::art::CENTRE, crate::art::SCREEN_H], [blue, Color32::BLACK, blue, Color32::BLACK]);
-            Art::shade(painter, v, [crate::art::CENTRE, 0.0, crate::art::CENTRE, crate::art::SCREEN_H], [Color32::BLACK, red, Color32::BLACK, red]);
+            Art::shade(painter, v, [0.0, 0.0, crate::art::CENTRE, crate::art::SCREEN_H], [blue, black, blue, black]);
+            Art::shade(painter, v, [crate::art::CENTRE, 0.0, crate::art::CENTRE, crate::art::SCREEN_H], [black, red, black, red]);
             let (a, b) = if self.mode == TagMode::Arcade { ("PLAYERS", "10 PAIRS") } else { ("TEAM 1", "TEAM 2") };
             centred(0, 6, 92.0, 32.0, a);
             centred(0, 6, 276.0, 32.0, b);
@@ -530,10 +551,13 @@ impl TagSelect {
             }
             let c = &roster.characters[s.character];
             face(c.id, cx - 19.0, 56.0, 1.2);
-            let model = c.costumes.get(s.costume).copied().unwrap_or(0);
-            let cos = roster.costume_of.get(&model).copied().unwrap_or(0);
-            let name = roster.ui.selection_names.get(c.id * 4 + cos).filter(|_| roster.ttt.is_none()).cloned().unwrap_or_else(|| c.name.to_uppercase());
-            centred(0, 6, cx, 132.0, &name);
+            // (a name too long for its column shrinks to fit; Tekken Tag's in the chrome font its name plates are of)
+            let name = name_of(s.character, s.costume);
+            match tt {
+                Some(d) => crate::ttt::setup_text(painter, v, own, d, &name, [cx, 130.0], 5.0, None, 86.0),
+                None if art.text_w(0, &name) > 86.0 => art.text_scaled(painter, v, 0, 6, cx - 43.0, 132.0, 86.0 / art.text_w(0, &name), &name, Color32::WHITE),
+                None => centred(0, 6, cx, 132.0, &name),
+            }
             centred(0, 6, cx, 150.0, &format!("STYLE {}", s.costume + 1));
             let nobody = if self.mode == TagMode::Force { "-" } else { "CPU" };
             let player = s.player.map_or(nobody.to_string(), |p| format!("{}P", p + 1));
@@ -549,8 +573,11 @@ impl TagSelect {
         for (f, &ch) in self.faces.iter().enumerate() {
             let (x, y, scale) = self.face_place(f);
             face(roster.characters[ch].id, x, y, scale);
-            if self.cursor == Cursor::Face(f) {
-                frame(x - 2.0 * scale, y - 2.0 * scale, CELL_W * scale, CELL_H * scale, if blink { white(255) } else { Color32::from_rgb(0xF0, 0xC0, 0x20) });
+            match tt {
+                // (Tekken Tag: its select's cursor, 55 x 53 about its 51 x 51 face)
+                Some(d) if self.cursor == Cursor::Face(f) => crate::ttt::setup_cursor(painter, v, own, d, [x - scale, y + 11.0 * scale, 34.5 * scale, 35.3 * scale], self.frame, false),
+                None if self.cursor == Cursor::Face(f) => frame(x - 2.0 * scale, y - 2.0 * scale, CELL_W * scale, CELL_H * scale, if blink { white(255) } else { Color32::from_rgb(0xF0, 0xC0, 0x20) }),
+                _ => {}
             }
         }
         // the other players' cursors, in their colours, with their number
@@ -559,13 +586,18 @@ impl TagSelect {
             let (Some(cursor), Some(seat)) = (cursor, self.seat_of(p)) else { continue };
             let c = colours[(p - 1).min(2)];
             let c = if blink { c } else { c.gamma_multiply(0.6) };
-            match *cursor {
-                Cursor::Face(f) => {
+            match (*cursor, tt) {
+                (Cursor::Face(f), Some(d)) => {
+                    let (x, y, scale) = self.face_place(f);
+                    crate::ttt::setup_cursor(painter, v, own, d, [x - scale, y + 11.0 * scale, 34.5 * scale, 35.3 * scale], self.frame, true);
+                    centred(0, 6, x + 16.0 * scale, y + 12.0 * scale + 9.0 * (p as f32 - 1.0), &format!("{}P", p + 1));
+                }
+                (Cursor::Face(f), None) => {
                     let (x, y, scale) = self.face_place(f);
                     frame(x - 2.0 * scale + p as f32, y - 2.0 * scale + p as f32, CELL_W * scale - 2.0 * p as f32, CELL_H * scale - 2.0 * p as f32, c);
                     art.text(painter, v, 0, 6, x + 1.0, y + 1.0 + 9.0 * (p as f32 - 1.0), &format!("{}P", p + 1), Color32::WHITE);
                 }
-                Cursor::Slot(s) => {
+                (Cursor::Slot(s), _) => {
                     let cx = COLUMNS[s];
                     frame(cx - 40.0 + p as f32, 55.0 + p as f32, 80.0 - 2.0 * p as f32, 134.0 - 2.0 * p as f32, c);
                 }
@@ -574,7 +606,7 @@ impl TagSelect {
         }
         // what the cursor does
         let hint = match self.cursor {
-            Cursor::Face(f) => format!("{} -> SLOT {}   BUTTON 1-4: STYLE", roster.characters[self.faces[f]].name.to_uppercase(), self.current + 1),
+            Cursor::Face(f) => format!("{} -> SLOT {}   BUTTON 1-4: STYLE", name_of(self.faces[f], 0), self.current + 1),
             Cursor::Slot(s) if s == self.current => "BUTTON: CPU / 1P / 2P / 3P / 4P".to_string(),
             Cursor::Slot(_) => "BUTTON: PICK FOR THIS SLOT".to_string(),
         };

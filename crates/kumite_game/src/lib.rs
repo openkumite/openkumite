@@ -1358,6 +1358,8 @@ impl Game {
             let r = self.fight.actor(k).filter(|_| self.ball_team.is_some())?.root();
             Some([r.x.round() as i64, -(r.y.round() as i64) - 900, -(r.z.round() as i64)])
         });
+        // (and framed sideways, the partners still standing)
+        self.camera.partners = [2, 3].map(|k| self.camera.players[k].filter(|_| self.fight.actor(k).is_some_and(|f| f.health > 0)));
         let mc = std::array::from_fn(|i| self.fight.fighters[i].current_move(&gd).flags24.camera_script as i64);
         if self.camera.data().director.is_some() {
             self.camera.actors = self.camera_actors();

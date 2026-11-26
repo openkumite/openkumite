@@ -856,6 +856,8 @@ pub struct FightCamera {
     pub ball: Option<[i64; 3]>,
     /// Ball 2 ON 2 (OpenKumite's own): the four players (game units, y down), whom the eye keeps out of.
     pub players: [Option<[i64; 3]>; 4],
+    /// Ball 2 ON 2: the partners still standing, framed sideways as the ball is.
+    pub partners: [Option<[i64; 3]>; 2],
     w: [i64; 5],
     wprev: [i64; 5],
     pub frame: i64,
@@ -916,6 +918,7 @@ impl FightCamera {
             samp: [Sample { x: 0, y: 0, z: 0, side: 0 }; 2],
             ball: None,
             players: [None; 4],
+            partners: [None; 2],
             w: [0x1000, 0, 0, 0, 0],
             wprev: [0; 5],
             frame: 0,
@@ -1825,11 +1828,13 @@ impl FightCamera {
             (mx + sra_tz(c * ox - s * oz, 12), mz + sra_tz(s * ox + c * oz, 12))
         };
         let ey = key.y;
-        // the fighters' samples, and in Ball the ball as a third point (index 2)
-        let (mut xs, mut ys, mut zs, mut hds) = ([0i64; 3], [0i64; 3], [0i64; 3], [0i64; 3]);
+        // the fighters' samples, and in Ball the ball as a third point (index 2), Ball 2 ON 2's partners (3, 4)
+        let (mut xs, mut ys, mut zs, mut hds) = ([0i64; 5], [0i64; 5], [0i64; 5], [0i64; 5]);
         let ball = self.ball;
-        let points = self.samp.iter().map(|p| [p.x, p.y, p.z]).chain(ball);
+        let extra = [ball, self.partners[0], self.partners[1]];
+        let points = self.samp.iter().map(|p| Some([p.x, p.y, p.z])).chain(extra);
         for (i, p) in points.enumerate() {
+            let Some(p) = p else { continue };
             let (dx, dz, dy) = (p[0] - ex, p[2] - ez, p[1] - ey);
             let hd = sra_tz(s4 * dx + s3 * dz, 12);
             xs[i] = sra_tz(s3 * dx - s4 * dz, 12);
@@ -1846,9 +1851,7 @@ impl FightCamera {
         let a0 = dist - zc;
         zc = dist;
         dz_ -= a0;
-        zs[0] += a0;
-        zs[1] += a0;
-        zs[2] += a0;
+        zs.iter_mut().for_each(|z| *z += a0);
         // horizontal framing (150-unit margins, 280-px window, 48-px dead zone)
         let (mut l, mut r) = if xs[0] < xs[1] {
             xs[0] -= 150;
@@ -1859,14 +1862,14 @@ impl FightCamera {
             xs[0] += 150;
             (1, 0)
         };
-        // the ball widens the pair on the side it is out on (0x80064E10, battle type 7)
-        if ball.is_some() {
-            if xs[2] < xs[l] {
-                xs[2] -= 150;
-                l = 2;
-            } else if xs[2] > xs[r] {
-                xs[2] += 150;
-                r = 2;
+        // the ball widens the pair on the side it is out on (0x80064E10, battle type 7); so do the partners
+        for i in (2..5).filter(|&i| extra[i - 2].is_some()) {
+            if xs[i] < xs[l] {
+                xs[i] -= 150;
+                l = i;
+            } else if xs[i] > xs[r] {
+                xs[i] += 150;
+                r = i;
             }
         }
         // the lateral step: 1/8 (Tekken Tag: x * 16 >> 7, x * 8 >> 7 while either fighter is on a camera id 0x17-0x1A)
@@ -1894,9 +1897,7 @@ impl FightCamera {
             st.hpull = a1;
             dz_ += a1;
             dx_ = lateral(xs[l] - tdiv(-((fit / 2) * v1), h));
-            zs[0] -= a1;
-            zs[1] -= a1;
-            zs[2] -= a1;
+            zs.iter_mut().for_each(|z| *z -= a1);
             zc -= a1;
         } else {
             let mut decay = true;
@@ -1924,9 +1925,7 @@ impl FightCamera {
                 };
                 st.hpull = n;
                 dz_ += n;
-                zs[0] -= n;
-                zs[1] -= n;
-                zs[2] -= n;
+                zs.iter_mut().for_each(|z| *z -= n);
                 zc -= n;
             }
         }
@@ -1976,8 +1975,8 @@ impl FightCamera {
         a3 += sra_tz(tdiv(sra_tz(pull * s5, 12) * h, dist), 4);
         let dy_ = yc - tdiv(a3 * zc, h) + lift;
         // Ball 2 ON 2 (OpenKumite's own; the PS1's Ball is one on one): the eye backs off to stay 3500 in depth behind
-        // all four, where a standing body fits the picture's height (the partners are not framed, and on the wide
-        // court the pair can turn faster than the yaw)
+        // all four, where a standing body fits the picture's height (on the wide court the pair can turn faster than
+        // the yaw)
         let depth = |p: &[i64; 3]| sra_tz(s5 * sra_tz(s4 * (p[0] - ex) + s3 * (p[2] - ez), 12) - s0 * (p[1] - ey), 12) - dz_;
         let near = self.players.iter().flatten().map(depth).min();
         if let Some(near) = near {

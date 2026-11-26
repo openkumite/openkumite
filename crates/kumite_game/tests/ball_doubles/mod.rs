@@ -11,16 +11,16 @@ use std::path::Path;
 /// A CPU 2 ON 2 round of `models` (the sides' first) and `team` (their partners), with `camera` (Tekken Tag: the slice's
 /// Ball camera): the four keep their own health; a point costs both of the side still standing and leaves the other
 /// side's alone; nothing but the ball takes health (a point, or the Attack Ball on the one it hits); one at no health
-/// is nobody's target, nor framed by the camera (its standing partner is, in its place); the round is lost when both of
-/// a side are out; the same round twice is the same.
+/// is nobody's target, nor framed by the camera (its standing partner is, in its place); everyone standing is in the
+/// picture sideways; the round is lost when both of a side are out; the same round twice is the same.
 pub fn rules(a: &Assets, models: [usize; 2], team: [usize; 2], camera: Option<&Path>) {
-    let run = || {
+    let run = |server: usize| {
         let mut g = Game::load(a, models).unwrap();
         if let Some(c) = camera {
             g.load_camera(c).unwrap();
         }
         let data = std::sync::Arc::new(kumite_sim::data::load(&a.root.join("gamedata/ball.json")).unwrap());
-        g.ball = Some(kumite_game::BallSetup { data, kind: 0, server: 1, rounds: 0 });
+        g.ball = Some(kumite_game::BallSetup { data, kind: 0, server, rounds: 0 });
         g.ball_team = Some(team.map(|m| kumite_game::Actor::load(a, m).unwrap()));
         g.round_frames = u32::MAX / 2;
         (g.ko_collapse, g.fight.ko_collapse) = (false, false);
@@ -31,7 +31,7 @@ pub fn rules(a: &Assets, models: [usize; 2], team: [usize; 2], camera: Option<&P
         b.extra_cpu = Some(kumite_sim::ai::Ai::new(2, 9, 1));
         // (each side's two: actors 0, 3 and 1, 2)
         let order = [0, 3, 1, 2];
-        let (mut log, mut points, mut out_alone, mut framed) = (Vec::new(), 0, 0, 0);
+        let (mut log, mut points, mut out_alone, mut framed, mut off, mut seen) = (Vec::new(), 0, 0, 0, 0, 0);
         for _ in 0..60000 {
             let f = &b.game.fight;
             let before = order.map(|i| f.actor(i).unwrap().health);
@@ -56,6 +56,15 @@ pub fn rules(a: &Assets, models: [usize; 2], team: [usize; 2], camera: Option<&P
                         assert_eq!(before[k] - after[k], lost, "point on side {side}: actor {i}");
                     }
                 }
+                // everyone standing in the picture sideways (the root, 900 up: 256 of the 512 pixels each way)
+                let (eye, forward, fovy) = kumite_game::view_camera(&b.game.camera.view);
+                let right = forward.cross(glam::Vec3::Y).normalize_or_zero();
+                for i in order.into_iter().filter(|&i| f.actor(i).unwrap().health > 0) {
+                    let d = (f.actor(i).unwrap().root() + glam::Vec3::Y * 900.0) / kumite_game::UNITS - eye;
+                    let depth = d.dot(forward);
+                    seen += 1;
+                    off += usize::from(depth <= 0.0 || (d.dot(right) / depth).abs() > (fovy / 2.0).tan() * 256.0 / 240.0);
+                }
                 // one out (since the step before: the targets are picked at a step's start), its partner still in:
                 // nobody standing faces it
                 for k in 0..4 {
@@ -77,13 +86,21 @@ pub fn rules(a: &Assets, models: [usize; 2], team: [usize; 2], camera: Option<&P
             if let RoundState::Ko { winner } = f.state {
                 let lost = if winner == 0 { [2, 3] } else { [0, 1] };
                 assert!(lost.iter().all(|&k| after[k] <= 0) && after[2 * winner..2 * winner + 2].iter().any(|&h| h > 0), "K.O. for {winner} at {after:?}");
-                return (log, points, out_alone, framed);
+                return (log, points, out_alone, framed, off, seen);
             }
         }
         panic!("no K.O.");
     };
-    let (log, points, out_alone, framed) = run();
-    eprintln!("{points} points, {out_alone} steps with one out alone ({framed} framed in a first's place), {} steps", log.len());
-    assert!(points >= 4 && out_alone > 0 && framed > 0);
-    assert!(run().0 == log, "the same round went another way");
+    // (both servers: a round where a side's first falls before its partner)
+    let (mut out_alone, mut framed, mut off, mut seen) = (0, 0, 0, 0);
+    for server in [1, 0] {
+        let (log, points, o, f, x, n) = run(server);
+        eprintln!("server {server}: {points} points, {o} steps with one out alone ({f} framed in a first's place), {} steps, {x} of {n} off the picture", log.len());
+        assert!(points >= 4);
+        (out_alone, framed, off, seen) = (out_alone + o, framed + f, off + x, seen + n);
+        assert!(run(server).0 == log, "the same round went another way");
+    }
+    assert!(out_alone > 0 && framed > 0);
+    // (a moment off while the eye catches up with a dash)
+    assert!(off * 20 < seen, "{off} of {seen} standing off the picture");
 }
