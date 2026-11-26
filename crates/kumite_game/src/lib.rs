@@ -192,14 +192,18 @@ impl Animations for FighterAnims<'_> {
             on(&self.own.hurt, &mut v.hurt);
             on(&self.own.push, &mut v.push);
             v.joints = at.iter().map(|w| w.1).collect();
+            // (True Ogre: his arm's slot 5 where its wave puts it, his left hand's glow on slot 19's matrix; shortcut:
+            // the spheres keep the motion's arm, upgrade when a PS1 case checks a hit on it)
+            let mut hand = at;
+            if f.character == Some(20) {
+                let arm = t3pose::ogre_arm(&turns, at[4], &self.own.character.slots, self.flap.count, self.flap.amp);
+                (hand[6], v.joints[5], v.arm) = (arm[3], arm[0].1, -arm[1].1[1]);
+            }
             // (the hands' slots where their glows sit: the character's points on the hand's matrix, ApplyRotMatrix plus
-            // its place, 0x800707F4; True Ogre's left glows on his slot 19's, not posed here, so on the joint)
+            // its place, 0x800707F4)
             let hands = f.character.and_then(|c| kumite_sim::objects::HAND_GLOWS.get(usize::try_from(c).ok()?));
-            for (k, (slot, p)) in [6, 10].into_iter().zip(hands.into_iter().flatten()).enumerate() {
-                if k == 0 && f.character == Some(20) {
-                    continue;
-                }
-                let (r, t) = at[slot];
+            for (slot, p) in [6, 10].into_iter().zip(hands.into_iter().flatten()) {
+                let (r, t) = hand[slot];
                 v.joints[slot] = std::array::from_fn(|i| ((0..3).map(|c| i64::from(r[i][c]) * i64::from(p[c])).sum::<i64>() >> 12) as i32 + t[i]);
             }
             v.head = Some(at[2]);
@@ -571,7 +575,7 @@ fn load_body(assets: &Assets, record: usize, rules: &serde_json::Value, index: &
         motion_scale,
         size,
         springs: if tag { springs(id) } else { Vec::new() },
-        flaps: tag && id == 20,
+        flaps: id == 20,
         twins,
     };
     // the copying character: its own moveset is never played; outside a bout's rounds it stays the setup's fighter
@@ -764,6 +768,24 @@ fn step_flap(body: &Body, other: &Body, shown: &Snapshot, pose: &mut [Mat4], f: 
         return;
     }
     let owner = if shown.partner { &other.character } else { &body.character };
+    // (Tekken 3: the PS1's wave, t3pose::ogre_wave, on slots 5 and 6 and the hand's two nodes after them, each at the
+    // place the PS1 puts it; glTF's axes: y and z turned over)
+    if body.bones.is_empty() {
+        let Some(c) = shown.clip.and_then(|(c, k)| channels(owner.clips.get(c)?, k)) else { return };
+        let turns = shown.ease.map_or_else(|| t3pose::locals(c), |e| e.0);
+        let nodes = &body.character.nodes;
+        let child = |p: Option<usize>| p.and_then(|p| nodes.iter().position(|n| n.parent == Some(p)));
+        let (n5, n6) = (body.slots.get(5).copied(), body.slots.get(6).copied());
+        let n18 = child(n6);
+        let flip = Mat3::from_diagonal(Vec3::new(1.0, -1.0, -1.0));
+        for (n, (turn, at)) in [n5, n6, n18, child(n18)].into_iter().zip(t3pose::ogre_wave(&turns, &body.character.slots, f.count, f.amp)) {
+            let t: [i16; 9] = std::array::from_fn(|k| turn[k / 3][k % 3] as i16);
+            if let Some(n) = n {
+                head::set_local_at(nodes, pose, n, flip * turn_mat(&t) * flip, Some(flip * Vec3::from(at.map(|v| v as f32)) / UNITS));
+            }
+        }
+        return;
+    }
     let z5 = shown.clip.and_then(|(c, k)| owner.clips.get(c)?.angles.get(k).map(|a| i32::from(a[3 + 3 * 5 + 2] as i16))).unwrap_or(0);
     for (part, slot) in [5, 6, 18, 19].into_iter().enumerate() {
         let at = part as i32 * 0x400;
@@ -1885,9 +1907,13 @@ impl Game {
         // (live, a borrowed clip is its owner's, as `clip` took it: in Force's co-op, any foe's)
         let (shown, other) = self.display.map_or_else(|| (self.snapshot(i), self.clip_owner(i)), |d| (d[i], &self.bodies[1 - i]));
         let (mut pose, place) = shown_pose(&self.bodies[i], other, &shown);
-        if self.display.is_none() {
-            let b = &self.bodies[i];
+        let b = &self.bodies[i];
+        // (Tekken 3's True Ogre waves in replays too, at the wave's last frame; shortcut: the PS1's replay runs it on,
+        // upgrade if a replay is compared)
+        if self.display.is_none() || b.bones.is_empty() {
             step_flap(b, other, &shown, &mut pose, self.flaps[i]);
+        }
+        if self.display.is_none() {
             for (sp, (local, _)) in b.springs.iter().zip(&self.springs[i]) {
                 if let Some(n) = slot_node(b, sp.slot) {
                     head::set_local(&b.character.nodes, &mut pose, n, turn_mat3(local));
@@ -1901,6 +1927,14 @@ impl Game {
     fn step_springs(&mut self) {
         for i in 0..2 {
             let b = &self.bodies[i];
+            // (Tekken 3's True Ogre: his arm's wave, P+0x1294 a frame on, its amplitude from slot 6's height, +0xAA4)
+            if b.flaps && b.bones.is_empty() {
+                let f = self.flaps[i].next();
+                let anims = FighterAnims { own: b, other: &self.bodies[1 - i], springs: &[], flap: f };
+                let high = anims.volumes(&self.fight.fighters[i], &self.fight.data).map_or(0, |v| v.arm);
+                self.flaps[i] = Flap { high, ..f };
+                continue;
+            }
             if b.springs.is_empty() && !b.flaps {
                 continue;
             }
@@ -2177,7 +2211,7 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
     // shortcut: the game's mouth (nodes 7-13) opens as it breathes (PCSX2: node 13 up to 120 off ours); port its
     // turns (0x351E98) when the fire must land to the unit
     let head = if body.bones.is_empty() { None } else { body.character.nodes.iter().position(|n| n.name == "node_13") };
-    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones, slots: [slot(head.unwrap_or(body.chest)), slot(body.pelvis)], joints: Vec::new(), head: None }
+    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones, slots: [slot(head.unwrap_or(body.chest)), slot(body.pelvis)], joints: Vec::new(), head: None, arm: 0 }
 }
 
 /// A turn's float entry as the game's 4096 = 1 (0x34ED90: times 4096, truncated; a float a hair off a whole number,

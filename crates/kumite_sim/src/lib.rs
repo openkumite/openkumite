@@ -144,6 +144,8 @@ pub struct BodyVolumes {
     pub joints: Vec<[i32; 3]>,
     /// Tekken 3: the head's matrix as the PS1 keeps it (+0x97C: rows of 4096 = 1, its place), where the breath starts.
     pub head: Option<([[i32; 3]; 3], [i32; 3])>,
+    /// Tekken 3's True Ogre: his slot 6's height where his arm's wave puts it (-(P+0xAA4)), the next wave's amplitude.
+    pub arm: i32,
 }
 /// Round clock for the default option (40 s).
 pub const ROUND_FRAMES: u32 = 40 * 60;
@@ -3215,7 +3217,7 @@ fn t3_atan(mut dx: i32, mut dz: i32) -> i32 {
 
 /// Tekken 3's atan table's angle at `q` (0x800210C8's byte plus half the index): round(atan((q + 3/8) / 1024) x
 /// 2048 / pi).
-pub(crate) fn t3_atan_table(q: i64) -> i64 {
+pub fn t3_atan_table(q: i64) -> i64 {
     ((q as f64 + 0.375).datan2(1024.0) * 2048.0 / std::f64::consts::PI).round() as i64
 }
 

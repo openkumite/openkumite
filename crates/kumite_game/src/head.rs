@@ -253,6 +253,11 @@ pub fn split_neck(nodes: &[kumite_assets::Node], pose: &mut [Mat4]) {
 
 /// Set node `n`'s local rotation to `rot` (its offset kept), carrying everything hanging from it along.
 pub fn set_local(nodes: &[kumite_assets::Node], pose: &mut [Mat4], n: usize, rot: Mat3) {
+    set_local_at(nodes, pose, n, rot, None);
+}
+
+/// [`set_local`], its offset `at` when given.
+pub fn set_local_at(nodes: &[kumite_assets::Node], pose: &mut [Mat4], n: usize, rot: Mat3, at: Option<Vec3>) {
     let Some(&old) = pose.get(n) else { return };
     let parent = match nodes.get(n).and_then(|x| x.parent) {
         Some(p) => match pose.get(p) {
@@ -261,7 +266,7 @@ pub fn set_local(nodes: &[kumite_assets::Node], pose: &mut [Mat4], n: usize, rot
         },
         None => Mat4::IDENTITY,
     };
-    let new = parent * Mat4::from_mat3_translation(rot, (parent.inverse() * old).w_axis.truncate());
+    let new = parent * Mat4::from_mat3_translation(rot, at.unwrap_or_else(|| (parent.inverse() * old).w_axis.truncate()));
     let delta = new * old.inverse();
     for (i, m) in pose.iter_mut().enumerate() {
         let mut at = Some(i);

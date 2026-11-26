@@ -165,6 +165,35 @@ pub fn places(turns: &Turns, slots: &[[i32; 3]], facing: i32, root: [i32; 3]) ->
     world
 }
 
+/// True Ogre's arm (0x80033A00, the skeleton's call for each of his slots 5, 6, 18 and 19 at 0x8003B310 /
+/// 0x8003B434): each takes a part of a wave instead of its motion's turn, Rz Ry Rx of (0, the sine at the counter x 32
+/// times `amp` / 512, the sine at the counter x 64 times `amp` / 256 plus slot 5's motion turn about z), the parts a
+/// quarter of a wave apart; each part's turn and place on the one before, the place another slot's turn keeps
+/// (P+0xF74 + 0x14: slot 5 at slot 18's, 6 at 5's, 18 at 19's, 19 at 6's). `count`: P+0x1294 this frame; `amp`: half
+/// slot 6's height the frame before, 0 to 256 (P+0xAA4).
+/// shortcut: his hand's value P+0x1296 (the wave's 0x100 less it, the rows' scales) is taken as 0, as the PS1's VS
+/// fights keep it; slots 18 and 19's places are not in the pack (its 18): the PS1's, upgrade when the converter adds them
+pub fn ogre_wave(turns: &Turns, slots: &[[i32; 3]], count: u16, amp: i32) -> [(M, [i32; 3]); 4] {
+    let t5 = turns[5];
+    let z5 = -(kumite_sim::camera::ratan2_on(kumite_sim::t3_atan_table, t5[0].into(), t5[1].into()) as i32) * 4;
+    let place = |s: usize| slots.get(s).copied().unwrap_or_default();
+    let at = [[273, -1, 2], place(5), [171, 0, 0], place(6)];
+    std::array::from_fn(|part| {
+        let wave = |times: i32| sin12(i32::from(count) * times + part as i32 * 0x400) * amp;
+        (euler(0, s16(wave(32) / 512), s16(wave(64) / 256 + z5)), at[part])
+    })
+}
+
+/// The four slots of True Ogre's arm ([`ogre_wave`]) in the world, from slot 4's.
+pub fn ogre_arm(turns: &Turns, upper: (M, [i32; 3]), slots: &[[i32; 3]], count: u16, amp: i32) -> [(M, [i32; 3]); 4] {
+    let mut on = upper;
+    ogre_wave(turns, slots, count, amp).map(|(turn, at)| {
+        let p = mv(&on.0, at);
+        on = (mul(&on.0, &turn), std::array::from_fn(|i| p[i] + on.1[i]));
+        on
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +210,19 @@ mod tests {
         assert_eq!(l[5], [-508, 4051, 0, -4051, -508, 0, 0, 0, 4096]);
         assert_eq!(l[13], [-281, -4078, 0, 4078, -281, 0, 0, 0, 4096]);
         assert_eq!(l[17], [-1564, 3658, 975, -3760, -1624, 59, 439, -874, 3977]);
+    }
+
+    /// True Ogre's arm as the PS1 had it (t3sim42's c24 RAM at vsync 1790: P+0x1294 1314, amplitude 256, slot 5's
+    /// motion turn about z 0): slots 5, 6, 18 and 19's places from slot 4's (P+0x8F4 + 0x44 a slot).
+    #[test]
+    fn true_ogres_arm_waves_as_on_the_ps1() {
+        let upper = ([[2273, -3413, -16], [-1471, -989, 3695], [-3099, -2036, -1766]], [-845, -3055, -371]);
+        let mut turns = [[0; 9]; 18];
+        turns[5][0] = 4096;
+        let mut slots = [[0; 3]; 18];
+        (slots[5], slots[6]) = ([343, 0, 0], [270, 0, 0]);
+        let arm = ogre_arm(&turns, upper, &slots, 1314, 256);
+        assert_eq!(arm.map(|w| w.1), [[-693, -3151, -578], [-485, -3326, -791], [-338, -3387, -856], [-116, -3446, -1000]]);
+        assert_eq!(arm[3].0[0], [2262, -3413, -220]);
     }
 }
