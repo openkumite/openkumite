@@ -515,6 +515,8 @@ impl Melee {
             // (the two's striking objects, owned by their slots)
             let own = |o: &crate::objects::Object| [a, b].iter().position(|&k| k == o.owner).filter(|_| o.strikes).map(|owner| crate::objects::Object { owner, ..o.clone() });
             self.fight.objects.list = self.objects.list.iter().filter_map(own).collect();
+            let slot = |o: usize| [a, b].iter().position(|&k| k == o);
+            self.fight.objects.registered = self.objects.registered.as_ref().map(|r| r.iter().filter_map(|&(o, p, q)| Some((slot(o)?, p, q))).collect());
             self.on_pair(a, b, |f| f.resolve_hits(&gd, pair));
         }
         self.fight.objects.list.clear();

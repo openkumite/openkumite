@@ -1036,9 +1036,38 @@ fn true_ogres_fire_burns() {
     assert!(at.is_some_and(|(m, k, d)| m == 3799 && (62..=66).contains(&k) && (1700.0..2200.0).contains(&d)), "{at:?}");
 }
 
+/// True Ogre's d/b+1+2 (move 3800) as in PCSX2 (the move audit's `trueogre_sdb12`, both holding 1+2 through the
+/// intro): the first flame starts at (865, 1381, -807), 200 along the z of node 13 as drawn, the neck split
+/// (0x3A4EE8); the hit pass reads the segments the task runner registered after the frame before (0x346230, 0x3770E0),
+/// so Hwoarang burns (5527) on frame 38 of it (the animated node 13 and this frame's segments: frame 36).
+#[test]
+fn true_ogres_low_fire_lands_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [TRUE_OGRE, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    let hold = Pad { buttons: 3, ..Pad::default() };
+    while b.phase != Phase::Fight {
+        b.step([hold; 2]);
+    }
+    let (mut start, mut burns) = (None, None);
+    for pad in parse_script("n*61,f*30,n*2,d/b+1+2*2,n*129").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        start = start.or_else(|| b.game.fight.objects.list.first().map(|o| o.pos));
+        if burns.is_none() && f[1].shown_move().0.index == 5527 {
+            burns = Some((f[0].shown_move().0.index, f[0].shown_move().1));
+        }
+    }
+    assert!(start.is_some_and(|p| p.distance(glam::Vec3::new(865.0, 1381.0, -807.0)) < 20.0), "{start:?}");
+    assert_eq!(burns, Some((3800, 38)));
+}
+
 /// True Ogre's fire sets sparks off (task 0x3A4970: quad 0x80 at 0.2, 0.044 m) and fires on the floor (0x3A4C28:
-/// quad 0x400 at 0.2-0.5) at Hwoarang's feet and where the stream licks the floor; as in PCSX2 (the move audit's
-/// `trueogre_12`), some 10-25 sparks and 1-5 floor fires burn while he does.
+/// quad 0x400 at 0.2-0.5) at Hwoarang's feet and where the stream licks the floor. PCSX2's task list, his 1+2 burning
+/// Hwoarang after a walk of 10 / 20 frames: at most 29 / 18 sparks and 6 / 2 floor fires at once.
+/// shortcut: ours draws up to some 40 sparks and 10 floor fires (its own rand, not the game's libc stream shared by
+/// some 300 callers); match the counts when that stream is followed.
 #[test]
 fn true_ogres_fire_sparks_and_sets_the_floor_alight() {
     let Some(a) = assets() else { return };
@@ -1066,7 +1095,7 @@ fn true_ogres_fire_sparks_and_sets_the_floor_alight() {
         }
         (sparks, floor) = (sparks.max(n), floor.max(f));
     }
-    assert!((8..=40).contains(&sparks) && (1..=8).contains(&floor) && feet == Some(true), "sparks {sparks} floor {floor} feet {feet:?}");
+    assert!((8..=40).contains(&sparks) && (1..=12).contains(&floor) && feet == Some(true), "sparks {sparks} floor {floor} feet {feet:?}");
 }
 
 /// The effects frame by frame (for a comparison with PCSX2's effect tasks): `OK_FX_MODEL` (Paul) vs Hwoarang,
