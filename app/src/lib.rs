@@ -4946,11 +4946,6 @@ impl App {
         let shown = force_sim(&self.roster, &self.assets, &self.actor_cache, &ctx, &mut fight.bout, st, self.force_ko_boss);
         run.step_hud(&fight.bout.game);
         self.force_shown(shown);
-        // an AI 2P down gets up again: its START, as a person's (the join is recorded; a replay has it)
-        let down = |f: &Fight| f.bout.partner_cpu.is_some() && f.bout.phase == Phase::Fight && f.bout.game.fight.partner.as_ref().is_some_and(|p| p.health <= 0);
-        if self.replay_view.is_none() && self.fight.as_ref().is_some_and(down) {
-            self.join_force_partner();
-        }
     }
 
     /// Force's events for the eyes and ears: sounds, the music's fade, the boss's music.
@@ -5921,11 +5916,13 @@ impl App {
                 if let (Some(cache), None) = (scene.force_models.as_ref(), cutscene) {
                     let st = self.force.as_ref().and_then(|f| f.stage.as_ref());
                     let shown = |pos: usize| st.is_none_or(|s| (0..s.slots.len()).any(|k| s.slot_actor(k) == pos && s.visible(k)) || s.boss_phase && pos == 1);
+                    // (a player down lies out of play, still drawn; a place nobody plays is not)
+                    let players = game.players();
                     for k in 0..game.fight.actor_count() {
                         let out = game.fight.actor(k).is_none_or(|f| f.inactive);
                         let (Some(body), Some((pose, mut place))) = (game.body_of(k), game.pose_actor(k)) else { continue };
                         let foe = !kumite_sim::Fight::is_player(k);
-                        if (foe && (out || !shown(k))) || (k >= 4 && out) {
+                        if (foe && (out || !shown(k))) || (out && !players.contains(&k)) {
                             place = glam::Mat4::from_scale(glam::Vec3::ZERO);
                         }
                         if let Some(model) = cache.get(&(k, body.model_record)) {

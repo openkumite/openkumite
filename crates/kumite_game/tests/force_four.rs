@@ -55,7 +55,7 @@ struct Seen {
 
 /// Stage 1 of `a`'s force.json with `models` as the players (1P, 2P, 3P, 4P; selections `stride` a character),
 /// all mashing, for `frames` frames; the bout and stage after.
-fn coop(a: &Assets, models: &[usize], stride: usize, frames: usize) -> (Seen, Bout, ForceStage) {
+fn coop(a: &Assets, models: &[usize], stride: usize, frames: usize, hook: &mut dyn FnMut(usize, &mut Bout, &ForceStage)) -> (Seen, Bout, ForceStage) {
     let data: Arc<ForceData> = Arc::new(a.gamedata("force.json").unwrap());
     let roster: serde_json::Value = a.gamedata("roster.json").unwrap();
     let record = |sel: usize| {
@@ -105,6 +105,7 @@ fn coop(a: &Assets, models: &[usize], stride: usize, frames: usize) -> (Seen, Bo
             seen.landed += u32::from(player(h.attacker) && !player(h.victim));
         }
         seen.hashes.push(b.game.state_hash());
+        hook(f, &mut b, &st);
         if !matches!(b.phase, Phase::Fight | Phase::Call) {
             break;
         }
@@ -115,13 +116,13 @@ fn coop(a: &Assets, models: &[usize], stride: usize, frames: usize) -> (Seen, Bo
 /// The co-op checks on `models`: hits both ways and none between players, the same hashes again, each player's
 /// points adding to the total's share, the round on while one stands and lost when all are down.
 fn check(a: &Assets, models: &[usize], stride: usize) {
-    let (seen, mut b, st) = coop(a, models, stride, 60 * 40);
+    let (seen, mut b, st) = coop(a, models, stride, 60 * 40, &mut |_, _, _| {});
     println!("{} players: soldiers struck {}, players landed {}, friendly {}; score {} {:?}", models.len(), seen.struck, seen.landed, seen.friendly, st.score, st.player_scores);
     assert_eq!(seen.friendly, 0, "no player hits another");
     assert!(seen.struck > 0, "the soldiers hit the players");
     assert!(seen.landed > 0, "the players hit the soldiers");
     assert!(st.player_scores.iter().sum::<u32>() <= st.score && st.player_scores.iter().filter(|&&s| s > 0).count() > 1, "{:?} of {}", st.player_scores, st.score);
-    let again = coop(a, models, stride, 60 * 40).0;
+    let again = coop(a, models, stride, 60 * 40, &mut |_, _, _| {}).0;
     assert_eq!(seen.hashes, again.hashes, "a second run is the same");
     // down one by one: the round goes on until the last
     let players = b.game.players();
@@ -150,4 +151,51 @@ fn tekken_tag_force_co_op_of_two_and_of_four() {
     // Lei, Paul, Xiaoyu, Jin
     check(&a, &[372, 345], 8);
     check(&a, &[372, 345, 432, 351], 8);
+}
+
+/// A player down while the others stand (one life a stage): it lies where it fell, nobody moves it (the stage's
+/// scroll, the push, the soldiers' hits) and nobody takes it on, while the others fight on; the camera follows those
+/// standing.
+fn lies_where_it_fell(a: &Assets, models: &[usize], stride: usize, who: usize) {
+    let (mut down_at, mut lying, mut moved, mut struck, mut targeted) = (None, None::<glam::Vec3>, 0.0f32, 0, 0);
+    let (seen, b, _) = coop(a, models, stride, 60 * 60, &mut |f, b, _| {
+        if f == 120 {
+            b.game.fight.actor_mut(who).unwrap().health = kumite_sim::ONE;
+        }
+        let me = b.game.fight.actor(who).unwrap();
+        if down_at.is_none() && me.health <= 0 {
+            down_at = Some(f);
+        }
+        let Some(d) = down_at else { return };
+        // (its fall played out)
+        if f >= d + 150 {
+            let r = me.root();
+            moved = moved.max((r - *lying.get_or_insert(r)).length());
+            struck += b.game.fight.hits.iter().filter(|h| h.victim == who).count();
+            let m = b.game.fight.coop.as_ref().unwrap();
+            targeted += (0..m.actors.len()).filter(|&i| !kumite_sim::Fight::is_player(i) && m.target[i] == who && !m.actors[i].inactive).count();
+        }
+    });
+    let d = down_at.expect("the player went down");
+    let others = b.game.players().into_iter().filter(|&i| i != who).filter_map(|i| b.game.fight.actor(i)).filter(|p| p.health > 0).count();
+    println!("{} players, {who} down at {d}: moved {moved}, struck {struck}, targeted {targeted}; others standing {others}, camera {}", models.len(), b.game.camera.view.eye[0]);
+    assert!(others > 0 && seen.hashes.len() > d + 600, "the others fought on");
+    assert!(moved < 1.0, "the downed player moved {moved} after its fall");
+    assert_eq!((struck, targeted), (0, 0), "the downed player is out of the fight");
+}
+
+#[test]
+fn tekken_3_a_downed_player_lies_where_it_fell() {
+    let Some(a) = t3() else { return };
+    lies_where_it_fell(&a, &[71, 79], 4, 3);
+    lies_where_it_fell(&a, &[71, 79, 95], 4, 4);
+    lies_where_it_fell(&a, &[71, 79, 95, 127], 4, 4);
+}
+
+#[test]
+fn tekken_tag_a_downed_player_lies_where_it_fell() {
+    let Some(a) = ttt() else { return };
+    lies_where_it_fell(&a, &[372, 345], 8, 3);
+    lies_where_it_fell(&a, &[372, 345, 432], 8, 0);
+    lies_where_it_fell(&a, &[372, 345, 432, 351], 8, 4);
 }
