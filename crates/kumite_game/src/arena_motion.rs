@@ -162,6 +162,9 @@ impl ArenaMotion {
             let name = format!("object_{k}");
             if let Some((at, q)) = rest(&name) {
                 let (z, y, x) = q.to_euler(EulerRot::ZYX);
+                // the PS2's turn is (0, about pi, 0) (0x3D6208): of Rz Ry Rx's two solutions the one without the
+                // half turns about x and z, which taking off's pitch would turn upside down
+                let (x, y, z) = if x.abs() > std::f32::consts::FRAC_PI_2 { (x - std::f32::consts::PI.copysign(x), std::f32::consts::PI - y, z - std::f32::consts::PI.copysign(z)) } else { (x, y, z) };
                 // (0x3D6208's heading, pi + pi / 6 - rand x pi / 3: the converter's middle one)
                 let heading = y;
                 let at = at * 1000.0;
@@ -550,11 +553,12 @@ impl Helicopter {
                 let t = self.count as f32 / rise;
                 self.climb -= t * 20.0;
                 self.at.y = self.base + self.climb;
+                // (the nose swings only over the last `ease` frames: PCSX2's heading holds before them)
                 if (self.count as f32) < ease {
                     let k = ((self.count as f32 * pi / ease + pi).cos() + 1.0) * 0.5;
                     self.turn.x = self.pitch[0] + (self.pitch[1] - self.pitch[0]) * (1.0 - k);
+                    self.turn.y += self.dir * f(&c["swing_down"]) * self.count as f32 / ease;
                 }
-                self.turn.y += self.dir * f(&c["swing_down"]) * self.count as f32 / ease;
                 if self.count < 0 {
                     (self.state, self.count, self.settled, self.base) = (1, 0, false, self.at.y);
                 }
@@ -633,5 +637,32 @@ mod tests {
             }
         }
         assert_eq!(states[..4], [0, 2, 3, 1]);
+    }
+
+    #[test]
+    fn the_helicopter_turned_half_round_on_its_pad_stays_upright_in_flight() {
+        let v = json!({"helicopter": {"object": 1, "bob": 0.0316, "wait": 600, "pitch": [0.26, 0.26], "veer": [0.52, 1.05, 0.52, 1.05],
+            "rise": 450.0, "ease": 330.0, "swing": 0.0035, "top": 50000.0, "back": [0.87, 1.75], "land": [2000.0, 4000.0, 14000.0, 5000.0],
+            "swing_down": 0.0005, "settle": [120.0, 30.0, 3.0, 6.0]}});
+        // (Nina's arenas' object_1 as the converter stands it: turned pi about y)
+        let rest = Mat4::from_rotation_translation(Quat::from_xyzw(0.0, 1.0, 0.0, -4.371139e-8), Vec3::new(0.0, 0.4, 14.0));
+        let mut m = ArenaMotion::new(&json!({"objects": v}), |_| Some(rest)).unwrap();
+        let h = m.heli.as_ref().unwrap();
+        assert!(h.turn.x.abs() < 1e-3 && h.turn.z.abs() < 1e-3 && (h.turn.y - std::f32::consts::PI).abs() < 1e-3, "{:?}", h.turn);
+        let away = Mat4::from_translation(Vec3::new(100.0, 0.0, 0.0));
+        let (mut states, mut headings) = (vec![], vec![]);
+        for frame in 0..60 * 300 {
+            m.step(Vec3::ZERO, away, &[], &[]);
+            let (_, place, _) = m.places(0.0).swap_remove(0);
+            assert!(place.transform_vector3(Vec3::Y).y > 0.9, "upside down at frame {frame}");
+            let h = m.heli.as_ref().unwrap();
+            if states.last() != Some(&h.state) {
+                states.push(h.state);
+                headings.push(h.turn.y);
+            }
+        }
+        assert!(states.len() > 4, "{states:?}");
+        // the descent turns its nose by about 0.086 only (PCSX2: -2.4814 to -2.5675 over 1536 frames down)
+        assert!((headings[2] - headings[3]).abs() < 0.1, "{headings:?}");
     }
 }
