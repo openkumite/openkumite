@@ -819,6 +819,27 @@ mod tests {
         assert_eq!((t.mode, of(2), of(3), of(1)), (TagMode::Force, Some(picked[0]), Some(picked[1]), None));
     }
 
+    /// Ball 2 ON 2's setup (Tekken 3's BALL 2 ON 2, Tekken Tag's TEKKEN BALL select on 3P's or 4P's START): 2P..4P
+    /// join with START, each on a seat of its own, so the match plays four pads; a seat nobody takes is the CPU's.
+    #[test]
+    fn ball_2_on_2_seats_up_to_four_players() {
+        let Some(roster) = roster() else { return };
+        let fight = |joins: &[usize]| {
+            let mut s = TagSelect::new(&roster, 1, 3, TagMode::Ball);
+            for &p in joins {
+                s.key(p, Key::Start, &roster);
+            }
+            s.key(0, Key::Start, &roster);
+            let Outcome::Fight(setup, _) = s.key(0, Key::Start, &roster) else { panic!("the match") };
+            setup.partners.map(|d| d.seats)
+        };
+        let mut four = fight(&[2, 1, 3]).map_or([9; 4], |s| s.map(|p| p.unwrap_or(9)));
+        four.sort();
+        assert_eq!(four, [0, 1, 2, 3]);
+        // (3P alone: the other side's first, the partners the CPU's)
+        assert_eq!(fight(&[2]), Some([Some(0), Some(2), None, None]));
+    }
+
     /// TAG BRAWL: the same face picked for every slot gives each its own costume while one is left.
     #[test]
     fn one_face_four_times_four_models() {

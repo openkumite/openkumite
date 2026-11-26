@@ -1213,8 +1213,20 @@ impl Game {
 
     /// What the camera samples from both fighters (0x8006465C), in game space (Y down, Z = −glTF Z):
     /// the root on the floor, chest height − 290, and the side each is on (its pelvis on the screen, +0x1278).
+    /// Ball 2 ON 2 (OpenKumite's own): a side's fighter who is out gives its place to its partner still in play
+    /// (actor 3 beside 1P, 2 beside 2P), its side under the last view.
     pub fn camera_samples(&self) -> [Sample; 2] {
+        let stand = |k: usize| self.fight.actor(k).is_some_and(|f| f.health > 0);
+        let partner = |k: usize| {
+            let ((pose, place), body, f) = (self.pose_actor(k)?, self.body_of(k)?, self.fight.actor(k)?);
+            let chest = place.transform_point3(pose.get(body.chest)?.w_axis.truncate()) * UNITS;
+            let side = screen_side(body, &pose, place, &self.camera.view).unwrap_or(f.side);
+            Some(Sample { x: f.root().x.round() as i64, y: -(chest.y.round() as i64) - 290, z: -(f.root().z.round() as i64), side: side as i64 })
+        };
         std::array::from_fn(|i| {
+            if let Some(s) = (self.fight.ball_doubles() && !stand(i) && stand(3 - i)).then(|| partner(3 - i)).flatten() {
+                return s;
+            }
             let (pose, place) = self.pose(i);
             let chest = place.transform_point3(pose[self.bodies[i].chest].w_axis.truncate()) * UNITS;
             let root = self.fight.fighters[i].root();
@@ -1888,18 +1900,27 @@ impl Game {
     }
 }
 
+/// The pelvis's horizontal place on the screen under view `v` (scaled to whole units); None behind the eye.
+fn screen_side(body: &Body, pose: &[Mat4], place: Mat4, v: &View) -> Option<i32> {
+    let (eye, forward, _) = view_camera(v);
+    let right = forward.cross(Vec3::Y).normalize_or_zero();
+    let d = place.transform_point3(pose.get(body.pelvis)?.w_axis.truncate()) - eye;
+    let depth = d.dot(forward);
+    (depth > 1e-3).then(|| (d.dot(right) / depth * 10000.0).round() as i32)
+}
+
 /// Fighter `f`'s side under view `v`, posed `pose` at `place`: the screen's right (its angle), its pelvis's
 /// horizontal place on the screen (scaled to whole units), whether it is off the screen (under `last`, the frame
 /// before's view: Tekken Tag's points take this frame's bones through last frame's matrix 0x436530, PCSX2).
 fn project_side(f: &mut kumite_sim::Fighter, body: &Body, pose: &[Mat4], place: Mat4, v: &View, last: &View) {
-    let (eye, forward, _) = view_camera(v);
+    let (_, forward, _) = view_camera(v);
     let right = forward.cross(Vec3::Y).normalize_or_zero();
     f.screen_right = right.x.datan2(right.z);
-    let Some(m) = pose.get(body.pelvis) else { return };
-    let d = place.transform_point3(m.w_axis.truncate()) - eye;
-    let depth = d.dot(forward);
-    if depth > 1e-3 {
-        f.side = (d.dot(right) / depth * 10000.0).round() as i32;
+    if pose.get(body.pelvis).is_none() {
+        return;
+    }
+    if let Some(side) = screen_side(body, pose, place, v) {
+        f.side = side;
     }
     // its head's and both feet's x on the 512 pixels (0x34FD90: 256 + x * H / z, cut toward 0), for the off-screen
     // test (0x5C) and the camera
