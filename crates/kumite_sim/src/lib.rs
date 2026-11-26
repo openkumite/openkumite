@@ -1474,9 +1474,10 @@ impl Fighter {
                 });
                 Some((clamp(to_opp / n, k), 0x9554))
             }
-            // after start-up: re-aim every 5 frames at ≤ 3°/frame (0x8003FD80)
+            // after start-up: re-aim every 5 frames at ≤ 3°/frame (0x8003FD80); a jumping attack (+0x5E, its damage)
+            // stops turning once landed past its active frames
             6 => {
-                if self.connected && j0 != 0 && !airborne && frame >= a1 {
+                if self.current_move(gd).damage != 0 && self.current_move(gd).damage_type != 1 && j0 != 0 && !airborne && frame >= a1 {
                     self.turn = None;
                 } else if frame > a0 && (frame - a0) % 5 == 0 && off < 0x5556 {
                     let m = if len - frame < 6 { 5 } else { len - frame };
