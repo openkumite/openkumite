@@ -467,8 +467,8 @@ fn a_reversal_starts_the_frame_after_the_hit() {
     }
     let (p1, p2) = (parse_script("n*61,f*30,n*2,b+1+3*2,n*20").unwrap(), parse_script("n*91,2*2,n*22").unwrap());
     let mut rows = Vec::new();
-    for k in 0..p1.len() {
-        b.step([p1[k], p2.get(k).copied().unwrap_or_default()]);
+    for (k, pad) in p1.into_iter().enumerate() {
+        b.step([pad, p2.get(k).copied().unwrap_or_default()]);
         let f = &b.game.fight.fighters;
         let ((m0, k0), (m1, k1)) = (f[0].shown_move(), f[1].shown_move());
         if (m1.index, k1) == (852, 10) || (m0.index, k0) == (4790, 1) {
