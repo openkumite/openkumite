@@ -718,8 +718,8 @@ pub struct Fighter {
     /// Tekken Tag: the root at the last body push (its step since then shares the push, 0x377338); none before the
     /// first.
     pub push_prev: Option<Vec3>,
-    /// Tekken Tag: in its move's jump window as the facing pass left it (+0x135, set after the tracking modes,
-    /// 0x370858): the modes read last frame's.
+    /// In its move's jump window as the facing pass left it (Tekken Tag's +0x135, set after the tracking modes,
+    /// 0x370858): the modes of both games read last frame's.
     jump_window: bool,
     /// Tekken Tag: the pose ease; the move of the frame before (+0xB5E8); the pose and root height last shown
     /// (+0xB390, +0xB5D2); struck, until a move starts on a frame it is not (+0xF3: 0x371F58, 0x36A8F8).
@@ -730,6 +730,10 @@ pub struct Fighter {
     /// commit was the END look-ahead's (+0x8B 3, 0x8002DCD4).
     new_motion: bool,
     again: bool,
+    /// Tekken 3's +0x198: the frame the last queued link runs at (or a flight's first), which the next command's
+    /// link type test reads before it is set again (0x8002DA90 before 0x8002DAD8). shortcut: the END look-ahead's
+    /// queue (0x8002DC88) neither sets nor tests it here; check one there.
+    exec_mark: u32,
     shown_turns: Turns,
     shown_height: i32,
     reacting: bool,
@@ -847,6 +851,7 @@ impl Fighter {
             ease_last: None,
             new_motion: false,
             again: false,
+            exec_mark: 0,
             shown_turns: [[0; 9]; 18],
             shown_height: 0,
             reacting: false,
@@ -1118,7 +1123,7 @@ impl Fighter {
         if t == TRANSITION_GETUP {
             self.getup_lock = 24;
         }
-        self.jump_home = (self.tag_rules(gd) && matches!(t, 0x10 | 0x12 | 0x13)).then_some(None);
+        self.jump_home = matches!(t, 0x10 | 0x12 | 0x13).then_some(None);
         // facing: bit 7 turns around first; END and buffered links add the old animation's net turn (+0x12)
         if t != 0x11 {
             self.turn = turn;
@@ -1217,6 +1222,10 @@ impl Fighter {
             // back into the same one, as a pushed move's condition 0x33 entry makes each step)
             self.new_motion |= !self.tag_rules(gd) && (!same || buffered || matches!(t, 1 | 3));
             self.again = buffered;
+            // (a link the END look-ahead queued marks frame 1, 0x8002F5B4)
+            if buffered {
+                self.exec_mark = 1;
+            }
             self.since = if same && !buffered && !self.new_motion { self.frame } else { 1 };
         }
         if to_mv.as_ref().is_some_and(|m| m.flags24.raw & 0x800 != 0) {
@@ -1428,7 +1437,9 @@ impl Fighter {
         let attack = a0 != 0 && mv.attack.is_some();
         let (j0, j1) = (mv.bytes_18.jump_start as i32, mv.bytes_18.jump_end as i32);
         let frame = self.frame as i32;
-        let airborne = self.juggle != 0 || self.air.is_some() || (j0 != 0 && (j0..=j1).contains(&frame));
+        // (the jump window as the facing pass sees it: last frame's, as Tekken Tag's +0x135)
+        let window = std::mem::replace(&mut self.jump_window, j0 != 0 && (j0..=j1).contains(&frame));
+        let airborne = self.juggle != 0 || self.air.is_some() || window;
         let n = (a0 + 1 - frame).max(1);
         // degrees as the game's angles (k x 0xFFFF / 360, 0x8003FA08)
         let deg = |k: i32| k * 0xFFFF / 360;
@@ -1578,6 +1589,8 @@ impl Fighter {
     /// Start a hit reaction: it keeps the victim's facing (a hit from behind plays the back reaction), as the
     /// reaction transitions do (0x25 / 0x27..0x2B).
     fn start_reaction(&mut self, to: Current, alias: usize) {
+        // (the reaction's queue marks the frame it was struck in, 0x8002EE74)
+        self.exec_mark = self.frame;
         self.start_facing(to, self.commits_root);
         self.alias = alias;
         self.chain = 0;
@@ -1606,6 +1619,9 @@ impl Fighter {
         self.landed = None;
         self.landed_counter = false;
         self.struck_in_move &= self.struck_last;
+        // any move switch ends a jump toward the opponent, a reaction's too (Tekken 3's +0x82 at 0x8002F5F4, Tekken
+        // Tag's +0xF0 at 0x36A808); a jump's link sets it again
+        self.jump_home = None;
     }
 
     /// Jumps and hops drift (0x8003F3A8): from the frame before the jump window to its end, the move's +0x16
@@ -1636,21 +1652,32 @@ impl Fighter {
         }
     }
 
-    /// Tekken Tag's jump toward the opponent (0x36FC04): from the jump window's first frame the fighter moves each frame
-    /// by the pair distance (at most 0xC00) less 500 over the frames left to the window's end, toward the opponent;
-    /// at the end the origin takes the root.
+    /// The jump toward the opponent (links 0x10 / 0x12 / 0x13; Tekken Tag's 0x36FC04, Tekken 3's +0x82 at 0x8003F104):
+    /// from the jump window's first frame the fighter moves each frame by the pair distance (at most 0xC00) less 500
+    /// over the frames left to the window's end, toward the opponent; at the end the origin takes the root.
     fn jump_toward(&mut self, gd: &GameData, before: Vec3) {
         let Some(step) = self.jump_home else { return };
         let b = &self.current_move(gd).bytes_18;
         let (j0, j1) = (b.jump_start, b.jump_end);
         match step {
-            None if self.frame >= j0 => {
+            None if self.frame >= j0 && self.tag_rules(gd) => {
                 // (the pair distance of the frame before, gp-0x74C8)
                 let d = self.opponent.root - before;
                 let dist = (d.x * d.x + d.z * d.z).sqrt().min(3072.0) as i32 - 500;
                 let speed = dist / (j1 as i32 - self.frame as i32).max(1);
                 let [s, c] = tag_sin_cos(d.x.datan2(d.z)).map(|t| (speed * t / 0x7FFF) as f32);
                 self.jump_home = Some(Some(Vec3::new(s, 0.0, c)));
+            }
+            None if self.frame >= j0 => {
+                // (the pair distance of the frame before, 0x800AFA3C; the speed an i16, at the angle to the opponent
+                // +0x2A, in the game's z)
+                let d = self.opponent.root - before;
+                let dist = camera::isqrt((d.x as i64).pow(2) + (d.z as i64).pow(2)).min(0xC00) as i32 - 500;
+                let left = j1 as i32 - self.frame as i32;
+                let speed = i32::from((dist / if left == 0 { 1 } else { left }) as i16);
+                let a = self.geometry16(before, self.opponent.root).0 >> 4;
+                let [s, c] = [ball::sin12(a), ball::cos12(a)].map(|t| (speed * t.clamp(-0xFFF, 0xFFF) * 8 / 0x7FFF) as f32);
+                self.jump_home = Some(Some(Vec3::new(s, 0.0, -c)));
             }
             Some(v) => {
                 self.position += v;
@@ -1724,6 +1751,7 @@ impl Fighter {
         // drift away from the attacker for the whole flight (0x8002F074)
         let drift = (damage.abs() + 7 * (n + 1) + 10 + extra_drift).clamp(0, 100) as f32;
         f.frame = start.max(1) as u32;
+        f.exec_mark = f.frame;
         // (a hit in the air keeps the drift found the frame before, +0x9A / +0x9E: the next step still takes it)
         let step = f.air.as_ref().map_or([0; 2], |a| a.step);
         f.air = Some(Air { drift, y: y0, down: -vy as f32, target, spike, kind, step });
@@ -1808,8 +1836,10 @@ impl Fighter {
         }
         if let Some((alias, exec, transition)) = hit {
             if let Some(to) = self.resolve(alias) {
-                let exec = if exec == 255 { 255 } else { exec };
-                let t = normalize_transition(transition, self.moves(gd, to.bank).moves.get(to.index), exec);
+                let mark = if self.tag_rules(gd) { exec } else { self.exec_mark };
+                let t = normalize_transition(transition, self.moves(gd, to.bank).moves.get(to.index), mark);
+                // shortcut: the PS1 marks the window's end instead while +0x6E is negative; check one there
+                self.exec_mark = if exec == 255 { self.current_move(gd).frames } else { exec };
                 self.queued = Some((to, exec, t));
                 self.queued_alias = alias;
                 self.queued_buffered = false;
@@ -1959,6 +1989,9 @@ impl Fighter {
     pub fn posture(&self, gd: &GameData) -> u32 {
         let mv = self.current_move(gd);
         let raw = mv.posture.raw & 0xFFFF;
+        // Tekken 3: an airborne state (9) counts as lying from its jump window's first frame on (0x800409A0)
+        let j0 = mv.bytes_18.jump_start;
+        let raw = if !self.tag_rules(gd) && (raw >> 11) & 0x1F == 9 && j0 != 0 && self.frame >= j0 { raw | posture::LYING } else { raw };
         if mv.flags24.raw & 0x4000 != 0 && self.ki == 0 {
             if let Some(g) = self.guard_posture(gd) {
                 return g;
@@ -2317,7 +2350,10 @@ impl Fighter {
             if reached {
                 self.commit(gd, to, self.queued_alias, transition, false, anims);
                 // the new move's root on the frame it starts (Tekken Tag's 0x34E748 runs after the move logic; Tekken 3's
-                // root 0x8003AAF4 and ease 0x8003C270 too)
+                // root 0x8003AAF4 and ease 0x8003C270 too; its pushback, the facing pass's 0x8003F798, as on any step)
+                if !self.tag_rules(gd) {
+                    self.push_back();
+                }
                 self.shown_root = self.root();
                 self.root_motion(gd, anims);
                 self.ease(gd, anims);
@@ -3631,7 +3667,7 @@ impl Fight {
             // (Tekken Tag turns the basis before the root's update of the frame: the rebase and the basis's turn
             // show at once, and a throw's pair shows its link frame's places; Tekken 3's rebase likewise,
             // 0x8003A9C8, its root keeping the eased height)
-            if f.rebase_root || f.tag_rules(&gd) && (linked || f.root_yaw != basis) {
+            if f.rebase_root || f.root_yaw != basis || f.tag_rules(&gd) && linked {
                 let y = f.anim_root_y;
                 f.root_motion(&gd, anims[i]);
                 if !f.tag_rules(&gd) {
@@ -3826,8 +3862,19 @@ impl Fight {
             fi.root_yaw = yaw;
             fi.turn = tag_turn.map(|t| (t.1, 16));
         } else {
-            let (yaw, root) = (self.fighters[j].yaw, self.fighters[j].root());
+            // Tekken 3: the thrower linked by the break turns round (0x80030858) and the breaker takes its new basis
+            // (0x80030784), on its root before this step's root motion (+0xF68 at the commit)
+            let t3 = !self.fighters[j].tag_rules(gd);
+            let turn = if t3 { PI } else { 0.0 };
+            let (yaw, root) = (self.fighters[j].yaw + turn, drawn.filter(|_| t3).unwrap_or_else(|| self.fighters[j].root()));
+            victim_yaw = Some(yaw);
             let fi = &mut self.fighters[i];
+            if t3 {
+                // (the PS1 commits before the root motion: this step's clip root goes along the new basis)
+                let (s, c) = (yaw - fi.root_yaw).dsin_cos();
+                let o = fi.offset;
+                fi.offset = Vec3::new(o.x * c + o.z * s, o.y, o.z * c - o.x * s);
+            }
             fi.yaw = yaw;
             fi.root_yaw = yaw;
             fi.position = Vec3::new(root.x, 0.0, root.z);
@@ -4295,6 +4342,7 @@ impl Fight {
             let Some(to) = fv.resolve(e.dest) else { continue };
             let t = normalize_transition(e.transition & 0x3F, fv.moves(gd, to.bank).moves.get(to.index), e.exec);
             fv.reversal_damage = Some(damage / 2 + 25);
+            fv.exec_mark = e.exec;
             log::info!("P{} reverses P{}'s {anim} (cond {:#x})", v + 1, a + 1, e.cond);
             if e.exec == 255 || fv.frame < e.exec {
                 fv.queued = Some((to, e.exec, t));
@@ -4494,11 +4542,11 @@ impl Fight {
                         let pair = self.extra.is_none();
                         let at = self.fighters[a].root();
                         let fv = &mut self.fighters[v];
-                        let old = fv.current_move(gd).anim.clone();
                         fv.start_reaction(to, alias);
-                        // (the reaction commit sets Tekken 3's +0xDA when its motion is another, 0x8002F900; Tekken Tag's
-                        // +0x134 always, its +0xF8 1, 0x368C30 -> 0x36A9A0: the hold steps' ease sees it)
-                        fv.new_motion |= fv.tag_rules(gd) || fv.current_move(gd).anim != old;
+                        // (the reaction commit sets Tekken 3's +0xDA, the hit pass's +0x8B 1, 0x80045394, 0x8002F910;
+                        // Tekken Tag's +0x134, its +0xF8 1, 0x368C30 -> 0x36A9A0; the motion the same too: the hold
+                        // steps' ease sees it)
+                        fv.new_motion = true;
                         // blocks and counter hits (0x800309E4, 0x80030C8C): the root basis on the attacker, and the
                         // body turning to it while it reels (mode 7); Tekken Tag's basis is the facing pass's target
                         // +0x44 (0x36B8FC), not one from the roots now; Tekken 3's the target +0x34 on both roots as
@@ -4673,7 +4721,8 @@ impl Fight {
         let target = air.target_height as f32;
         let Some(to) = f.resolve(air.alias) else { return false };
         let left_1000 = f.current_move(gd).flags24.raw & 0x1000 != 0;
-        let toward = f.geometry_of(gd).2;
+        // (Tekken 3's +0x34 from the attacker's root as it struck, 0x80030B88)
+        let toward = if f.tag_rules(gd) { f.geometry_of(gd).2 } else { t3y(f.geometry16(f.root(), from).2) };
         f.start_reaction(to, air.alias);
         // the fall's root travel runs along the line to the attacker (0x80030A7C), turned by p0 after a 0x1000 move
         f.root_yaw = toward + if left_1000 { angle as f32 * std::f32::consts::TAU / 65536.0 } else { 0.0 };

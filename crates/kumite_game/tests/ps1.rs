@@ -399,6 +399,124 @@ fn a_landed_jump_attack_stops_turning_as_on_the_ps1() {
     assert_eq!(f, [20395, 20370, 20370, 20370, 20370]);
 }
 
+/// Ogre's f+2+4 out of his landing, and Mokujin's d/b+4: the tracking's airborne step (1°) reads the jump window as
+/// the facing pass saw it last frame, as Tekken Tag's +0x135 does. Ours took this frame's, a step early at both ends
+/// (33 and 10 off).
+#[test]
+fn the_tracking_reads_last_frames_jump_window_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [187, 83], None, 1, "n*179,f*39,u+3*2,n*40,d/b+1*2,n*40,f+2+4*2,n*174", "n*180,b*39,n+4*2,n*30,d+1*2,n*226", 400);
+    for (row, want) in [(832, 15404), (835, 14858), (841, 13364)] {
+        assert_eq!(at(&t, 497, row, 0).3, want, "PS1 row {row}");
+    }
+    let t = rows(&a, [195, 123], Some(8), 1, "n*216,f*40,n+1+2*2,n*40,f+3*2,n*40,d/b+4*2,n*173", "n*217,b*40,n+4*2,n*30,n+3*2,n*225", 400);
+    for (row, want) in [(811, 27973), (818, 26881)] {
+        assert_eq!(at(&t, 500, row, 0).3, want, "PS1 row {row}");
+    }
+}
+
+/// Law presses 1 again in his b+1+3 (link 2 to the same motion, its active frame 8 one past the link's frame 7): the
+/// PS1's link type test (0x80030F68) reads +0x198 before the command sets it (0x8002DA90, 0x8002DAD8), so the link
+/// before's frame makes it type 0x14, which ends the auto-turn. Ours turned one step more, 719 off.
+#[test]
+fn a_link_type_reads_the_last_links_frame_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [75, 83], None, 1, "n*202,f*57,n+1+3*2,n*138", "n*262,n+1*2,n*4,n+1*2,n*4,n+1*2,n*4,n+1*2,n*118", 300);
+    for (row, want) in [(870, -16877), (875, -16475)] {
+        assert_eq!(at(&t, 599, row, 1).3, want, "PS1 row {row}");
+    }
+    assert_eq!(at(&t, 599, 870, 0).0, 450, "PS1 row 870");
+}
+
+/// Doctor B., knocked away by Gon, lands into his queued get-up: the pushback runs in the facing pass (0x8003F798)
+/// on the step that commits the queued move too, so its last two 49-unit steps come there. Ours skipped it on that
+/// step and slid two frames late, 98 off.
+#[test]
+fn a_queued_moves_commit_step_keeps_the_pushback_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [243, 251], None, 1, "n*208,f*40,n+1*2,n*20,n+3*2,n*135", "n*209,b*199", 400);
+    for (row, want) in [(984, 2354), (985, 2385), (987, 2338)] {
+        assert_eq!(at(&t, 660, row, 1).0, want, "PS1 row {row}");
+    }
+}
+
+/// Yoshimitsu's u+2 jumps toward Gun Jack (link 0x10 sets +0x82, 0x8002FF40): from the jump window's first frame the
+/// PS1 moves him the pair distance less 500 over the frames left (0x8003F104), 17 a frame; Gun Jack's hit ends it
+/// (0x8002F5F4). Ours kept that to Tekken Tag and stood still, 51 short.
+#[test]
+fn a_jump_goes_toward_the_opponent_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [107, 99], None, 1, "n*235,f*40,u+2*2,n*40,d/f+3*2,n*40,n+1+3*2,n*174", "n*236,b*40,n+4*2,n*30,n+2*2,n*226", 400);
+    for (row, want) in [(977, (-820, -1154, 23)), (979, (-786, -1389, 23)), (1030, (-2428, -249, 22))] {
+        let r = at(&t, 691, row, 0);
+        assert_eq!((r.0, r.1, r.2), want, "PS1 row {row}");
+    }
+}
+
+/// Heihachi's d+4 on Yoshimitsu falling from a juggle: an airborne move (state 9) counts as lying from its jump
+/// window's first frame (+0x60 | 4, 0x800409A0), so the kick's frame-1 cancel on a lying opponent (cond 0x35) takes
+/// the ground kick (motion_073). Ours read the move's posture alone and kept the standing kick, 426 off.
+#[test]
+fn an_airborne_opponent_counts_as_lying_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [179, 107], None, 1, "n*151,f*40,d/f+2*2,n*40,f+1*2,n*40,d+4*2,n*172", "n*152,b*40,n+3*2,n*30,u+1*2,n*224", 300);
+    for (row, want) in [(736, (-329, -999, -65)), (746, (173, -1106, -101))] {
+        let r = at(&t, 455, row, 0);
+        assert_eq!((r.0, r.1, r.2), want, "PS1 row {row}");
+    }
+}
+
+/// Anna, hit out of her u/f+4 by Yoshimitsu's f+2: the flight's basis is the angle to him (+0x34, 0x80030B88) from his
+/// root as he struck, not the one he had at the step's start. Ours flew 176 off the line.
+#[test]
+fn an_air_hit_flies_along_the_line_to_the_striker_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [235, 171], None, 1, "n*186,f*36,u/f+4*2,n*40,d/b+2*2,n*40,n+1+4*2,n*174", "n*187,b*36,n+4*2,n*30,f+2*2,n*226", 300);
+    for (row, want) in [(759, (-872, 18, 17775)), (771, (-1336, 63, 17775))] {
+        let r = at(&t, 522, row, 0);
+        assert_eq!((r.0, r.2, r.4), want, "PS1 row {row}");
+    }
+}
+
+/// Gun Jack blocks Xiaoyu's 2 and then her 4 in the same block motion: the hit pass's +0x8B 1 (0x80045394) makes the
+/// commit set +0xDA (0x8002F910) with the motion the same, which ends the ease toward the end of the first block.
+/// Ours went on easing over the second one, 94 too high.
+#[test]
+fn a_second_block_ends_the_ease_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [131, 211], None, 1, "n*198,f*60,n+1*2,n*10,n+2*2,n*30,n+4*2,n*94", "n*399", 300);
+    for (row, want) in [(916, -942), (922, -942), (929, -978)] {
+        assert_eq!(at(&t, 632, row, 1).1, want, "PS1 row {row}");
+    }
+}
+
+/// Nina's 2+4 on Paul: the thrower's basis turns to the victim over 16 frames, and the PS1's facing pass (0x8003F098)
+/// runs before the root update (0x8003AAF4), so each frame's clip root goes along the basis turned that frame. Ours
+/// placed it on the basis of the frame before, 13 off in z.
+#[test]
+fn a_turning_basis_carries_the_root_of_its_frame_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [115, 75], None, 1, "n*199,f*60,n+2+4*2,n*157", "n*419", 300);
+    for (row, want) in [(910, (495, -170)), (915, (866, -79)), (925, (1446, 0))] {
+        let r = at(&t, 637, row, 0);
+        assert_eq!((r.0, r.2), want, "PS1 row {row}");
+    }
+}
+
+/// Hwoarang breaks King's 1+3 with 1: the thrower linked by the break turns round (0x80030858) and the breaker takes
+/// his new basis on his root before the step's root motion (0x80030784). Ours kept both facings and put Hwoarang on
+/// the far side of King, 1960 off.
+#[test]
+fn a_throw_break_turns_the_thrower_round_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let p2 = "n*269,n+2*2,n*4,n+2*2,n*80,n+1*2,n*4,n+1*2,n*142";
+    let t = rows(&a, [99, 123], None, 1, "n*206,f*60,n+2+4*2,n*80,d/f+1+3*2,n*80,n+1+3*2,n*74", p2, 400);
+    for (row, i, want) in [(1027, 0, (470, -1104, -16850)), (1026, 1, (1457, -888, -16850)), (1030, 1, (1507, -860, -16850))] {
+        let r = at(&t, 661, row, i);
+        assert_eq!((r.0, r.1, r.3), want, "PS1 row {row}, P{}", i + 1);
+    }
+}
+
 /// Law, juggled by Paul, is hit again in the air: the flight's next step still takes the drift found the frame
 /// before (+0x9A / +0x9E, 0x8003F268) on top of the new pop's. Ours started the new flight from none, 28 short.
 #[test]
