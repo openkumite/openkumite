@@ -583,9 +583,11 @@ pub struct Fighter {
     strike_from: Option<(Vec3, Vec3)>,
     /// Tekken Tag: the angle to the opponent of the last facing pass (+0x3A), which the next frame's moves take.
     seen: Option<f32>,
-    /// Tekken Tag: the facing target (+0x44) of the last facing pass with the pair more than 0x200 apart (0x370FEC:
-    /// nearer, it is kept).
+    /// The facing target (Tekken Tag's +0x44, Tekken 3's +0x34 as its 16-bit angle) of the last facing pass with the
+    /// pair more than 0x200 apart (0x370FEC, 0x80043C1C: nearer, it is kept).
     basis: Option<f32>,
+    /// Tekken 3: the pair 0x200 or nearer at this step's facing pass (+0xF8 as the next pass reads it).
+    pair_near: bool,
     pub health: i32,
     /// Full health (16.16; the VS handicap scales it: 70..140 %).
     pub max_health: i32,
@@ -782,6 +784,7 @@ impl Fighter {
             strike_from: None,
             seen: None,
             basis: None,
+            pair_near: false,
             health: max_health,
             max_health,
             character: None,
@@ -1152,6 +1155,8 @@ impl Fighter {
             let off = wrap_pi(self.yaw - a).abs();
             (a, off, if off < FRAC_PI_2 { a } else { a + PI })
         };
+        // (the basis takes the target +0x34 as the facing pass kept it, the pair near; the auto-turn a fresh one)
+        let kept = if t3 { self.basis.filter(|_| self.pair_near).map_or(target, |k| t3y(k as i32)) } else { target };
         // 112° (Tekken 3's type 4 takes it as near too, 0x8002FB44)
         let near = off < if t3 && t == 4 { 0x4FA5 } else { 0x4FA4 } as f32 * ANGLE;
         let n_att = a0.saturating_sub(1).max(1);
@@ -1167,8 +1172,8 @@ impl Fighter {
             }
             1 | 6 | 7 | 8 | TRANSITION_CONTINUE | TRANSITION_CONTINUE_2 | 0x17 | 0x1C | 0x1D | 0x25 | 0x27..=0x2B => self.root_yaw = yaw,
             4 | 5 | 0xA | dialect::TRANSITION_AXIS | dialect::TRANSITION_ACROSS => self.root_yaw = yaw,
-            9 | 0xB | 0xF | 0x18 | 0x1E | 0x23 | 0x24 | 0x26 => self.root_yaw = target,
-            0xC..=0xE => self.root_yaw = if near { a2a } else { target },
+            9 | 0xB | 0xF | 0x18 | 0x1E | 0x23 | 0x24 | 0x26 => self.root_yaw = kept,
+            0xC..=0xE => self.root_yaw = if near { a2a } else { kept },
             0x10 | 0x12 | 0x13 => self.root_yaw = a2a,
             _ => {}
         }
@@ -1423,6 +1428,13 @@ impl Fighter {
     fn track_t3(&mut self, gd: &GameData, seen: Option<[Vec3; 2]>) {
         let [me, opp] = seen.unwrap_or([self.root(), self.opponent.root]);
         let (a2a, off, target) = self.geometry16(me, opp);
+        // (the target +0x34 is kept while the pair was 0x200 or nearer a step before, +0xF8, 0x80043C1C)
+        let d = opp - me;
+        let near = std::mem::replace(&mut self.pair_near, (d.x as i64).pow(2) + (d.z as i64).pow(2) < 0x201 * 0x201);
+        if self.basis.is_none() || !near {
+            self.basis = Some(target as f32);
+        }
+        let target = self.basis.map_or(target, |t| t as i32);
         let (mut yaw, mut basis, mut acc) = (t3a(self.yaw), t3a(self.root_yaw), a16(self.acc));
         // the auto-turn (+0x114 frames of +0x116; kept as the yaw's turn, which runs the other way)
         if let Some((step, left)) = self.turn {
@@ -4566,7 +4578,8 @@ impl Fight {
                         // the step leaves them (the attacker's own, not the one seen before the root update; Force's
                         // soldiers the seen one)
                         if blocked || counter {
-                            fv.root_yaw = fv.basis.filter(|_| pair).unwrap_or_else(|| if fv.tag_rules(gd) || !pair { fv.geometry_of(gd).2 } else { t3y(fv.geometry16(fv.root(), at).2) });
+                            fv.root_yaw =
+                                fv.basis.filter(|_| pair && fv.tag_rules(gd)).unwrap_or_else(|| if fv.tag_rules(gd) || !pair { fv.geometry_of(gd).2 } else { t3y(fv.geometry16(fv.root(), at).2) });
                             fv.mode = 7;
                         }
                         if !blocked && !lying && !counter && quadrant != 0 {

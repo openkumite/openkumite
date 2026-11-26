@@ -100,6 +100,20 @@ fn lei_sidesteps_out_of_the_round_start_as_on_the_ps1() {
     }
 }
 
+/// Jin walks in on King's 1+4: while the pair was 0x200 or nearer a step before (+0xF8), the facing pass keeps the
+/// target +0x34 (0x80043C1C), so Jin's walk stops turning; the stop's commit (type 0xB) takes the kept target as its
+/// basis and turns toward the live one (ours turned up to 191 on toward King and took the live basis, 159 off).
+#[test]
+fn the_target_is_kept_while_the_pair_is_near_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let p1 = "n*178,f*40,n+1+4*2,n*40,d/b+1+3*2,n*62,d/b+1+3*2,n*62,d/b+1+3*2,n*62,d/b+1+3*2,n*144";
+    let t = rows(&a, [99, 147], None, 1, p1, "n*179,b*60,n*360", 260);
+    for (row, want) in [(901, (-16321, -16305)), (912, (-16321, -16305)), (914, (-16330, -16321)), (918, (-16366, -16321))] {
+        let r = at(&t, 673, row, 1);
+        assert_eq!((r.3, r.4), want, "PS1 row {row}");
+    }
+}
+
 /// King's d/f+2 over and over on Jin walking in: Jin's health as the PS1's hit by hit down to the K.O. (13 a hit; one
 /// came a step late without the END window open), and his root. Each stagger's commit step (no hold at hit-stop 0 or
 /// 1, +0x76, 0x8002F4A4) has the reaction's frame 1 root, pose and pushback (the K.O. chain was 729 off); the
