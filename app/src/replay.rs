@@ -67,8 +67,13 @@ pub enum Match {
         #[serde(default)]
         ttt: Option<crate::ttt::Run>,
     },
-    /// The tag brawl: its four and their teams, on this stage.
-    Tag { setup: crate::tagrun::TagSetup, stage: usize },
+    /// The tag brawl: its four and their teams, on this stage, each round's clock (frames; older replays: 40 s).
+    Tag {
+        setup: crate::tagrun::TagSetup,
+        stage: usize,
+        #[serde(default)]
+        round_frames: Option<u32>,
+    },
     /// A Force stage: its fight's setup, the run as the stage began, and players joining on the way (the step
     /// before which, and who: 1 the co-op partner, 2 and 3 for 3P and 4P).
     Force { setup: FightSetup, start: crate::forcerun::ForceStart, joins: Vec<(u64, u8)> },

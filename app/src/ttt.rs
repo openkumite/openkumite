@@ -5110,7 +5110,8 @@ pub fn tag_brawl_hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, g: 
             }
         }
     }
-    timer(painter, v, art, h, Some(g.melee.clock.div_ceil(60)));
+    // (the fights' timer, 0x3C6738)
+    timer(painter, v, art, h, (g.round_frames <= 100 * 70).then(|| (g.melee.clock * 6 / 7).saturating_sub(1) / 60));
     crate::debug::mark_under(painter);
     // the round's texts at the fight's frames (rounds.json: the banner 5 after the call, READY! 44 before the fight)
     let [round, _, fight] = if g.round == 1 { kumite_game::bout::CALL_FIRST } else { kumite_game::bout::CALL_OTHER };
