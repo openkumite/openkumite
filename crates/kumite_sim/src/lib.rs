@@ -3648,7 +3648,7 @@ impl Fight {
             // (Tekken Tag turns the basis before the root's update of the frame: the rebase and the basis's turn
             // show at once, and a throw's pair shows its link frame's places; Tekken 3's rebase likewise,
             // 0x8003A9C8, its root keeping the eased height)
-            if f.rebase_root || f.tag_rules(&gd) && (linked || f.root_yaw != basis) {
+            if f.rebase_root || f.root_yaw != basis || f.tag_rules(&gd) && linked {
                 let y = f.anim_root_y;
                 f.root_motion(&gd, anims[i]);
                 if !f.tag_rules(&gd) {
@@ -3843,8 +3843,19 @@ impl Fight {
             fi.root_yaw = yaw;
             fi.turn = tag_turn.map(|t| (t.1, 16));
         } else {
-            let (yaw, root) = (self.fighters[j].yaw, self.fighters[j].root());
+            // Tekken 3: the thrower linked by the break turns round (0x80030858) and the breaker takes its new basis
+            // (0x80030784), on its root before this step's root motion (+0xF68 at the commit)
+            let t3 = !self.fighters[j].tag_rules(gd);
+            let turn = if t3 { PI } else { 0.0 };
+            let (yaw, root) = (self.fighters[j].yaw + turn, drawn.filter(|_| t3).unwrap_or_else(|| self.fighters[j].root()));
+            victim_yaw = Some(yaw);
             let fi = &mut self.fighters[i];
+            if t3 {
+                // (the PS1 commits before the root motion: this step's clip root goes along the new basis)
+                let (s, c) = (yaw - fi.root_yaw).dsin_cos();
+                let o = fi.offset;
+                fi.offset = Vec3::new(o.x * c + o.z * s, o.y, o.z * c - o.x * s);
+            }
             fi.yaw = yaw;
             fi.root_yaw = yaw;
             fi.position = Vec3::new(root.x, 0.0, root.z);

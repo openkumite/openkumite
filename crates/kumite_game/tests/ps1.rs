@@ -449,6 +449,33 @@ fn a_second_block_ends_the_ease_as_on_the_ps1() {
     }
 }
 
+/// Nina's 2+4 on Paul: the thrower's basis turns to the victim over 16 frames, and the PS1's facing pass (0x8003F098)
+/// runs before the root update (0x8003AAF4), so each frame's clip root goes along the basis turned that frame. Ours
+/// placed it on the basis of the frame before, 13 off in z.
+#[test]
+fn a_turning_basis_carries_the_root_of_its_frame_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [115, 75], None, 1, "n*199,f*60,n+2+4*2,n*157", "n*419", 300);
+    for (row, want) in [(910, (495, -170)), (915, (866, -79)), (925, (1446, 0))] {
+        let r = at(&t, 637, row, 0);
+        assert_eq!((r.0, r.2), want, "PS1 row {row}");
+    }
+}
+
+/// Hwoarang breaks King's 1+3 with 1: the thrower linked by the break turns round (0x80030858) and the breaker takes
+/// his new basis on his root before the step's root motion (0x80030784). Ours kept both facings and put Hwoarang on
+/// the far side of King, 1960 off.
+#[test]
+fn a_throw_break_turns_the_thrower_round_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let p2 = "n*269,n+2*2,n*4,n+2*2,n*80,n+1*2,n*4,n+1*2,n*142";
+    let t = rows(&a, [99, 123], None, 1, "n*206,f*60,n+2+4*2,n*80,d/f+1+3*2,n*80,n+1+3*2,n*74", p2, 400);
+    for (row, i, want) in [(1027, 0, (470, -1104, -16850)), (1026, 1, (1457, -888, -16850)), (1030, 1, (1507, -860, -16850))] {
+        let r = at(&t, 661, row, i);
+        assert_eq!((r.0, r.1, r.3), want, "PS1 row {row}, P{}", i + 1);
+    }
+}
+
 /// Law, juggled by Paul, is hit again in the air: the flight's next step still takes the drift found the frame
 /// before (+0x9A / +0x9E, 0x8003F268) on top of the new pop's. Ours started the new flight from none, 28 short.
 #[test]
