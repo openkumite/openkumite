@@ -2355,9 +2355,10 @@ fn heads_and_eyes_follow_the_opponent() {
     }
     for i in 0..2 {
         let (anim, drawn, eye) = (off(&b.game, i, 6, false), off(&b.game, i, 6, true), off(&b.game, i, 21, true));
-        eprintln!("P{}: head off the opponent {anim:.1} deg animated, {drawn:.1} drawn; eye {eye:.1}", i + 1);
-        // (the neck is aimed from the split neck and rebuilt from its base, as on the PS2: Lei's head ends 3.1° off)
-        assert!(drawn < 3.5 && eye < 3.0, "P{} looks at the opponent", i + 1);
+        eprintln!("P{}: head off the opponent {anim:.2} deg animated, {drawn:.2} drawn; eye {eye:.2}", i + 1);
+        // (the eased look trails Lei's stance: PCSX2 draws her head 0.3°..5.4° off, 3.07° at this frame, stance 16 f61)
+        let ps2 = [None, Some(3.07)][i];
+        assert!(ps2.map_or(drawn < 3.0, |d: f32| (drawn - d).abs() < 0.1) && eye < 3.0, "P{} looks at the opponent", i + 1);
     }
     let f = &mut b.game.fight.fighters;
     let along = f[1].position - f[0].position;
