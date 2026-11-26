@@ -879,12 +879,13 @@ pub fn name_plate(d: &HudData, painter: &egui::Painter, v: &View, art: &Art, mod
     let strip = Tex { page: d.bar_page, bpp: 4, u: d.plate_uv[0], v: d.plate_uv[1], clut: Some(plate) };
     let [ph, pdy, pad] = d.plate;
     let Some([w, h]) = art.indexed_size(&file) else {
-        // an extra fighter has no name picture: its name in the HUD font, on the plate strip
+        // an extra fighter has no name picture: its name in the HUD font in the name pictures' colours (their
+        // CLUT shades its glyphs alike: 1 the light face .. 0xA / 0xB the outline), on the plate strip
         let name = d.extra_names.get(&model)?;
         let w = art.text_w(0, name);
         let x = if right { x - w } else { x };
         art.quad(painter, v, &["exe"], &strip, 1, ph as u32, [x - pad, y + pdy, w + 2.0 * pad, ph], [Color32::WHITE; 4]);
-        art.text(painter, v, 0, 0, x, y + 4.0, name, Color32::WHITE);
+        art.text_clut(painter, v, 0, clut, x, y, name, Color32::WHITE);
         return Some(w);
     };
     let (w, sheet) = (w as f32, h > 16);

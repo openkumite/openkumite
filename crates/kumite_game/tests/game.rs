@@ -1910,6 +1910,29 @@ fn extra_fighters_throw_guard_and_sidestep_out_of_a_walk() {
     }
 }
 
+/// The extra fighters pose as in Tekken 2: their own win poses (its slots 0x19B..0x19E, Tekken 2 motions), and no
+/// intro (a round starts in the stance), not their donor's.
+#[test]
+fn extra_fighters_win_with_their_own_poses_and_start_in_the_stance() {
+    let Some(a) = assets() else { return };
+    let index: MovesetIndex = kumite_sim::data::load(&a.root.join("gamedata/movesets/index.json")).unwrap();
+    for model in [900, 938].into_iter().filter(|m| index.models.iter().any(|x| x.model_record == *m)) {
+        let mut g = Game::load(&a, [model, MODEL_71]).unwrap();
+        let mut anim = |alias: usize| {
+            let f = &mut g.fight.fighters[0];
+            assert!(f.play_alias(alias), "model {model}: alias {alias:#x}");
+            f.animation(&g.fight.data).0.to_string()
+        };
+        let stance = anim(3);
+        for alias in [0, 1, 2] {
+            assert_eq!(anim(alias), stance, "model {model}: intro alias {alias}");
+        }
+        for alias in kumite_game::bout::WIN_POSES {
+            assert!(anim(alias).starts_with("t2m_"), "model {model}: win pose {alias:#x} is Tekken 2's");
+        }
+    }
+}
+
 /// An extra level's walls hold the fighters: walking back stops at the wall (a blocked column 3 m behind
 /// P1 here), and the arena's own walk grid keeps its stage-40 fight spot free.
 #[test]
