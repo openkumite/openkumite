@@ -4690,7 +4690,8 @@ impl Fight {
         let target = air.target_height as f32;
         let Some(to) = f.resolve(air.alias) else { return false };
         let left_1000 = f.current_move(gd).flags24.raw & 0x1000 != 0;
-        let toward = f.geometry_of(gd).2;
+        // (Tekken 3's +0x34 from the attacker's root as it struck, 0x80030B88)
+        let toward = if f.tag_rules(gd) { f.geometry_of(gd).2 } else { t3y(f.geometry16(f.root(), from).2) };
         f.start_reaction(to, air.alias);
         // the fall's root travel runs along the line to the attacker (0x80030A7C), turned by p0 after a 0x1000 move
         f.root_yaw = toward + if left_1000 { angle as f32 * std::f32::consts::TAU / 65536.0 } else { 0.0 };

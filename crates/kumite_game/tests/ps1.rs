@@ -425,6 +425,18 @@ fn an_airborne_opponent_counts_as_lying_as_on_the_ps1() {
     }
 }
 
+/// Anna, hit out of her u/f+4 by Yoshimitsu's f+2: the flight's basis is the angle to him (+0x34, 0x80030B88) from his
+/// root as he struck, not the one he had at the step's start. Ours flew 176 off the line.
+#[test]
+fn an_air_hit_flies_along_the_line_to_the_striker_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [235, 171], None, 1, "n*186,f*36,u/f+4*2,n*40,d/b+2*2,n*40,n+1+4*2,n*174", "n*187,b*36,n+4*2,n*30,f+2*2,n*226", 300);
+    for (row, want) in [(759, (-872, 18, 17775)), (771, (-1336, 63, 17775))] {
+        let r = at(&t, 522, row, 0);
+        assert_eq!((r.0, r.2, r.4), want, "PS1 row {row}");
+    }
+}
+
 /// Law, juggled by Paul, is hit again in the air: the flight's next step still takes the drift found the frame
 /// before (+0x9A / +0x9E, 0x8003F268) on top of the new pop's. Ours started the new flight from none, 28 short.
 #[test]
