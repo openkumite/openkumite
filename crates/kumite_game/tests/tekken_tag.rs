@@ -524,6 +524,29 @@ fn the_tag_runs_off_and_comes_in_as_the_game() {
     assert_eq!(play_tag([585, 426], script, 5397, &[1, 2, 20]), [(-2213.0, -14.0), (-2145.0, -14.0), (-329.0, 9.0)]);
 }
 
+/// The camera chases Eddy's run-off (4829) with the game's shifts down (0x38FAA8-0x38FC2C, not Tekken 3's toward
+/// zero): PCSX2's view yaw (0x41580C) on the run-off's frames 15-18, 20, 21: -284, -292, -299, -306, -320, -326
+/// (toward zero: -291 at 16, -325 at 21).
+#[test]
+fn the_camera_chases_a_run_off_as_the_game() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [450, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let mut seen = Vec::new();
+    for pad in parse_script("n*61,f*30,n*2,5*2,n*60").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        if f.current.index == 4829 && [15, 16, 17, 18, 20, 21].contains(&f.frame) {
+            seen.push(b.game.camera.view.yaw);
+        }
+    }
+    assert_eq!(seen, [-284, -292, -299, -306, -320, -326]);
+}
+
 /// The incoming partner keeps the entrance's tracking mode (+0x11E 8): Paul, tagged in for Wang, turns his body +0x3C
 /// toward Hwoarang each frame of his entrance (4936) while the basis +0x1A stays, as in PCSX2: +0x3C 16384, 16399,
 /// 16543 on its frames 1, 12, 25, +0x1A 16384 throughout.

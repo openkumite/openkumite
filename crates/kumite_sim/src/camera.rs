@@ -1705,7 +1705,11 @@ impl FightCamera {
         let key = self.keys[0];
         let st = &mut self.st[0];
         let [mut a, mut b] = self.samp;
-        if d_.director.is_some() {
+        // (Tekken Tag's braking, step and pitch lag shift down (sra, 0x38FAA8-0x38FD04) where Tekken 3 divides
+        // toward zero)
+        let tag = d_.director.is_some();
+        let sr = |a: i64, n: u32| if tag { a >> n } else { sra_tz(a, n) };
+        if tag {
             // (Tekken Tag's: a side on flags bits 20-21 = 2, a run-off, from its root, not its eased sample)
             for (s, i) in [(&mut a, 0), (&mut b, 1)] {
                 if self.actors[i].follow == 2 {
@@ -1743,8 +1747,8 @@ impl FightCamera {
         } else if st.state == 1 {
             if d < 0x38E4 {
                 let w = st.yawvel;
-                st.yawacc -= half(st.yawacc);
-                st.yawvel = w - sra_tz(w * 14, 7);
+                st.yawacc -= if tag { st.yawacc >> 1 } else { half(st.yawacc) };
+                st.yawvel = w - sr(w * 14, 7);
                 st.yawacc += sgn * 0x300;
                 if d < 0xE39 {
                     st.yawacc -= half(st.yawacc);
@@ -1778,7 +1782,7 @@ impl FightCamera {
                 st.yawvel = -0xDDD0;
                 st.yawacc += 0x600;
             }
-            dyaw = sra_tz(st.yawvel, 6);
+            dyaw = sr(st.yawvel, 6);
         }
         // pitch lag
         st.yawerr = d;
@@ -1789,7 +1793,7 @@ impl FightCamera {
             0
         };
         if st.moving {
-            let step = sra_tz(st.pitch_tgt - st.pitch, 4).clamp(-0x100, 0x100);
+            let step = sr(st.pitch_tgt - st.pitch, 4).clamp(-0x100, 0x100);
             st.pitch_step = step;
             st.pitch += step;
         } else {
