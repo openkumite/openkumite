@@ -129,11 +129,12 @@ impl Manifests {
         self.t2.is_some() || self.cs.is_some()
     }
 
-    /// What the extras are made of: when it changes they are installed again.
+    /// What the extras are made of: when it changes they are installed again (Tekken 2's with its installer's version:
+    /// an older one's throws named other fighters' victims).
     pub fn stamp(&self) -> Value {
         json!({
             "t3": self.t3.as_ref().map(|m| m["fingerprint"].clone()),
-            "t2": self.t2.as_ref().map(|m| json!({"format": m["format"], "source": m["source"]})),
+            "t2": self.t2.as_ref().map(|m| json!({"format": m["format"], "source": m["source"], "by": ok_tekken2_converter::pack::INSTALL})),
             "cs": self.cs.as_ref().map(|m| json!({"format": m["format"], "levels": m["levels"]})),
         })
     }
