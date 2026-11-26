@@ -139,7 +139,8 @@ pub struct BodyVolumes {
     /// The head's and the pelvis's world matrices (game units: turned and scaled as the body, placed in units), where
     /// the effect objects that strike start (bone slots 2 and 11, [`objects`]).
     pub slots: [glam::Mat4; 2],
-    /// Tekken 3: the 18 joint slots where the PS1 keeps them (+0x908, its integers; y down, z negated), its burns'.
+    /// Tekken 3: the 18 joint slots where the PS1 keeps them (+0x908, its integers; y down, z negated), its burns'; the
+    /// hands' (6, 10) where their glows sit ([`objects::HAND_GLOWS`]).
     pub joints: Vec<[i32; 3]>,
     /// Tekken 3: the head's matrix as the PS1 keeps it (+0x97C: rows of 4096 = 1, its place), where the breath starts.
     pub head: Option<([[i32; 3]; 3], [i32; 3])>,

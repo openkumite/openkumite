@@ -192,6 +192,16 @@ impl Animations for FighterAnims<'_> {
             on(&self.own.hurt, &mut v.hurt);
             on(&self.own.push, &mut v.push);
             v.joints = at.iter().map(|w| w.1).collect();
+            // (the hands' slots where their glows sit: the character's points on the hand's matrix, ApplyRotMatrix plus
+            // its place, 0x800707F4; True Ogre's left glows on his slot 19's, not posed here, so on the joint)
+            let hands = f.character.and_then(|c| kumite_sim::objects::HAND_GLOWS.get(usize::try_from(c).ok()?));
+            for (k, (slot, p)) in [6, 10].into_iter().zip(hands.into_iter().flatten()).enumerate() {
+                if k == 0 && f.character == Some(20) {
+                    continue;
+                }
+                let (r, t) = at[slot];
+                v.joints[slot] = std::array::from_fn(|i| ((0..3).map(|c| i64::from(r[i][c]) * i64::from(p[c])).sum::<i64>() >> 12) as i32 + t[i]);
+            }
             v.head = Some(at[2]);
         }
         Some(v)

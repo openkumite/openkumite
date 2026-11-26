@@ -170,6 +170,19 @@ fn heavy_hits_throw_their_particles_off_as_on_the_ps1() {
     assert_eq!(at(&t, 549, 1012, 1).5, 6_553_600, "PS1 row 1012: King's health");
 }
 
+/// Paul ki-charges (1+2+3+4), then kicks King guarding (t3sim40's c07ki recording): the charge's 120 frames from its
+/// end, his hands' glows and their sparks, the kicks' glowing limbs, trails and ki particles draw as the PS1's all 655
+/// steps. (The PS1's lagged frame at step 483 brings the vsync-timed kick a step early: pressed at 488, not 489.)
+#[test]
+fn a_ki_charge_glows_and_kicks_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let start = "d06f2765,137,0,0,1,1,0:1442,91:1532,104:1544,145:1584,164:1602,199:1636,224:1660,253:1688,284:1718,307:1740,344:1776,361:1792,363:1793,452:1881,463:1891,468:1895,519:1945,575:2000,623:2047,637:2060,639:2061";
+    let (t, seeds) = rows_at(&a, [75, 99], None, 1, "n*407,1+2+3+4*2,n*79,n+4*2,n*40,n+3*2,n*60,n+4*2,n*120", "n*358,b*300", 655, start);
+    assert_eq!([seeds[470], seeds[500], seeds[600], seeds[652]], [0x2aba_01bf, 0x678c_be36, 0x325e_87c2, 0x17de_4cff]);
+    let r = at(&t, 549, 1151, 1);
+    assert_eq!((r.0, r.1, r.2, r.5), (-2002, -916, 405, 7_143_424), "PS1 row 1151: King");
+}
+
 /// King's 1+3 throws Jin, who lies where he fell; of King's d/b+1+3s (move 277, its strike on frame 20 hitting the
 /// grounded) the first comes in the throw's end, the second misses him lying 2100 off, the third links its grounded
 /// throw (motion 186 on Jin's 187), as the PS1's rows (t3sim40's g1throw recording) to the end of the throw.

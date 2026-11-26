@@ -94,6 +94,30 @@ const POOL: usize = 80;
 pub const GLOWS: i32 = 8;
 /// The joint slots each fighter's glows sit on (0x8006F678's +0x40).
 pub const GLOW_SLOTS: [usize; 4] = [6, 10, 14, 17];
+/// Where each character's (+0x18) hands glow (slots 6 and 10): these points on the hand's matrix (0x80025334, 0x800707F4).
+pub const HAND_GLOWS: [[[i32; 3]; 2]; 21] = [
+    [[80, 0, 0], [80, 0, 0]],
+    [[100, 0, 0], [100, 0, 0]],
+    [[60, 0, 0], [60, 0, 0]],
+    [[90, 0, 0], [90, 0, 0]],
+    [[90, 0, 0], [90, 0, 0]],
+    [[90, 0, 0], [90, 0, 0]],
+    [[80, 0, 0], [80, 0, 0]],
+    [[90, 0, 0], [90, 0, 0]],
+    [[90, 0, 0], [90, 0, 0]],
+    [[80, 0, 0], [80, 0, 0]],
+    [[80, 0, 0], [80, 0, 0]],
+    [[280, 0, 0], [280, 0, 0]],
+    [[80, 0, 0], [80, 0, 0]],
+    [[80, 0, 0], [80, 0, 0]],
+    [[70, 0, 0], [70, 0, 0]],
+    [[90, 0, 0], [90, 0, 0]],
+    [[80, 0, 0], [80, 0, 0]],
+    [[58, 0, 0], [58, 0, 0]],
+    [[90, 0, 0], [90, 0, 0]],
+    [[80, 0, 0], [80, 0, 0]],
+    [[300, 0, -300], [180, 0, 300]],
+];
 /// The joint slot a descriptor's limb byte glows on (0x800251C4; 0 none).
 pub const LIMB_GLOWS: [u32; 26] = [0, 0, 0, 0, 6, 6, 6, 0, 10, 10, 10, 0, 14, 14, 14, 17, 17, 17, 10, 10, 0, 0, 0, 0, 0, 0];
 /// The bone slots a struck fighter burns on (0x80025180), one for Gon (character 17, +0x18 0x11).
@@ -538,8 +562,6 @@ impl Objects {
             if !self.glows[g].1 {
                 continue;
             }
-            // shortcut: the hands' glows sit on their joints, the PS1's 80 to 100 further along the hand's matrix
-            // (0x80025334 by character); upgrade with the slots' matrices in BodyVolumes
             if let Some(&p) = self.joints.get(k).and_then(|j| j.get(slot)) {
                 self.glows[g].0 = p;
             }
