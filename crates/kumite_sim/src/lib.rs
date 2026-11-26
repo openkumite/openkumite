@@ -1850,8 +1850,8 @@ impl Fighter {
         }
         if let Some((alias, exec, transition)) = hit {
             if let Some(to) = self.resolve(alias) {
-                let mark = if self.tag_rules(gd) { exec } else { self.exec_mark };
-                let t = normalize_transition(transition, self.moves(gd, to.bank).moves.get(to.index), mark);
+                // (the mark as the last queue left it: Tekken Tag's 0x368CB0 normalizes before +0x178 takes the new exec)
+                let t = normalize_transition(transition, self.moves(gd, to.bank).moves.get(to.index), self.exec_mark);
                 // shortcut: the PS1 marks the window's end instead while +0x6E is negative; check one there
                 self.exec_mark = if exec == 255 { self.current_move(gd).frames } else { exec };
                 self.queued = Some((to, exec, t));

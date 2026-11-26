@@ -578,6 +578,17 @@ fn a_throw_links_as_the_game() {
 
 /// Fighter 0's root (x, the game's z) on the given frames of alias `alias`, from the fight's start (both holding 1+2
 /// through the intro, partners Paul), P1 playing `script`.
+/// A link's transition 2 becomes 0x14 (tracking mode 4) only if the mark the last queue left (+0x178) is before the new
+/// move's strike (0x36BE08, called at 0x368CB0 before +0x178 takes the new exec). Jun's 10-hit: its 3rd hit (alias 2547)
+/// comes from a link whose mark was 36, so it stays 2 (mode 0xB) and Jun does not turn; frames 30 and 60 as in PCSX2.
+#[test]
+fn a_link_takes_the_mark_the_last_queue_left() {
+    let script = "n*61,f*30,n*2,1*2,n*8,1*2,n*8,2*2,n*8,4*2,n*8,3*2,n*8,4*2,n*8,2*2,n*8,1*2,n*8,2*2,n*8,1*2,n*97";
+    if assets().is_some() {
+        assert_eq!(play_tag([672, 426], script, 2547, &[30, 60]), [(2196.0, 129.0), (2581.0, 214.0)]);
+    }
+}
+
 fn play_tag(m: [usize; 2], script: &str, alias: usize, frames: &[u32]) -> Vec<(f32, f32)> {
     let Some(a) = assets() else { return Vec::new() };
     let mut g = Game::load(&a, m).unwrap();
