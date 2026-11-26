@@ -188,21 +188,26 @@ impl Animations for FighterAnims<'_> {
             let root = [r.x, -r.y - f.anim_root_y, -r.z].map(|v| v.round() as i32);
             let facing = 0x8000 - (f.yaw / std::f32::consts::TAU * 65536.0).round() as i32;
             let at = t3pose::places(&turns, &self.own.character.slots, facing, root);
-            let on = |layout: &[(usize, Vec3, f32, usize)], spheres: &mut [Sphere]| {
+            // (True Ogre: his arm's slots 5 and 6 where its wave puts them, P+0x8F4 as the hurt spheres read it,
+            // 0x80041F6C; the push spheres keep the motion's, as the PS1's)
+            let arm = (f.character == Some(20)).then(|| t3pose::ogre_arm(&turns, at[4], &self.own.character.slots, self.flap.count, self.flap.amp));
+            let mut waved = at;
+            if let Some(arm) = arm {
+                (waved[5], waved[6]) = (arm[0], arm[1]);
+            }
+            let on = |at: &[(t3pose::M, [i32; 3]); 18], layout: &[(usize, Vec3, f32, usize)], spheres: &mut [Sphere]| {
                 for (&(node, offset, ..), s) in layout.iter().zip(spheres) {
                     if let Some((_, p)) = self.own.slots.iter().position(|&n| n == node).and_then(|k| at.get(k)) {
                         s.centre = Vec3::new(p[0] as f32, -p[1] as f32, -p[2] as f32) + offset * UNITS;
                     }
                 }
             };
-            on(&self.own.hurt, &mut v.hurt);
-            on(&self.own.push, &mut v.push);
+            on(&waved, &self.own.hurt, &mut v.hurt);
+            on(&at, &self.own.push, &mut v.push);
             v.joints = at.iter().map(|w| w.1).collect();
-            // (True Ogre: his arm's slot 5 where its wave puts it, his left hand's glow on slot 19's matrix; shortcut:
-            // the spheres keep the motion's arm, upgrade when a PS1 case checks a hit on it)
+            // (True Ogre: his arm's slot 5 where its wave puts it, his left hand's glow on slot 19's matrix)
             let mut hand = at;
-            if f.character == Some(20) {
-                let arm = t3pose::ogre_arm(&turns, at[4], &self.own.character.slots, self.flap.count, self.flap.amp);
+            if let Some(arm) = arm {
                 (hand[6], v.joints[5], v.arm) = (arm[3], arm[0].1, -arm[1].1[1]);
             }
             // (the hands' slots where their glows sit: the character's points on the hand's matrix, ApplyRotMatrix plus
@@ -1255,7 +1260,12 @@ impl Game {
         self.wolves = Default::default();
         // (the wave's counter starts again with the round's start motion, PCSX2's +0xB120)
         // shortcut: the PS2 starts it again with the win poses too; upgrade where they start
-        self.flaps = Default::default();
+        // (Tekken 3's, P+0x1294, runs on from the fight's load: the PS1's counted on into round 2)
+        for (f, b) in self.flaps.iter_mut().zip(&self.bodies) {
+            if !b.bones.is_empty() {
+                *f = Flap::default();
+            }
+        }
         self.step_camera();
     }
 
