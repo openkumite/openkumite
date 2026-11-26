@@ -162,7 +162,22 @@ pub enum Kind {
     TrailSpark,
     /// An object over (type 0): its slot held for `count` more passes.
     Done,
+    /// Tekken Tag's flames' and burns' sparks (task 0x3A4970), its fires on the floor (0x3A4C28: its quad's `scale`, its
+    /// `fade`) and its burns on fighter `victim`'s drawn node `node` (0x3A50B8, placed by the game each frame); their
+    /// `state` 0 before their first run, then their stage (+0x1A) + 1, `count` +0x16, `left` +0x14, `frames` +0x1E.
+    TagSpark,
+    TagFloor {
+        scale: f32,
+        fade: f32,
+    },
+    TagBurn {
+        victim: usize,
+        node: usize,
+    },
 }
+
+/// The drawn nodes a fighter True Ogre's fire struck burns on (0x3A54D8's table 0x5198A0).
+pub const TAG_BURN_NODES: [usize; 10] = [1, 31, 37, 56, 62, 79, 81, 86, 90, 95];
 
 /// One object: its owner (fighter 0 / 1; a brawl's actor), where it is and was a frame before (game units, world), its travel a frame,
 /// its state (+0xE: the fire's 1 growing, 2 looped, 4 ending), frame counter (+0x48) and frames (+0x40, +0x44). A spark's
@@ -195,7 +210,7 @@ pub struct Object {
 pub struct Objects {
     pub list: Vec<Object>,
     /// rand()'s state (0x800A39B8). Tekken 3's one stream: the blinks, the sounds and the CPUs draw from it too, in the
-    /// game's order (Tekken Tag's flames keep their own).
+    /// game's order.
     pub seed: u32,
     /// Tekken 3: the objects the last pass ran (0x800A9194), the limb glows with them: the sparks' odds.
     pub count: i32,
@@ -219,6 +234,20 @@ pub struct Objects {
     /// Tekken Tag: the striking objects' travel the task runner registered after the last fight frame (0x346230,
     /// owner and segment), which this frame's hit pass reads (0x3770E0); None for Tekken 3.
     pub registered: Option<Vec<(usize, Vec3, Vec3)>>,
+    /// Tekken Tag's libc rand() (0x40FBD0) is `seed`, one stream for the tasks, the sounds and the blinks; at a frame
+    /// with a new press on a pad the main loop seeds it again (0x35C370): `reseed` (0x439C7C) plus `vblanks` (0x8BD2F4,
+    /// an interrupt's count, one a frame). `loops`: the main loop's frame (gp-0x74D8).
+    /// shortcut: the CPUs and the camera (kumite_sim::ai::AiRng) and the arenas' effects (weather, clouds, leaves:
+    /// drawn only, 0x3D47E8's 80 draws a frame on some) keep their own streams; share this one in the PS2's order
+    /// (the CPUs' input after the sounds, 0x36C4C0; the arenas' tasks in the runner) when a fight with them is matched
+    pub vblanks: u32,
+    pub reseed: u32,
+    pub loops: u32,
+    /// Tekken Tag: this frame's objects' bytes and contacts ([`Objects::step`]'s), for the task runner that runs after
+    /// the fight frame, its sounds and the fighters' draw (0x346608).
+    pub pending: Option<(Vec<Option<u32>>, Vec<bool>)>,
+    /// Tekken Tag: where a flame or a burn lit the fighters this frame (0x3531F0, gp-0x6EC0).
+    pub lit: Option<Vec3>,
 }
 
 impl Objects {
@@ -226,6 +255,43 @@ impl Objects {
     pub fn rand(&mut self) -> i32 {
         self.seed = self.seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
         ((self.seed >> 16) & 0x7FFF) as i32
+    }
+
+    /// Tekken Tag's libc rand() (0x40FBD0): the state's low 31 bits.
+    pub fn libc(&mut self) -> u32 {
+        self.seed = self.seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
+        self.seed & 0x7FFF_FFFF
+    }
+
+    /// Tekken Tag's 0x3A94B0: rand()'s low 24 bits as 0..1.
+    fn unit(&mut self) -> f32 {
+        (self.libc() & 0xFF_FFFF) as f32 / 16_777_216.0
+    }
+
+    /// Tekken Tag's main loop at a frame's start (0x35C370): `pressed` a pad has a new press this frame.
+    pub fn tag_frame(&mut self, pressed: bool) {
+        self.vblanks = self.vblanks.wrapping_add(1);
+        self.loops = self.loops.wrapping_add(1);
+        if pressed {
+            self.reseed = self.reseed.wrapping_add(self.vblanks);
+            self.seed = self.reseed;
+        }
+    }
+
+    /// Tekken Tag: a task of `kind` at `pos` (game units, y up), `angles` the pitch and yaw a spark heads along (its
+    /// spawner's +0x70 / +0x74), kept in its `vel` until its first run.
+    fn tag_task(&mut self, kind: Kind, owner: usize, pos: Vec3, angles: [f32; 2]) {
+        let vel = Vec3::new(angles[0], angles[1], 0.0);
+        self.list.push(Object { kind, owner, pos, prev: pos, vel, strikes: false, state: 0, count: 0, frames: 0, left: 0, mirror: false, angles: [0; 2], at: [0; 3], travel: [0; 3] });
+    }
+
+    /// Tekken Tag: fighter `victim`, struck by True Ogre's fire (0x35C0E0 -> 0x3A54D8), burns on ten drawn nodes, and a
+    /// fire on the floor at `feet` (its root as drawn the frame before, +0x590 / +0x598).
+    pub fn tag_burn(&mut self, victim: usize, attacker: usize, feet: Vec3) {
+        for node in TAG_BURN_NODES {
+            self.tag_task(Kind::TagBurn { victim, node }, attacker, feet, [0.0; 2]);
+        }
+        self.tag_task(Kind::TagFloor { scale: 0.0, fade: 0.0 }, attacker, feet, [0.0; 2]);
     }
 
     /// A draw's odds of a spark or a flame, out of 0x8000: fewer as the pool fills (0x800713BC, `k` 15, 9 or 10).
@@ -349,6 +415,7 @@ impl Objects {
         for (k, b) in self.burned.iter_mut().enumerate() {
             *b = striking[k] == Some(TAG_FIRE) && (*b || struck.get(k).copied().unwrap_or(false));
         }
+        self.lit = None;
         // (the glows first: the last one's offspring are not run when it ran as the newest)
         let newest_glow = t3 && self.glow();
         let (mut i, mut ran) = (0, 0);
@@ -380,6 +447,9 @@ impl Objects {
                     o.count > 0
                 }
                 Kind::TagFire => self.tag_fire(&mut o, on(TAG_FIRE)),
+                Kind::TagSpark => self.tag_spark(&mut o),
+                Kind::TagFloor { .. } => self.tag_floor(&mut o),
+                Kind::TagBurn { .. } => self.tag_burning(&mut o),
                 Kind::TagMist => self.tag_mist(&mut o, on(TAG_MIST)),
                 Kind::Mist(byte) => self.mist(&mut o, on(byte)),
                 Kind::GasSource { heading, next } => {
@@ -741,30 +811,23 @@ impl Objects {
     }
 
     /// Tekken Tag's flame (0x3A44F8): false when it is gone. `count` its frames in the stage (+0x16), `frames` its
-    /// picture of the 30 (+0x1E), `left` its frames held.
+    /// picture of the 30 (+0x1E), `left` its frames held. Each frame on, a spark one frame in 64, a fire on the floor
+    /// one in 63 while it is down there, a light one in 16 before it fades (0x3A4810).
     fn tag_fire(&mut self, o: &mut Object, on: bool) -> bool {
         let burned = self.burned.get(o.owner).copied().unwrap_or(false);
-        // (libc rand, 0x40FBD0, and 0x3A94B0's 0..1 of its low 24 bits)
-        let mut rand = || {
-            self.seed = self.seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
-            (self.seed & 0x7FFF_FFFF) as i32
-        };
-        let along = |pitch: f32, yaw: f32, speed: f32| Vec3::new(yaw.dsin() * pitch.dcos(), pitch.dsin(), yaw.dcos() * pitch.dcos()) * speed;
-        let angles = |v: Vec3| (v.y.datan2(glam::Vec2::new(v.x, v.z).length()), v.x.datan2(v.z));
         o.strikes &= on && !burned;
         match o.state {
             0 => {
-                let mut unit = || (rand() & 0xFF_FFFF) as f32 / 16_777_216.0 * 2.0 - 1.0;
-                let (pitch, yaw) = angles(o.vel);
-                let (pitch, yaw) = (pitch + unit() * std::f32::consts::PI / 32.0, yaw + unit() * std::f32::consts::PI / 64.0);
-                o.vel = along(pitch, yaw, TAG_FIRE_SPEED[0]);
-                (o.state, o.count, o.frames, o.strikes) = (1, 0, rand() % 30, on && !burned);
+                let (pitch, yaw) = tag_angles(o.vel);
+                let (pitch, yaw) = (pitch + (self.unit() * 2.0 - 1.0) * std::f32::consts::PI / 32.0, yaw + (self.unit() * 2.0 - 1.0) * std::f32::consts::PI / 64.0);
+                o.vel = tag_along(pitch, yaw, TAG_FIRE_SPEED[0]);
+                (o.state, o.count, o.frames, o.strikes) = (1, 0, self.libc() as i32 % 30, on && !burned);
                 return true;
             }
             1 if o.count >= 8 => {
-                (o.state, o.count, o.left) = (2, 0, ((rand() >> 2) & 3) + 5);
-                let (pitch, yaw) = angles(o.vel);
-                o.vel = along(pitch, yaw, TAG_FIRE_SPEED[1]);
+                (o.state, o.count, o.left) = (2, 0, ((self.libc() as i32 >> 2) & 3) + 5);
+                let (pitch, yaw) = tag_angles(o.vel);
+                o.vel = tag_along(pitch, yaw, TAG_FIRE_SPEED[1]);
             }
             2 if o.count >= o.left => (o.state, o.count) = (4, 0),
             4 if o.count >= 7 => return false,
@@ -777,6 +840,96 @@ impl Objects {
         if o.pos.y < TAG_FIRE_FLOOR {
             o.pos.y = TAG_FIRE_FLOOR;
             o.vel = Vec3::new(o.vel.x, 0.0, o.vel.z).normalize_or_zero() * TAG_FIRE_SPEED[1];
+        }
+        if self.libc() & 0x3F == 0 {
+            let (pitch, yaw) = tag_angles(o.vel);
+            self.tag_task(Kind::TagSpark, o.owner, o.pos, [pitch, yaw]);
+        }
+        if o.pos.y <= TAG_FIRE_FLOOR && self.libc().is_multiple_of(0x3F) {
+            self.tag_task(Kind::TagFloor { scale: 0.0, fade: 0.0 }, o.owner, o.pos, [0.0; 2]);
+        }
+        if o.state < 4 && self.libc() & 0xF == 0 {
+            self.lit = Some(o.pos);
+        }
+        true
+    }
+
+    /// Tekken Tag's spark (0x3A4970): its first run puts it up to 128 off where it was let out, 16-47 frames, 32-111
+    /// a frame along its spawner's heading turned by up to pi / 32; then rising 1.5 a frame faster, gone under the
+    /// floor or at its end. No draws after the first.
+    fn tag_spark(&mut self, o: &mut Object) -> bool {
+        if o.state == 0 {
+            let [pitch, yaw] = [o.vel.x, o.vel.y];
+            for k in 0..3 {
+                o.pos[k] += (self.unit() * 2.0 - 1.0) * 128.0;
+            }
+            o.left = 16 + (self.libc() & 0x1F) as i32;
+            let speed = self.unit() * 63.0 * 1.25 + 32.0;
+            let pitch = pitch + (self.unit() * 2.0 - 1.0) * std::f32::consts::PI / 32.0;
+            let yaw = yaw + (self.unit() * 2.0 - 1.0) * std::f32::consts::PI / 32.0;
+            o.vel = tag_along(pitch, yaw, speed);
+            (o.state, o.frames, o.prev) = (1, self.libc() as i32 % 30, o.pos);
+            return true;
+        }
+        o.vel.y += 1.5;
+        o.prev = o.pos;
+        o.pos += o.vel;
+        o.frames = (o.frames + 1) % 30;
+        o.count += 1;
+        o.pos.y >= 0.0 && o.count < o.left
+    }
+
+    /// Tekken Tag's fire on the floor (0x3A4C28): 366 up, burning 60-91 frames, then fading over 32; a spark off it one
+    /// frame in 32.
+    fn tag_floor(&mut self, o: &mut Object) -> bool {
+        let Kind::TagFloor { mut scale, mut fade } = o.kind else { return false };
+        if o.state == 0 {
+            o.left = 60 + (self.libc() & 0x1F) as i32;
+            o.frames = self.libc() as i32 % 30;
+            scale = self.unit() * 0.3 + 0.2;
+            (o.state, o.count, o.pos.y) = (1, 0, 366.0);
+            o.kind = Kind::TagFloor { scale, fade };
+            return true;
+        }
+        if o.state == 1 && o.count >= o.left {
+            (o.state, o.count, o.left) = (2, 0, 32);
+        } else if o.state == 2 {
+            fade += 1.0 / o.left as f32;
+            o.kind = Kind::TagFloor { scale, fade };
+            if o.count >= o.left {
+                return false;
+            }
+        }
+        o.frames = (o.frames + 1) % 30;
+        o.count += 1;
+        if self.libc() & 0x1F == 0 {
+            self.tag_task(Kind::TagSpark, o.owner, o.pos, [std::f32::consts::FRAC_PI_2, 0.0]);
+        }
+        true
+    }
+
+    /// Tekken Tag's burn on a struck fighter's drawn node (0x3A50B8; `pos` set by the game each frame): 60-75 frames,
+    /// then 16 fading; each frame a light one in 16 and a spark straight up one in 32.
+    /// shortcut: the burn does not end when its fighter's alias (+0x2A) changes (a tag out); end it there when the sim
+    /// tracks a burn's fighter by its member.
+    fn tag_burning(&mut self, o: &mut Object) -> bool {
+        if o.state == 0 {
+            o.frames = self.libc() as i32 % 30;
+            (o.state, o.count, o.left) = (1, 0, 60 + (self.libc() & 0xF) as i32);
+            return true;
+        }
+        o.frames = (o.frames + 1) % 30;
+        o.count += 1;
+        if o.state == 1 && o.count >= o.left {
+            (o.state, o.count, o.left) = (2, 0, 16);
+        } else if o.state == 2 && o.count >= o.left {
+            return false;
+        }
+        if self.libc() & 0xF == 0 {
+            self.lit = Some(o.pos);
+        }
+        if self.libc() & 0x1F == 0 {
+            self.tag_task(Kind::TagSpark, o.owner, o.pos, [std::f32::consts::FRAC_PI_2, 0.0]);
         }
         true
     }
@@ -835,6 +988,16 @@ impl Objects {
         }
         self.list.iter().filter(|o| o.owner == owner && o.strikes && (o.kind != Kind::Breath || self.field == (o.owner % 2 == 1))).map(|o| (o.prev, o.pos)).collect()
     }
+}
+
+/// Tekken Tag: the pitch and the yaw of a travel (y up; the yaw from z towards x).
+fn tag_angles(v: Vec3) -> (f32, f32) {
+    (v.y.datan2(glam::Vec2::new(v.x, v.z).length()), v.x.datan2(v.z))
+}
+
+/// Tekken Tag's 0x3A3518: `speed` along a pitch and a yaw.
+fn tag_along(pitch: f32, yaw: f32, speed: f32) -> Vec3 {
+    Vec3::new(yaw.dsin() * pitch.dcos(), pitch.dsin(), yaw.dcos() * pitch.dcos()) * speed
 }
 
 /// 0x8006DF34: the pitch and the yaw of `e`, a quarter turn less (4096 a turn).

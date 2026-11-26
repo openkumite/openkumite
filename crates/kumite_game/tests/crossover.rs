@@ -373,9 +373,9 @@ fn doctor_bs_type_9_mutes_his_jumps() {
         let aliases = f.moveset.aliases.clone().unwrap();
         let alias = aliases.iter().position(|r| r.index.is_some_and(|i| f.moveset.moves[i].bytes_18.jump_start > 1 && muted(&f.moveset.moves[i]))).expect("a muted jump");
         let k = aliases[alias].index.unwrap();
-        if strip {
-            std::sync::Arc::make_mut(&mut f.moveset).moves[k].sounds.iter_mut().for_each(|l| l.retain(|e| e.kind != 9));
-        }
+        // (without its script, type 8: a running script skips the steps, muted or not, 0x375F74)
+        let gone = |e: &kumite_sim::data::SoundEntry| e.kind == 8 || strip && e.kind == 9;
+        std::sync::Arc::make_mut(&mut f.moveset).moves[k].sounds.iter_mut().for_each(|l| l.retain(|e| !gone(e)));
         f.play_alias(alias);
         let mut files = Vec::new();
         for _ in 0..f.moveset.moves[k].bytes_18.jump_start + 4 {
@@ -703,7 +703,7 @@ fn his_flights_rise_as_in_tekken_3() {
     eprintln!("Gon's flights rise {r} units, Tekken 3's {r3}");
     // (1.2: Tekken Tag's Paul hits harder, and the pop rises with the damage; with the queued commit's pushback the
     // CPU fights at levels 1 / 5 give 1181 against Tekken 3's 1048)
-    assert!(r > 0.0 && r <= r3 * 1.2, "Gon's flights rise {r} units, Tekken 3's {r3}");
+    assert!(r > 0.0 && r <= r3 * 1.1, "Gon's flights rise {r} units, Tekken 3's {r3}");
 }
 
 /// Ball 2 ON 2's rules (OpenKumite's own; [`ball_doubles::rules`]) in Tekken Tag: Julia and Xiaoyu against Paul and Jin.

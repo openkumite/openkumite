@@ -3421,6 +3421,10 @@ impl Fight {
     /// One 60 Hz step. `bodies[i]` = fighter i's collision volumes for the pose shown last frame.
     pub fn step(&mut self, pads: [Pad; 2], bodies: &[BodyVolumes; 2], anims: [&dyn Animations; 2]) {
         self.step_with(pads, bodies, anims, None);
+        // (Tekken Tag's task runner, which the game runs after its sounds and the fighters' draw)
+        if let Some((striking, struck)) = self.objects.pending.take() {
+            self.objects.step(&striking, &struck, false);
+        }
     }
 
     /// Actor `i`: 0, 1 the fighters, 2 Force's extra, 3 the co-op partner.
@@ -3781,7 +3785,7 @@ impl Fight {
         // the effect objects (0x8006F0F4, 0x8006F5C0), seeing last frame's contacts
         let struck = [self.fighters[1].struck, self.fighters[0].struck];
         self.objects.field = self.frame & 1 == 0;
-        step_objects(&mut self.objects, &gd, &self.fighters, &[&bodies[0], &bodies[1]], &anims, &struck);
+        step_objects(&mut self.objects, &gd, &self.fighters, &[&bodies[0], &bodies[1]], &anims, &struck, !gd.tag_moves);
         // the hit pass's per-frame flags (cleared at 0x80044008) and the body push's
         for f in &mut self.fighters {
             (f.struck, f.whiffed, f.pushed) = (false, false, false);
@@ -3834,6 +3838,12 @@ impl Fight {
         if !gd.tag_moves {
             let gon: Vec<bool> = (0..3).map(|v| self.actor(v).is_some_and(|f| f.character == Some(17))).collect();
             self.objects.on_hits(&self.hits, &gon);
+        } else {
+            // (Tekken Tag: True Ogre's fire sets the struck one burning, 0x35C0E0 -> 0x3A54D8)
+            for h in self.hits.iter().filter(|h| h.limb == 0x18 && !h.blocked && h.base_damage != 0) {
+                let feet = roots_before.get(h.victim).copied().unwrap_or_default();
+                self.objects.tag_burn(h.victim, h.attacker, feet);
+            }
         }
         // the ball after the hit pass (it keeps flying after the K.O.)
         self.ball_step(&gd, &[&bodies[0], &bodies[1]]);
@@ -4859,8 +4869,9 @@ pub fn direction_quadrant(yaw: f32, from: Vec3, other: Vec3) -> usize {
 
 /// A move of descriptor byte 0x18 or more starts its object on each frame of its active window; the objects strike
 /// for their owner while it is in such a move past the window's start. `struck[k]`: fighter k's strike landed last
-/// frame (the fight's pair, or a brawl's actors).
-pub(crate) fn step_objects(objects: &mut objects::Objects, gd: &GameData, fighters: &[Fighter], bodies: &[&BodyVolumes], anims: &[&dyn Animations], struck: &[bool]) {
+/// frame (the fight's pair, or a brawl's actors). `run`: the objects run now; else they wait for the task runner
+/// ([`objects::Objects::pending`]).
+pub(crate) fn step_objects(objects: &mut objects::Objects, gd: &GameData, fighters: &[Fighter], bodies: &[&BodyVolumes], anims: &[&dyn Animations], struck: &[bool], run: bool) {
     let mut striking = vec![None; fighters.len()];
     let t3 = !gd.tag_moves;
     objects.started.resize(fighters.len(), None);
@@ -4906,7 +4917,11 @@ pub(crate) fn step_objects(objects: &mut objects::Objects, gd: &GameData, fighte
     if !t3 {
         objects.registered = Some(objects.list.iter().filter(|o| o.strikes).map(|o| (o.owner, o.prev, o.pos)).collect());
     }
-    objects.step(&striking, struck, t3);
+    if run {
+        objects.step(&striking, struck, t3);
+    } else {
+        objects.pending = Some((striking, struck.to_vec()));
+    }
 }
 
 #[cfg(test)]

@@ -1208,13 +1208,18 @@ impl Game {
         let (ma, mb) = (a.moveset.clone(), b.moveset.clone());
         let guard_input = [a.guard_input, b.guard_input];
         let walls = self.fight.walls.take();
-        // (Tekken 3's rand() and blinks run on from round to round; Tekken Tag's flames' rand starts again)
+        // (the one rand() and Tekken 3's blinks run on from round to round, Tekken Tag's with its main loop's counts)
         let (seed, blinks) = (self.fight.objects.seed, self.fight.blinks);
+        let o = &self.fight.objects;
+        let counts = (o.vblanks, o.reseed, o.loops);
         self.fight = Fight::new(self.fight.data.clone(), ma, mb);
         (self.fight.ko_collapse, self.fight.guard_damage) = (self.ko_collapse, self.guard_damage);
         self.fight.walls = walls;
         if !self.fight.data.tag_moves {
             (self.fight.objects.seed, self.fight.blinks) = (seed, blinks);
+        } else {
+            let o = &mut self.fight.objects;
+            (o.seed, o.vblanks, o.reseed, o.loops) = (seed, counts.0, counts.1, counts.2);
         }
         for (i, (f, g)) in self.fight.fighters.iter_mut().zip(guard_input).enumerate() {
             f.guard_input = g; // who is CPU-controlled stays the same
@@ -1465,10 +1470,20 @@ impl Game {
         if intro {
             self.fight.clock = clock;
         }
+        // (Tekken Tag: the fight frame's sounds (0x375B60) draw before the fighters' draw, whose blinks draw before the
+        // task runner (0x346608): one rand())
+        let tag = self.fight.data.tag_moves;
+        if tag {
+            self.step_sound();
+        }
         self.step_faces();
         self.step_heads();
         self.step_hands();
         self.step_springs();
+        if let Some((striking, struck)) = self.fight.objects.pending.take() {
+            self.place_burns();
+            self.fight.objects.step(&striking, &struck, false);
+        }
         let shot = [self.snapshot(0), self.snapshot(1)];
         if self.recorded.len() >= REPLAY_RING {
             self.recorded.pop_front();
@@ -1481,19 +1496,47 @@ impl Game {
             self.ball_ring.push_back(b.clone());
         }
         self.recorded_total += 1;
-        // the fighters' sound player after the hit pass and the objects (0x8002B4C4): Tekken 3's on the fight's rand()
-        if let Some(mut s) = self.sound.take() {
-            let t3 = !self.fight.data.tag_moves;
-            if t3 {
-                s.state.seed = self.fight.objects.seed;
-            }
-            s.step(self);
-            if t3 {
-                self.fight.objects.seed = s.state.seed;
-            }
-            self.sound = Some(s);
+        if !tag {
+            self.step_sound();
         }
         self.step_camera();
+    }
+
+    /// The fighters' sound player (0x8002B4C4, Tekken Tag's 0x375B60) on the fight's rand().
+    fn step_sound(&mut self) {
+        if let Some(mut s) = self.sound.take() {
+            s.state.seed = self.fight.objects.seed;
+            s.step(self);
+            self.fight.objects.seed = s.state.seed;
+            self.sound = Some(s);
+        }
+    }
+
+    /// Tekken Tag's burns where their nodes are drawn (0x3A50B8 -> 0x346330), before the task runner.
+    fn place_burns(&mut self) {
+        let burning: Vec<(usize, usize)> = self
+            .fight
+            .objects
+            .list
+            .iter()
+            .filter_map(|o| match o.kind {
+                kumite_sim::objects::Kind::TagBurn { victim, node } => Some((victim, node)),
+                _ => None,
+            })
+            .collect();
+        if burning.is_empty() {
+            return;
+        }
+        let poses: Vec<Option<(Vec<Mat4>, Mat4)>> = (0..2).map(|i| burning.iter().any(|b| b.0 == i).then(|| self.pose(i))).collect();
+        for o in &mut self.fight.objects.list {
+            if let kumite_sim::objects::Kind::TagBurn { victim, node } = o.kind {
+                if let Some((pose, place)) = poses.get(victim).and_then(Option::as_ref) {
+                    if let Some(m) = pose.get(node) {
+                        o.pos = place.transform_point3(m.w_axis.truncate()) * UNITS;
+                    }
+                }
+            }
+        }
     }
 
     /// Force's co-op step: the four actors, each borrowing from the one it fights.
@@ -1818,12 +1861,8 @@ impl Game {
     /// Tekken Tag's fingers and faces of both fighters.
     fn step_hands(&mut self) {
         for i in 0..2 {
-            let seed = &mut self.face_rand;
-            let mut rand = || {
-                *seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
-                (*seed >> 16) & 0x7FFF
-            };
-            step_hands_face(&self.bodies[i], &self.fight.fighters[i], &self.fight.data, self.hand_live, &mut self.hands[i], &mut self.tag_faces[i], &mut rand);
+            let fight = &mut self.fight;
+            step_hands_face(&self.bodies[i], &fight.fighters[i], &fight.data, self.hand_live, &mut self.hands[i], &mut self.tag_faces[i], &mut || fight.objects.libc());
         }
     }
 

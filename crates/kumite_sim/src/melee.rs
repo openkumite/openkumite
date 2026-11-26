@@ -463,7 +463,7 @@ impl Melee {
             !over
         });
         // the effect objects, seeing last step's contacts (as the pair fight's)
-        crate::step_objects(&mut self.objects, &gd, &self.actors, bodies, anims, &landed);
+        crate::step_objects(&mut self.objects, &gd, &self.actors, bodies, anims, &landed, true);
         for f in &mut self.actors {
             (f.struck, f.whiffed, f.pushed) = (false, false, false);
         }
