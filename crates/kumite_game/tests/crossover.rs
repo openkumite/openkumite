@@ -670,7 +670,8 @@ fn eased_poses_stay_upright() {
 }
 
 /// The CPU juggles Gon in Tekken Tag as in Tekken 3: against Paul, his flights rise from where he was hit no higher than
-/// Tekken 3's (they start high when he is hit at the top of his own jump, 1.9 m, as there).
+/// Tekken 3's (they start high when he is hit at the top of his own jump, 1.9 m, as there). His own rebound (the air
+/// setup, 0x80030574: to the air table's 1357 in both games) is no hit and not counted.
 #[test]
 fn his_flights_rise_as_in_tekken_3() {
     let (Some(a), Some(t3)) = (assets(), std::env::var_os("OPENKUMITE_ASSETS")) else { return };
@@ -686,7 +687,7 @@ fn his_flights_rise_as_in_tekken_3() {
             let before = f.position.y + f.anim_root_y;
             b.step([Pad::default(); 2]);
             let f = &b.game.fight.fighters[i];
-            match f.air {
+            match f.air.as_ref().filter(|a| a.kind != 5) {
                 Some(_) if f.juggle != juggle => (from, juggle) = (before, f.juggle),
                 Some(_) => most = most.max(f.position.y + f.anim_root_y - from),
                 None => juggle = 0,
@@ -698,9 +699,7 @@ fn his_flights_rise_as_in_tekken_3() {
     let r = rise(&a, [GON, PAUL]).max(rise(&a, [PAUL, GON]));
     let r3 = rise(&t3, [GON, 71]).max(rise(&t3, [71, GON]));
     eprintln!("Gon's flights rise {r} units, Tekken 3's {r3}");
-    // (1.2: Tekken Tag's Paul hits harder, and the pop rises with the damage; at levels 3 / 7 and 6 / 2 it stays under
-    // Tekken 3's)
-    assert!(r > 0.0 && r <= r3 * 1.2, "Gon's flights rise {r} units, Tekken 3's {r3}");
+    assert!(r > 0.0 && r <= r3 * 1.1, "Gon's flights rise {r} units, Tekken 3's {r3}");
 }
 
 /// Ball 2 ON 2 (OpenKumite's own) as the app sets it up in Tekken Tag (the slice's Ball camera), four CPUs, over whole
