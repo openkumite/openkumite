@@ -685,6 +685,30 @@ fn the_cpu_beats_an_idle_player_and_poses() {
     assert!(down_after_ko, "a KO'd player should lie on the floor at the end of the round ({knockouts} KOs)");
 }
 
+/// A CPU that knocks out the human for the match: the loser shot, but in Team Battle and Survival (ctx+0xA) the
+/// CPU's win pose (PS1, t3sim45: GON WINS! after Yoshimitsu's K.O. in Team Battle).
+#[test]
+fn a_cpu_winner_poses_in_team_battle_and_survival() {
+    let Some(a) = assets() else { return };
+    for cpu_poses in [false, true] {
+        let mut b = Bout::new(Game::load(&a, [MODEL_71, MODEL_79]).unwrap(), kumite_game::ai_data(&a).unwrap(), 1, false);
+        b.set_cpu(1, Some((2, 9)));
+        b.cpu_poses = cpu_poses;
+        let mut shown = None;
+        for _ in 0..60 * 60 {
+            if b.phase == Phase::Fight {
+                b.game.fight.fighters[0].health = 0;
+            }
+            b.step([Pad::default(); 2]);
+            if let Phase::Result { winner: Some(1) } = b.phase {
+                shown = Some(b.game.visible);
+                break;
+            }
+        }
+        assert_eq!(shown, Some(if cpu_poses { [false, true] } else { [true, false] }), "cpu_poses {cpu_poses}");
+    }
+}
+
 #[test]
 fn cpu_matches_are_deterministic() {
     let Some(a) = assets() else { return };

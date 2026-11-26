@@ -266,6 +266,8 @@ pub struct Bout {
     pub interlude_check: bool,
     /// Tekken Tag's arcade (settings +0x1F): a match the CPU won ends on the losing pair's motion, not its pose.
     pub team_lose: bool,
+    /// Team Battle and Survival (ctx+0xA, 0x8003EAB8): a CPU that won the match poses too, no loser shot.
+    pub cpu_poses: bool,
     /// Tekken Tag's team intro before the first round (a tag battle, not 1 ON 1).
     pub team_intro: bool,
     /// Force: the other soldier's CPU, and no replay or result after the K.O. (the app takes over).
@@ -320,6 +322,7 @@ impl Bout {
             frames: 0,
             interlude_check: false,
             team_lose: false,
+            cpu_poses: false,
             team_intro: false,
             extra_cpu: None,
             force: false,
@@ -913,7 +916,7 @@ impl Bout {
                 self.result = ResultKind::TeamLose(frames);
             }
             // (Tekken Tag has no loser shot outside the arcade)
-            Some(w) if !decided || self.cpu[w].is_none() || tag.is_some() => {
+            Some(w) if !decided || self.cpu[w].is_none() || tag.is_some() || self.cpu_poses => {
                 // the win motion: the frame counter's parity, or a held button (□ △ × ○ -> 0xD67..0xD6A)
                 let b = self.last_pads[w].buttons;
                 let pick = if b & 1 != 0 {

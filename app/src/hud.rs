@@ -734,13 +734,13 @@ impl Hud {
         }
     }
 
-    /// DRAW, YOU WIN! / YOU LOSE (one human player), or "<NAME> WINS!".
+    /// DRAW, YOU WIN! / YOU LOSE (one human player, not in Team Battle: 0x8003E1F4), or "<NAME> WINS!".
     fn result(&self, d: &HudData, painter: &egui::Painter, v: &View, art: &Art, winner: Option<usize>, info: &HudInfo) {
         let Some(w) = winner else {
             d.draw.draw(painter, v, art);
             return;
         };
-        if info.humans[0] != info.humans[1] {
+        if info.humans[0] != info.humans[1] && info.team.is_none() {
             let human_won = info.humans[w];
             (if human_won { &d.you_win } else { &d.you_lose }).draw(painter, v, art);
             return;
