@@ -578,6 +578,9 @@ pub struct Fighter {
     rebase_root: bool,
     /// The root as drawn before this frame's update.
     shown_root: Vec3,
+    /// The origin and root before this step's body push, which the strike is placed from (Tekken 3 builds it at
+    /// 0x80041F6C, the push 0x8003EC64 comes after).
+    strike_from: Option<(Vec3, Vec3)>,
     /// Tekken Tag: the angle to the opponent of the last facing pass (+0x3A), which the next frame's moves take.
     seen: Option<f32>,
     /// Tekken Tag: the facing target (+0x44) of the last facing pass with the pair more than 0x200 apart (0x370FEC:
@@ -766,6 +769,7 @@ impl Fighter {
             root_x: [0.0; 2],
             rebase_root: false,
             shown_root: Vec3::ZERO,
+            strike_from: None,
             seen: None,
             basis: None,
             health: max_health,
@@ -2198,6 +2202,7 @@ impl Fighter {
     /// Advance one frame of move logic.
     fn step(&mut self, gd: &GameData, pad: Pad, facing_right: bool, anims: &dyn Animations) {
         self.shown_move = None;
+        self.strike_from = None;
         self.started_with = None;
         self.landing = 0;
         self.deal_damage = None;
@@ -2639,15 +2644,16 @@ impl Fighter {
             let (s, c) = yaw.dsin_cos();
             Vec3::new(v.x * c + v.z * s, v.y, -v.x * s + v.z * c)
         };
-        let root = self.root();
         let to_world = |p: [i32; 3]| {
             let v = Vec3::new(-p[0] as f32, -p[1] as f32, p[2] as f32);
             // relative to the actor position (0x8006A230) in the root basis (the move's root lean is already
             // baked into the path), then turned about the root by the body's facing off that basis (0x8006A428)
-            let p = self.position + turn(v, self.root_yaw);
+            let (position, root) = self.strike_from.unwrap_or((self.position, self.root()));
+            let p = position + turn(v, self.root_yaw);
             root + turn(p - root, self.yaw - self.root_yaw)
         };
-        a.frames.iter().filter(|f| f.frame == self.frame).flat_map(|f| f.segments.iter().map(|s| (to_world(s[0]), to_world(s[1])))).collect()
+        let set = if matches!(self.character, Some(14 | 15)) && !a.alt_frames.is_empty() && !self.tag_rules(gd) { &a.alt_frames } else { &a.frames };
+        set.iter().filter(|f| f.frame == self.frame).flat_map(|f| f.segments.iter().map(|s| (to_world(s[0]), to_world(s[1])))).collect()
     }
 
     /// Tekken Tag's strike this frame (0x34F288): each pair's segment from bone `start` to bone `end` of the pose, or
@@ -3877,6 +3883,9 @@ impl Fight {
 
     /// Body collision: the games' push in their two-fighter fights, else OpenKumite's sphere push (Force).
     fn separate(&mut self, bodies: [&BodyVolumes; 2]) {
+        for f in &mut self.fighters {
+            f.strike_from.get_or_insert((f.position, f.root()));
+        }
         if self.extra.is_none() {
             self.separate_tag(bodies)
         } else {

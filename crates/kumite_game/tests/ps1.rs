@@ -356,3 +356,23 @@ fn a_juggled_fighter_drifts_as_on_the_ps1() {
     assert_eq!(at(&t, 475, 768, 0).1, -1198, "PS1 row 768");
     assert_eq!(at(&t, 475, 787, 0).0 - at(&t, 475, 771, 0).0, -320, "PS1 rows 771..787");
 }
+
+/// Ogre's d/f+2 from afar: Ogre and Mokujin (character 14, 15) strike by the descriptor's alternate set (fmt bits
+/// 4..14, 0x8006A3BC's mode 1), which falls short of Julia; the primary one reached her and she blocked, slid 500 off.
+#[test]
+fn ogre_strikes_by_the_alternate_set_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [187, 155], None, 1, "n*174,f*40,d/f+2*2,n*40,b+1*2,n*40,n+2+3*2,n*174", "n*175,b*40,d+2*2,n*30,n+1*2,n*226", 330);
+    let r = at(&t, 552, 866, 1);
+    assert_eq!((r.0, r.1, r.2), (1114, -936, 53), "PS1 row 866");
+}
+
+/// Lei's 2 on Eddy in his handstand while the bodies push: the strike is built before the push (0x80041F6C, the push
+/// 0x8003EC64), 25 units back, and whiffs; built after it, it hit Eddy.
+#[test]
+fn a_strike_is_placed_before_the_push_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [139, 91], None, 1, "n*228,f*39,d+3+4,n*30,n+3*2,n*30,d+3+4*2,n*30,n+4*2,n*162", "n*229,b*39,n+2,n*258", 300);
+    let r = at(&t, 601, 885, 0);
+    assert_eq!((r.0, r.1, r.2, r.5), (-264, -817, 1398, 9175040), "PS1 row 885");
+}

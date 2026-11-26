@@ -246,6 +246,10 @@ pub struct Property {
 pub struct Attack {
     #[serde(default)]
     pub frames: Vec<AttackFrame>,
+    /// The descriptor's alternate set (fmt bits 4..14), read instead by Ogre and Mokujin (0x8006A3BC's mode 1:
+    /// character 14 or 15, 0x800A05A8); empty when it has none.
+    #[serde(default)]
+    pub alt_frames: Vec<AttackFrame>,
     /// Descriptor bytes 0..5: the striking limbs' bone slots first (reversal limb test 0x8002EB4C).
     #[serde(default)]
     pub header_bytes: Vec<u32>,
