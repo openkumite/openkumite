@@ -1223,7 +1223,6 @@ impl App {
         if state.wooden.iter().any(|&w| w) {
             log::info!("a wooden copying character");
         }
-        let mut bout = bout;
         bout.game.sound = self.sound.clone().map(|d| Box::new(kumite_game::sound::FightSound::new(d, banks, voices, state)));
         self.fight = Some(Fight {
             bout,
@@ -4774,7 +4773,6 @@ impl App {
         let characters = [player_char, soldier_char];
         // (the soldiers' voice row: their +0x1A)
         let voices = [self.roster.voice_of.get(&player_model).copied().unwrap_or(player_char), self.roster.voice_of.get(&soldier_record).copied().unwrap_or(soldier_char)];
-        let mut bout = bout;
         bout.game.sound = self.sound.clone().map(|d| Box::new(kumite_game::sound::FightSound::new(d, banks, voices, Default::default())));
         self.fight = Some(Fight {
             bout,
