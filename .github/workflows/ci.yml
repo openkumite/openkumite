@@ -1,6 +1,8 @@
-# The checks a pull request must pass to be merged into main (the branch's ruleset requires them), as check.sh does
-# them: rustfmt, clippy with warnings as errors (native on each OS, the browser build), the tests, cargo deny. The
-# tests that read the converted game data skip themselves here (there is none: it is copyrighted).
+# The checks a pull request must pass to be merged into main (the branch's ruleset requires `linux`), as check.sh does
+# them: rustfmt, clippy with warnings as errors (native, the browser build), cargo deny, the tests — on Linux only.
+# The tests on Windows and macOS run at a release (release.yml calls this before it publishes) or by hand (Actions,
+# ci, Run workflow); the Android APK and the packages are built by release.yml alone (by hand too). The tests that
+# read the converted game data skip themselves here (there is none: it is copyrighted).
 # A change of only Markdown and LICENSE* files runs no CI at all; such a PR is merged with the admin bypass.
 name: ci
 
@@ -10,6 +12,8 @@ on:
   push:
     branches: [main]
     paths-ignore: ["**.md", "**/LICENSE*", "LICENSE*"]
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,7 +26,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  lint:
+  linux:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -38,38 +42,22 @@ jobs:
       - name: clippy (browser build)
         run: cargo clippy --release --target wasm32-unknown-unknown -p openkumite -- -D warnings
       - run: cargo deny --log-level error check
+      - run: cargo clippy --workspace --all-targets --release -- -D warnings
+      - run: cargo test --workspace --release
 
   test:
+    # (a release's tag, or by hand; in a call from release.yml, github is the caller's)
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
         # (macOS on Intel: GitHub's Apple Silicon runners are often out of capacity)
-        os: [ubuntu-24.04, windows-latest, macos-15-intel]
+        os: [windows-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - run: cargo clippy --workspace --all-targets --release -- -D warnings
       - run: cargo test --workspace --release
-
-  # the Android APK builds (packaging/android/build.sh; the runner has the SDK, an NDK and a JDK); no device to run it
-  android:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-ndk
-      # (the runner's NDK; `env.` in an expression sees only the workflow's own variables)
-      - run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" sh packaging/android/build.sh
-      - uses: actions/upload-artifact@v7
-        with:
-          name: openkumite-android
-          path: target/android/openkumite.apk
