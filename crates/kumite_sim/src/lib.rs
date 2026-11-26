@@ -2350,7 +2350,10 @@ impl Fighter {
             if reached {
                 self.commit(gd, to, self.queued_alias, transition, false, anims);
                 // the new move's root on the frame it starts (Tekken Tag's 0x34E748 runs after the move logic; Tekken 3's
-                // root 0x8003AAF4 and ease 0x8003C270 too)
+                // root 0x8003AAF4 and ease 0x8003C270 too; its pushback, the facing pass's 0x8003F798, as on any step)
+                if !self.tag_rules(gd) {
+                    self.push_back();
+                }
                 self.shown_root = self.root();
                 self.root_motion(gd, anims);
                 self.ease(gd, anims);

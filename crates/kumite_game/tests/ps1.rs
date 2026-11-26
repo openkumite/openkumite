@@ -428,6 +428,18 @@ fn a_link_type_reads_the_last_links_frame_as_on_the_ps1() {
     assert_eq!(at(&t, 599, 870, 0).0, 450, "PS1 row 870");
 }
 
+/// Doctor B., knocked away by Gon, lands into his queued get-up: the pushback runs in the facing pass (0x8003F798)
+/// on the step that commits the queued move too, so its last two 49-unit steps come there. Ours skipped it on that
+/// step and slid two frames late, 98 off.
+#[test]
+fn a_queued_moves_commit_step_keeps_the_pushback_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [243, 251], None, 1, "n*208,f*40,n+1*2,n*20,n+3*2,n*135", "n*209,b*199", 400);
+    for (row, want) in [(984, 2354), (985, 2385), (987, 2338)] {
+        assert_eq!(at(&t, 660, row, 1).0, want, "PS1 row {row}");
+    }
+}
+
 /// Yoshimitsu's u+2 jumps toward Gun Jack (link 0x10 sets +0x82, 0x8002FF40): from the jump window's first frame the
 /// PS1 moves him the pair distance less 500 over the frames left (0x8003F104), 17 a frame; Gun Jack's hit ends it
 /// (0x8002F5F4). Ours kept that to Tekken Tag and stood still, 51 short.
