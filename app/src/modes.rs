@@ -855,6 +855,26 @@ mod tests {
     }
 
     #[test]
+    fn survival_carries_the_winners_health_as_on_the_ps1() {
+        let gd = crate::test_assets().join("gamedata");
+        if !kumite_fs::exists(&gd.join("screens.json")) {
+            return;
+        }
+        let roster = Roster::load(&gd);
+        let data = ModeData::load(&roster.screens);
+        let mut records = crate::save::Records::default();
+        let (mut run, mut seed) = (Run::survival((0, 0)), 1);
+        let max = 140 * kumite_sim::ONE;
+        // PS1 (t3sim45 surv3, Xiaoyu): health at the K.O. and fighting frames -> the next fight's health (16.16)
+        for (health, frames, next) in [(0x46_0000, 54, 0x83_4000), (0xA_4000, 555, 0x31_A000), (0x12_A000, 440, 0x3A_0000)] {
+            let setup = run.setup(&roster, &data, &mut seed, 0);
+            run.frames = frames;
+            assert!(matches!(run.after(&setup, Some(0), [health, 0], [max; 2], &data, &mut records, &roster), Next::Fight));
+            assert_eq!(run.start_health[0], Some(next));
+        }
+    }
+
+    #[test]
     fn carry_over_tables() {
         // a winner at 10 % of 170, index 0: gain[0] 256ths of the maximum back (made-up gains)
         let max = 170 * kumite_sim::ONE;
