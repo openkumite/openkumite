@@ -591,41 +591,45 @@ impl CameraData {
 
     /// 0x8004B39C: atan2(y, x) in 0..4096.
     pub fn ratan2(&self, x: i64, y: i64) -> i64 {
-        if x == 0 && y == 0 {
-            return 0;
-        }
-        let at = |q: i64| self.atn[q as usize] + (q >> 1);
-        let r = if x >= 0 {
-            if y >= 0 {
-                if x >= y {
-                    at(tdiv(y << 10, x))
-                } else {
-                    0x400 - at(tdiv(x << 10, y))
-                }
+        ratan2_on(|q| self.atn[q as usize] + (q >> 1), x, y)
+    }
+}
+
+/// 0x8004B39C on the table angle `at(q)` for q = 1024 x minor / major: atan2(y, x) in 0..4096.
+pub fn ratan2_on(at: impl Fn(i64) -> i64, x: i64, y: i64) -> i64 {
+    if x == 0 && y == 0 {
+        return 0;
+    }
+    let r = if x >= 0 {
+        if y >= 0 {
+            if x >= y {
+                at(tdiv(y << 10, x))
             } else {
-                let ny = -y;
-                if x >= ny {
-                    0x1000 - at(tdiv(ny << 10, x))
-                } else {
-                    at(tdiv(x << 10, ny)) + 0xC00
-                }
+                0x400 - at(tdiv(x << 10, y))
             }
         } else {
-            let nx = -x;
-            if y >= 0 {
-                if nx >= y {
-                    0x800 - at(tdiv(y << 10, nx))
-                } else {
-                    at(tdiv(nx << 10, y)) + 0x400
-                }
-            } else if nx < -y {
-                0xC00 - at(tdiv(x << 10, y))
+            let ny = -y;
+            if x >= ny {
+                0x1000 - at(tdiv(ny << 10, x))
             } else {
-                at(tdiv(y << 10, x)) + 0x800
+                at(tdiv(x << 10, ny)) + 0xC00
             }
-        };
-        s16(r)
-    }
+        }
+    } else {
+        let nx = -x;
+        if y >= 0 {
+            if nx >= y {
+                0x800 - at(tdiv(y << 10, nx))
+            } else {
+                at(tdiv(nx << 10, y)) + 0x400
+            }
+        } else if nx < -y {
+            0xC00 - at(tdiv(x << 10, y))
+        } else {
+            at(tdiv(y << 10, x)) + 0x800
+        }
+    };
+    s16(r)
 }
 
 // ---------------------------------------------------------------- MIPS integer helpers

@@ -35,7 +35,7 @@ pub fn in_the_way(a: &Assets, records: [usize; 4], teams: [usize; 4], script: &s
         };
         let node = |i: usize, name: &str| g.bodies[i].character.nodes.iter().position(|n| n.name == name);
         vfx.step_actors(&g.melee.hits, &models, &actors, kumite_game::view_camera(&g.camera.view).0, &at, &node);
-        vfx.objects(&g.melee.objects.list, &models);
+        vfx.objects(&g.melee.objects, &models);
         let drawn = vfx.sprites();
         for (k, n) in near.iter_mut().enumerate() {
             let root = g.melee.actors[k].root() / 1000.0;

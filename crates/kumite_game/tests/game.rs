@@ -1021,7 +1021,10 @@ fn a_heavy_hit_adds_the_character_spark_its_light_and_flying_sparks() {
             if g.fight.hits.iter().any(|h| h.damage >= 21) {
                 lit = v.hit_light();
             }
-            particles = particles.max(v.particles.len());
+            // (the sim's objects, types 1 and 2, drawn from it)
+            let heavy = |o: &&kumite_sim::objects::Object| matches!(o.kind, kumite_sim::objects::Kind::Particle { .. } | kumite_sim::objects::Kind::Streak { .. });
+            particles = particles.max(g.fight.objects.list.iter().filter(heavy).count());
+            assert!(v.sprites().len() >= g.fight.objects.list.iter().filter(heavy).filter(|o| o.state == 1).count());
             charspark |= v.slots.iter().flatten().any(|s| *s.strip.cells == *own.strip.cells);
         }
         if lit.is_some() {

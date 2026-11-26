@@ -21,7 +21,8 @@ fn assets() -> Option<Assets> {
 type Row = [(i32, i32, i32, i16, i16, i32, String, Vec<[i32; 3]>); 2];
 
 /// The rand() state, the blinks (P1's timer and shut, P2's) and the frame counter's parity (0x800AFA4C) at a case's
-/// first step, as the PS1 had them: none (""), or "seed,t1,c1,t2,c2,parity" (hex seed).
+/// first step, as the PS1 had them: none (""), or "seed,t1,c1,t2,c2,parity" (hex seed), then any "step:frame"s
+/// ([`rows_at`]).
 fn start_rand(g: &mut Game, v: &str) {
     let n: Vec<i64> = v.split(',').enumerate().filter_map(|(k, x)| if k == 0 { i64::from_str_radix(x, 16).ok() } else { x.parse().ok() }).collect();
     if let [seed, t1, c1, t2, c2, parity] = n[..] {
@@ -49,13 +50,13 @@ fn sound(a: &Assets, models: [usize; 2]) -> Option<Box<FightSound>> {
 /// `lead`: steps P1's start move runs ahead of P2's (the PS1's round 2 starts them a step apart); `copy`: the copying
 /// character P1's draw for the round (its pool's entry).
 fn rows(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize) -> Vec<Row> {
-    rows_at(a, models, copy, lead, p1, p2, steps, &std::env::var("VS_RAND").unwrap_or_default())
+    rows_at(a, models, copy, lead, p1, p2, steps, &std::env::var("VS_RAND").unwrap_or_default()).0
 }
 
-/// [`rows`] from the PS1's rand() and blinks ([`start_rand`]); VS_RAND_LOG=1 prints each step's state ("step rs seed
-/// g=count objects").
+/// [`rows`] from the PS1's rand() and blinks ([`start_rand`]), and rand()'s state after each step; VS_RAND_LOG=1
+/// prints each step's state ("step rs seed g=count objects").
 #[allow(clippy::too_many_arguments)]
-fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize, start: &str) -> Vec<Row> {
+fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize, start: &str) -> (Vec<Row>, Vec<u32>) {
     let mut g = Game::load(a, models).unwrap();
     g.sound = sound(a, models);
     // (the PS1's VS LIFE level 3, "100 %", is the life table's 140, 0x800225EC; round 1's intro ends on a commit facing
@@ -78,13 +79,21 @@ fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &
     let log = std::env::var_os("VS_RAND_LOG").is_some();
     let (s1, s2) = (parse_script(p1).unwrap(), parse_script(p2).unwrap());
     let angle = |y: f32| (0x8000 - (y / std::f32::consts::TAU * 65536.0).round() as i32) as i16;
-    (0..steps)
+    // (the start's "step:frame" entries: the PS1's frame counter from that step on, 0x800AFA4C, t3sim40's rs.lua f=;
+    // its main loop runs two steps in one of its frames when it lags, which turns the parity the hurt voices go by)
+    let frames: std::collections::BTreeMap<usize, u64> = start.split(',').filter_map(|e| e.split_once(':').and_then(|(k, f)| Some((k.parse().ok()?, f.parse().ok()?)))).collect();
+    let mut seeds = Vec::new();
+    let rows = (0..steps)
         .map(|k| {
+            if let Some(&f) = frames.get(&k) {
+                g.fight.frame = f.saturating_sub(1);
+            }
             g.step([s1.get(k).copied().unwrap_or_default(), s2.get(k).copied().unwrap_or_default()]);
             if log {
                 let l: Vec<String> = g.fight.objects.list.iter().map(|o| format!("{:?}.{}.{}", o.kind, o.state, o.count)).collect();
                 eprintln!("{k} rs {:08x} g={} {}", g.fight.objects.seed, g.fight.objects.count, l.join(" "));
             }
+            seeds.push(g.fight.objects.seed);
             std::array::from_fn(|i| {
                 let f = &g.fight.fighters[i];
                 let r = f.root();
@@ -93,7 +102,8 @@ fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &
                 (r.x.round() as i32, (-r.y - f.anim_root_y).round() as i32, (-r.z).round() as i32, angle(f.yaw), angle(f.root_yaw), f.health, m, push)
             })
         })
-        .collect()
+        .collect();
+    (rows, seeds)
 }
 
 /// Prints the rows (VS_TRACE=1; VS_MODELS=a,b, VS_P1 / VS_P2 the pads' scripts, VS_STEPS, VS_COPY P1's copy draw) as
@@ -135,12 +145,46 @@ fn at(rows: &[Row], first: usize, row: usize, i: usize) -> &(i32, i32, i32, i16,
 #[test]
 fn the_breath_turns_on_the_one_rand_stream_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let t = rows_at(&a, [203, 99], None, 1, "n*245,f*40,n+1+2*2,n*218", "n*246,b*80,n*180", 503, "a71000eb,57,0,0,1,1");
+    let (t, seeds) = rows_at(&a, [203, 99], None, 1, "n*245,f*40,n+1+2*2,n*218", "n*246,b*80,n*180", 503, "a71000eb,57,0,0,1,1");
     for (row, want) in [(1026, (-286, -999, -24, 9_175_040)), (1027, (-282, -1018, -19, 6_619_136)), (1060, (401, -997, -133, 6_619_136)), (1150, (-410, -170, -32, 6_619_136))] {
         let r = at(&t, 676, row, 1);
         assert_eq!((r.0, r.1, r.2, r.5), want, "PS1 row {row}");
     }
     assert_eq!(at(&t, 676, 1060, 0).3, 17076, "PS1 row 1060: True Ogre's facing");
+    // (rs.lua's state at the PS1's steps 1105 and 1137: each breath starts on the head's integer matrix and the
+    // ratan2 table, so its floor flames come on the PS1's frames; ours were a draw off from step 372)
+    assert_eq!([seeds[427], seeds[459]], [0x7f21_783b, 0x62ab_31da]);
+}
+
+/// Paul's d/f+1 and kicks on King walking back, from the PS1's rand() and frame counter (t3sim40's rs.lua
+/// recording): each hit of 21 or more (30, 0x80076D40) throws off 20 particles, then 6 easing ones (types 2 and 1, two
+/// draws each on their first pass), which end at their lives' ends or the floor; the stream and the pool's count are
+/// the PS1's all 656 steps (ours drew none and the count ran 26 short).
+#[test]
+fn heavy_hits_throw_their_particles_off_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let start = "d06f2765,137,0,0,1,1,0:1442,91:1532,104:1544,145:1584,164:1602,199:1636,224:1660,253:1688,284:1718,307:1740,344:1776,361:1792,363:1793,450:1879,480:1908,494:1921,496:1922,546:1971,556:1980,562:1985,600:2022,607:2028,654:2074";
+    let (t, seeds) = rows_at(&a, [75, 99], None, 1, "n*407,d/f+1*2,n*40,n+4*2,n*50,n+3*2,n*154", "n*358,b*300", 656, start);
+    // (rs.lua's state and count after the PS1's steps 1011, 1067 and 1150: the hits' particles and their ends)
+    assert_eq!([seeds[461], seeds[517], seeds[600]], [0x0ecd_4125, 0x3e7a_a644, 0xfb37_3062]);
+    assert_eq!(at(&t, 549, 1012, 1).5, 6_553_600, "PS1 row 1012: King's health");
+}
+
+/// King's 1+3 throws Jin, who lies where he fell; of King's d/b+1+3s (move 277, its strike on frame 20 hitting the
+/// grounded) the first comes in the throw's end, the second misses him lying 2100 off, the third links its grounded
+/// throw (motion 186 on Jin's 187), as the PS1's rows (t3sim40's g1throw recording) to the end of the throw.
+#[test]
+fn kings_grounded_throw_takes_jin_lying_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let p1 = "n*178,f*60,n+1+3*2,n*120,d/b+1+3*2,n*63,d/b+1+3*2,n*64,d/b+1+3*2,n*64,d/b+1+3*2,n*100";
+    let t = rows(&a, [99, 147], None, 1, p1, "n*700", 595);
+    for (row, want) in [(1192, [(4530, -802, -152, -17300), (5347, -152, -2, -16385)]), (1265, [(5051, -925, 6, -16400), (5316, -280, 155, -16385)])] {
+        for (i, w) in want.into_iter().enumerate() {
+            let r = at(&t, 673, row, i);
+            assert_eq!((r.0, r.1, r.2, r.3), w, "PS1 row {row}, P{}", i + 1);
+        }
+    }
+    assert!(at(&t, 673, 1192, 0).6.starts_with("motion_186@") && at(&t, 673, 1192, 1).6.starts_with("motion_187@"));
 }
 
 /// Lei (P1) taps up near the end of the later rounds' start move (240 frames from frame 1, 0x8002D3DC; it kept the
@@ -208,7 +252,7 @@ fn king_knocks_out_jin_as_on_the_ps1() {
 #[test]
 fn doctor_bs_mist_strikes_gon_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let t = rows_at(&a, [251, 243], None, 1, "n*155,f*40,n+2*2,n*30,d+4*2,n*40,b+3*2,n*144", "n*156,b*40,n+4*2,n*40,n+1+2*2,n*176", 260, "d06f2765,60,0,0,1,0");
+    let t = rows_at(&a, [251, 243], None, 1, "n*155,f*40,n+2*2,n*30,d+4*2,n*40,b+3*2,n*144", "n*156,b*40,n+4*2,n*40,n+1+2*2,n*176", 260, "d06f2765,60,0,0,1,0").0;
     for (row, want) in [(917, (439, -16416)), (920, (500, -16414)), (922, (521, -16412))] {
         let r = at(&t, 739, row, 1);
         assert_eq!((r.0, r.3), want, "PS1 row {row}");

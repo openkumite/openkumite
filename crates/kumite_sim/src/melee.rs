@@ -518,6 +518,10 @@ impl Melee {
             self.on_pair(a, b, |f| f.resolve_hits(&gd, pair));
         }
         self.fight.objects.list.clear();
+        if !gd.tag_moves {
+            let gon: Vec<bool> = self.actors.iter().map(|f| f.character == Some(17)).collect();
+            self.objects.on_hits(&self.hits, &gon);
+        }
         if self.state == MeleeState::Fighting && self.links.is_empty() {
             self.clock = self.clock.saturating_sub(1);
             let teams = self.teams();

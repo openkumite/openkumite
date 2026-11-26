@@ -184,14 +184,15 @@ impl Animations for FighterAnims<'_> {
             let at = t3pose::places(&turns, &self.own.character.slots, facing, root);
             let on = |layout: &[(usize, Vec3, f32, usize)], spheres: &mut [Sphere]| {
                 for (&(node, offset, ..), s) in layout.iter().zip(spheres) {
-                    if let Some(p) = self.own.slots.iter().position(|&n| n == node).and_then(|k| at.get(k)) {
+                    if let Some((_, p)) = self.own.slots.iter().position(|&n| n == node).and_then(|k| at.get(k)) {
                         s.centre = Vec3::new(p[0] as f32, -p[1] as f32, -p[2] as f32) + offset * UNITS;
                     }
                 }
             };
             on(&self.own.hurt, &mut v.hurt);
             on(&self.own.push, &mut v.push);
-            v.joints = at.to_vec();
+            v.joints = at.iter().map(|w| w.1).collect();
+            v.head = Some(at[2]);
         }
         Some(v)
     }
@@ -2166,7 +2167,7 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
     // shortcut: the game's mouth (nodes 7-13) opens as it breathes (PCSX2: node 13 up to 120 off ours); port its
     // turns (0x351E98) when the fire must land to the unit
     let head = if body.bones.is_empty() { None } else { body.character.nodes.iter().position(|n| n.name == "node_13") };
-    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones, slots: [slot(head.unwrap_or(body.chest)), slot(body.pelvis)], joints: Vec::new() }
+    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones, slots: [slot(head.unwrap_or(body.chest)), slot(body.pelvis)], joints: Vec::new(), head: None }
 }
 
 /// A turn's float entry as the game's 4096 = 1 (0x34ED90: times 4096, truncated; a float a hair off a whole number,
