@@ -637,6 +637,22 @@ pub enum Motion {
     Track(Vec<Joint>),
 }
 
+/// Tekken 3's floor colours (0x80048E58, 0x80049848): mode 0 fades the far floor by `shade` (the `fade` table at
+/// depths past the eye's distance to the fighters, scaled by `fade_depth`: before the match is decided, after), mode 1
+/// lights it from each fighter (`spot[0]` / d²), mode 2 from their midpoint (`spot[1]` / d², at most `cap`); with True
+/// Ogre in the fight mode 0 is mode 2 at most `true_ogre_cap`. The grid's `tile` in game units.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct FloorShading {
+    pub mode: u32,
+    pub shade: i32,
+    pub tile: i32,
+    pub spot: [i32; 2],
+    pub cap: i32,
+    pub true_ogre_cap: i32,
+    pub fade: Vec<u8>,
+    pub fade_depth: [i32; 2],
+}
+
 /// A Tekken Tag texture channel over one of a stage's textures: the rectangle (x, y, w, h) its frames change in
 /// texture `image`, the textures holding each frame's texels there (`first`, `frames` of them), its speed (256ths of
 /// a frame a frame) and first frame ([`channel_frame`]); a still one an arena's task plays (speed 0, resting on
@@ -749,6 +765,8 @@ pub struct Stage {
     pub floor_patch: Option<[f32; 2]>,
     /// The extra stages' floor lighting: mode, shade and the fade table (every 32nd entry), when the stage has it.
     pub floor_light: Option<(u32, f32, [f32; 32])>,
+    /// Tekken 3's floor colours per vertex (scene extras `floor_shading`; `kumite_game::floor`).
+    pub floor_shading: Option<FloorShading>,
     /// Tekken Tag's floor cells (scene extras `floor_levels`): their levels of detail and the window they are laid in.
     pub floor_levels: Option<FloorLevels>,
     /// Tekken Tag's arena fog (scene extras `fog`): FOGCOL (0..1) and the coefficient `line[0] + line[1] x depth` (mm,
@@ -918,6 +936,7 @@ impl Stage {
             camera_drum: false,
             floor_patch: None,
             floor_light: None,
+            floor_shading: None,
             floor_levels: None,
             fog: None,
             channels: vec![],
@@ -1025,6 +1044,8 @@ impl Stage {
                 }
                 st.floor_light = Some((fl["mode"].as_u64().unwrap_or(0) as u32, fl["shade"].as_f64().unwrap_or(0.0) as f32, table));
             }
+            st.floor_shading =
+                serde_json::from_value::<FloorShading>(v["floor_shading"].clone()).ok().filter(|l| l.fade.len() == 1024 && (1..=0xFFFF).contains(&l.tile) && l.fade_depth.iter().all(|d| *d > 0));
         }
         // the objects' animations: each node's keys
         let mut keys: HashMap<usize, (Vec<Vec3>, Vec<Quat>)> = HashMap::new();

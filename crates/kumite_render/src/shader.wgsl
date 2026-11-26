@@ -55,6 +55,10 @@ struct Globals {
     grass: array<vec4<f32>, 289>,
     // OpenKumite's enhancements: x 1 soft shadows
     enhance: vec4<f32>,
+    // Tekken 3's floor colours: the grid's centre (x, z, metres), its tile, w = 1 when on; the colours (128 = 1), a row
+    // of 11 from the least x, the rows from the greatest z
+    floor_grid: vec4<f32>,
+    floor_shades: array<vec4<f32>, 31>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var tex: texture_2d<f32>;
@@ -74,6 +78,8 @@ struct VsOut {
     @location(5) fog: f32,
     // Tekken Tag's fighter's environment map: its coordinates (repeating) and its size in the texture (zw 0: none)
     @location(6) env: vec4<f32>,
+    // Tekken 3's floor: its colour (1 = as drawn), across the screen as the PS1's Gouraud shading
+    @location(7) @interpolate(linear) shade: f32,
 };
 
 // Standard 4-joint linear blend skinning. Tekken Tag's fighters (its three lights) lit per vertex as its VU0
@@ -249,8 +255,11 @@ fn vs_world(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2
 fn texel(uv: vec2<f32>) -> vec4<f32> {
     let t = textureSample(tex, samp, uv);
     if (g.gamma.x < 0.5) { return t; }
-    let c = t.rgb;
-    return vec4(select(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3(0.0031308)), t.a);
+    return vec4(linear_to_srgb(t.rgb), t.a);
+}
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    return select(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3(0.0031308));
 }
 
 // Anti-aliased (alpha to coverage): a cut-out's edge as the coverage, sharpened to a pixel's width; else (the
@@ -402,6 +411,10 @@ fn static_vertex(pos: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, cell: vec4<f32
     o.color = select(color, vec4(1.0, 1.0, 1.0, grass_scale(d)), on && g.grass_info.w > 0.5 && cell.z > 0.5);
     o.world = p;
     o.normal = vec3(0.0);
+    // Tekken 3's floor: the colour of its grid's vertex here (the nearest edge's beyond the grid)
+    let k = clamp(vec2<i32>(round(vec2(p.x - g.floor_grid.x, g.floor_grid.y - p.z) / max(g.floor_grid.z, 0.001))) + 5, vec2(0), vec2(10));
+    let n = u32(k.y * 11 + k.x);
+    o.shade = g.floor_shades[n / 4u][n % 4u] / 128.0;
     return o;
 }
 
@@ -480,7 +493,14 @@ fn static_texel(i: VsOut) -> vec4<f32> {
     }
     if (g.near_cut.y > 0.5 && i.world.y > 0.05 && i.world.z > g.near_cut.x) { discard; }
     let t = texel(i.uv);
-    return vec4(mix(t.rgb * i.color.rgb * floor_light(i.world), g.fog_colour.rgb, i.fog), t.a);
+    var rgb = t.rgb * i.color.rgb * floor_light(i.world);
+    // Tekken 3's floor as the PS1's GPU draws it: the texel's bytes times its colour (an integer) >> 7, at most 255,
+    // dithered to 5 bits by its ordered matrix (-4..3): 4 less on average
+    if (g.floor_grid.w > 0.5) {
+        let r8 = min(floor(round(linear_to_srgb(rgb) * 255.0) * floor(i.shade * 128.0 + 0.001) / 128.0), vec3(255.0));
+        rgb = srgb_to_linear(clamp(r8 - 4.0, vec3(0.0), vec3(248.0)) / 255.0);
+    }
+    return vec4(mix(rgb, g.fog_colour.rgb, i.fog), t.a);
 }
 
 fn in_tube(p: vec3<f32>, fighter: vec3<f32>, margin: f32) -> bool {

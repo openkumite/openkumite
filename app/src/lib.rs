@@ -166,6 +166,7 @@ struct Scene {
     camera_drum: bool,
     floor_patch: Option<[f32; 2]>,
     floor_light: Option<(u32, f32, [f32; 32])>,
+    floor_shading: Option<kumite_assets::FloorShading>,
     floor_levels: Option<kumite_assets::FloorLevels>,
     fog: Option<([f32; 3], [f32; 2])>,
     statics: Vec<StaticMesh>,
@@ -1535,6 +1536,7 @@ impl App {
             camera_drum: false,
             floor_patch: None,
             floor_light: None,
+            floor_shading: None,
             floor_levels: None,
             fog: None,
             floor_period: None,
@@ -1653,6 +1655,7 @@ impl App {
                     .and_then(|p| Some((p, tex.get(p.image)?.clone(), st.textures.get(p.image).map(|t| [t.width as f32, t.height as f32])?, r.texture(1, 1, &[255; 4]))));
                 scene.background = st.background;
                 (scene.camera_drum, scene.floor_patch, scene.floor_light, scene.floor_levels, scene.fog) = (st.camera_drum, st.floor_patch, st.floor_light, st.floor_levels, st.fog);
+                scene.floor_shading = st.floor_shading.clone();
                 if let Some((m, at)) = st.strip.as_ref().filter(|(m, _)| !m.indices.is_empty()) {
                     // the strip flat on the screen, as the original's sprites: x in its texels, y 0..1 its height
                     // (the stage's fill above it); `stage_view` places it. Four turns: two as the original repeats
@@ -6015,6 +6018,15 @@ impl App {
                     None => game.display.map_or(game.fight.fighters[i].root(), |d| d[i].root),
                 };
                 stage_view(&mut cam, scene, [shown(0), shown(1)].map(|p| p / kumite_game::UNITS), self.debug.free_cam.is_some());
+                // Tekken 3's floor: its vertices' colours as the PS1 works them out each frame, on the game's camera
+                cam.floor_shades = scene.floor_shading.as_ref().map(|l| {
+                    let u = kumite_game::UNITS;
+                    let xz = |p: glam::Vec3| [p.x.round() as i32, -p.z.round() as i32];
+                    let depth = |x: i32, z: i32| ((glam::Vec3::new(x as f32, 0.0, -z as f32) / u - eye).dot(forward) * u).round() as i32;
+                    let ogre = game.fight.fighters.iter().any(|f| f.character == Some(20));
+                    let (centre, shades) = kumite_game::floor::shades(l, [xz(shown(0)), xz(shown(1))], xz(eye * u), depth, ogre, fight.bout.decided());
+                    kumite_render::FloorShades { centre: [centre[0] as f32 / u, -centre[1] as f32 / u], tile: l.tile as f32 / u, shades }
+                });
                 // Tekken Tag's fight: nothing of the arena's scenery stands before the fighters (its z guard)
                 if scene.z_guard && cutscene.is_none() {
                     cam.scenery_cut = kumite_game::scenery_cut(cam.eye, cam.target - cam.eye, [shown(0), shown(1)].map(|p| p / kumite_game::UNITS));
