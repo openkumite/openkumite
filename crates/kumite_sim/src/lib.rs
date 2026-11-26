@@ -2524,9 +2524,9 @@ impl Fighter {
         let (cut, hold) = if tag {
             (fl & 0x181 != 0 || self.reacting || last_fl & fl & 0x40 != 0 || ko, fl & 2 != 0 || (active[0] != 0 && frame <= active[1]) || self.juggle != 0 || airborne && self.struck_in_move || ko)
         } else {
-            // Tekken 3 (0x8003C87C, 0x8003C9B4): the move's +0x24 bits 0x100 / 0x200, juggled (+0x94), struck in the air
-            // (+0xDB, +0x87)
-            (fl & 1 != 0, fl & 2 != 0 || self.juggle != 0 || (self.airborne_flag(gd) && self.struck_in_move))
+            // Tekken 3 (0x8003C87C, 0x8003C9B4): the move's +0x24 bits 0x100 / 0x200 (a commit on the frame of a hit or
+            // block cuts too: +0x89 / +0x8A, 0x8002F7A0), juggled (+0x94), struck in the air (+0xDB, +0x87)
+            (fl & 1 != 0 || self.reacting, fl & 2 != 0 || self.juggle != 0 || (self.airborne_flag(gd) && self.struck_in_move))
         };
         let e = &mut self.ease;
         if match e.mode {
@@ -3602,6 +3602,8 @@ impl Fight {
         for f in &mut self.fighters {
             f.early_end = if ball { gd.ball.end(f.alias) } else { None };
         }
+        // (Tekken 3's link victim eases after the link, from the pose shown last frame)
+        let eased = self.fighters.each_ref().map(|f| (f.ease, f.ease_last, f.shown_turns, f.shown_height));
         for i in 0..2 {
             if self.fighters[i].inactive {
                 continue;
@@ -3672,11 +3674,17 @@ impl Fight {
             f.track(&gd, idle.is_none().then_some([roots_before[i], roots_before[1 - i]]));
             // (Tekken Tag turns the basis before the root's update of the frame: the rebase and the basis's turn
             // show at once, and a throw's pair shows its link frame's places; Tekken 3's rebase likewise,
-            // 0x8003A9C8, its root keeping the eased height)
-            if f.rebase_root || f.root_yaw != basis || f.tag_rules(&gd) && linked {
+            // 0x8003A9C8, its root keeping the eased height; a link's pair takes the new move's height, as the PS1's
+            // root update 0x8003AAF4 runs after the link)
+            if f.rebase_root || f.root_yaw != basis || linked {
                 let y = f.anim_root_y;
                 f.root_motion(&gd, anims[i]);
-                if !f.tag_rules(&gd) {
+                if !f.tag_rules(&gd) && linked && f.chain < 0 {
+                    // (the victim's move starts in the link, 0x800307DC, before its root update and ease, 0x8003C270)
+                    (f.ease, f.ease_last, f.shown_turns, f.shown_height) = eased[i];
+                    f.new_motion = true;
+                    f.ease(&gd, anims[i]);
+                } else if !f.tag_rules(&gd) && !linked {
                     f.anim_root_y = y;
                 }
             }
@@ -3716,9 +3724,10 @@ impl Fight {
             // the hit pass (Tekken Tag's 0x371D68, Tekken 3's 0x80044008) strikes in the pose made before the push
             // moves the bodies (0x34F3D8, then 0x371C68; Tekken 3's spheres 0x80041F6C, then 0x8003EC64)
             posed = self.extra.is_none().then_some(now);
-        } else if gd.tag_push {
+        } else if gd.tag_push || pair {
             // (Tekken Tag measures the push's steps from the places the pair leaves a throw at: 0x3772F0 keeps the
-            // roots each frame no one is in a throw, +0xE0)
+            // roots each frame no one is in a throw, +0xE0; Tekken 3's push after a link steps from the link's last
+            // places too, as the PS1's +0x3E8 showed after Law's parry)
             for f in &mut self.fighters {
                 f.push_prev = Some(push_place(f));
             }
@@ -3732,13 +3741,13 @@ impl Fight {
         let connected_before = [self.fighters[0].connected, self.fighters[1].connected];
         if self.link.is_none() && pair {
             let now: [Option<BodyVolumes>; 2] = posed.unwrap_or_else(|| std::array::from_fn(|i| anims[i].volumes(&self.fighters[i], &gd)));
-            self.resolve_hits(&gd, [now[0].as_ref().unwrap_or(&bodies[0]), now[1].as_ref().unwrap_or(&bodies[1])], anims);
+            self.resolve_hits(&gd, [now[0].as_ref().unwrap_or(&bodies[0]), now[1].as_ref().unwrap_or(&bodies[1])]);
         }
         // the other soldier's hits on the player and the player's on it, as a pair of their own (actor 2)
-        if let (true, Some((_, body, anim))) = (extra_on && self.state == RoundState::Fighting && self.link.is_none(), extra) {
+        if let (true, Some((_, body, _))) = (extra_on && self.state == RoundState::Fighting && self.link.is_none(), extra) {
             let before = self.hits.len();
             self.swap_extra();
-            self.resolve_hits(&gd, [&bodies[0], body], [anims[0], anim]);
+            self.resolve_hits(&gd, [&bodies[0], body]);
             self.swap_extra();
             for h in &mut self.hits[before..] {
                 if h.attacker == 1 {
@@ -3845,7 +3854,7 @@ impl Fight {
         } else if !breaking {
             let (fi, fj) = (&self.fighters[i], &self.fighters[j]);
             let quadrant = direction_quadrant(fj.yaw, fj.root(), fi.root());
-            let target = drawn.filter(|_| fi.tag_rules(gd)).unwrap_or_else(|| fj.root());
+            let target = drawn.unwrap_or_else(|| fj.root());
             let to = target - fi.position;
             // Tekken Tag (0x36B638): the facing +0x3C is the last facing pass's angle +0x3A turned by the quadrant; the
             // victim turns round where it stands (0x36B77C), and over 16 frames the thrower turns to the victim's new
@@ -3854,7 +3863,8 @@ impl Fight {
             // finds); Force's soldiers keep the old way
             let game = |y: f32| ((PI - y) / ANGLE).round() as i32;
             if fi.tag_rules(gd) || self.extra.is_none() {
-                let a = if fi.tag_rules(gd) { game(fi.seen.unwrap_or_else(|| fi.geometry().0)) } else { fi.geometry16(fi.root(), fj.root()).0 };
+                let a =
+                    if fi.tag_rules(gd) { game(fi.seen.unwrap_or_else(|| fi.geometry().0)) } else { drawn.map_or_else(|| fi.geometry16(fi.root(), fj.root()), |d| fi.geometry16(fi.shown_root, d)).0 };
                 let g = a + [0, 0x4000, -0x8000, -0x4000][quadrant];
                 // shortcut: Force's soldiers keep the thrower's basis (the pair's rule moved its AI runs); check one there
                 let v = if self.extra.is_none() { fj.yaw + PI } else { fi.root_yaw };
@@ -3896,6 +3906,8 @@ impl Fight {
             (Bank::Partner, Some(p)) => p.clone(),
             _ => fi.moveset.clone(),
         };
+        // (Tekken 3 keeps the throw's damage, timed property 0x0B, in the move's damage word from load)
+        let thrown = if fi.tag_rules(gd) { 0 } else { mv.properties.iter().flatten().filter(|p| p.op == 0x0B).map(|p| p.arg).sum::<u32>() };
         let fj = &mut self.fighters[j];
         fj.locked = true;
         // the victim link (transition 0x22, 0x800307DC) counts the victim's chain stage down
@@ -3912,7 +3924,7 @@ impl Fight {
                 // the most, 0x42)
                 let hold = mv.bytes_18.hold_frame;
                 fj.stun_timer = if hold != 0 { hold + fj.current_move(gd).frames } else { mv.frames }.min(300);
-                let word = (mv.damage as u32 & 0x3FFF) | (mv.damage_type << 14);
+                let word = ((mv.damage as u32 + thrown) & 0x3FFF) | (mv.damage_type << 14);
                 fj.stun = (0x22 + word * 32 / 45).clamp(0x22, 0x42);
                 fj.chain = if chain > 0 { -1 } else { chain - 1 };
                 fj.yaw = yaw;
@@ -4269,7 +4281,7 @@ impl Fight {
     }
 
     /// Both directions are tested before any reaction is applied, so trades hit both fighters.
-    fn resolve_hits(&mut self, gd: &GameData, bodies: [&BodyVolumes; 2], anims: [&dyn Animations; 2]) {
+    fn resolve_hits(&mut self, gd: &GameData, bodies: [&BodyVolumes; 2]) {
         let mut hits = Vec::new();
         // the strike's downward speed: segment 0's travel this frame (units, down positive), for spikes
         let mut strike_down = [0.0f32; 2];
@@ -4350,18 +4362,11 @@ impl Fight {
             fv.reversal_damage = Some(damage / 2 + 25);
             fv.exec_mark = e.exec;
             log::info!("P{} reverses P{}'s {anim} (cond {:#x})", v + 1, a + 1, e.cond);
-            // (Tekken Tag commits it in the next frame's moves, as a reaction: PCSX2 shows the reversed attack's hit
-            // frame first, the reversal's frame 1 on the next)
-            if e.exec == 255 || fv.frame < e.exec || fv.tag_rules(gd) {
-                fv.queued = Some((to, e.exec, t));
-                fv.queued_alias = e.dest;
-                fv.queued_buffered = false;
-            } else {
-                fv.commit(gd, to, e.dest, t, false, anims[v]);
-                if t == TRANSITION_LINK {
-                    self.link(gd, v, None);
-                }
-            }
+            // (both games commit it in the next frame's moves, as a reaction: PCSX2 shows the reversed attack's hit
+            // frame first, the reversal's frame 1 on the next; the PS1's hit pass only queues it, 0x8002D8B4)
+            fv.queued = Some((to, e.exec, t));
+            fv.queued_alias = e.dest;
+            fv.queued_buffered = false;
         }
         if hits.is_empty() {
             return;
