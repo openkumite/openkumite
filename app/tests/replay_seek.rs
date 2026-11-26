@@ -23,7 +23,8 @@ fn replay_line(log: &str) -> &str {
     &line[line.find("replay at step").unwrap()..]
 }
 
-/// Record a match of `mode` (the player idle, the CPU winning), then seek in its replay: 5 s forward at step 400, and
+/// Record a match of `mode` (the player idle, the CPU winning; Tekken Tag's tag rounds ignore `--round-time`, so
+/// time for its full rounds), then seek in its replay: 5 s forward at step 400, and
 /// back from step 1700 (into the round before).
 fn seeks_show_what_playing_straight_shows(mode: &[&str], name: &str) {
     let Some(assets) = assets() else { return };
@@ -33,7 +34,7 @@ fn seeks_show_what_playing_straight_shows(mode: &[&str], name: &str) {
     let shot = |n: &str| save.join(format!("{n}.png")).to_string_lossy().into_owned();
     let mut args = mode.to_vec();
     let rec = shot("rec");
-    args.extend(["--round-time", "20", "--shot", &rec, "--frames", "9000"]);
+    args.extend(["--round-time", "20", "--shot", &rec, "--frames", "20000"]);
     let log = run(&assets, &save, &args);
     let Some(id) = std::fs::read_dir(save.join("replays")).ok().into_iter().flatten().flatten().find_map(|e| e.path().file_stem().map(|s| s.to_string_lossy().into_owned())) else {
         // (no GPU here: nothing ran)
