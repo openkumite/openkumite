@@ -134,6 +134,11 @@ pub struct EffectsData {
     pub fire_end: Strip,
     pub gas: Strip,
     pub mist: Strip,
+    /// Tekken 3's sparks (type 7) and floor flames (type 9): their loop's cells and their ends' (a pack before format 15
+    /// has none).
+    pub ember: Strip,
+    pub ember_end: Strip,
+    pub floor_flame_end: Strip,
     pub objects_sheet: usize,
 }
 
@@ -231,6 +236,9 @@ impl EffectsData {
             fire_end: object("fire_end"),
             gas: object("gas"),
             mist: object("mist"),
+            ember: object("ember"),
+            ember_end: object("ember_end"),
+            floor_flame_end: object("floor_flame_end"),
             objects_sheet,
         })
     }
@@ -976,9 +984,8 @@ impl Vfx {
 
     /// The effect objects' pictures (drawn after their move, 0x8006FC84): the fire's growing, looped and ending
     /// cells, 2 frames each, lighting the fighters now and then (0x800720EC); the gas puff's; Tekken 3's burns, heavy
-    /// hits' particles and limb glows with their trails on their palette steps.
-    /// shortcut: Tekken 3's sparks (type 7) and floor flames (type 9) are not drawn, nor a glow's light (0x80039F0C);
-    /// upgrade with their cells (0x80025564, 0x8002561C) in effects.json
+    /// hits' particles and limb glows with their trails on their palette steps; the sparks and the floor flames.
+    /// shortcut: a glow's light (0x80039F0C) is not drawn; upgrade if a ki charge looks darker than the PS1's
     pub fn objects(&mut self, objects: &kumite_sim::objects::Objects, models: &[usize]) {
         use kumite_sim::objects::Kind;
         let list = &objects.list;
@@ -1062,6 +1069,11 @@ impl Vfx {
                 // (a glow's trail, 0x80025484's 160 quad, and its spark, 0x800254A4's 60, 0x80070E08 / 0x80071110)
                 (Kind::Trail, 1) => step(&d.heavy[1], o.frames, ps1(o.at), 0.160),
                 (Kind::TrailSpark, 1) => step(&d.heavy[1], o.frames >> 1, ps1(o.at), 0.060),
+                // (a spark: 0x80025564's 96 quad, a floor flame: 0x8002561C's 512; their cells as the sim names them)
+                (Kind::Spark, 1..) if o.count < 8 => sprite(&d.ember, o.count, ps1(o.at), 0.096, Blend::Add, false),
+                (Kind::Spark, 1..) => sprite(&d.ember_end, o.count - 8, ps1(o.at), 0.096, Blend::Add, false),
+                (Kind::FloorFlame, 1..) if o.count < 8 => sprite(&d.ember, o.count, ps1(o.at), 0.512, Blend::Add, false),
+                (Kind::FloorFlame, 1..) => sprite(&d.floor_flame_end, o.count - 8, ps1(o.at), 0.512, Blend::Add, false),
                 // (one quad: the object's two are the two frame buffers' copies, 0x80072D5C; a pack before format 13,
                 // without the mist's palette, draws it as the gas)
                 (Kind::Mist(b), 1..) => sprite(

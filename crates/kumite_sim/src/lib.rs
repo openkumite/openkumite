@@ -3990,11 +3990,13 @@ impl Fight {
         // (Tekken Tag's victim of a chain throw's next part, stage < 0, keeps its origin and facing, 0x36B828)
         let (kept, old_turn, origin, root) = (fj.tag_rules(gd) && chain < 0, fj.current_move(gd).next.hi, fj.position, fj.root());
         if let Some(alias) = victim_alias {
-            let started = if Arc::ptr_eq(&owner, &fj.moveset) || *owner.moveset_id.as_ref().unwrap_or(&-1) == fj.moveset.moveset_id.unwrap_or(-2) {
-                fj.play_alias(alias)
-            } else {
-                fj.play_partner_alias(alias, owner)
-            };
+            // (Tekken 3 takes it from the victim's own merged table, 0x8002D75C -> 0x8002D178: its own entry, else the
+            // thrower's; Gon's 1+3 gives Paul his own common move)
+            let entry = fj.moveset.aliases.as_ref().and_then(|a| a.get(alias));
+            let own = !fj.tag_rules(gd) && entry.is_some_and(|r| matches!(r.bank, Bank::Own | Bank::Common))
+                || Arc::ptr_eq(&owner, &fj.moveset)
+                || *owner.moveset_id.as_ref().unwrap_or(&-1) == fj.moveset.moveset_id.unwrap_or(-2);
+            let started = if own { fj.play_alias(alias) } else { fj.play_partner_alias(alias, owner) };
             if started {
                 // a thrown fighter stays down (0x80030910): the stun timer runs over the thrower's hold frame plus
                 // the victim move (else the thrower's move), the pool from its damage word (a throw's type bits:

@@ -200,6 +200,20 @@ fn kings_grounded_throw_takes_jin_lying_as_on_the_ps1() {
     assert!(at(&t, 673, 1192, 0).6.starts_with("motion_186@") && at(&t, 673, 1192, 1).6.starts_with("motion_187@"));
 }
 
+/// Gon's 1+3 on Paul: the victim's alias comes from Paul's own merged table (0x8002D75C -> 0x8002D178), his own
+/// common move (common_140, Paul's height at Gon's size); Gon's own victim move (motion_047) put Paul up to 862 off.
+/// The heights are the PS1's (t3sim42's g2gon re-recording); its x and z stay 40 and 4 off from the fight's start.
+#[test]
+fn gons_throw_takes_pauls_own_victim_move_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let p1 = "n*223,f*40,n+1+3*2,n*255,d/b+1+3*2,n*64,d/b+1+3*2,n*120";
+    let t = rows(&a, [239, 71], None, 1, p1, "n*800", 360);
+    for (row, y) in [(1235, -858), (1249, -3093), (1259, -3345), (1281, -1313)] {
+        assert_eq!(at(&t, 938, row, 1).1, y, "PS1 row {row}");
+    }
+    assert!(at(&t, 938, 1249, 1).6.starts_with("common_140@"));
+}
+
 /// Lei (P1) taps up near the end of the later rounds' start move (240 frames from frame 1, 0x8002D3DC; it kept the
 /// last 150): its END window is open from frame 60, so the stance's sidestep is taken there without a new press
 /// (0x8002DB74), and the sidesteps go round Julia as on the PS1's rows (it waited for the move's end).
