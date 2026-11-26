@@ -165,7 +165,8 @@ pub enum Kind {
 }
 
 /// One object: its owner (fighter 0 / 1; a brawl's actor), where it is and was a frame before (game units, world), its travel a frame,
-/// its state (+0xE: the fire's 1 growing, 2 looped, 4 ending), frame counter (+0x48) and frames (+0x40, +0x44).
+/// its state (+0xE: the fire's 1 growing, 2 looped, 4 ending), frame counter (+0x48) and frames (+0x40, +0x44). A spark's
+/// and a floor flame's `count` is the cell its UV table named this frame: its loop's 0-7, its end's from 8.
 #[derive(Clone, Debug)]
 pub struct Object {
     pub kind: Kind,
@@ -537,6 +538,8 @@ impl Objects {
             vel = heading(o.angles, ((r >> 12) & 0x3FF) * 5 / 4 + 0x200);
         }
         o.frames += 1;
+        // (the UVs: 0x8002553C by frames & 0xE, then 0x8002554C a frame each, 0x80071CA8 / 0x80071D80)
+        o.count = if o.state == 1 { (o.frames & 0xE) >> 1 } else { 8 + o.frames };
         if o.state == 1 && o.frames >= o.left {
             (o.frames, o.state) = (-1, 2);
         } else if o.state == 2 {
@@ -666,12 +669,15 @@ impl Objects {
         }
         if o.state == 1 {
             o.frames += 1;
+            // (the spark's loop's UVs, 0x80072828; the end's 0x800255FC a frame each, 0x80072900)
+            o.count = (o.frames & 0xE) >> 1;
             o.left -= 1;
             if o.left < 0 {
                 (o.frames, o.state) = (-1, 2);
             }
         } else {
             o.frames += 1;
+            o.count = 8 + o.frames;
             over = o.frames >= 0x10;
             if !over {
                 rise -= 0x24000;
@@ -911,6 +917,29 @@ mod tests {
         assert!(o.list.iter().any(|x| x.kind == Kind::Trail) && o.list.iter().all(|x| x.state == 1));
         assert_eq!(o.seed, draws(&start, 3 + 2 * o.list.len()));
         assert_eq!(o.glows.iter().filter(|g| g.1).count(), 3);
+    }
+
+    /// A spark names its loop's cells two frames each (0x8002553C), then its end's twelve a frame each (0x8002554C); a
+    /// floor flame its loop's from its random phase, then its end's sixteen (0x800255FC).
+    #[test]
+    fn sparks_and_floor_flames_name_their_cells_as_on_the_ps1() {
+        let mut o = Objects { seed: 7, ..Default::default() };
+        o.let_out(0, Kind::Spark, [0, -30000, 0], [0x400, 0]);
+        let mut x = o.list.remove(0);
+        let mut cells = Vec::new();
+        while o.spark(&mut x) {
+            cells.push(x.count);
+        }
+        let n = x.left as usize;
+        assert!(cells[..n].iter().enumerate().all(|(k, &c)| c == ((k as i32 + 1) & 0xE) >> 1), "{cells:?}");
+        assert_eq!(cells[n..], (8..20).collect::<Vec<_>>()[..], "{cells:?}");
+        o.let_out(0, Kind::FloorFlame, [0; 3], [0; 2]);
+        let mut x = o.list.remove(0);
+        let mut cells = Vec::new();
+        while o.floor_flame(&mut x) {
+            cells.push(x.count);
+        }
+        assert!(cells[..cells.len() - 16].iter().all(|c| (0..8).contains(c)) && cells.ends_with(&(8..24).collect::<Vec<_>>()), "{cells:?}");
     }
 
     /// Tekken Tag's mist moves 48 a frame for 21 frames, striking its first 15 moves while its owner is in the move.
