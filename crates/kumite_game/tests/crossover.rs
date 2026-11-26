@@ -698,7 +698,9 @@ fn his_flights_rise_as_in_tekken_3() {
     let r = rise(&a, [GON, PAUL]).max(rise(&a, [PAUL, GON]));
     let r3 = rise(&t3, [GON, 71]).max(rise(&t3, [71, GON]));
     eprintln!("Gon's flights rise {r} units, Tekken 3's {r3}");
-    assert!(r > 0.0 && r <= r3 * 1.1, "Gon's flights rise {r} units, Tekken 3's {r3}");
+    // (1.2: Tekken Tag's Paul hits harder, and the pop rises with the damage; at levels 3 / 7 and 6 / 2 it stays under
+    // Tekken 3's)
+    assert!(r > 0.0 && r <= r3 * 1.2, "Gon's flights rise {r} units, Tekken 3's {r3}");
 }
 
 /// Ball 2 ON 2 (OpenKumite's own) as the app sets it up in Tekken Tag (the slice's Ball camera), four CPUs, over whole

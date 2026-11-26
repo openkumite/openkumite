@@ -376,3 +376,25 @@ fn a_strike_is_placed_before_the_push_as_on_the_ps1() {
     let r = at(&t, 601, 885, 0);
     assert_eq!((r.0, r.1, r.2, r.5), (-264, -817, 1398, 9175040), "PS1 row 885");
 }
+
+/// Heihachi juggles Yoshimitsu, still sliding at 10 a frame from the hit before: the air hit's pushback (no constant
+/// part) leaves that slide (+0x106 frames at +0x108, 0x8003F798) running out in its own direction, on the sine table,
+/// through the flight. Ours stopped it, 9 short a frame (971 off by the landing).
+#[test]
+fn an_air_hit_keeps_the_slide_going_on_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [179, 107], None, 1, "n*151,f*40,d/f+2*2,n*40,f+1*2,n*40,d+4*2,n*172", "n*152,b*40,n+3*2,n*30,u+1*2,n*224", 300);
+    let r = at(&t, 455, 706, 1);
+    assert_eq!((r.0, r.1, r.2), (1334, -2170, 0), "PS1 row 706");
+}
+
+/// Eddy's u+3 whiffs Lei: once landed past its active frames the jumping attack stops turning (0x8003FD80: by its
+/// damage +0x5E, not by a contact). Ours kept re-aiming, 563 off.
+#[test]
+fn a_landed_jump_attack_stops_turning_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [139, 123], None, 1, "n*246,f*37,d+4*2,n*40,u+3*2,n*40,f+1*2,n*174", "n*247,b*37,n+2*2,n*30,d+4*2,n*226", 400);
+    // (the PS1 holds 20370 from row 959; ours stops a turn step late, 25 off)
+    let f: Vec<i16> = [965, 975, 985].map(|row| at(&t, 598, row, 0).3).to_vec();
+    assert!(f.iter().all(|&y| (i32::from(y) - 20370).abs() <= 25), "{f:?}");
+}

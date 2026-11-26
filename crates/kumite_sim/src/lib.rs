@@ -1474,9 +1474,10 @@ impl Fighter {
                 });
                 Some((clamp(to_opp / n, k), 0x9554))
             }
-            // after start-up: re-aim every 5 frames at ≤ 3°/frame (0x8003FD80)
+            // after start-up: re-aim every 5 frames at ≤ 3°/frame (0x8003FD80); a jumping attack (+0x5E, its damage)
+            // stops turning once landed past its active frames
             6 => {
-                if self.connected && j0 != 0 && !airborne && frame >= a1 {
+                if self.current_move(gd).damage != 0 && self.current_move(gd).damage_type != 1 && j0 != 0 && !airborne && frame >= a1 {
                     self.turn = None;
                 } else if frame > a0 && (frame - a0) % 5 == 0 && off < 0x5556 {
                     let m = if len - frame < 6 { 5 } else { len - frame };
@@ -1715,7 +1716,10 @@ impl Fighter {
         f.frame = start.max(1) as u32;
         f.air = Some(Air { drift, y: y0, down: -vy as f32, target, spike, kind, step: [0; 2] });
         f.juggle += 1;
-        f.pushback = None;
+        // (Tekken 3's pushback of the launching hit goes on through the flight, 0x8003F820)
+        if f.tag_rules(gd) {
+            f.pushback = None;
+        }
     }
 
     /// Where the fighter's root is drawn and its attacks originate: position + current root-motion offset.
@@ -2390,6 +2394,18 @@ impl Fighter {
             (self.juggle, self.juggle_bias) = (0, 0); // landed: the juggle counter starts again
         }
         self.hit_flash = self.hit_flash.saturating_sub(1);
+    }
+
+    /// A new pushback. Tekken 3's without a constant part leaves the one going on (+0x106 frames at +0x108, 0x8003F798)
+    /// to run out in the new direction.
+    fn set_pushback(&mut self, gd: &GameData, p: Option<Pushback>) {
+        let left = self.pushback.as_ref().map_or((0, 0), |o| (o.curve.constant_frames - o.frame, o.curve.velocity));
+        self.pushback = p.map(|mut p| {
+            if !self.tag_rules(gd) && p.curve.constant_frames == 0 && left.0 > 0 {
+                (p.curve.constant_frames, p.curve.velocity) = left;
+            }
+            p
+        });
     }
 
     /// One frame of the pushback from a hit or block, along its direction.
@@ -4412,7 +4428,13 @@ impl Fight {
                 }
                 let away = -glam::Vec2::new(to_attacker.x, to_attacker.z).normalize_or_zero();
                 let curve = PushbackCurve { index: 0, constant_frames: 0, velocity: 0, impulses };
-                self.fighters[v].pushback = Some(Pushback { curve, frame: 0, direction: away, tag: None });
+                // (Tekken 3's straight away on the sine table, as any pushback's +0x10C, 0x8003F820)
+                let fv = &self.fighters[v];
+                let tag = (!fv.tag_rules(gd)).then(|| {
+                    let a = (fv.geometry16(fv.root(), self.fighters[a].root()).0 - 0x8000) >> 4;
+                    [ball::sin12(a), -ball::cos12(a)].map(|v| v.clamp(-0xFFF, 0xFFF) * 8)
+                });
+                self.fighters[v].set_pushback(gd, Some(Pushback { curve, frame: 0, direction: away, tag }));
             } else {
                 let (slot, curve, angle) = if blocked {
                     (10 + st, param(6), param(0))
@@ -4504,7 +4526,8 @@ impl Fight {
                 let to = if fv.tag_rules(gd) { ((PI - fv.seen.unwrap_or_else(|| fv.geometry().0)) / ANGLE).round() as i32 } else { fv.geometry16(fv.root(), self.fighters[a].root()).0 };
                 let a = (to + angle - 0x8000) >> 4;
                 let tag = Some([ball::sin12(a), -ball::cos12(a)].map(|v| v.clamp(-0xFFF, 0xFFF) * 8));
-                self.fighters[v].pushback = gd.reactions.pushback_curves.entries.iter().find(|c| c.index as i32 == curve_ref).map(|curve| Pushback { curve: curve.clone(), frame: 0, direction, tag });
+                let p = gd.reactions.pushback_curves.entries.iter().find(|c| c.index as i32 == curve_ref).map(|curve| Pushback { curve: curve.clone(), frame: 0, direction, tag });
+                self.fighters[v].set_pushback(gd, p);
             }
             self.fighters[v].struck_in_move = true;
             self.fighters[v].reacting = true;
