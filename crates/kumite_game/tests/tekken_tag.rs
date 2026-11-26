@@ -596,6 +596,106 @@ fn the_tracking_reads_last_frames_jump_window() {
     assert_eq!(seen, [16944, 17064, 17064]);
 }
 
+/// An END link takes the facing into the basis even when the move left has no turn (+0x12 0, 0x36AA48): Eddy rising
+/// from d+3 (1141) into 2816 lays its root motion along +0x1A 20459, his facing then, and walks on to PCSX2's
+/// (149, 690) at 2789's frame 10 (with the old basis 23903 he went ~19 degrees off).
+#[test]
+fn an_end_link_with_no_turn_takes_the_facing_as_basis() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [450, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let u = |y: f32| ((std::f32::consts::PI - y) * 32768.0 / std::f32::consts::PI).round() as i32 & 0xFFFF;
+    let mut seen = Vec::new();
+    for pad in parse_script("n*61,f*30,n*2,d*20,d+3*2,d*6,n*59").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        if f.current.index == 2816 && f.frame == 1 {
+            seen.push((u(f.root_yaw), 0));
+        }
+        if f.current.index == 2789 && f.frame == 10 {
+            seen.push((f.root().x as i32, -f.root().z as i32));
+        }
+    }
+    assert_eq!(seen, [(20459, 0), (149, 690)]);
+}
+
+/// A tag throw's swap (6403): the incoming partner takes the leaving one's last facing angle +0x3A as facing and basis,
+/// as in PCSX2 (+0x1A 49615 on 6403's frame 2, the partner off at z 1086), not the angle from its origin (49631).
+#[test]
+fn the_tag_throws_partner_comes_in_on_the_leaving_ones_angle() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [585, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let u = |y: f32| ((std::f32::consts::PI - y) * 32768.0 / std::f32::consts::PI).round() as i32 & 0xFFFF;
+    let mut seen = None;
+    for pad in parse_script("n*61,f*60,n*2,2+5*2,n*80").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters[0];
+        if f.current.index == 6403 && f.frame == 2 {
+            seen = Some((u(f.root_yaw), -f.root().z as i32));
+        }
+    }
+    assert_eq!(seen, Some((49615, 1086)));
+}
+
+/// The pose ease holds while a fighter struck in its move (+0xF3, kept by a move started on the frame after the
+/// strike) is in the move's jump window (+0x135): Hwoarang, thrown by Kazuya's tag throw, rolls off in 5286 (window
+/// 1-20) with no ease toward the next move until frame 21 (PCSX2's +0xB5DC 3 from frame 21, 10 frames), and the
+/// pair's push then splits as there (P2 x 299 on Paul's 6431 frame 55, 301 with the ease from frame 15).
+#[test]
+fn a_struck_fighter_holds_the_ease_through_its_jump_window() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [585, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let (mut eased, mut x) = (Vec::new(), None);
+    for pad in parse_script("n*61,f*60,n*2,2+5*2,n*130").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        if f[1].current.index == 5286 && (19..=22).contains(&f[1].frame) {
+            eased.push(f[1].eased().is_some());
+        }
+        if f[0].current.index == 6431 && f[0].frame == 55 {
+            x = Some(f[1].root().x as i32);
+        }
+    }
+    assert_eq!((eased, x), (vec![false, false, true, true], Some(299)));
+}
+
+/// A hit reaction's commit always marks a new motion in Tekken Tag (+0xF8 1 -> +0x134, 0x36A9A0), so a re-hit into the
+/// same reaction ends the ease toward the next move: Hwoarang, struck again in 4565 by Kazuya's 1523, keeps no ease
+/// (PCSX2's +0xB5DC 0) and the push of 1523's frame 6 moves him to x 2494, as there (2426 with the ease running on).
+#[test]
+fn a_rehit_into_the_same_reaction_ends_its_ease() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [585, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
+    }
+    let mut x = None;
+    for pad in parse_script("n*61,f*30,n*2,1*2,n*7,1*2,n*9,2*2,n*8,4*2,n*30").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        if f[0].current.index == 1523 && f[0].frame == 6 {
+            x = Some(f[1].root().x as i32);
+        }
+    }
+    assert_eq!(x, Some(2494));
+}
+
 /// The incoming partner keeps the entrance's tracking mode (+0x11E 8): Paul, tagged in for Wang, turns his body +0x3C
 /// toward Hwoarang each frame of his entrance (4936) while the basis +0x1A stays, as in PCSX2: +0x3C 16384, 16399,
 /// 16543 on its frames 1, 12, 25, +0x1A 16384 throughout.

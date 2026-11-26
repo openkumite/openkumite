@@ -692,6 +692,9 @@ pub struct Fighter {
     /// 0x800442D8); the own attack reached its last active frame without contact (+0xD2, 0x80044374).
     pub struck: bool,
     pub struck_in_move: bool,
+    /// Tekken Tag: struck by the last hit pass or throw damage (+0x12F, 0x371F5C): a move started on the frame after
+    /// keeps +0xF3 (`struck_in_move`, 0x36A8EC).
+    struck_last: bool,
     pub whiffed: bool,
     /// The body push moved the pair apart this frame (+0x3E8..+0x3F0 non-zero).
     pub pushed: bool,
@@ -827,6 +830,7 @@ impl Fighter {
             chain: 0,
             struck: false,
             struck_in_move: false,
+            struck_last: false,
             whiffed: false,
             pushed: false,
             early_end: None,
@@ -1125,8 +1129,8 @@ impl Fighter {
             self.yaw += PI;
             self.root_yaw += PI;
         }
-        // (Tekken 3 sets the basis to the facing with no turn too, 0x8002F9F0)
-        if (end || buffered) && t != 0x22 && (old_turn != 0 || !self.tag_rules(gd)) {
+        // (with no turn too: the basis takes the facing, Tekken 3's 0x8002F9F0, Tekken Tag's 0x36AA48)
+        if (end || buffered) && t != 0x22 {
             // the game's angles run the other way round on OpenKumite's flipped z (Tekken Tag's 0x36AA48 adds +0x12
             // to +0x3C, Tekken 3's 0x8002F9F0 to +0x2C)
             self.yaw -= old_turn as f32 * ANGLE;
@@ -1601,7 +1605,7 @@ impl Fighter {
         self.connected = false;
         self.landed = None;
         self.landed_counter = false;
-        self.struck_in_move = false;
+        self.struck_in_move &= self.struck_last;
     }
 
     /// Jumps and hops drift (0x8003F3A8): from the frame before the jump window to its end, the move's +0x16
@@ -2469,6 +2473,7 @@ impl Fighter {
         };
         let (m, frame, last) = (self.current_move(gd), self.frame as i32, self.ease_last);
         let (fl, frames, active, next) = (if tag { m.flags24.tag } else { m.flags24.raw >> 8 }, m.frames as i32, m.active.map(|a| a as i32), m.next.alias);
+        let (j0, j1) = (m.bytes_18.jump_start as i32, m.bytes_18.jump_end as i32);
         let last_move = last.and_then(|c| self.moves(gd, c.bank).moves.get(c.index));
         // +0x134: a new motion started (0x36A9A0; Tekken 3's +0xDA, 0x8002F900)
         let new_motion = if tag { self.new_motion || self.started_with.is_some_and(|t| matches!(t & 0x3F, 1 | 3) || last_move.is_some_and(|l| l.anim != m.anim)) } else { self.new_motion };
@@ -2478,11 +2483,10 @@ impl Fighter {
         let ko = self.health <= 0;
         // no ease from the pose shown (a3), none toward the next move (s2). shortcut: player +0x17E (transition bit
         // 0x4000, Unknown's only) is left out
+        // (+0x135 && +0xF3: juggled or in the move's jump window, struck in it)
+        let airborne = self.juggle != 0 || self.air.is_some() || j0 != 0 && (j0..=j1).contains(&frame);
         let (cut, hold) = if tag {
-            (
-                fl & 0x181 != 0 || self.reacting || last_fl & fl & 0x40 != 0 || ko,
-                fl & 2 != 0 || (active[0] != 0 && frame <= active[1]) || self.juggle != 0 || (self.air.is_some() && self.reacting) || ko,
-            )
+            (fl & 0x181 != 0 || self.reacting || last_fl & fl & 0x40 != 0 || ko, fl & 2 != 0 || (active[0] != 0 && frame <= active[1]) || self.juggle != 0 || airborne && self.struck_in_move || ko)
         } else {
             // Tekken 3 (0x8003C87C, 0x8003C9B4): the move's +0x24 bits 0x100 / 0x200, juggled (+0x94), struck in the air
             // (+0xDB, +0x87)
@@ -3243,9 +3247,9 @@ impl Fight {
             log::warn!("P{}: the incoming partner has no entrance (alias {entrance})", i + 1);
         }
         f.offset = out.offset;
-        // facing the opponent: +0x3A between the roots drawn last frame (0x371330)
+        // facing the opponent: the leaving one's +0x3A, the angle between the roots drawn last frame (0x371330)
         let d = f.opponent.root - f.position;
-        let a = PI - tag_atan(d.x as i32, -d.z as i32) as f32 * ANGLE;
+        let a = out.seen.unwrap_or_else(|| PI - tag_atan(d.x as i32, -d.z as i32) as f32 * ANGLE);
         (f.yaw, f.root_yaw) = (a, a);
         // the player block keeps the entrance's tracking mode (+0x11E, 8 in PCSX2): the body +0x3C turns on toward the
         // opponent each frame, the basis +0x1A stays
@@ -3635,6 +3639,10 @@ impl Fight {
                 }
             }
         }
+        // (+0x12F is cleared as the hit pass starts, 0x371DBC: the moves above saw last frame's)
+        for f in &mut self.fighters {
+            f.struck_last = false;
+        }
         self.throw_damage(&gd);
         if self.ball.is_some() {
             self.ball_fighters();
@@ -3894,6 +3902,7 @@ impl Fight {
                 v.health = (v.health - damage * ONE).clamp(0, v.max_health);
             }
             v.hit_flash = 8;
+            (v.struck_in_move, v.struck_last) = (v.struck_in_move || gd.tag_moves, gd.tag_moves);
             log::info!("P{} takes {damage} from P{} {anim} (throw) -> health {}", 2 - i, i + 1, v.health / ONE);
             let point = v.root() + Vec3::Y * 900.0;
             self.hits.push(HitEvent {
@@ -4327,6 +4336,7 @@ impl Fight {
             }
             if mv.damage_type == 1 {
                 self.fighters[1 - a].struck_in_move = true;
+                self.fighters[1 - a].struck_last = gd.tag_moves;
                 // a throw attempt: contact only (+0xD1); its command list links the throw (reactions.md §5.1)
                 continue;
             }
@@ -4486,9 +4496,9 @@ impl Fight {
                         let fv = &mut self.fighters[v];
                         let old = fv.current_move(gd).anim.clone();
                         fv.start_reaction(to, alias);
-                        // (the reaction commit sets Tekken 3's +0xDA, Tekken Tag's +0x134, when its motion is another,
-                        // 0x8002F900, 0x36A9A0: the hold steps' ease sees it)
-                        fv.new_motion |= fv.current_move(gd).anim != old;
+                        // (the reaction commit sets Tekken 3's +0xDA when its motion is another, 0x8002F900; Tekken Tag's
+                        // +0x134 always, its +0xF8 1, 0x368C30 -> 0x36A9A0: the hold steps' ease sees it)
+                        fv.new_motion |= fv.tag_rules(gd) || fv.current_move(gd).anim != old;
                         // blocks and counter hits (0x800309E4, 0x80030C8C): the root basis on the attacker, and the
                         // body turning to it while it reels (mode 7); Tekken Tag's basis is the facing pass's target
                         // +0x44 (0x36B8FC), not one from the roots now; Tekken 3's the target +0x34 on both roots as
@@ -4549,6 +4559,7 @@ impl Fight {
                 self.fighters[v].set_pushback(gd, p);
             }
             self.fighters[v].struck_in_move = true;
+            self.fighters[v].struck_last = gd.tag_moves;
             self.fighters[v].reacting = true;
             let what = if blocked {
                 "blocks"
