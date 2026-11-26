@@ -176,6 +176,12 @@ impl Animations for FighterAnims<'_> {
         step_flap(self.own, other, &shown, &mut pose, self.flap.next());
         step_springs(self.own, &mut pose, place, self.springs);
         let mut v = volumes(self.own, &pose, place);
+        // (Tekken Tag's fire and mist start at the drawn node 13, 0x3A4EE8: after the neck split, PCSX2 to the unit)
+        let nodes = &self.own.character.nodes;
+        if !self.own.bones.is_empty() && head::TagLook::fits(|n| nodes.get(n)?.parent) {
+            head::split_neck(nodes, &mut pose);
+            v.slots[0] = volumes(self.own, &pose, place).slots[0];
+        }
         if let Some(c) = t3 {
             let turns = f.eased().map_or_else(|| t3pose::locals(c), |e| e.0);
             let r = f.root();
@@ -2174,8 +2180,6 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
         Mat4::from_cols(m.x_axis, m.y_axis, m.z_axis, (m.w_axis.truncate() * UNITS).extend(1.0))
     };
     // Tekken Tag's fire and mist start at the drawn node 13 on the head (player +0x1770 = +0xDB0 + 13 * 0xC0, 0x3A4EE8).
-    // shortcut: the game's mouth (nodes 7-13) opens as it breathes (PCSX2: node 13 up to 120 off ours); port its
-    // turns (0x351E98) when the fire must land to the unit
     let head = if body.bones.is_empty() { None } else { body.character.nodes.iter().position(|n| n.name == "node_13") };
     BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones, slots: [slot(head.unwrap_or(body.chest)), slot(body.pelvis)], joints: Vec::new(), head: None }
 }

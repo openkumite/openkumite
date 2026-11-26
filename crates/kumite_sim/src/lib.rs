@@ -4900,6 +4900,10 @@ pub(crate) fn step_objects(objects: &mut objects::Objects, gd: &GameData, fighte
         objects.started[i] = key;
         striking[i] = (f.frame >= mv.active[0]).then_some(byte);
     }
+    // (Tekken Tag: the runner after the fight frame moves the tasks and registers their segments, 0x346608)
+    if !t3 {
+        objects.registered = Some(objects.list.iter().filter(|o| o.strikes).map(|o| (o.owner, o.prev, o.pos)).collect());
+    }
     objects.step(&striking, struck, t3);
 }
 

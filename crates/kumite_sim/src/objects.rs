@@ -216,6 +216,9 @@ pub struct Objects {
     /// objects: where each is (its joint slot this frame, [`Objects::joints`]), whether it shows and its frames shown
     /// (+0x44, its palette step).
     pub glows: [([i32; 3], bool, i32); 8],
+    /// Tekken Tag: the striking objects' travel the task runner registered after the last fight frame (0x346230,
+    /// owner and segment), which this frame's hit pass reads (0x3770E0); None for Tekken 3.
+    pub registered: Option<Vec<(usize, Vec3, Vec3)>>,
 }
 
 impl Objects {
@@ -827,6 +830,9 @@ impl Objects {
 
     /// Fighter `owner`'s strikes this frame: its striking objects' travel.
     pub fn strikes(&self, owner: usize) -> Vec<(Vec3, Vec3)> {
+        if let Some(r) = &self.registered {
+            return r.iter().filter(|s| s.0 == owner).map(|s| (s.1, s.2)).collect();
+        }
         self.list.iter().filter(|o| o.owner == owner && o.strikes && (o.kind != Kind::Breath || self.field == (o.owner % 2 == 1))).map(|o| (o.prev, o.pos)).collect()
     }
 }
