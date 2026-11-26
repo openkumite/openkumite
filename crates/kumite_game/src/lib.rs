@@ -1264,7 +1264,7 @@ impl Game {
         }
         self.looks = Default::default();
         self.wolves = Default::default();
-        // (the wave's counter starts again with the round's start motion, PCSX2's +0xB120)
+        // (the wave's counter starts again with the round's start motion: PCSX2 calls 0x363150 at round 2's set-up, +0xB120)
         // shortcut: the PS2 starts it again with the win poses too; upgrade where they start
         // (Tekken 3's, P+0x1294, runs on from the fight's load: the PS1's counted on into round 2)
         for (f, b) in self.flaps.iter_mut().zip(&self.bodies) {
