@@ -437,6 +437,18 @@ fn an_air_hit_flies_along_the_line_to_the_striker_as_on_the_ps1() {
     }
 }
 
+/// Gun Jack blocks Xiaoyu's 2 and then her 4 in the same block motion: the hit pass's +0x8B 1 (0x80045394) makes the
+/// commit set +0xDA (0x8002F910) with the motion the same, which ends the ease toward the end of the first block.
+/// Ours went on easing over the second one, 94 too high.
+#[test]
+fn a_second_block_ends_the_ease_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [131, 211], None, 1, "n*198,f*60,n+1*2,n*10,n+2*2,n*30,n+4*2,n*94", "n*399", 300);
+    for (row, want) in [(916, -942), (922, -942), (929, -978)] {
+        assert_eq!(at(&t, 632, row, 1).1, want, "PS1 row {row}");
+    }
+}
+
 /// Law, juggled by Paul, is hit again in the air: the flight's next step still takes the drift found the frame
 /// before (+0x9A / +0x9E, 0x8003F268) on top of the new pop's. Ours started the new flight from none, 28 short.
 #[test]

@@ -4511,11 +4511,11 @@ impl Fight {
                         let pair = self.extra.is_none();
                         let at = self.fighters[a].root();
                         let fv = &mut self.fighters[v];
-                        let old = fv.current_move(gd).anim.clone();
                         fv.start_reaction(to, alias);
-                        // (the reaction commit sets Tekken 3's +0xDA when its motion is another, 0x8002F900; Tekken Tag's
-                        // +0x134 always, its +0xF8 1, 0x368C30 -> 0x36A9A0: the hold steps' ease sees it)
-                        fv.new_motion |= fv.tag_rules(gd) || fv.current_move(gd).anim != old;
+                        // (the reaction commit sets Tekken 3's +0xDA, the hit pass's +0x8B 1, 0x80045394, 0x8002F910;
+                        // Tekken Tag's +0x134, its +0xF8 1, 0x368C30 -> 0x36A9A0; the motion the same too: the hold
+                        // steps' ease sees it)
+                        fv.new_motion = true;
                         // blocks and counter hits (0x800309E4, 0x80030C8C): the root basis on the attacker, and the
                         // body turning to it while it reels (mode 7); Tekken Tag's basis is the facing pass's target
                         // +0x44 (0x36B8FC), not one from the roots now; Tekken 3's the target +0x34 on both roots as
