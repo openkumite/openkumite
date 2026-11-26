@@ -3132,6 +3132,12 @@ fn atan16(dx: i32, dz: i32, table: impl Fn(i32) -> i32) -> i32 {
     }) & 0xFFFF
 }
 
+/// The drawn root Tekken Tag's body push measures a step from (+0x51C..+0x524: its height in, as eased, so a stance's
+/// bob counts as a step).
+fn push_place(f: &Fighter) -> Vec3 {
+    f.root() + Vec3::Y * f.eased().map_or(f.anim_root_y, |e| f.anim_root_y + e.1)
+}
+
 fn sight_of(o: &Fighter, gd: &GameData) -> Opponent {
     let posture = o.posture(gd);
     let airborne = posture & posture::AIRBORNE != 0 || o.air.is_some() || o.airborne_flag(gd);
@@ -3652,6 +3658,12 @@ impl Fight {
             // the hit pass (Tekken Tag's 0x371D68, Tekken 3's 0x80044008) strikes in the pose made before the push
             // moves the bodies (0x34F3D8, then 0x371C68; Tekken 3's spheres 0x80041F6C, then 0x8003EC64)
             posed = self.extra.is_none().then_some(now);
+        } else if gd.tag_push {
+            // (Tekken Tag measures the push's steps from the places the pair leaves a throw at: 0x3772F0 keeps the
+            // roots each frame no one is in a throw, +0xE0)
+            for f in &mut self.fighters {
+                f.push_prev = Some(push_place(f));
+            }
         }
         if let (true, Some((_, body, _))) = (extra_on && self.link.is_none(), extra) {
             self.swap_extra();
@@ -4118,8 +4130,7 @@ impl Fight {
                 }
             }
         }
-        // (the drawn roots, +0x51C..+0x524: their height in, as eased, so a stance's bob counts as a step)
-        let drawn = |f: &Fighter| f.root() + Vec3::Y * f.eased().map_or(f.anim_root_y, |e| f.anim_root_y + e.1);
+        let drawn = push_place;
         let roots = [drawn(&self.fighters[0]), drawn(&self.fighters[1])].map(point);
         // (the basis +0x1A, not the body's facing +0x3C: a jump's re-aim turns only the body, 0x36FEE4)
         // (as 0x377338: the s16 angle over 16, cut toward zero)
