@@ -589,7 +589,33 @@ fn a_link_takes_the_mark_the_last_queue_left() {
     }
 }
 
+/// King's chain throw (b+1+2, then 1+3): its next part's victim (alias 4181) keeps its own origin and facing 16384
+/// (0x36B828), not the thrower's 16399; frames 80, 81 as in PCSX2 (81 was (3618, 443): the last key's heading is
+/// stored whole).
+#[test]
+fn a_chain_throw_victim_keeps_its_facing() {
+    let script = "n*61,f*60,n*2,b+1+2*1,1+2*1,n*16,1+3*2,n*199";
+    if assets().is_some() {
+        assert_eq!(play_pair([384, 426], [script, ""], 1, 4181, &[80, 81]), [(3615.0, 445.0), (3617.0, 446.0)]);
+    }
+}
+
+/// Paul's reversal of Hwoarang's 2: Hwoarang's +0x3A is Paul's less 0x8000 (0x371330 runs on player 1), 49152
+/// straight down the x axis (its own atan2 gives 49151), so as the victim (alias 4621) he faces 16384; PCSX2's roots.
+#[test]
+fn player_2_sees_player_1s_angle_turned_round() {
+    let p1 = "n*62,f*30,n*2,b+1+3*2,n*121";
+    if assets().is_some() {
+        assert_eq!(play_pair([PAUL, 426], [p1, "n*92,2*2,n*123"], 1, 4621, &[30, 50]), [(324.0, 643.0), (382.0, 1665.0)]);
+    }
+}
+
 fn play_tag(m: [usize; 2], script: &str, alias: usize, frames: &[u32]) -> Vec<(f32, f32)> {
+    play_pair(m, [script, ""], 0, alias, frames)
+}
+
+/// Fighter `who`'s root (x, the game's z) on the given frames of alias `alias`, each player playing its script.
+fn play_pair(m: [usize; 2], scripts: [&str; 2], who: usize, alias: usize, frames: &[u32]) -> Vec<(f32, f32)> {
     let Some(a) = assets() else { return Vec::new() };
     let mut g = Game::load(&a, m).unwrap();
     g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
@@ -598,9 +624,10 @@ fn play_tag(m: [usize; 2], script: &str, alias: usize, frames: &[u32]) -> Vec<(f
         b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
     }
     let mut seen = Vec::new();
-    for pad in parse_script(script).unwrap() {
-        b.step([pad, Pad::default()]);
-        let f = &b.game.fight.fighters[0];
+    let [p1, p2] = scripts.map(|s| parse_script(s).unwrap());
+    for (k, pad) in p1.into_iter().enumerate() {
+        b.step([pad, p2.get(k).copied().unwrap_or_default()]);
+        let f = &b.game.fight.fighters[who];
         if f.alias == alias && frames.contains(&f.frame) && seen.len() < frames.len() {
             seen.push((f.root().x, -f.root().z));
         }

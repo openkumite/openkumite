@@ -1311,7 +1311,8 @@ impl Fighter {
     /// mode the commit chose (switch 0x8003F890, facing_re §3).
     /// `seen`: both roots before this frame's root motion (mine, the opponent's): the angle between them is taken
     /// before the roots move (Tekken 3's 0x8003F0DC before 0x8003A818; Tekken Tag's +0x3A, 0x371330, before 0x34E748).
-    fn track(&mut self, gd: &GameData, seen: Option<[Vec3; 2]>) {
+    /// `second`: Tekken Tag's player 2, whose +0x3A is player 1's less 0x8000 (0x371330 runs on player 1).
+    fn track(&mut self, gd: &GameData, seen: Option<[Vec3; 2]>, second: bool) {
         if !self.tag_rules(gd) {
             self.track_t3(gd, seen);
             return;
@@ -1319,7 +1320,8 @@ impl Fighter {
         let (a2a, off, target) = match seen {
             Some([me, opp]) => {
                 let d = opp - me;
-                self.seen = (d.x * d.x + d.z * d.z > 1.0).then(|| PI - tag_atan(d.x as i32, -d.z as i32) as f32 * ANGLE);
+                let a = if second { (tag_atan(-d.x as i32, d.z as i32) - 0x8000) & 0xFFFF } else { tag_atan(d.x as i32, -d.z as i32) };
+                self.seen = (d.x * d.x + d.z * d.z > 1.0).then_some(PI - a as f32 * ANGLE);
                 let (a, off, target) = self.geometry_from(self.seen);
                 // (the pair distance gp-0x74C8 is the integer square root)
                 if self.basis.is_none() || (d.x as i64).pow(2) + (d.z as i64).pow(2) >= 0x201 * 0x201 {
@@ -3709,7 +3711,7 @@ impl Fight {
         if let Some(e) = self.extra.as_mut().filter(|e| !e.inactive) {
             (e.opponent.root, e.opponent.evasive) = (player.root, player.evasive);
             if e.freeze == 0 {
-                e.track(&gd, None);
+                e.track(&gd, None, false);
             }
         }
         for i in 0..2 {
@@ -3728,7 +3730,7 @@ impl Fight {
                 f.push_back();
             }
             let basis = f.root_yaw;
-            f.track(&gd, idle.is_none().then_some([roots_before[i], roots_before[1 - i]]));
+            f.track(&gd, idle.is_none().then_some([roots_before[i], roots_before[1 - i]]), i == 1);
             // (Tekken Tag turns the basis before the root's update of the frame: the rebase and the basis's turn
             // show at once, and a throw's pair shows its link frame's places; Tekken 3's rebase likewise,
             // 0x8003A9C8, its root keeping the eased height; a link's pair takes the new move's height, as the PS1's
@@ -3985,6 +3987,8 @@ impl Fight {
         fj.locked = true;
         // the victim link (transition 0x22, 0x800307DC) counts the victim's chain stage down
         let chain = fj.chain;
+        // (Tekken Tag's victim of a chain throw's next part, stage < 0, keeps its origin and facing, 0x36B828)
+        let (kept, old_turn, origin, root) = (fj.tag_rules(gd) && chain < 0, fj.current_move(gd).next.hi, fj.position, fj.root());
         if let Some(alias) = victim_alias {
             let started = if Arc::ptr_eq(&owner, &fj.moveset) || *owner.moveset_id.as_ref().unwrap_or(&-1) == fj.moveset.moveset_id.unwrap_or(-2) {
                 fj.play_alias(alias)
@@ -4000,9 +4004,15 @@ impl Fight {
                 let word = ((mv.damage as u32 + thrown) & 0x3FFF) | (mv.damage_type << 14);
                 fj.stun = (0x22 + word * 32 / 45).clamp(0x22, 0x42);
                 fj.chain = if chain > 0 { -1 } else { chain - 1 };
-                fj.yaw = yaw;
-                fj.root_yaw = yaw;
-                fj.position = position;
+                if !kept {
+                    (fj.yaw, fj.root_yaw, fj.position) = (yaw, yaw, position);
+                } else if fj.current_move(gd).flags24.raw & 0x1000 != 0 {
+                    // (a part with flags24 0x1000 turns it by the old motion's net turn +0x12, from its drawn root)
+                    fj.yaw -= old_turn as f32 * ANGLE;
+                    (fj.root_yaw, fj.position) = (fj.yaw, Vec3::new(root.x, origin.y, root.z));
+                } else {
+                    fj.position = origin;
+                }
                 fj.offset = Vec3::ZERO;
                 fj.pushback = None;
                 fj.air = None;

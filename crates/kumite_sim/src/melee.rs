@@ -425,7 +425,7 @@ impl Melee {
                 f.push_back();
             }
             if !frozen && !f.inactive {
-                f.track(&gd, seen);
+                f.track(&gd, seen, false);
                 if self.tag_pairs && f.rebase_root {
                     f.root_motion(&gd, anims[i]);
                 }
