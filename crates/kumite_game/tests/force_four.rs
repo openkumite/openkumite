@@ -162,6 +162,11 @@ fn lies_where_it_fell(a: &Assets, models: &[usize], stride: usize, who: usize) {
         if f == 120 {
             b.game.fight.actor_mut(who).unwrap().health = kumite_sim::ONE;
         }
+        // (the others kept standing: how long the CPUs last is the run's luck, not this rule)
+        for i in b.game.players().into_iter().filter(|&i| i != who && f > 120) {
+            let p = b.game.fight.actor_mut(i).unwrap();
+            p.health = p.max_health;
+        }
         let me = b.game.fight.actor(who).unwrap();
         if down_at.is_none() && me.health <= 0 {
             down_at = Some(f);

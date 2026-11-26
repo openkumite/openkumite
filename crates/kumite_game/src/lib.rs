@@ -191,6 +191,7 @@ impl Animations for FighterAnims<'_> {
             };
             on(&self.own.hurt, &mut v.hurt);
             on(&self.own.push, &mut v.push);
+            v.joints = at.to_vec();
         }
         Some(v)
     }
@@ -460,6 +461,8 @@ pub struct Game {
     pub tag_bench: Option<[Actor; 2]>,
     /// Tekken Tag's round machine (rounds.json); None: Tekken 3's.
     pub rounds: Option<bout::RoundRules>,
+    /// The fighters' sounds, picked in the step (set by the app; none: silent).
+    pub sound: Option<Box<sound::FightSound>>,
     /// A tag battle's win pose: the side whose benched partner poses in the loser's place (0x3B5DB0).
     pub posing_partner: Option<usize>,
     /// Each model record's costume number (roster.json selections; Tekken Tag's team intro pairs).
@@ -906,6 +909,7 @@ impl Game {
             copy_seed: 0,
             tag_bench: None,
             rounds,
+            sound: None,
             posing_partner: None,
             costume_of: roster["selections"]["entries"].as_array().into_iter().flatten().filter_map(|e| Some((e["model_record"].as_u64()? as usize, e["costume"].as_i64()?))).collect(),
         };
@@ -1160,9 +1164,14 @@ impl Game {
         let (ma, mb) = (a.moveset.clone(), b.moveset.clone());
         let guard_input = [a.guard_input, b.guard_input];
         let walls = self.fight.walls.take();
+        // (Tekken 3's rand() and blinks run on from round to round; Tekken Tag's flames' rand starts again)
+        let (seed, blinks) = (self.fight.objects.seed, self.fight.blinks);
         self.fight = Fight::new(self.fight.data.clone(), ma, mb);
         (self.fight.ko_collapse, self.fight.guard_damage) = (self.ko_collapse, self.guard_damage);
         self.fight.walls = walls;
+        if !self.fight.data.tag_moves {
+            (self.fight.objects.seed, self.fight.blinks) = (seed, blinks);
+        }
         for (i, (f, g)) in self.fight.fighters.iter_mut().zip(guard_input).enumerate() {
             f.guard_input = g; // who is CPU-controlled stays the same
             f.max_health = self.max_health[i].map_or_else(|| self.fight.data.max_health_of(self.characters[i], self.handicap[i]), |h| h * kumite_sim::ONE);
@@ -1423,6 +1432,18 @@ impl Game {
             self.ball_ring.push_back(b.clone());
         }
         self.recorded_total += 1;
+        // the fighters' sound player after the hit pass and the objects (0x8002B4C4): Tekken 3's on the fight's rand()
+        if let Some(mut s) = self.sound.take() {
+            let t3 = !self.fight.data.tag_moves;
+            if t3 {
+                s.state.seed = self.fight.objects.seed;
+            }
+            s.step(self);
+            if t3 {
+                self.fight.objects.seed = s.state.seed;
+            }
+            self.sound = Some(s);
+        }
         self.step_camera();
     }
 
@@ -1704,15 +1725,19 @@ impl Game {
         let c = Mat3::from_diagonal(Vec3::new(1.0, -1.0, -1.0));
         for i in 0..2 {
             let gd = &self.fight.data;
-            let m = self.fight.fighters[i].current_move(gd);
-            let flags = m.flags24.raw;
-            let forced = flags & 0x4_0000 != 0 || (m.posture.raw & 4 != 0 && flags & 0x4000_0000 == 0);
-            let seed = &mut self.face_rand;
-            let mut rand = || {
-                *seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
-                (*seed >> 16) & 0x7FFF
-            };
-            self.faces[i].blink(forced, &mut rand);
+            if gd.tag_moves {
+                let m = self.fight.fighters[i].current_move(gd);
+                let flags = m.flags24.raw;
+                let forced = flags & 0x4_0000 != 0 || (m.posture.raw & 4 != 0 && flags & 0x4000_0000 == 0);
+                let seed = &mut self.face_rand;
+                let mut rand = || {
+                    *seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
+                    (*seed >> 16) & 0x7FFF
+                };
+                self.faces[i].blink(forced, &mut rand);
+            } else {
+                self.faces[i].closed = self.fight.blinks[i].closed;
+            }
             // (open while airborne and not juggled: 0x370C94's +0x135 and +0xF7)
             let f = &self.fight.fighters[i];
             self.wings[i].state = i32::from(f.airborne_flag(gd) && f.juggle == 0);
@@ -2141,7 +2166,7 @@ pub fn volumes(body: &Body, pose: &[Mat4], place: Mat4) -> BodyVolumes {
     // shortcut: the game's mouth (nodes 7-13) opens as it breathes (PCSX2: node 13 up to 120 off ours); port its
     // turns (0x351E98) when the fire must land to the unit
     let head = if body.bones.is_empty() { None } else { body.character.nodes.iter().position(|n| n.name == "node_13") };
-    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones, slots: [slot(head.unwrap_or(body.chest)), slot(body.pelvis)] }
+    BodyVolumes { hurt: make(&body.hurt), push: make(&body.push), bones, slots: [slot(head.unwrap_or(body.chest)), slot(body.pelvis)], joints: Vec::new() }
 }
 
 /// A turn's float entry as the game's 4096 = 1 (0x34ED90: times 4096, truncated; a float a hair off a whole number,
