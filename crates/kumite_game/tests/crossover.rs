@@ -256,8 +256,12 @@ fn their_root_is_as_high_as_in_tekken_3() {
     let t3 = Assets::new(std::path::Path::new(&t3)).unwrap();
     // (Tekken 3's Paul: its model record 71)
     let pads = parse_script("n*60,f*60,n*20,1,n*30,d+4,n*40,u,n*60,2,n*40,b*40").unwrap();
-    for m in [GON, DOCTOR_B] {
+    // (old: a Tekken 3 pack before format 12, its motions without their channels: their root at the size already)
+    for (m, old) in [(GON, false), (DOCTOR_B, false), (GON, true), (DOCTOR_B, true)] {
         let (mut g, mut g3) = (Game::load(&a, [m, PAUL]).unwrap(), Game::load(&t3, [m, 71]).unwrap());
+        if old {
+            std::sync::Arc::get_mut(&mut g.bodies[0]).unwrap().character.clips.iter_mut().for_each(|c| c.channels.clear());
+        }
         let mut same = 0;
         for &p in &pads {
             g.step([p, Pad::default()]);
@@ -273,10 +277,10 @@ fn their_root_is_as_high_as_in_tekken_3() {
             };
             // (the round's first frames ease from the intro: up to 9 units apart)
             let (y, y3) = (f.position.y + f.anim_root_y, f3.position.y + f3.anim_root_y);
-            assert!((y - y3).abs() < 10.0, "model {m}: {:?} at {y}, Tekken 3's at {y3}", f.animation(&g.fight.data));
-            assert!((drawn(&g) - drawn(&g3)).abs() < 0.005, "model {m}: drawn at {} m, Tekken 3's at {} m", drawn(&g), drawn(&g3));
+            assert!((y - y3).abs() < 10.0, "model {m} (old {old}): {:?} at {y}, Tekken 3's at {y3}", f.animation(&g.fight.data));
+            assert!((drawn(&g) - drawn(&g3)).abs() < 0.005, "model {m} (old {old}): drawn at {} m, Tekken 3's at {} m", drawn(&g), drawn(&g3));
         }
-        assert!(same > 200, "model {m}: {same} frames alike");
+        assert!(same > 200, "model {m} (old {old}): {same} frames alike");
     }
 }
 
@@ -661,4 +665,36 @@ fn eased_poses_stay_upright() {
     }
     assert!(eased > 0, "an ease");
     assert!(over.is_empty(), "turned over on frames {over:?}");
+}
+
+/// The CPU juggles Gon in Tekken Tag as in Tekken 3: against Paul, his flights rise from where he was hit no higher than
+/// Tekken 3's (they start high when he is hit at the top of his own jump, 1.9 m, as there).
+#[test]
+fn his_flights_rise_as_in_tekken_3() {
+    let (Some(a), Some(t3)) = (assets(), std::env::var_os("OPENKUMITE_ASSETS")) else { return };
+    let t3 = Assets::new(std::path::Path::new(&t3)).unwrap();
+    let rise = |a: &Assets, m: [usize; 2]| {
+        let i = usize::from(m[1] == GON);
+        let mut b = Bout::new(Game::load(a, m).unwrap(), kumite_game::ai_data(a).unwrap(), 2, false);
+        b.set_cpu(0, Some((1, 5)));
+        b.set_cpu(1, Some((1, 5)));
+        let (mut most, mut from, mut juggle) = (0f32, 0f32, 0);
+        for _ in 0..4800 {
+            let f = &b.game.fight.fighters[i];
+            let before = f.position.y + f.anim_root_y;
+            b.step([Pad::default(); 2]);
+            let f = &b.game.fight.fighters[i];
+            match f.air {
+                Some(_) if f.juggle != juggle => (from, juggle) = (before, f.juggle),
+                Some(_) => most = most.max(f.position.y + f.anim_root_y - from),
+                None => juggle = 0,
+            }
+        }
+        most
+    };
+    // (the CPU fights differ between the games: their highest flights are compared, either way round)
+    let r = rise(&a, [GON, PAUL]).max(rise(&a, [PAUL, GON]));
+    let r3 = rise(&t3, [GON, 71]).max(rise(&t3, [71, GON]));
+    eprintln!("Gon's flights rise {r} units, Tekken 3's {r3}");
+    assert!(r > 0.0 && r <= r3 * 1.1, "Gon's flights rise {r} units, Tekken 3's {r3}");
 }
