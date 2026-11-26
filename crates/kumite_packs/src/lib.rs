@@ -207,11 +207,12 @@ pub fn install(base: &dyn Vfs, packs: &[(Part, &dyn Vfs)], extras: &dyn Vfs, log
     Ok(())
 }
 
-/// What Tekken Tag Tournament's extras are made of (its game root's fingerprint and the Tekken 3 pack's): when it
-/// changes they are installed again.
+/// What Tekken Tag Tournament's extras are made of (its game root's fingerprint, the Tekken 3 pack's and the
+/// installer's format): when it changes they are installed again (an older installer's had no Gon's size: his motions'
+/// root ran at 100 % and he flew).
 pub fn ttt_stamp(game: &dyn Vfs, base: &dyn Vfs) -> Value {
     let game: Option<Value> = game.read("manifest.json").ok().and_then(|b| serde_json::from_slice(&b).ok());
-    json!({"ttt": game.map(|m| m["fingerprint"].clone()), "t3": Part::T3.manifest(base).map(|m| m["fingerprint"].clone())})
+    json!({"ttt": game.map(|m| m["fingerprint"].clone()), "t3": Part::T3.manifest(base).map(|m| m["fingerprint"].clone()), "by": Part::T3.format()})
 }
 
 /// The extras (their manifest.json) are Tekken Tag Tournament's installed on these games' data.
@@ -290,6 +291,12 @@ mod tests {
             let extras = StdFs(dir.join(name));
             install_ttt(&game, &base, &extras, &|_| {}).unwrap();
             assert!(ttt_installed(&game, &base, &extras), "{name}");
+            // (an older installer's extras, stamped without its format, are installed again)
+            let mut e: Value = serde_json::from_slice(&extras.read("manifest.json").unwrap()).unwrap();
+            e["installed"].as_object_mut().unwrap().remove("by");
+            let older = StdFs(dir.join(format!("{name}_by")));
+            older.write("manifest.json", e.to_string().as_bytes()).unwrap();
+            assert!(!ttt_installed(&game, &base, &older), "{name}: an older installer's extras");
             let roster = String::from_utf8(extras.read("gamedata/roster.json").unwrap()).unwrap();
             assert!(roster.contains("Gon") && roster.contains("Doctor B"), "{name}: no Gon or Doctor B.");
             assert!(extras.exists("gamedata/force.json"), "{name}: no Tekken Force");

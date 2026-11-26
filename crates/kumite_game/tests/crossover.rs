@@ -247,6 +247,39 @@ fn gons_root_runs_at_his_size() {
     assert!(hit, "Gon's 2 from 1000 units");
 }
 
+/// Gon and Doctor B. stand, walk, jump and strike at Tekken 3's heights in Tekken Tag: on every frame both games play
+/// the same motion's frame, the root's height and the drawn root's are Tekken 3's (at 100 % Gon's ran 2.2 times as
+/// high: he flew).
+#[test]
+fn their_root_is_as_high_as_in_tekken_3() {
+    let (Some(a), Some(t3)) = (assets(), std::env::var_os("OPENKUMITE_ASSETS")) else { return };
+    let t3 = Assets::new(std::path::Path::new(&t3)).unwrap();
+    // (Tekken 3's Paul: its model record 71)
+    let pads = parse_script("n*60,f*60,n*20,1,n*30,d+4,n*40,u,n*60,2,n*40,b*40").unwrap();
+    for m in [GON, DOCTOR_B] {
+        let (mut g, mut g3) = (Game::load(&a, [m, PAUL]).unwrap(), Game::load(&t3, [m, 71]).unwrap());
+        let mut same = 0;
+        for &p in &pads {
+            g.step([p, Pad::default()]);
+            g3.step([p, Pad::default()]);
+            let (f, f3) = (&g.fight.fighters[0], &g3.fight.fighters[0]);
+            if f.animation(&g.fight.data) != f3.animation(&g3.fight.data) || f.air.is_some() || f3.air.is_some() {
+                continue;
+            }
+            same += 1;
+            let drawn = |g: &Game| {
+                let (pose, place) = g.pose(0);
+                (place * pose[g.bodies[0].root]).w_axis.y
+            };
+            // (the round's first frames ease from the intro: up to 9 units apart)
+            let (y, y3) = (f.position.y + f.anim_root_y, f3.position.y + f3.anim_root_y);
+            assert!((y - y3).abs() < 10.0, "model {m}: {:?} at {y}, Tekken 3's at {y3}", f.animation(&g.fight.data));
+            assert!((drawn(&g) - drawn(&g3)).abs() < 0.005, "model {m}: drawn at {} m, Tekken 3's at {} m", drawn(&g), drawn(&g3));
+        }
+        assert!(same > 200, "model {m}: {same} frames alike");
+    }
+}
+
 /// What the sound tables make a step play: the files under audio/sfx.
 fn heard(a: &Assets, s: &SoundData, b: &Bout, st: &mut SoundState) -> Vec<String> {
     s.step(b, st, ["", ""], [0, 0]).iter().map(|x| x.file.strip_prefix(a.root.join("audio/sfx")).unwrap().to_string_lossy().into_owned()).collect()
