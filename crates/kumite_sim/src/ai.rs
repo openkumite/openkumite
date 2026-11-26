@@ -1006,6 +1006,8 @@ pub struct Ai {
     /// The style played now (a Mixed seat's current pick) and, for Mixed, the frames until the next pick.
     playing: Style,
     mixt: i32,
+    /// A Force player seat (its lean on the profile on top of the style's).
+    force: bool,
     /// Statistics: chain-throw continuations and reaction picks (4.M / 4.O), sidesteps started.
     pub followups: u32,
     pub sidesteps: u32,
@@ -1227,6 +1229,7 @@ impl Ai {
             style: Style::Classic,
             playing: Style::Classic,
             mixt: 0,
+            force: false,
             followups: 0,
             sidesteps: 0,
             strings: 0,
@@ -1395,6 +1398,7 @@ impl Ai {
         if self.style == Style::Mixed {
             self.mix(rng);
         }
+        self.force = s.force.is_some();
         self.load_profile(data, s.me, s.op, -1, -1);
         self.h_vs = data.handlers_of(s.op.moveset.moveset_id).0;
         self.h_self = data.handlers_of(s.me.moveset.moveset_id).1;
@@ -1514,6 +1518,18 @@ impl Ai {
                 p.pressure_on_stun_prob = 4096;
                 self.natk_max += 4;
             }
+        }
+        // a Force player seat, whatever its style: guard and punish, keep a stunned soldier under pressure, longer
+        // strings (with the PS1's push and strikes it lands fewer hits a soldier; Juggler's lean cleared most)
+        if self.force {
+            for g in [&mut p.guard_prob, &mut p.guard_prob_cap] {
+                at_least(g, 2048);
+            }
+            for c in [&mut p.counter_attack_prob, &mut p.counter_attack_cap] {
+                at_least(c, 1024);
+            }
+            p.pressure_on_stun_prob = 4096;
+            self.natk_max += 4;
         }
     }
 

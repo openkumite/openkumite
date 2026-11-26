@@ -157,20 +157,21 @@ fn a_hurt_ai_player_goes_for_the_chicken() {
     assert!(got.is_some() && f.health == 90 * kumite_sim::ONE, "the chicken taken ({got:?}), health {} at {:?}", f.health / kumite_sim::ONE, f.root());
 }
 
-/// Alone on stage 1: the AI clears it more often and takes the chickens (before the Force layer these 48 runs
-/// cleared 5, took 28 chickens and went 23000 on average; with it 16, 108 and 25800; with the PS1's jumps 9, 81
-/// and 23600; with the PS1's push and distance limit 14, 84 and 24700;
-/// with its mist, sizes and eases 20, 102 and 27700; with the strikes placed before the push, as the PS1's, 8, 64 and
-/// 22800; with an air hit keeping the slide going on, as the PS1's, 4, 50 and 19600).
+/// Alone on stage 1: the AI clears it more often and takes the chickens, every character in a spread of styles and
+/// starts (when these were King's runs alone: before the Force layer they cleared 5, took 28 chickens and
+/// went 23000 on average; with it 16, 108 and 25800; with the PS1's jumps 9, 81 and 23600; with the PS1's push and
+/// distance limit 14, 84 and 24700; with its mist, sizes and eases 20, 102 and 27700; with the strikes placed before
+/// the push 8, 64 and 22800; with an air hit keeping the slide going on 4, 50 and 19600. This spread: 14 and 90 at
+/// #245, 7 and 73 after the PS1's physics, 15 and 91 with the Force seat's own lean).
 #[test]
 fn the_ai_player_gets_on_through_stage_1() {
     let Some(a) = assets() else { return };
-    let runs: Vec<Run> = (0..48).map(|k| pick(k * 10 + 3)).map(|(p, _, s, late)| play(&a, p, None, s, late)).collect();
+    let runs: Vec<Run> = (0..48).map(|k| pick(k * 10 + k % 10)).map(|(p, _, s, late)| play(&a, p, None, s, late)).collect();
     let progress = runs.iter().map(|r| r.progress).sum::<i32>() / runs.len() as i32;
     let cleared = runs.iter().filter(|r| r.cleared).count();
     let pickups: u32 = runs.iter().map(|r| r.pickups).sum();
     eprintln!("48 runs: {cleared} cleared, {progress} on average, {pickups} chickens");
-    assert!(cleared >= 4 && pickups >= 50, "{cleared} cleared, {pickups} chickens");
+    assert!(cleared >= 10 && pickups >= 60, "{cleared} cleared, {pickups} chickens");
 }
 
 #[test]
