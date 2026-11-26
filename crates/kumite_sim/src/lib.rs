@@ -715,6 +715,9 @@ pub struct Fighter {
     /// Tekken Tag: the root at the last body push (its step since then shares the push, 0x377338); none before the
     /// first.
     pub push_prev: Option<Vec3>,
+    /// Tekken Tag: in its move's jump window as the facing pass left it (+0x135, set after the tracking modes,
+    /// 0x370858): the modes read last frame's.
+    jump_window: bool,
     /// Tekken Tag: the pose ease; the move of the frame before (+0xB5E8); the pose and root height last shown
     /// (+0xB390, +0xB5D2); struck, until a move starts on a frame it is not (+0xF3: 0x371F58, 0x36A8F8).
     ease: Ease,
@@ -835,6 +838,7 @@ impl Fighter {
             screen_right: 0.0,
             juggle_bias: 0,
             push_prev: None,
+            jump_window: false,
             ease: Ease::default(),
             ease_last: None,
             new_motion: false,
@@ -1283,7 +1287,8 @@ impl Fighter {
         let attack = a0 != 0 && mv.attack.is_some();
         let (j0, j1) = (mv.bytes_18.jump_start, mv.bytes_18.jump_end);
         let frame = self.frame;
-        let airborne = self.juggle != 0 || self.air.is_some() || (j0 != 0 && (j0..=j1).contains(&frame));
+        let window = std::mem::replace(&mut self.jump_window, j0 != 0 && (j0..=j1).contains(&frame));
+        let airborne = self.juggle != 0 || self.air.is_some() || window;
         let deg = |d: f32| d.to_radians();
         let clamp = |x: f32, l: f32| x.clamp(-l, l);
         let opp_evasive = self.opponent.evasive != 0;
