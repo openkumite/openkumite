@@ -415,6 +415,19 @@ fn the_tracking_reads_last_frames_jump_window_as_on_the_ps1() {
     }
 }
 
+/// Law presses 1 again in his b+1+3 (link 2 to the same motion, its active frame 8 one past the link's frame 7): the
+/// PS1's link type test (0x80030F68) reads +0x198 before the command sets it (0x8002DA90, 0x8002DAD8), so the link
+/// before's frame makes it type 0x14, which ends the auto-turn. Ours turned one step more, 719 off.
+#[test]
+fn a_link_type_reads_the_last_links_frame_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [75, 83], None, 1, "n*202,f*57,n+1+3*2,n*138", "n*262,n+1*2,n*4,n+1*2,n*4,n+1*2,n*4,n+1*2,n*118", 300);
+    for (row, want) in [(870, -16877), (875, -16475)] {
+        assert_eq!(at(&t, 599, row, 1).3, want, "PS1 row {row}");
+    }
+    assert_eq!(at(&t, 599, 870, 0).0, 450, "PS1 row 870");
+}
+
 /// Yoshimitsu's u+2 jumps toward Gun Jack (link 0x10 sets +0x82, 0x8002FF40): from the jump window's first frame the
 /// PS1 moves him the pair distance less 500 over the frames left (0x8003F104), 17 a frame; Gun Jack's hit ends it
 /// (0x8002F5F4). Ours kept that to Tekken Tag and stood still, 51 short.

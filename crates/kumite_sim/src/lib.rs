@@ -730,6 +730,10 @@ pub struct Fighter {
     /// commit was the END look-ahead's (+0x8B 3, 0x8002DCD4).
     new_motion: bool,
     again: bool,
+    /// Tekken 3's +0x198: the frame the last queued link runs at (or a flight's first), which the next command's
+    /// link type test reads before it is set again (0x8002DA90 before 0x8002DAD8). shortcut: the END look-ahead's
+    /// queue (0x8002DC88) neither sets nor tests it here; check one there.
+    exec_mark: u32,
     shown_turns: Turns,
     shown_height: i32,
     reacting: bool,
@@ -847,6 +851,7 @@ impl Fighter {
             ease_last: None,
             new_motion: false,
             again: false,
+            exec_mark: 0,
             shown_turns: [[0; 9]; 18],
             shown_height: 0,
             reacting: false,
@@ -1217,6 +1222,10 @@ impl Fighter {
             // back into the same one, as a pushed move's condition 0x33 entry makes each step)
             self.new_motion |= !self.tag_rules(gd) && (!same || buffered || matches!(t, 1 | 3));
             self.again = buffered;
+            // (a link the END look-ahead queued marks frame 1, 0x8002F5B4)
+            if buffered {
+                self.exec_mark = 1;
+            }
             self.since = if same && !buffered && !self.new_motion { self.frame } else { 1 };
         }
         if to_mv.as_ref().is_some_and(|m| m.flags24.raw & 0x800 != 0) {
@@ -1580,6 +1589,8 @@ impl Fighter {
     /// Start a hit reaction: it keeps the victim's facing (a hit from behind plays the back reaction), as the
     /// reaction transitions do (0x25 / 0x27..0x2B).
     fn start_reaction(&mut self, to: Current, alias: usize) {
+        // (the reaction's queue marks the frame it was struck in, 0x8002EE74)
+        self.exec_mark = self.frame;
         self.start_facing(to, self.commits_root);
         self.alias = alias;
         self.chain = 0;
@@ -1740,6 +1751,7 @@ impl Fighter {
         // drift away from the attacker for the whole flight (0x8002F074)
         let drift = (damage.abs() + 7 * (n + 1) + 10 + extra_drift).clamp(0, 100) as f32;
         f.frame = start.max(1) as u32;
+        f.exec_mark = f.frame;
         // (a hit in the air keeps the drift found the frame before, +0x9A / +0x9E: the next step still takes it)
         let step = f.air.as_ref().map_or([0; 2], |a| a.step);
         f.air = Some(Air { drift, y: y0, down: -vy as f32, target, spike, kind, step });
@@ -1824,8 +1836,10 @@ impl Fighter {
         }
         if let Some((alias, exec, transition)) = hit {
             if let Some(to) = self.resolve(alias) {
-                let exec = if exec == 255 { 255 } else { exec };
-                let t = normalize_transition(transition, self.moves(gd, to.bank).moves.get(to.index), exec);
+                let mark = if self.tag_rules(gd) { exec } else { self.exec_mark };
+                let t = normalize_transition(transition, self.moves(gd, to.bank).moves.get(to.index), mark);
+                // shortcut: the PS1 marks the window's end instead while +0x6E is negative; check one there
+                self.exec_mark = if exec == 255 { self.current_move(gd).frames } else { exec };
                 self.queued = Some((to, exec, t));
                 self.queued_alias = alias;
                 self.queued_buffered = false;
@@ -4325,6 +4339,7 @@ impl Fight {
             let Some(to) = fv.resolve(e.dest) else { continue };
             let t = normalize_transition(e.transition & 0x3F, fv.moves(gd, to.bank).moves.get(to.index), e.exec);
             fv.reversal_damage = Some(damage / 2 + 25);
+            fv.exec_mark = e.exec;
             log::info!("P{} reverses P{}'s {anim} (cond {:#x})", v + 1, a + 1, e.cond);
             if e.exec == 255 || fv.frame < e.exec {
                 fv.queued = Some((to, e.exec, t));
