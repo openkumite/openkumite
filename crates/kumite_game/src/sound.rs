@@ -576,7 +576,7 @@ impl SoundData {
         let fighters: Vec<&kumite_sim::Fighter> = m.actors.iter().collect();
         let opponents: Vec<usize> = (0..fighters.len()).map(|i| m.facing(i)).collect();
         if let Some(t) = &self.tag {
-            return t.step_actors(&fighters, models, &opponents, &m.hits, &m.fight.data, state);
+            return t.step_actors(&fighters, models, &opponents, &m.hits, &m.fight.data, state, m.fight.objects.loops);
         }
         let voiced: Vec<usize> = (0..fighters.len()).collect();
         self.step_actors(&fighters, &opponents, &voiced, &m.hits, &m.fight.data, m.fight.frame, state, banks, characters)
@@ -876,6 +876,15 @@ struct Tag {
     arenas: TagArenas,
     /// Timed sound scripts (0x505C10): [frame, kind, entry].
     scripts: Vec<Vec<[u32; 3]>>,
+    /// The swings (0x376680) and the three a script step of kind 3 picks from (0x376578).
+    swing: TagSwing,
+    kind3: Vec<u16>,
+}
+#[derive(Deserialize)]
+struct TagSwing {
+    bodies: Vec<i64>,
+    early: Vec<u16>,
+    late: Vec<u16>,
 }
 
 #[derive(Deserialize)]
@@ -917,6 +926,12 @@ struct VoiceRow {
     counts: [usize; 4],
     codes: Vec<u16>,
     cooldown: u32,
+    /// The attack voices (0x3764D8) and the light and heavy hurt ones (0x376410): entries (none for the crossover's
+    /// rows, Tekken 3's characters).
+    #[serde(default)]
+    attack: Vec<u16>,
+    #[serde(default)]
+    hurt: Vec<Vec<u16>>,
 }
 #[derive(Deserialize)]
 struct TagImpacts {
@@ -978,6 +993,8 @@ impl Tag {
             moves: serde_json::from_value(get("/move_sounds")?)?,
             arenas: serde_json::from_value(get("/arena_sounds")?)?,
             scripts: serde_json::from_value(get("/scripts/entries")?)?,
+            swing: serde_json::from_value(get("/swing")?)?,
+            kind3: serde_json::from_value(get("/script_kind_3/entries")?)?,
         })
     }
 
@@ -1019,7 +1036,7 @@ impl Tag {
         let fighters: Vec<&kumite_sim::Fighter> = (0..f.actor_count()).map_while(|k| f.actor(k)).collect();
         let models: Vec<usize> = (0..fighters.len()).map(|k| g.body_of(k).map_or(usize::MAX, |b| b.model_record)).collect();
         let opponents: Vec<usize> = (0..fighters.len()).map(|k| f.opponent_index(k)).collect();
-        let mut out = self.step_actors(&fighters, &models, &opponents, &f.hits, &f.data, state);
+        let mut out = self.step_actors(&fighters, &models, &opponents, &f.hits, &f.data, state, f.objects.loops);
         // Ball (the Tekken 3 slice's): its sounds are ids of a group of their own (ball.json `constants.sounds`)
         for e in f.ball.iter().flat_map(|b| &b.events) {
             if let kumite_sim::ball::BallEvent::Sound(id) = *e {
@@ -1031,17 +1048,28 @@ impl Tag {
 
     /// The same for any number of actors (the tag brawl's): the models' voice banks, `opponents[i]` actor i's (a
     /// script's kind 2 entries), hits naming actors by index.
-    fn step_actors(&self, fighters: &[&kumite_sim::Fighter], models: &[usize], opponents: &[usize], hits: &[kumite_sim::HitEvent], data: &kumite_sim::GameData, state: &mut SoundState) -> Vec<Sound> {
+    fn step_actors(
+        &self,
+        fighters: &[&kumite_sim::Fighter],
+        models: &[usize],
+        opponents: &[usize],
+        hits: &[kumite_sim::HitEvent],
+        data: &kumite_sim::GameData,
+        state: &mut SoundState,
+        loops: u32,
+    ) -> Vec<Sound> {
         let (n, arena, mut out) = (fighters.len(), state.arena, Vec::new());
         state.last.resize(n.max(state.last.len()), None);
         state.script.resize(n.max(state.script.len()), None);
         state.voice_lock.resize(n.max(state.voice_lock.len()), 0);
         state.footstep.resize(n.max(state.footstep.len()), None);
         let voices: Vec<(u32, usize)> = models.iter().map(|&m| self.voice_banks.iter().find(|v| v.model_record == m).map_or((0, usize::MAX), |v| (v.bank, v.voice_row))).collect();
+        // (libc rand(), 0x40FBD0: the fight's one stream)
         let rand = |seed: &mut u32| {
-            *seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
-            (*seed >> 16) & 0x7FFF
+            *seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
+            *seed & 0x7FFF_FFFF
         };
+        let pick = |list: &[u16], r: u32| list.get(((r & 0xFF) as usize * list.len()) >> 8).copied();
         // an entry of fighter `who`'s: types 2-5 its voices, the others an effect (0x13 a footstep pair)
         let entry = |out: &mut Vec<Sound>, footstep: &mut Option<u32>, who: usize, code: u32| {
             let (kind, id) = ((code >> 12) as usize, (code & 0xFFF) as u16);
@@ -1055,6 +1083,38 @@ impl Tag {
                 out.extend(self.sound(id, bank, arena, false));
             }
         };
+        // a fighter's hit sounds (types 1 and 7) on the frame its move connects (0x3769D0): a K.O. 0x0A by an arm (end
+        // bone below 0xB) else 0x0D; guarded 0x10; the generic ids by the attacker's damage band and limb (end bone 0xC
+        // and up a leg), an arm's band 0 one of two by rand(); the other ids as written
+        let im = &self.impacts;
+        let hit_sounds = |out: &mut Vec<Sound>, seed: &mut u32, i: usize| {
+            for h in hits.iter().filter(|h| h.attacker == i) {
+                let fa = fighters[i];
+                let mv = fa.current_move(data);
+                let end = mv.attack.as_ref().and_then(|a| a.bones.as_ref()).map_or(0, |b| b.end0);
+                if h.health <= 0 && !h.blocked {
+                    out.extend(self.sound(im.ko[usize::from(end >= im.ko_arm_end_bone_below)], 0, arena, false));
+                    continue;
+                }
+                let band = im.damage_bands.iter().filter(|&&b| attack_damage(mv) >= b).count();
+                for e in mv.sounds.iter().flatten().take(3).filter(|e| e.kind == 1 || e.kind == 7) {
+                    let code = ((e.kind << 12) | e.index) as u16;
+                    let id = if h.blocked {
+                        im.blocked
+                    } else if !im.auto.contains(&code) {
+                        code
+                    } else if end >= 0xC {
+                        im.legs[band]
+                    } else {
+                        let rows = if fa.character.is_some_and(|c| im.arms.bodies.contains(&c)) { &im.arms.rows_of_bodies } else { &im.arms.rows };
+                        let column = if band == 0 { (rand(seed) & 1) as usize } else { 0 };
+                        rows.get(band).map_or(0, |r| r[column])
+                    };
+                    out.extend(self.sound(id, 0, arena, false));
+                }
+            }
+        };
+        // each fighter a frame (0x375B60, P1's then P2's)
         for i in 0..n {
             let fighter = fighters[i];
             let (bank, row) = voices[i];
@@ -1063,9 +1123,8 @@ impl Tag {
             let advanced = state.last[i] != Some(now);
             let new_move = started || state.last[i].is_none_or(|(c, _)| c != fighter.current);
             state.last[i] = Some(now);
+            // a footstep pair's second step, 4 frames after the first
             if advanced {
-                state.voice_lock[i] = state.voice_lock[i].saturating_sub(1);
-                // a footstep pair's second step, 4 frames after the first
                 if let Some(n) = state.footstep[i].as_mut() {
                     *n = n.saturating_sub(1);
                     if *n == 0 {
@@ -1076,91 +1135,109 @@ impl Tag {
             }
             let mv = fighter.current_move(data);
             let entries: Vec<&kumite_sim::data::SoundEntry> = mv.sounds.iter().flatten().take(3).collect();
+            let voice_row = self.rows.get(row);
+            // (+0x8: a voice played this frame)
+            let mut voiced = false;
             // the K.O. (+0x138): a category-2 voice, then the fighter is silent (+0xB6)
             if hits.iter().any(|h| h.victim == i && h.health <= 0 && !h.blocked) {
-                let k = self.rows.get(row).map_or(0, |r| r.counts[2]);
+                let k = voice_row.map_or(0, |r| r.counts[2]);
                 let c = ((rand(&mut state.seed) & 0xFF) as usize * k) >> 8;
                 out.extend(self.voice(row, 2, c).and_then(|v| self.sound(v, bank, arena, false)));
+                voiced = true;
             }
             let silent = fighter.health <= 0;
+            hit_sounds(&mut out, &mut state.seed, i);
+            // types 2 and 3 (0x375CAC): a category-0 / 1 voice on the move's first frame while no voice cooldown runs;
+            // type 2 sets the cooldown (the row's: 10 or 6 frames), type 3 counts as this frame's voice
+            for e in entries.iter().filter(|_| started && !silent) {
+                if voiced || state.voice_lock[i] != 0 {
+                    break;
+                }
+                match e.kind {
+                    2 => {
+                        out.extend(self.voice(row, 0, e.index as usize).and_then(|v| self.sound(v, bank, arena, false)));
+                        state.voice_lock[i] = voice_row.map_or(10, |r| r.cooldown);
+                    }
+                    3 => {
+                        out.extend(self.voice(row, 1, e.index as usize).and_then(|v| self.sound(v, bank, arena, false)));
+                        voiced = true;
+                    }
+                    _ => {}
+                }
+            }
             // timed scripts (type 8, 0x37623C): one starts with its move and runs on (the move's frame) to its last
-            // step; kind 0 an effect, 1 an entry of the fighter's, 2 of the opponent's
+            // step; kind 0 an effect, 1 an entry of the fighter's, 2 of the opponent's, 3 one of three on the
+            // opponent's side (0x376578)
             if new_move {
                 if let Some(e) = entries.iter().find(|e| e.kind == 8 && e.index != 255) {
                     state.script[i] = Some((e.index as usize, fighter.frame.saturating_sub(1)));
                 }
             }
-            if let (true, Some((index, counter))) = (advanced, state.script[i].as_mut()) {
-                *counter += 1;
-                let list = self.scripts.get(*index).map(Vec::as_slice).unwrap_or_default();
-                for &[_, kind, code] in list.iter().filter(|e| e[0] == *counter) {
-                    match kind {
-                        0 => out.extend(self.sound(code as u16, bank, arena, false)),
-                        1 => entry(&mut out, &mut state.footstep[i], i, code),
-                        2 => {
-                            let o = opponents.get(i).copied().unwrap_or(i).min(n - 1);
-                            entry(&mut out, &mut state.footstep[o], o, code)
+            let o = opponents.get(i).copied().unwrap_or(i).min(n - 1);
+            // (a script running, +0xDC: no hurt voice, attack voice, steps or swing this frame, 0x375F74)
+            if let Some((index, counter)) = state.script[i].as_mut() {
+                if advanced {
+                    *counter += 1;
+                    let list = self.scripts.get(*index).map(Vec::as_slice).unwrap_or_default();
+                    for &[_, kind, code] in list.iter().filter(|e| e[0] == *counter) {
+                        match kind {
+                            0 => out.extend(self.sound(code as u16, bank, arena, false)),
+                            1 => entry(&mut out, &mut state.footstep[i], i, code),
+                            2 => entry(&mut out, &mut state.footstep[o], o, code),
+                            3 => {
+                                let k = ((rand(&mut state.seed) & 0xFF) * 3) >> 8;
+                                out.extend(self.kind3.get(k as usize).and_then(|&c| self.sound(c, 0, arena, false)));
+                            }
+                            _ => {}
                         }
-                        _ => {}
+                    }
+                    if list.last().is_none_or(|e| e[0] <= *counter) {
+                        state.script[i] = None;
                     }
                 }
-                if list.last().is_none_or(|e| e[0] <= *counter) {
-                    state.script[i] = None;
-                }
-            }
-            // types 2 and 3: a category-0 / 1 voice on the move's first frame; type 2 only when the voice cooldown
-            // is out, and sets it (the row's: 10 or 6 frames)
-            for e in entries.iter().filter(|_| started && !silent) {
-                match e.kind {
-                    2 if state.voice_lock[i] == 0 => {
-                        out.extend(self.voice(row, 0, e.index as usize).and_then(|v| self.sound(v, bank, arena, false)));
-                        state.voice_lock[i] = self.rows.get(row).map_or(10, |r| r.cooldown);
+            } else {
+                // struck (+0x131): a hurt voice (0x376410), only on main-loop frames not a multiple of 4: the row's light
+                // ones, its heavy ones for an attacker's damage of 20 or more
+                if !voiced && !silent && loops & 3 != 0 && hits.iter().any(|h| h.victim == i && !h.blocked) {
+                    let heavy = usize::from(attack_damage(fighters[o].current_move(data)) >= 20);
+                    if let Some(list) = voice_row.and_then(|r| r.hurt.get(heavy)).filter(|l| !l.is_empty()) {
+                        if let Some(code) = pick(list, rand(&mut state.seed)) {
+                            out.extend(self.voice(row, usize::from(code >> 12).saturating_sub(2), usize::from(code & 0xFFF)).and_then(|v| self.sound(v, bank, arena, false)));
+                        }
+                        voiced = true;
                     }
-                    3 => out.extend(self.voice(row, 1, e.index as usize).and_then(|v| self.sound(v, bank, arena, false))),
-                    _ => {}
+                }
+                // a move starting with damage outside a chain (+0x134, +0xCA, +0xE0): an attack voice one time in two
+                // (0x3764D8), which sets the cooldown
+                if state.voice_lock[i] == 0 && !voiced && started && attack_damage(mv) != 0 && fighter.chain == 0 && rand(&mut state.seed) & 1 != 0 {
+                    if let Some(code) = voice_row.and_then(|r| pick(&r.attack, rand(&mut state.seed))) {
+                        out.extend(self.voice(row, usize::from(code >> 12).saturating_sub(2), usize::from(code & 0xFFF)).and_then(|v| self.sound(v, bank, arena, false)));
+                    }
+                    state.voice_lock[i] = voice_row.map_or(10, |r| r.cooldown);
+                }
+                // the jump's take-off (move +0x19), the landing (+0x137: the arena's); a type 9 entry 0 mutes both for
+                // the frame (0x376578 sets gp-0x71A0[side], read at 0x376008)
+                // shortcut: type 9's entries 1-3 (a voice and the opponent's script stopped, the voice lock, one of three
+                // sounds) are not played, upgrade when a move is heard missing one
+                let muted = entries.iter().any(|e| e.kind == 9 && e.index == 0);
+                let js = mv.bytes_18.jump_start;
+                if advanced && js != 0 && fighter.frame == js && !muted {
+                    out.extend(self.sound(self.moves.take_off, bank, arena, false));
+                }
+                if fighter.landing != 0 && !muted {
+                    out.extend(self.sound(self.moves.landing, bank, arena, false));
+                }
+                // the frame before the move's first active one: a swing (0x376680), bodies 5, 7, 10 and 18 their own
+                // before frame 9
+                if fighter.frame + 1 == mv.active[0] {
+                    let r = rand(&mut state.seed);
+                    let own = fighter.character.is_some_and(|c| self.swing.bodies.contains(&c)) && fighter.frame < 9;
+                    let code = if own { self.swing.early.get(((r >> 6) & 3) as usize) } else { self.swing.late.get((((r & 0xFF) * 3) >> 8) as usize) };
+                    out.extend(code.and_then(|&c| self.sound(c, bank, arena, false)));
                 }
             }
-            // the jump's take-off (move +0x19), the landing (+0x137: the arena's); a type 9 entry 0 mutes both for the
-            // frame (0x376578 sets gp-0x71A0[side], read at 0x376008)
-            // shortcut: type 9's entries 1-3 (a voice and the opponent's script stopped, the voice lock, one of three
-            // sounds) are not played, upgrade when a move is heard missing one
-            let muted = entries.iter().any(|e| e.kind == 9 && e.index == 0);
-            let js = mv.bytes_18.jump_start;
-            if advanced && js != 0 && fighter.frame == js && !muted {
-                out.extend(self.sound(self.moves.take_off, bank, arena, false));
-            }
-            if fighter.landing != 0 && !muted {
-                out.extend(self.sound(self.moves.landing, bank, arena, false));
-            }
-        }
-        // the hit sounds (types 1 and 7) on the frame the move connects (0x3769D0): a K.O. 0x0A by an arm (end bone
-        // below 0xB) else 0x0D; guarded 0x10; the generic ids by the attacker's damage band and limb (end bone 0xC
-        // and up a leg), an arm's band 0 one of two by rand(); the other ids as written
-        let im = &self.impacts;
-        for h in hits {
-            let Some(fa) = fighters.get(h.attacker) else { continue };
-            let mv = fa.current_move(data);
-            let end = mv.attack.as_ref().and_then(|a| a.bones.as_ref()).map_or(0, |b| b.end0);
-            if h.health <= 0 && !h.blocked {
-                out.extend(self.sound(im.ko[usize::from(end >= im.ko_arm_end_bone_below)], 0, arena, false));
-                continue;
-            }
-            let band = im.damage_bands.iter().filter(|&&b| attack_damage(mv) >= b).count();
-            for e in mv.sounds.iter().flatten().take(3).filter(|e| e.kind == 1 || e.kind == 7) {
-                let code = ((e.kind << 12) | e.index) as u16;
-                let id = if h.blocked {
-                    im.blocked
-                } else if !im.auto.contains(&code) {
-                    code
-                } else if end >= 0xC {
-                    im.legs[band]
-                } else {
-                    let rows = if fa.character.is_some_and(|c| im.arms.bodies.contains(&c)) { &im.arms.rows_of_bodies } else { &im.arms.rows };
-                    let column = if band == 0 { (rand(&mut state.seed) & 1) as usize } else { 0 };
-                    rows.get(band).map_or(0, |r| r[column])
-                };
-                out.extend(self.sound(id, 0, arena, false));
-            }
+            // the voice cooldown runs down a frame (0x37608C)
+            state.voice_lock[i] = state.voice_lock[i].saturating_sub(1);
         }
         out
     }

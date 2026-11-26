@@ -1063,26 +1063,117 @@ fn true_ogres_low_fire_lands_as_on_the_ps2() {
     assert_eq!(burns, Some((3800, 38)));
 }
 
-/// True Ogre's fire sets sparks off (task 0x3A4970: quad 0x80 at 0.2, 0.044 m) and fires on the floor (0x3A4C28:
-/// quad 0x400 at 0.2-0.5) at Hwoarang's feet and where the stream licks the floor. PCSX2's task list, his 1+2 burning
-/// Hwoarang after a walk of 10 / 20 frames: at most 29 / 18 sparks and 6 / 2 floor fires at once.
-/// shortcut: ours draws up to some 40 sparks and 10 floor fires (its own rand, not the game's libc stream shared by
-/// some 300 callers); match the counts when that stream is followed.
-#[test]
-fn true_ogres_fire_sparks_and_sets_the_floor_alight() {
-    let Some(a) = assets() else { return };
-    let mut g = Game::load(&a, [TRUE_OGRE, HWOARANG]).unwrap();
-    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
-    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+/// True Ogre (Paul) against Hwoarang (Paul) with the fight's sounds, to the fight; then (the move audit's
+/// `trueogre_wN`), Tekken Tag's one rand() where PCSX2 had it then (audit38's r3, arena 9,
+/// which draws nothing): its state (0x4F57F8) and seed (0x439C7C), the vblank count (0x8BD2F4), the main loop's
+/// frame (gp-0x74D8) and the faces (Hwoarang's blink 75 frames off; True Ogre's never comes).
+fn ogre_from_the_ps2s_rand(a: &Assets) -> Bout {
+    let mut g = Game::load(a, [TRUE_OGRE, HWOARANG]).unwrap();
+    g.start_tag([kumite_game::Actor::load(a, PAUL).unwrap(), kumite_game::Actor::load(a, PAUL).unwrap()]);
+    let sound = std::sync::Arc::new(SoundData::load(a).unwrap());
+    g.sound = Some(Box::new(kumite_game::sound::FightSound::new(sound, [String::new(), String::new()], [0, 1], SoundState::default())));
+    let mut b = Bout::new(g, kumite_game::ai_data(a).unwrap(), 2, false);
     while b.phase != Phase::Fight {
         b.step([Pad::default(); 2]);
     }
+    b
+}
+
+/// The PS2's state at the move audit's row 1, the walk's first frame (step 63 of `n*63,...`: the PS2's moves take a
+/// pad a frame after it is read, 0x36C4C0, so its rows' moves are the script's a frame later; its press seeds rand()
+/// as it is read, a frame before ours, so the vblank count one less).
+fn ps2_rand_at_the_walk(b: &mut Bout) {
+    let o = &mut b.game.fight.objects;
+    (o.seed, o.reseed, o.vblanks, o.loops) = (464_375, 464_375, 2039, 1238);
+    let f = &mut b.game.tag_faces;
+    (f[0].face, f[0].timer, f[1].face, f[1].timer) = (0, -210, 0, 74);
+}
+
+/// Tekken Tag's one rand() (0x40FBD0) as on the PS2: True Ogre's 1+2 after a walk of 30 / 10 frames, from PCSX2's
+/// state as the walk starts, draws as PCSX2's does frame by frame: the press of 1+2 seeds it again (0x35C370: the seed
+/// plus the vblank count), then the attack voice (0x3764D8), Hwoarang's blink (0x362B38), the swing (0x376680), the
+/// flames (0x3A44F8) with their sparks (0x3A4970) and fires on the floor (0x3A4C28), the hurt voice on main-loop
+/// frames not a multiple of 4 (0x376410) and the burns (0x3A54D8, 0x3A50B8); Hwoarang burns on frame 64 / 65.
+#[test]
+fn true_ogres_fire_draws_from_the_ps2s_one_rand() {
+    let Some(a) = assets() else { return };
+    let w30: [(usize, u32); 18] = [
+        (1, 464_375),
+        (13, 464_375),
+        (33, 3_216_496_188),
+        (57, 3_216_496_188),
+        (69, 3_216_496_188),
+        (70, 3_216_496_188),
+        (75, 3_216_496_188),
+        (76, 3_216_496_188),
+        (77, 2_465_509_317),
+        (89, 387_648_794),
+        (90, 1_081_443_137),
+        (95, 1_889_600_573),
+        (96, 3_250_949_969),
+        (100, 204_053_683),
+        (120, 390_489_922),
+        (150, 2_414_296_842),
+        (163, 1_290_056_701),
+        (183, 2_145_025_512),
+    ];
+    let w10: [(usize, u32); 17] = [
+        (1, 464_375),
+        (13, 2_332_280_328),
+        (33, 2_332_280_328),
+        (57, 2_332_280_328),
+        (69, 2_300_703_137),
+        (70, 85_146_292),
+        (75, 3_803_897_841),
+        (76, 3_162_766_352),
+        (77, 2_943_799_250),
+        (89, 2_802_513_485),
+        (90, 2_020_555_851),
+        (95, 2_178_714_258),
+        (96, 2_704_211_318),
+        (100, 471_568_000),
+        (120, 2_224_671_712),
+        (150, 3_076_873_747),
+        (163, 2_149_010_223),
+    ];
+    for (walk, ps2, burn) in [(30, &w30[..], 64), (10, &w10[..], 65)] {
+        let mut b = ogre_from_the_ps2s_rand(&a);
+        let (mut seen, mut burns) = (Vec::new(), None);
+        for (k, pad) in parse_script(&format!("n*63,f*{walk},n*2,1+2*2,n*200")).unwrap().into_iter().enumerate().take(62 + 184) {
+            b.step([pad, Pad::default()]);
+            if k == 63 {
+                ps2_rand_at_the_walk(&mut b);
+            }
+            let f = &b.game.fight.fighters;
+            if let Some(&(row, _)) = ps2.iter().find(|r| k == 62 + r.0) {
+                seen.push((row, b.game.fight.objects.seed));
+            }
+            if burns.is_none() && f[1].shown_move().0.index == 5527 {
+                burns = Some(f[0].shown_move().1);
+            }
+        }
+        assert_eq!(seen, ps2, "walk {walk}");
+        assert_eq!(burns, Some(burn), "walk {walk}");
+    }
+}
+
+/// True Ogre's fire sets sparks off (task 0x3A4970: quad 0x80 at 0.2, 0.044 m) and fires on the floor (0x3A4C28:
+/// quad 0x400 at 0.2-0.5) at Hwoarang's feet and where the stream licks the floor: his 1+2 after a walk of 30 frames from
+/// the PS2's rand() (as [`true_ogres_fire_draws_from_the_ps2s_one_rand`]): 5 floor fires burn at once by the move audit's
+/// last row, as PCSX2's draws start them (0x3A4C84's lives).
+#[test]
+fn true_ogres_fire_sparks_and_sets_the_floor_alight() {
+    let Some(a) = assets() else { return };
+    let mut b = ogre_from_the_ps2s_rand(&a);
     let mut v = kumite_game::vfx::Vfx::new(&a);
     let (mut sparks, mut floor, mut feet) = (0, 0, None);
-    for (k, pad) in parse_script("n*62,f*30,n*2,1+2*2,n*200").unwrap().into_iter().enumerate() {
+    for (k, pad) in parse_script("n*63,f*30,n*2,1+2*2,n*150").unwrap().into_iter().enumerate() {
         // (the fire at his feet stands at his root as drawn the frame before the hit, player +0x590 / +0x598)
         let drawn = b.game.fight.fighters[1].root() / 1000.0;
         b.step([pad, Pad::default()]);
+        if k == 63 {
+            ps2_rand_at_the_walk(&mut b);
+        }
         v.step(&b.game);
         let s = v.sprites();
         if feet.is_none() && b.game.fight.hits.iter().any(|h| h.attacker == 0 && h.limb == 0x18) {
@@ -1095,7 +1186,7 @@ fn true_ogres_fire_sparks_and_sets_the_floor_alight() {
         }
         (sparks, floor) = (sparks.max(n), floor.max(f));
     }
-    assert!((8..=40).contains(&sparks) && (1..=12).contains(&floor) && feet == Some(true), "sparks {sparks} floor {floor} feet {feet:?}");
+    assert!((8..=40).contains(&sparks) && floor == 5 && feet == Some(true), "sparks {sparks} floor {floor} feet {feet:?}");
 }
 
 /// The effects frame by frame (for a comparison with PCSX2's effect tasks): `OK_FX_MODEL` (Paul) vs Hwoarang,
@@ -2100,8 +2191,10 @@ fn hits_and_voices_play_their_samples() {
     let sounds = strike(&mut b, &mut st, "f*20,1,f*20,1,f*20,1,f*20,1,f*20,1", Pad::default()).expect("the jab is guarded");
     assert!(b.game.fight.hits.iter().all(|h| h.blocked) && sounds.contains(&"001/016.wav".to_string()), "{sounds:?}");
     // a move with a voice (alias 367: type 2, voice 7, Paul's id 0xDA, sample 8 of his bank 344) on its first frame
+    // (the sound player each frame: an attack voice's cooldown runs out, 0x37608C)
     for _ in 0..60 {
         b.step([Pad::default(); 2]);
+        heard(&a, &s, &b, &mut st);
     }
     b.game.fight.fighters[0].play_alias(367);
     assert_eq!(heard(&a, &s, &b, &mut st), ["344/008.wav"]);

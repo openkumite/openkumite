@@ -69,8 +69,9 @@ pub struct Cues {
 /// One fighter's face (fighter +0x8000 + 0x3066..0x3090).
 #[derive(Clone, Debug, Default)]
 pub struct Face {
-    face: i16,
-    timer: i16,
+    /// The face shown (+0x3066) and its frames left (+0x3068).
+    pub face: i16,
+    pub timer: i16,
     pose: i16,
     speed: f32,
     weight: f32,

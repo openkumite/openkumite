@@ -543,6 +543,14 @@ impl Bout {
         }
         self.phase_frame += 1;
         self.frames += 1;
+        // (Tekken Tag's main loop, every frame: a new press on a player's pad seeds rand() again, 0x35C370)
+        // shortcut: the press seeds it on the step whose move takes it; the PS2 reads the pad a frame before its move
+        // takes it (0x36C4C0), so its draws of that frame come after the seed; follow it if the fight takes pads late
+        if self.game.rounds.is_some() {
+            let bits = |p: &Pad| u16::from(p.buttons) | u16::from(p.up) << 8 | u16::from(p.down) << 9 | u16::from(p.left) << 10 | u16::from(p.right) << 11 | u16::from(p.start) << 12;
+            let pressed = (0..2).any(|i| self.cpu[i].is_none() && bits(&pads[i]) & !bits(&self.last_pads[i]) != 0);
+            self.game.fight.objects.tag_frame(pressed);
+        }
         self.last_pads = pads;
         // the heads follow the opponent only while the round is on (round state 2; Tekken Tag's also in the K.O.
         // time, gp-0x7268 1 or 2), and not Force's CPU soldiers
