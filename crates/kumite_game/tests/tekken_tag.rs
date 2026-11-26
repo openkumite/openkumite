@@ -381,6 +381,33 @@ fn the_tracking_turns_in_the_games_angles() {
     assert_eq!((king, paul), (vec![17423; 7], vec![49711, 49823]));
 }
 
+/// A move's auto-turn steps in the game's s16 angles (+0x15E, 0x36AE60: the angle left over the frames, cut toward
+/// zero), and a reaction's motion ends the ease toward the next move through its hold (+0x134, kept until the frame
+/// moves on, 0x36A500): Paul's sidestep down and 2 at Hwoarang (both holding 1+2 through the intro) push him to x
+/// 1046 on its frame 10, and his reaction 4565 slides him to (1492, 580) by its frame 5, as in PCSX2 (a float turn:
+/// 1045; the ease kept: 1493, 581).
+#[test]
+fn a_sidestep_turns_and_a_reaction_eases_as_the_game() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [PAUL, 426]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    let hold = Pad { buttons: 3, ..Pad::default() };
+    while b.phase != Phase::Fight {
+        b.step([hold; 2]);
+    }
+    let mut rows = Vec::new();
+    for pad in parse_script("n*61,f*30,n*2,d*1,n*40,2*2,n*40").unwrap() {
+        b.step([pad, Pad::default()]);
+        let f = &b.game.fight.fighters;
+        let (m0, m1) = (f[0].shown_move(), f[1].shown_move());
+        if (m0.0.index, m0.1) == (534, 10) || (m1.0.index, m1.1) == (4565, 5) {
+            rows.push((f[1].root().x as i32, -f[1].root().z as i32));
+        }
+    }
+    assert_eq!(rows, [(1046, 41), (1492, 580)]);
+}
+
 /// The facing pass (0x36FEF0) turns a fighter in its hit-stop frame too: Hwoarang, struck by Paul's 1 after a walk,
 /// starts turning to the attacker on the hit's frame (+0x3C -16384 -> -16350 in PCSX2), so the next push meets his
 /// body turned and his slide ends at x 1739, as in PCSX2 (not turning there: 1738).

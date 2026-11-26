@@ -717,7 +717,8 @@ pub struct Fighter {
     ease: Ease,
     ease_last: Option<Current>,
     /// Tekken 3's +0xDA: a new motion started (0x8002F900), kept until a step does not start with the queued move
-    /// (0x8002F4A8); the last commit was the END look-ahead's (+0x8B 3, 0x8002DCD4).
+    /// (0x8002F4A8); Tekken Tag's +0x134 as a reaction's commit sets it, kept through its hold (0x36A500); the last
+    /// commit was the END look-ahead's (+0x8B 3, 0x8002DCD4).
     new_motion: bool,
     again: bool,
     shown_turns: Turns,
@@ -1139,8 +1140,9 @@ impl Fighter {
         let n_att = a0.saturating_sub(1).max(1);
         let n_b = if a0 != 0 { n_att } else { old_len.min(16) };
         let yaw = self.yaw;
-        // (Tekken 3's step is the 16-bit difference over the frames, cut toward zero: 0x8002FB90)
-        let auto = |to: f32, n: u32| Some((if t3 { of16(d16(a16(to) - a16(yaw)) / n as i32) } else { wrap_pi(to - yaw) / n as f32 }, n));
+        // (the step is the 16-bit difference over the frames, cut toward zero: Tekken 3's 0x8002FB90, Tekken Tag's
+        // +0x15E, 0x36AE60)
+        let auto = |to: f32, n: u32| Some((if t3 { of16(d16(a16(to) - a16(yaw)) / n as i32) } else { tag_step(to, yaw, 1, n as i32, 0x8000) }, n));
         match t {
             0 | 0x1F | 0x20 | 0x2C | dialect::TRANSITION_FACE if !self.locked => {
                 self.yaw = a2a;
@@ -2228,10 +2230,12 @@ impl Fighter {
                     self.fly(gd);
                 }
             }
-            // (+0xDA cleared after the ease: the reaction's hold step is its commit's, whose ease sees it, 0x8002F4A8)
-            self.new_motion = false;
+            // (+0xDA cleared after the ease: the reaction's hold step is its commit's, whose ease sees it, 0x8002F4A8;
+            // Tekken Tag's +0x134 stays through the hold, cleared as the frame moves on, 0x36A500)
+            self.new_motion &= self.tag_rules(gd);
             return;
         }
+        self.new_motion &= !self.tag_rules(gd);
         // knockdown stun (0x800403C0): the reaction timer runs down; in its last 30 frames the pool drains, faster
         // while buttons are pressed (2: 4 a frame, any other: 2)
         // (a throw's victim waits on its link's frame 0 for the move logic that links it on the PS1, 0x80030910: its
@@ -2438,7 +2442,7 @@ impl Fighter {
         let (fl, frames, active, next) = (if tag { m.flags24.tag } else { m.flags24.raw >> 8 }, m.frames as i32, m.active.map(|a| a as i32), m.next.alias);
         let last_move = last.and_then(|c| self.moves(gd, c.bank).moves.get(c.index));
         // +0x134: a new motion started (0x36A9A0; Tekken 3's +0xDA, 0x8002F900)
-        let new_motion = if tag { self.started_with.is_some_and(|t| matches!(t & 0x3F, 1 | 3) || last_move.is_some_and(|l| l.anim != m.anim)) } else { self.new_motion };
+        let new_motion = if tag { self.new_motion || self.started_with.is_some_and(|t| matches!(t & 0x3F, 1 | 3) || last_move.is_some_and(|l| l.anim != m.anim)) } else { self.new_motion };
         let last_fl = last_move.map_or(0, |l| l.flags24.tag);
         self.ease_last = Some(self.current);
         // (+0x131: down for the round)
@@ -4432,9 +4436,9 @@ impl Fight {
                         let fv = &mut self.fighters[v];
                         let old = fv.current_move(gd).anim.clone();
                         fv.start_reaction(to, alias);
-                        // (Tekken 3's reaction commit sets +0xDA when its motion is another, 0x8002F900: the hold step's
-                        // ease sees it)
-                        fv.new_motion |= !fv.tag_rules(gd) && fv.current_move(gd).anim != old;
+                        // (the reaction commit sets Tekken 3's +0xDA, Tekken Tag's +0x134, when its motion is another,
+                        // 0x8002F900, 0x36A9A0: the hold steps' ease sees it)
+                        fv.new_motion |= fv.current_move(gd).anim != old;
                         // blocks and counter hits (0x800309E4, 0x80030C8C): the root basis on the attacker, and the
                         // body turning to it while it reels (mode 7); Tekken Tag's basis is the facing pass's target
                         // +0x44 (0x36B8FC), not one from the roots now; Tekken 3's the target +0x34 on both roots as
