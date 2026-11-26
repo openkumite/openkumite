@@ -287,6 +287,8 @@ pub struct Bout {
     playback: Option<(Arc<[StepInput]>, usize)>,
     /// The camera counters (intro variant, winner camera, replay camera): see [`COUNTERS`].
     counters: [usize; 3],
+    /// Tekken 3: the round's setup of the players' CPU state is to run (0x800593C8, a human's too).
+    setup: bool,
 }
 
 impl Bout {
@@ -328,7 +330,12 @@ impl Bout {
             more_human: Vec::new(),
             tape: None,
             playback: None,
+            setup: false,
         };
+        // (Tekken 3's one rand(): the fight's, from the CPUs' start)
+        if b.game.rounds.is_none() {
+            b.game.fight.objects.seed = b.ai_rng.rand;
+        }
         b.next_round();
         b
     }
@@ -402,6 +409,7 @@ impl Bout {
         for ai in self.cpu.iter_mut().flatten() {
             ai.new_round();
         }
+        self.setup = self.game.rounds.is_none();
         let variant = (self.count(INTRO) + 1) % 10;
         let intro = self.intros.then_some((variant, self.round == 1));
         // the copying character takes another fighter's moves for the round (0x8004F2DC, every round, player 1
@@ -448,7 +456,7 @@ impl Bout {
             usize::from(self.rng & 1 == 0)
         } else {
             // (libc rand() & 1, its odd draws alias 0; the CPUs' draws share the stream)
-            usize::from(self.ai_rng.rand() & 1 == 0)
+            usize::from(self.game.fight.objects.rand() & 1 == 0)
         }
     }
 
@@ -524,6 +532,10 @@ impl Bout {
     pub fn step(&mut self, pads: [Pad; 2]) {
         let pads = self.taped(pads);
         self.events.clear();
+        // (a step that does not run the fight starts no sounds)
+        if let Some(s) = self.game.sound.as_mut() {
+            s.heard.clear();
+        }
         // START pressed (online: from the pads, every computer on the same frame) skips the replay or the win pose
         let start = |p: &[Pad; 2]| p.iter().any(|p| p.start);
         if start(&pads) && !start(&self.last_pads) && matches!(self.phase, Phase::Replay { .. } | Phase::Result { .. } | Phase::TeamIntro { .. }) {
@@ -596,6 +608,10 @@ impl Bout {
                         self.game.fight.fighters[i].moveset.fixed.round_start[k]
                     });
                     self.game.set_start_moves(aliases);
+                    // (Tekken 3: then both players' CPU state is set up, P1's first, before the round's first step)
+                    if std::mem::take(&mut self.setup) {
+                        self.input([Pad::default(); 2], false);
+                    }
                     // (later rounds from frame 1: Tekken 3 keeps the last 150 frames in round 1 only, 0x8002D3DC)
                     if self.round > 1 {
                         for (f, a) in self.game.fight.fighters.iter_mut().zip(aliases) {
@@ -624,7 +640,7 @@ impl Bout {
                 }
             }
             Phase::Fight => {
-                let pads = self.input(pads);
+                let pads = self.input(pads, true);
                 self.fight_step(pads);
                 if self.free {
                     return;
@@ -975,10 +991,23 @@ impl Bout {
         }
     }
 
-    /// Human pads, or what each CPU player decides (0x8002C4C4: in slot order, only while it has HP left).
-    fn input(&mut self, pads: [Pad; 2]) -> [Pad; 2] {
+    /// Human pads, or what each CPU player decides (0x8002C4C4: in slot order, only while it has HP left); `think`
+    /// false: only the two players' round setup. Tekken 3's CPUs draw from the fight's rand().
+    fn input(&mut self, pads: [Pad; 2], think: bool) -> [Pad; 2] {
+        let t3 = self.game.rounds.is_none();
+        if t3 {
+            self.ai_rng.rand = self.game.fight.objects.seed;
+        }
+        let out = self.think(pads, think);
+        if t3 {
+            self.game.fight.objects.seed = self.ai_rng.rand;
+        }
+        out
+    }
+
+    fn think(&mut self, pads: [Pad; 2], think: bool) -> [Pad; 2] {
         let mut out = pads;
-        if self.cpu.iter().all(Option::is_none) && self.partner_cpu.is_none() && self.extra_cpu.is_none() && self.more_cpu.iter().all(Option::is_none) {
+        if think && self.cpu.iter().all(Option::is_none) && self.partner_cpu.is_none() && self.extra_cpu.is_none() && self.more_cpu.iter().all(Option::is_none) {
             return out;
         }
         // the opponent's chest height (+0x994): bone slot 2 of the pose shown
@@ -1008,11 +1037,18 @@ impl Bout {
                 partner: f.teams.as_ref().and_then(|t| t.get(i)).map(|t| t.partner()).map(|p| (p.health, p.max_health)),
             }
         };
-        // the round setup of both CPUs comes before either thinks
+        // the round setup of both CPUs comes before either thinks (Tekken 3's of a human too: 0x800595D4's randint(30))
         for (i, ai) in self.cpu.iter_mut().enumerate() {
-            if let Some(ai) = ai {
-                ai.prepare(&self.ai_data, &mut self.ai_rng, &sight(i));
+            match ai {
+                Some(ai) => ai.prepare(&self.ai_data, &mut self.ai_rng, &sight(i)),
+                None if !think => {
+                    self.ai_rng.randint(30);
+                }
+                None => {}
             }
+        }
+        if !think {
+            return out;
         }
         for (i, (pad, cpu)) in out.iter_mut().zip(self.cpu.iter_mut()).enumerate() {
             if let Some(ai) = cpu {

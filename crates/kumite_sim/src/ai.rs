@@ -586,7 +586,8 @@ impl AiData {
 #[derive(Clone, Debug)]
 pub struct AiRng {
     lcg: u32,
-    rand: u32,
+    /// libc's state (Tekken 3's is the fight's, [`crate::objects::Objects::seed`], while the CPUs draw).
+    pub rand: u32,
 }
 
 impl AiRng {

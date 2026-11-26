@@ -408,8 +408,6 @@ pub struct Ember {
     pub out: bool,
 }
 
-/// The bone slots a struck fighter burns on (0x80025180).
-const BURN_SLOTS: [usize; 10] = [1, 2, 4, 8, 5, 9, 12, 13, 15, 16];
 /// The drawn nodes a fighter True Ogre's fire struck burns on (0x3A54D8's table 0x5198A0).
 const TAG_BURN_NODES: [usize; 10] = [1, 31, 37, 56, 62, 79, 81, 86, 90, 95];
 /// The pictures' sizes (their corners: 0x80025584 ±432, 0x800256A0 ±345, 0x80025770 ±250 units) and the fires'
@@ -895,7 +893,7 @@ impl Vfx {
                         self.floor_fire(h.attacker, at);
                     }
                 } else if matches!(h.limb, 0x18 | 0x1A) {
-                    for slot in BURN_SLOTS {
+                    for slot in kumite_sim::objects::BURN_SLOTS {
                         let r = self.rand() as i32;
                         self.burns.push(Burn { victim: h.victim, attacker: h.attacker, slot, pos, state: 1, count: r >> 4, left: (r & 15) + 60, rise: 0.0, mirror: r & 1 != 0, tag: false });
                     }

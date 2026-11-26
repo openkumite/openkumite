@@ -3,12 +3,14 @@
 //! WAV each VAB program/key plays). Playback is the app's job; this decides *what* plays, so it is testable.
 
 use crate::bout::Bout;
+use crate::Game;
 use anyhow::{Context, Result};
 use kumite_assets::Assets;
 use kumite_sim::Current;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// One sound to start: a WAV file, a volume (0..1) and the speed it plays at (1: its own rate).
 #[derive(Clone, Debug, PartialEq)]
@@ -183,6 +185,40 @@ pub struct SoundState {
     /// A wooden copying character (0x800954A8: picked with down held as the fight loads): its blocks and the hits on it
     /// sound as wood.
     pub wooden: Vec<bool>,
+}
+
+/// The fighters' sound player as the fight step runs it ([`Game::sound`]): Tekken 3's draws from the fight's one
+/// rand() in the PS1's order (after the objects, 0x8002B4C4), so what it picks is the simulation's; the app plays
+/// `heard`.
+#[derive(Clone)]
+pub struct FightSound {
+    pub data: Arc<SoundData>,
+    pub state: SoundState,
+    /// The two fighters' sound banks ("m071") and voice rows (+0x1A); a co-op partner's (actor 3: Force's, Ball 2 ON
+    /// 2's), actor 2's own (Ball 2 ON 2), Force's 3P and 4P's: their banks and voice rows.
+    pub banks: [String; 2],
+    pub voices: [usize; 2],
+    pub partner: Option<(String, usize)>,
+    pub extra: Option<(String, usize)>,
+    pub more: [Option<(String, usize)>; 2],
+    /// The sounds the last step started.
+    pub heard: Vec<Sound>,
+}
+
+impl FightSound {
+    pub fn new(data: Arc<SoundData>, banks: [String; 2], voices: [usize; 2], state: SoundState) -> Self {
+        Self { data, state, banks, voices, partner: None, extra: None, more: Default::default(), heard: Vec::new() }
+    }
+
+    /// The sounds of the step `game` just made.
+    pub(crate) fn step(&mut self, game: &Game) {
+        let banks = [self.banks[0].as_str(), self.banks[1].as_str()];
+        fn pair(v: &Option<(String, usize)>) -> Option<(&str, usize)> {
+            v.as_ref().map(|(b, c)| (b.as_str(), *c))
+        }
+        let more = self.more.each_ref().map(pair);
+        self.heard = self.data.step_game(game, &mut self.state, banks, self.voices, pair(&self.partner), pair(&self.extra), &more);
+    }
 }
 
 /// The attacker's damage the impacts and voices weigh (+0x5E, set as the move starts, 0x8002F648): the move's,
@@ -480,10 +516,25 @@ impl SoundData {
         extra: Option<(&str, usize)>,
         more: &[Option<(&str, usize)>],
     ) -> Vec<Sound> {
+        self.step_game(&bout.game, state, banks, characters, partner, extra, more)
+    }
+
+    /// [`SoundData::step_with_partner`] of a game's step.
+    #[allow(clippy::too_many_arguments)]
+    fn step_game(
+        &self,
+        game: &Game,
+        state: &mut SoundState,
+        banks: [&str; 2],
+        characters: [usize; 2],
+        partner: Option<(&str, usize)>,
+        extra: Option<(&str, usize)>,
+        more: &[Option<(&str, usize)>],
+    ) -> Vec<Sound> {
         if let Some(t) = &self.tag {
-            return t.step(bout, state);
+            return t.step(game, state);
         }
-        let f = &bout.game.fight;
+        let f = &game.fight;
         // (Force's other soldier is actor 2: it plays the target's sound bank, unvoiced)
         let mut fighters: Vec<&kumite_sim::Fighter> = f.fighters.iter().chain(f.extra.as_deref()).collect();
         let (eb, ec) = extra.unwrap_or((banks[1], characters[1]));
@@ -962,8 +1013,8 @@ impl Tag {
 
     /// The step's sounds (0x375B60 a fighter a frame, the hits, the arena's steps). Each fighter's voice bank and
     /// row come from its character file (a tag swap brings the partner's).
-    fn step(&self, bout: &Bout, state: &mut SoundState) -> Vec<Sound> {
-        let (g, f) = (&bout.game, &bout.game.fight);
+    fn step(&self, g: &Game, state: &mut SoundState) -> Vec<Sound> {
+        let f = &g.fight;
         // (and Force's, Ball 2 ON 2's other actors: the soldier, the partner, 3P, 4P, the soldiers after them)
         let fighters: Vec<&kumite_sim::Fighter> = (0..f.actor_count()).map_while(|k| f.actor(k)).collect();
         let models: Vec<usize> = (0..fighters.len()).map(|k| g.body_of(k).map_or(usize::MAX, |b| b.model_record)).collect();

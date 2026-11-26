@@ -139,6 +139,8 @@ pub struct BodyVolumes {
     /// The head's and the pelvis's world matrices (game units: turned and scaled as the body, placed in units), where
     /// the effect objects that strike start (bone slots 2 and 11, [`objects`]).
     pub slots: [glam::Mat4; 2],
+    /// Tekken 3: the 18 joint slots where the PS1 keeps them (+0x908, its integers; y down, z negated), its burns'.
+    pub joints: Vec<[i32; 3]>,
 }
 /// Round clock for the default option (40 s).
 pub const ROUND_FRAMES: u32 = 40 * 60;
@@ -540,6 +542,35 @@ pub struct Air {
 impl Air {
     pub fn height(&self) -> f32 {
         self.y
+    }
+}
+
+/// A fighter's blink (0x80034100): 4 frames shut, then (rand & 0xFE) + 1 open, shut on the first frame; held shut by
+/// the move (`forced`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Blink {
+    /// Frames to its next change (+0x128E); shut (+0x1290).
+    pub timer: i32,
+    pub closed: bool,
+}
+
+impl Blink {
+    /// One frame; `rand` the game's rand() (drawn on each reopening).
+    pub fn step(&mut self, forced: bool, rand: &mut impl FnMut() -> u32) {
+        if forced {
+            self.timer = 2;
+            self.closed = true;
+        }
+        if self.timer == 0 {
+            if self.closed {
+                self.timer = (rand() & 0xFE) as i32 + 1;
+                self.closed = false;
+            } else {
+                self.timer = 4;
+                self.closed = true;
+            }
+        }
+        self.timer -= 1;
     }
 }
 
@@ -2933,6 +2964,8 @@ pub struct Fight {
     pub teams: Option<Box<[TagTeam; 2]>>,
     /// The effect objects that strike (Gon's fire and gas).
     pub objects: objects::Objects,
+    /// Tekken 3: the two fighters' blinks.
+    pub blinks: [Blink; 2],
     /// Tekken Tag's pair distance limit (0x371458): each fighter's kept place (x, z; 0x879610) and its move's flags
     /// of the frame before (gp-0x6508); None until the round's first frame (0x3713F0 starts them at the places).
     pub kept: Option<melee::KeptPlaces>,
@@ -3252,6 +3285,7 @@ impl Fight {
             idle_target: None,
             teams: None,
             objects: objects::Objects::default(),
+            blinks: Default::default(),
             kept: None,
         }
     }
@@ -3718,8 +3752,19 @@ impl Fight {
                 }
             }
         }
+        // (Tekken 3's blinks, in each fighter's move logic before the objects, 0x8003A97C: shut by a move of flags24 bit
+        // 0x40000, or lying without bit 0x40000000; they draw from the one rand())
+        if !gd.tag_moves {
+            for (b, f) in self.blinks.iter_mut().zip(&self.fighters) {
+                let m = f.current_move(&gd);
+                let flags = m.flags24.raw;
+                let o = &mut self.objects;
+                b.step(flags & 0x4_0000 != 0 || (m.posture.raw & 4 != 0 && flags & 0x4000_0000 == 0), &mut || o.rand() as u32);
+            }
+        }
         // the effect objects (0x8006F0F4, 0x8006F5C0), seeing last frame's contacts
         let struck = [self.fighters[1].struck, self.fighters[0].struck];
+        self.objects.field = self.frame & 1 == 0;
         step_objects(&mut self.objects, &gd, &self.fighters, &[&bodies[0], &bodies[1]], &anims, &struck);
         // the hit pass's per-frame flags (cleared at 0x80044008) and the body push's
         for f in &mut self.fighters {
@@ -3768,6 +3813,14 @@ impl Fight {
                 if h.victim == 1 {
                     h.victim = 2;
                 }
+            }
+        }
+        // (Tekken 3: a clean hit of the breath or the fire sets the struck one burning, 0x80076D24 -> 0x8006EF60)
+        if !gd.tag_moves {
+            let burns: Vec<usize> = self.hits.iter().filter(|h| !h.blocked && h.base_damage != 0 && matches!(h.limb, 0x18 | 0x1A)).map(|h| h.victim).collect();
+            for v in burns {
+                let gon = self.actor(v).is_some_and(|f| f.character == Some(17));
+                self.objects.burn(v, gon);
             }
         }
         // the ball after the hit pass (it keeps flying after the K.O.)
@@ -4787,6 +4840,7 @@ pub fn direction_quadrant(yaw: f32, from: Vec3, other: Vec3) -> usize {
 /// frame (the fight's pair, or a brawl's actors).
 pub(crate) fn step_objects(objects: &mut objects::Objects, gd: &GameData, fighters: &[Fighter], bodies: &[&BodyVolumes], anims: &[&dyn Animations], struck: &[bool]) {
     let mut striking = vec![None; fighters.len()];
+    let t3 = !gd.tag_moves;
     objects.started.resize(fighters.len(), None);
     for (i, f) in fighters.iter().enumerate() {
         let mv = f.current_move(gd);
@@ -4800,6 +4854,11 @@ pub(crate) fn step_objects(objects: &mut objects::Objects, gd: &GameData, fighte
             _ => None,
         };
         let byte = fire.or_else(|| mv.attack.as_ref().filter(|a| a.pairs.is_empty()).and_then(|a| a.header_bytes.first().copied()).filter(|&b| b >= 0x18));
+        // (Tekken 3's burns on the fighter: where its joints are this frame)
+        if t3 && objects.list.iter().any(|o| matches!(o.kind, objects::Kind::Burn { victim, .. } if victim == i)) {
+            objects.joints.resize(fighters.len(), Vec::new());
+            objects.joints[i] = anims.get(i).and_then(|a| a.volumes(f, gd)).map(|v| v.joints).unwrap_or_default();
+        }
         let (Some(byte), Some(&body), Some(anim)) = (byte.filter(|_| !f.inactive), bodies.get(i), anims.get(i)) else { continue };
         let key = (mv.active[0]..=mv.active[1]).contains(&f.frame).then_some((f.current.index, f.frame));
         if key.is_some() && objects.started[i] != key {
@@ -4809,9 +4868,7 @@ pub(crate) fn step_objects(objects: &mut objects::Objects, gd: &GameData, fighte
         objects.started[i] = key;
         striking[i] = (f.frame >= mv.active[0]).then_some(byte);
     }
-    if !objects.list.is_empty() {
-        objects.step(&striking, struck);
-    }
+    objects.step(&striking, struck, t3);
 }
 
 #[cfg(test)]

@@ -93,7 +93,7 @@ impl WingState {
 /// A fighter's face state.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Face {
-    timer: i32,
+    blink: kumite_sim::Blink,
     /// The eyes are shut.
     pub closed: bool,
     /// The moving pupils: each eye's row offset once it has been moved (None: as loaded).
@@ -102,22 +102,11 @@ pub struct Face {
 }
 
 impl Face {
-    /// One blink frame (0x80034100); `rand` the game's rand() (called on each reopening).
+    /// One blink frame (0x80034100; Tekken 3's run in the fight, [`kumite_sim::Fight::blinks`]); `rand` the game's
+    /// rand() (called on each reopening).
     pub fn blink(&mut self, forced: bool, rand: &mut impl FnMut() -> u32) {
-        if forced {
-            self.timer = 2;
-            self.closed = true;
-        }
-        if self.timer == 0 {
-            if self.closed {
-                self.timer = (rand() & 0xFE) as i32 + 1;
-                self.closed = false;
-            } else {
-                self.timer = 4;
-                self.closed = true;
-            }
-        }
-        self.timer -= 1;
+        self.blink.step(forced, rand);
+        self.closed = self.blink.closed;
     }
 
     /// The moving pupils (0x80033ECC) for the opponent's head at angle `a` (4096ths of a turn) in his head's frame.

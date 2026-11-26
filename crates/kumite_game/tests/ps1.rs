@@ -5,8 +5,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests: a failure stops them
 
 use kumite_assets::Assets;
+use kumite_game::sound::{FightSound, SoundData};
 use kumite_game::{parse_script, Game};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn assets() -> Option<Assets> {
     let root = std::env::var_os("OPENKUMITE_ASSETS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets"));
@@ -18,11 +20,44 @@ fn assets() -> Option<Assets> {
 /// as the PS1 keeps them (P+0x324).
 type Row = [(i32, i32, i32, i16, i16, i32, String, Vec<[i32; 3]>); 2];
 
+/// The rand() state, the blinks (P1's timer and shut, P2's) and the frame counter's parity (0x800AFA4C) at a case's
+/// first step, as the PS1 had them: none (""), or "seed,t1,c1,t2,c2,parity" (hex seed).
+fn start_rand(g: &mut Game, v: &str) {
+    let n: Vec<i64> = v.split(',').enumerate().filter_map(|(k, x)| if k == 0 { i64::from_str_radix(x, 16).ok() } else { x.parse().ok() }).collect();
+    if let [seed, t1, c1, t2, c2, parity] = n[..] {
+        (g.fight.objects.seed, g.fight.frame) = (seed as u32, parity as u64);
+        for (b, (t, c)) in g.fight.blinks.iter_mut().zip([(t1, c1), (t2, c2)]) {
+            (b.timer, b.closed) = (t as i32, c != 0);
+        }
+    }
+}
+
+/// The fighters' sound player as the PS1 runs it in the step (its voices draw from rand()), voice rows by model
+/// (roster.json: the descriptor's +0x1A).
+fn sound(a: &Assets, models: [usize; 2]) -> Option<Box<FightSound>> {
+    let data = SoundData::load(a).ok()?;
+    let roster: serde_json::Value = serde_json::from_slice(&std::fs::read(a.root.join("gamedata/roster.json")).ok()?).ok()?;
+    let row = |m: usize| {
+        let e = roster["selections"]["entries"].as_array()?.iter().find(|e| e["model_record"].as_u64() == Some(m as u64))?;
+        e["voice_row"].as_u64().or(e["descriptor"]["player_1A"].as_u64()).or(e["character"].as_u64()).map(|r| r as usize)
+    };
+    let voices = models.map(|m| row(m).unwrap_or(0));
+    Some(Box::new(FightSound::new(Arc::new(data), models.map(|m| format!("m{m:03}")), voices, Default::default())))
+}
+
 /// A VS fight of `models` from the round's first fight step, the pads' scripts from there, `steps` of them.
 /// `lead`: steps P1's start move runs ahead of P2's (the PS1's round 2 starts them a step apart); `copy`: the copying
 /// character P1's draw for the round (its pool's entry).
 fn rows(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize) -> Vec<Row> {
+    rows_at(a, models, copy, lead, p1, p2, steps, &std::env::var("VS_RAND").unwrap_or_default())
+}
+
+/// [`rows`] from the PS1's rand() and blinks ([`start_rand`]); VS_RAND_LOG=1 prints each step's state ("step rs seed
+/// g=count objects").
+#[allow(clippy::too_many_arguments)]
+fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize, start: &str) -> Vec<Row> {
     let mut g = Game::load(a, models).unwrap();
+    g.sound = sound(a, models);
     // (the PS1's VS LIFE level 3, "100 %", is the life table's 140, 0x800225EC; round 1's intro ends on a commit facing
     // the opponent, type 0: P2 at the atan of the start marks, 0xBFFF)
     g.max_health = [Some(140); 2];
@@ -39,11 +74,17 @@ fn rows(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str
     f.yaw = (0x8000 - 0xBFFF) as f32 * std::f32::consts::TAU / 65536.0;
     f.root_yaw = f.yaw;
     g.fight.fighters[0].frame += lead;
+    start_rand(&mut g, start);
+    let log = std::env::var_os("VS_RAND_LOG").is_some();
     let (s1, s2) = (parse_script(p1).unwrap(), parse_script(p2).unwrap());
     let angle = |y: f32| (0x8000 - (y / std::f32::consts::TAU * 65536.0).round() as i32) as i16;
     (0..steps)
         .map(|k| {
             g.step([s1.get(k).copied().unwrap_or_default(), s2.get(k).copied().unwrap_or_default()]);
+            if log {
+                let l: Vec<String> = g.fight.objects.list.iter().map(|o| format!("{:?}.{}.{}", o.kind, o.state, o.count)).collect();
+                eprintln!("{k} rs {:08x} g={} {}", g.fight.objects.seed, g.fight.objects.count, l.join(" "));
+            }
             std::array::from_fn(|i| {
                 let f = &g.fight.fighters[i];
                 let r = f.root();
@@ -85,6 +126,21 @@ fn print_vs_trace() {
 /// trace reads the roots before the step's update; P2 starts its round a step after P1, its pad a step later).
 fn at(rows: &[Row], first: usize, row: usize, i: usize) -> &(i32, i32, i32, i16, i16, i32, String, Vec<[i32; 3]>) {
     &rows[row - first - 2][i]
+}
+
+/// True Ogre's breath on King walking back, from the PS1's rand() of the case's first step (t3sim37's rs.lua): its
+/// one stream (the blinks, the attack voice, every breath, spark, floor flame and burn draw in the PS1's order, the
+/// pool's count in the sparks' odds) turns each breath as the PS1's, which strikes every other frame (the display
+/// field 0x800ADEFC); King is struck on the PS1's step and pushed as its (ours came a step early, 190 off).
+#[test]
+fn the_breath_turns_on_the_one_rand_stream_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows_at(&a, [203, 99], None, 1, "n*245,f*40,n+1+2*2,n*218", "n*246,b*80,n*180", 503, "a71000eb,57,0,0,1,1");
+    for (row, want) in [(1026, (-286, -999, -24, 9_175_040)), (1027, (-282, -1018, -19, 6_619_136)), (1060, (401, -997, -133, 6_619_136)), (1150, (-410, -170, -32, 6_619_136))] {
+        let r = at(&t, 676, row, 1);
+        assert_eq!((r.0, r.1, r.2, r.5), want, "PS1 row {row}");
+    }
+    assert_eq!(at(&t, 676, 1060, 0).3, 17076, "PS1 row 1060: True Ogre's facing");
 }
 
 /// Lei (P1) taps up near the end of the later rounds' start move (240 frames from frame 1, 0x8002D3DC; it kept the
@@ -147,11 +203,12 @@ fn king_knocks_out_jin_as_on_the_ps1() {
 /// new motion, on (0x8002F4A8 is not reached): his end-of-move ease starts over each step and his facing tracks as
 /// from frame 1 (+0x5C, 0x80030ED0). Doctor B.'s crawl (descriptor byte 0x1C) lets out his mist (object 10,
 /// 0x800729FC), which strikes Gon, and Gon plays Doctor B.'s reaction at his own size (45 %, 0x80038970). Ours missed
-/// (1894 off).
+/// (1894 off). The mist heads by its two rand() draws, from the PS1's rand() of the case's first step (t3sim39's rs.lua
+/// recording: the stream matched all 412 steps).
 #[test]
 fn doctor_bs_mist_strikes_gon_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let t = rows(&a, [251, 243], None, 1, "n*155,f*40,n+2*2,n*30,d+4*2,n*40,b+3*2,n*144", "n*156,b*40,n+4*2,n*40,n+1+2*2,n*176", 260);
+    let t = rows_at(&a, [251, 243], None, 1, "n*155,f*40,n+2*2,n*30,d+4*2,n*40,b+3*2,n*144", "n*156,b*40,n+4*2,n*40,n+1+2*2,n*176", 260, "d06f2765,60,0,0,1,0");
     for (row, want) in [(917, (439, -16416)), (920, (500, -16414)), (922, (521, -16412))] {
         let r = at(&t, 739, row, 1);
         assert_eq!((r.0, r.3), want, "PS1 row {row}");
