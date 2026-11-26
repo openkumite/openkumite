@@ -15,6 +15,7 @@ pub mod crowd;
 pub mod embu;
 pub mod ending;
 pub mod face;
+pub mod floor;
 pub mod force;
 pub mod hands;
 pub mod head;

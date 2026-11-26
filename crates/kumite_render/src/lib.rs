@@ -171,6 +171,8 @@ pub struct Camera {
     pub floor_clip: Option<[f32; 4]>,
     /// The extra stages' floor lighting (export_stages / 0x80082E60, 0x8008364C), when the stage has it.
     pub floor_light: Option<FloorLight>,
+    /// Tekken 3's floor colours per vertex ([`FloorShades`]).
+    pub floor_shades: Option<FloorShades>,
     /// An arena with walls (the extra levels): both fighters (metres) and a margin; stage surfaces above
     /// the floor in a tube from the camera to either fighter, nearer the camera than that fighter by more than the
     /// margin, are cut away, so walls and props between the camera and the fight do not hide it.
@@ -217,6 +219,15 @@ pub struct FloorLight {
     pub table: [f32; 32],
 }
 
+/// Tekken 3's floor colours (128 = as drawn) at the vertices of its 11 x 11 grid round `centre` (x, z, metres): rows
+/// of 11 from the least x, the rows from the greatest z, `tile` (m) apart; the floor beyond takes the nearest edge's.
+#[derive(Clone, Copy, Debug)]
+pub struct FloorShades {
+    pub centre: [f32; 2],
+    pub tile: f32,
+    pub shades: [u8; 121],
+}
+
 impl Camera {
     /// A camera with the backdrop at the origin.
     pub fn new(eye: Vec3, target: Vec3, fov_y: f32) -> Self {
@@ -240,6 +251,7 @@ impl Camera {
             gamma: false,
             grass: None,
             floor_light: None,
+            floor_shades: None,
             cutaway: None,
             cutaway_all: false,
             near_cut: None,
@@ -309,6 +321,9 @@ struct Globals {
     grass: [[f32; 4]; GRASS],
     // OpenKumite's enhancements: x 1 soft shadows
     enhance: [f32; 4],
+    // Tekken 3's floor colours: the grid's centre (x, z), its tile, 1 when on; the colours (Camera::floor_shades)
+    floor_grid: [f32; 4],
+    floor_shades: [[f32; 4]; 31],
 }
 
 /// Eddy's grass lattice's corners at most (17 x 17).
@@ -1669,6 +1684,8 @@ impl Renderer {
             grass: cam.grass.map_or([[0.0; 4]; GRASS], |l| l.moves),
             fog_line: cam.fog.map_or([0.0; 4], |(_, l)| [l[0], l[1], 0.0, 1.0]),
             enhance: [f32::from(u8::from(self.settings.soft_shadows)), 0.0, 0.0, 0.0],
+            floor_grid: cam.floor_shades.map_or([0.0; 4], |f| [f.centre[0], f.centre[1], f.tile, 1.0]),
+            floor_shades: std::array::from_fn(|i| std::array::from_fn(|k| cam.floor_shades.and_then(|f| f.shades.get(4 * i + k).copied()).map_or(0.0, f32::from))),
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
 
