@@ -854,6 +854,8 @@ pub struct FightCamera {
     samp: [Sample; 2],
     /// Ball: the ball, a third framing point (record 8 0x800B4484; game units, y down).
     pub ball: Option<[i64; 3]>,
+    /// Ball 2 ON 2 (OpenKumite's own): the four players (game units, y down), whom the eye keeps out of.
+    pub players: [Option<[i64; 3]>; 4],
     w: [i64; 5],
     wprev: [i64; 5],
     pub frame: i64,
@@ -913,6 +915,7 @@ impl FightCamera {
             st: [SlotState::default(); 5],
             samp: [Sample { x: 0, y: 0, z: 0, side: 0 }; 2],
             ball: None,
+            players: [None; 4],
             w: [0x1000, 0, 0, 0, 0],
             wprev: [0; 5],
             frame: 0,
@@ -1968,6 +1971,14 @@ impl FightCamera {
         }
         a3 += sra_tz(tdiv(sra_tz(pull * s5, 12) * h, dist), 4);
         let dy_ = yc - tdiv(a3 * zc, h) + lift;
+        // Ball 2 ON 2 (OpenKumite's own; the PS1's Ball is one on one): the eye backs off to stay 3500 in depth behind
+        // all four, where a standing body fits the picture's height (the partners are not framed, and on the wide
+        // court the pair can turn faster than the yaw)
+        let depth = |p: &[i64; 3]| sra_tz(s5 * sra_tz(s4 * (p[0] - ex) + s3 * (p[2] - ez), 12) - s0 * (p[1] - ey), 12) - dz_;
+        let near = self.players.iter().flatten().map(depth).min();
+        if let Some(near) = near {
+            dz_ -= (3500 - near).max(0);
+        }
         // view-space delta -> world
         let (sp, cp) = (sin6(pitch6), cos6(pitch6));
         let hd = sra_tz(dz_ * cp - dy_ * sp, 12);

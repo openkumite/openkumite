@@ -388,6 +388,8 @@ fn doctor_bs_type_9_mutes_his_jumps() {
 
 /// Xiaoyu's first model.
 const XIAOYU: usize = 432;
+const JULIA: usize = 486;
+const KING: usize = 390;
 
 /// What a Ball match of two CPUs saw: the frames the ball was charged, the most charge, the fighters' lowest health,
 /// the Ball sounds heard (files of the slice's Ball bank), the state hashes.
@@ -697,4 +699,46 @@ fn his_flights_rise_as_in_tekken_3() {
     let r3 = rise(&t3, [GON, 71]).max(rise(&t3, [71, GON]));
     eprintln!("Gon's flights rise {r} units, Tekken 3's {r3}");
     assert!(r > 0.0 && r <= r3 * 1.1, "Gon's flights rise {r} units, Tekken 3's {r3}");
+}
+
+/// Ball 2 ON 2 (OpenKumite's own) as the app sets it up in Tekken Tag (the slice's Ball camera), four CPUs, over whole
+/// matches: the fight camera keeps 2000 units from every fighter's joints. (It came inside a partner, and on the wide
+/// court inside one of the framed pair, in each of these three.)
+#[test]
+fn the_2_on_2_ball_camera_stays_out_of_the_fighters() {
+    let Some(a) = assets() else { return };
+    let mut nearest = (f32::MAX, 0, 0, 0);
+    for (k, (models, team, server)) in [([JULIA, XIAOYU], [PAUL, JIN], 1), ([PAUL, JIN], [LEI, HWOARANG], 1), ([JIN, LEI], [HWOARANG, KING], 0)].into_iter().enumerate() {
+        let mut g = Game::load(&a, models).unwrap();
+        g.load_camera(&a.root.join("gamedata/ball_camera.json")).unwrap();
+        g.ball = Some(kumite_game::BallSetup { data: std::sync::Arc::new(a.gamedata("ball.json").unwrap()), kind: 0, server, rounds: 0 });
+        g.ball_team = Some(team.map(|m| kumite_game::Actor::load(&a, m).unwrap()));
+        g.round_frames = u32::MAX / 2;
+        (g.ko_collapse, g.fight.ko_collapse) = (false, false);
+        let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+        b.set_cpu(0, Some((2, 9)));
+        b.set_cpu(1, Some((2, 9)));
+        b.partner_cpu = Some(kumite_sim::ai::Ai::new(2, 9, 0));
+        b.extra_cpu = Some(kumite_sim::ai::Ai::new(2, 9, 1));
+        for s in 0..30000 {
+            if b.finished() {
+                break;
+            }
+            b.step([Pad::default(); 2]);
+            if !matches!(b.phase, Phase::Call | Phase::Fight | Phase::RoundOver { .. }) {
+                continue;
+            }
+            let [x, y, z] = b.game.camera.view.eye.map(|v| v as f32);
+            let eye = glam::Vec3::new(x, -y, -z);
+            for i in 0..4 {
+                let (pose, place) = b.game.pose_actor(i).unwrap();
+                let d = pose.iter().map(|j| eye.distance(place.transform_point3(j.w_axis.truncate()) * kumite_game::UNITS)).fold(f32::MAX, f32::min);
+                if d < nearest.0 {
+                    nearest = (d, k, s, i);
+                }
+            }
+        }
+    }
+    eprintln!("nearest (units, match, step, actor): {nearest:?}");
+    assert!(nearest.0 > 2000.0, "the eye came {nearest:?} from a fighter's joint");
 }

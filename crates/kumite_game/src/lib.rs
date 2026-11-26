@@ -1341,6 +1341,11 @@ impl Game {
         }
         let gd = self.fight.data.clone();
         self.camera.ball = self.fight.ball.as_ref().map(|b| b.pos.map(|v| v as i64));
+        // (Ball 2 ON 2's four, at their bodies' middle, 900 up)
+        self.camera.players = [0, 1, 2, 3].map(|k| {
+            let r = self.fight.actor(k).filter(|_| self.ball_team.is_some())?.root();
+            Some([r.x.round() as i64, -(r.y.round() as i64) - 900, -(r.z.round() as i64)])
+        });
         let mc = std::array::from_fn(|i| self.fight.fighters[i].current_move(&gd).flags24.camera_script as i64);
         if self.camera.data().director.is_some() {
             self.camera.actors = self.camera_actors();
