@@ -407,8 +407,9 @@ pub struct Sphere {
 
 /// Per-animation root motion (game units, root translation per frame) supplied by the app from the glTF.
 pub trait Animations {
-    /// `partner`: the animation belongs to the opponent's character (a borrowed throw-victim move).
-    fn root(&self, anim: &str, frame: u32, partner: bool) -> Option<Vec3>;
+    /// `partner`: the animation belongs to the opponent's character (a borrowed throw-victim move); `thrown`: a
+    /// throw's victim (+0x74 < 0), whose Tekken 3 root plays at the opponent's size (0x8003890C).
+    fn root(&self, anim: &str, frame: u32, partner: bool, thrown: bool) -> Option<Vec3>;
     /// Tekken Tag: the body's scale of its motions' root (player +0x4FC, 4096 = 1: its model's +0xC percent, 0x3AF7D0);
     /// `other`: the opponent's, which a thrown fighter (+0xE0 < 0) takes whatever it plays (0x363A80).
     fn root_scale(&self, _other: bool) -> i32 {
@@ -532,6 +533,8 @@ pub struct Air {
     pub spike: bool,
     /// The air table entry it flies by (+0x90; 5 = the air setup, 0xD57).
     pub kind: usize,
+    /// Tekken 3's drift for the next frame (+0x9A, +0x9E: x and the game's z).
+    pub step: [i32; 2],
 }
 
 impl Air {
@@ -1116,9 +1119,8 @@ impl Fighter {
         // (Tekken 3 sets the basis to the facing with no turn too, 0x8002F9F0)
         if (end || buffered) && t != 0x22 && (old_turn != 0 || !self.tag_rules(gd)) {
             // the game's angles run the other way round on OpenKumite's flipped z (Tekken Tag's 0x36AA48 adds +0x12
-            // to +0x3C); shortcut: Tekken 3 keeps its sign, as its turns are mostly half a turn, until checked there
-            let turn = if self.tag_rules(gd) { -(old_turn as f32) } else { old_turn as f32 };
-            self.yaw += turn * ANGLE;
+            // to +0x3C, Tekken 3's 0x8002F9F0 to +0x2C)
+            self.yaw -= old_turn as f32 * ANGLE;
             self.root_yaw = self.yaw;
         }
         let t3 = !self.tag_rules(gd);
@@ -1188,7 +1190,7 @@ impl Fighter {
             let (anim, af) = self.animation(gd);
             let prev = (af as i32 - self.frame_step).max(0) as u32;
             let partner = self.current.bank == Bank::Partner;
-            if let (Some(r), Some(rp)) = (anims.root(anim, af, partner), anims.root(anim, prev, partner)) {
+            if let (Some(r), Some(rp)) = (anims.root(anim, af, partner, self.chain < 0), anims.root(anim, prev, partner, self.chain < 0)) {
                 let scale = self.tag_rules(gd).then(|| anims.root_scale(self.thrown));
                 self.position = Vec3::new(root.x, self.position.y, root.z) - root_offset(rp, self.root_yaw, scale);
                 self.offset = root_offset(r, self.root_yaw, scale);
@@ -1232,7 +1234,7 @@ impl Fighter {
         if self.mode == 0xA {
             let (anim, _) = self.animation(gd);
             let partner = self.current.bank == Bank::Partner;
-            if let (Some(r), Some(r0)) = (anims.root(anim, len - 1, partner), anims.root(anim, 0, partner)) {
+            if let (Some(r), Some(r0)) = (anims.root(anim, len - 1, partner, self.chain < 0), anims.root(anim, 0, partner, self.chain < 0)) {
                 self.lateral = (r.x - r0.x).signum();
             }
         }
@@ -1705,7 +1707,7 @@ impl Fighter {
         // drift away from the attacker for the whole flight (0x8002F074)
         let drift = (damage.abs() + 7 * (n + 1) + 10 + extra_drift).clamp(0, 100) as f32;
         f.frame = start.max(1) as u32;
-        f.air = Some(Air { drift, y: y0, down: -vy as f32, target, spike, kind });
+        f.air = Some(Air { drift, y: y0, down: -vy as f32, target, spike, kind, step: [0; 2] });
         f.juggle += 1;
         f.pushback = None;
     }
@@ -2206,21 +2208,25 @@ impl Fighter {
         // except against the last boss's move set (0x8003F248)
         if self.freeze > 0 {
             self.freeze -= 1;
-            if !self.opponent.moveset_id.is_some_and(|m| gd.characters.hitstop_still.contains(&m)) {
-                self.fly();
-            }
+            let flies = !self.opponent.moveset_id.is_some_and(|m| gd.characters.hitstop_still.contains(&m));
             // Tekken Tag draws the root of the held frame and eases its pose all the same (0x34E748 after the move
             // logic, its ease 0x373428): a new reaction's frame 1 shows its root step and its pose before the body
             // push. Tekken 3's hold (+0x76, 0x8002F4A4) is
             // the reaction's commit step (none more at hit-stop 0 or 1): only the frame stays, its pushback
-            // (0x8003F798), root and pose ease go on
+            // (0x8003F798), root and pose ease go on, the flight after them as on any step (0x8003F238)
             if self.tag_rules(gd) {
+                if flies {
+                    self.fly(gd);
+                }
                 self.root_motion(gd, anims);
                 self.ease(gd, anims);
             } else {
                 self.push_back();
                 self.root_motion(gd, anims);
                 self.ease(gd, anims);
+                if flies {
+                    self.fly(gd);
+                }
             }
             // (+0xDA cleared after the ease: the reaction's hold step is its commit's, whose ease sees it, 0x8002F4A8)
             self.new_motion = false;
@@ -2228,7 +2234,11 @@ impl Fighter {
         }
         // knockdown stun (0x800403C0): the reaction timer runs down; in its last 30 frames the pool drains, faster
         // while buttons are pressed (2: 4 a frame, any other: 2)
-        self.stun_timer = self.stun_timer.saturating_sub(1);
+        // (a throw's victim waits on its link's frame 0 for the move logic that links it on the PS1, 0x80030910: its
+        // timer starts there)
+        if self.chain >= 0 || self.frame != 0 || self.tag_rules(gd) {
+            self.stun_timer = self.stun_timer.saturating_sub(1);
+        }
         if self.stun_timer < 31 && self.stun > 0 {
             let p = self.input.pressed;
             self.stun = self.stun.saturating_sub(
@@ -2359,7 +2369,7 @@ impl Fighter {
         self.shown_root = self.root();
         self.root_motion(gd, anims);
         self.ease(gd, anims);
-        self.fly();
+        self.fly(gd);
         if self.air.is_none() {
             self.drift(gd);
             self.jump_toward(gd, before);
@@ -2399,10 +2409,10 @@ impl Fighter {
     fn root_motion(&mut self, gd: &GameData, anims: &dyn Animations) {
         let (anim, f) = self.animation(gd);
         let partner = self.current.bank == Bank::Partner;
-        if let Some(r) = anims.root(anim, f, partner) {
+        if let Some(r) = anims.root(anim, f, partner, self.chain < 0) {
             let scale = self.tag_rules(gd).then(|| anims.root_scale(self.thrown));
             let prev = (f as i32 - self.frame_step).max(0) as u32;
-            if let Some(rp) = anims.root(anim, prev, partner).filter(|_| std::mem::take(&mut self.rebase_root)) {
+            if let Some(rp) = anims.root(anim, prev, partner, self.chain < 0).filter(|_| std::mem::take(&mut self.rebase_root)) {
                 let root = self.shown_root;
                 self.position = Vec3::new(root.x, self.position.y, root.z) - root_offset(rp, self.root_yaw, scale);
             }
@@ -2559,7 +2569,7 @@ impl Fighter {
     /// body without the slots (the height eases alone).
     fn pose_at(&self, gd: &GameData, anims: &dyn Animations, c: Current, frame: u32) -> Option<(Turns, i32)> {
         let (anim, partner) = (&self.moves(gd, c.bank).moves.get(c.index)?.anim, c.bank == Bank::Partner);
-        let y = anims.root(anim, frame, partner)?.y.round() as i32;
+        let y = anims.root(anim, frame, partner, self.chain < 0)?.y.round() as i32;
         if !self.tag_rules(gd) {
             return Some((anims.turns(anim, frame, partner).unwrap_or([[0; 9]; 18]), y));
         }
@@ -2574,14 +2584,22 @@ impl Fighter {
 
     /// Juggle flight (0x8003F238): the physics height replaces the animation's root height until landing, with
     /// the drift away from the attacker.
-    fn fly(&mut self) {
+    fn fly(&mut self, gd: &GameData) {
         let root = self.root();
+        let t3 = (!self.tag_rules(gd)).then(|| self.geometry16(root, self.opponent.root).0 + 0x8000);
         if let Some(air) = &mut self.air {
             air.down += 2.0 * AIR_GRAVITY;
             air.y -= air.down;
-            let away = root - self.opponent.root;
-            let away = glam::Vec2::new(away.x, away.z).normalize_or_zero() * air.drift;
-            self.position += Vec3::new(away.x, 0.0, away.y);
+            if let Some(a) = t3 {
+                // Tekken 3 (0x8003F268): the drift found the frame before, then the next one away from the opponent
+                // (+0x2A turned round), the 4096 sine times 8 over 0x7FFF truncated
+                self.position += Vec3::new(air.step[0] as f32, 0.0, -air.step[1] as f32);
+                air.step = [ball::sin12(a >> 4), ball::cos12(a >> 4)].map(|t| (air.drift as i64 * i64::from(t.clamp(-0xFFF, 0xFFF) * 8) / 0x7FFF) as i32);
+            } else {
+                let away = root - self.opponent.root;
+                let away = glam::Vec2::new(away.x, away.z).normalize_or_zero() * air.drift;
+                self.position += Vec3::new(away.x, 0.0, away.y);
+            }
             let y = air.y;
             // it lands only while falling, at or below the landing height
             let (spike, kind) = (air.spike, air.kind);

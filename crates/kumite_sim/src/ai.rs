@@ -4483,7 +4483,7 @@ mod tests {
 
     struct NoAnims;
     impl Animations for NoAnims {
-        fn root(&self, _: &str, _: u32, _: bool) -> Option<Vec3> {
+        fn root(&self, _: &str, _: u32, _: bool, _: bool) -> Option<Vec3> {
             None
         }
     }

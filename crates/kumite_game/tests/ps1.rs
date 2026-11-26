@@ -323,3 +323,36 @@ fn the_get_up_lock_skips_a_sub_lists_entries_as_on_the_ps1() {
     let r = at(&t, 663, 930, 1);
     assert_eq!((r.0, r.1, r.2, r.3), (1722, -994, 344, -11203), "PS1 row 930");
 }
+
+/// Paul's 1+3 throws King: the victim plays Paul's motion at Paul's size (P+0x4EE from the thrower's +0x4EC while
+/// +0x74 < 0, 0x8003890C), not King's 106 %: his height was 65 off. Thrown down, King's END link out of it turns him
+/// by its +0x12 the PS1's way round (0x8002F9F0): his facing was 1454 off.
+#[test]
+fn a_throws_victim_plays_at_the_throwers_size_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [75, 99], None, 1, "n*357,f*60,n+1+3*2,n*80,n+2+4*2,n*80,f+1+3*2,n*134", "n*420,n+2*2,n*4,n+2*2,n*80,n+1*2,n*4,n+1*2,n*202", 650);
+    let r = at(&t, 549, 1077, 1);
+    assert_eq!((r.0, r.1, r.2), (1192, -1086, 43), "PS1 row 1077");
+    assert_eq!(at(&t, 549, 1182, 1).3, -15810, "PS1 row 1182");
+}
+
+/// Nina's 2+4 throws Paul down: his stun timer starts on the step the PS1's move logic links him (0x80030910), so the
+/// drained pool lets him roll over (common_034, cond 0x31) on the PS1's frame; it came a step early.
+#[test]
+fn a_throws_victim_gets_up_on_the_ps1s_frame() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [115, 75], None, 1, "n*199,f*60,n+2+4*2,n*157", "n*419", 400);
+    let r = at(&t, 637, 1034, 1);
+    assert_eq!((r.1, r.3), (-157, -16386), "PS1 row 1034");
+}
+
+/// Anna's d+1 hits Law in his u/b+4: in the flight his drift (+0x9A, +0x9E) is the integer one found the frame before
+/// (0x8003F268, the speed +0x98 by the sine away from her), and on the reaction's hold step the flight comes after
+/// the root and the ease as on any step. He drifted 21 units a frame from the hit's step, 8 too high on the hold.
+#[test]
+fn a_juggled_fighter_drifts_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [83, 235], None, 1, "n*242,f*40,u/b+4*2,n*40,d/b+4*2,n*40,f/f+4*2,n*173", "n*243,b*40,d+1*2,n*30,n+2*2,n*225", 330);
+    assert_eq!(at(&t, 475, 768, 0).1, -1198, "PS1 row 768");
+    assert_eq!(at(&t, 475, 787, 0).0 - at(&t, 475, 771, 0).0, -320, "PS1 rows 771..787");
+}

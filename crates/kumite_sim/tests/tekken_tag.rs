@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 struct NoRoot;
 impl Animations for NoRoot {
-    fn root(&self, _: &str, _: u32, _: bool) -> Option<Vec3> {
+    fn root(&self, _: &str, _: u32, _: bool, _: bool) -> Option<Vec3> {
         None
     }
 }

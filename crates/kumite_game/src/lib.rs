@@ -124,10 +124,11 @@ struct FighterAnims<'a> {
 type Spring = (kumite_sim::Turn, [i32; 3]);
 
 impl Animations for FighterAnims<'_> {
-    fn root(&self, anim: &str, frame: u32, partner: bool) -> Option<Vec3> {
+    fn root(&self, anim: &str, frame: u32, partner: bool, thrown: bool) -> Option<Vec3> {
         let src = if partner { self.other } else { self.own };
         let clip = src.character.clip(anim).and_then(|k| src.character.clips.get(k));
-        clip.and_then(|c| sized_root(c, frame as usize, self.own.size)).or_else(|| src.root_of(anim, frame))
+        let size = if thrown { self.other.size } else { self.own.size };
+        clip.and_then(|c| sized_root(c, frame as usize, size)).or_else(|| src.root_of(anim, frame))
     }
 
     fn root_scale(&self, other: bool) -> i32 {
@@ -170,7 +171,7 @@ impl Animations for FighterAnims<'_> {
         if self.own.bones.is_empty() && t3.is_none() {
             return None;
         }
-        let shown = Snapshot { clip: clip.map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw, ease: f.eased() };
+        let shown = Snapshot { clip: clip.map(|c| (c, frame as usize)), partner, thrown: f.chain < 0, root: f.root(), yaw: f.yaw, ease: f.eased() };
         let (mut pose, place) = shown_pose(self.own, other, &shown);
         step_flap(self.own, other, &shown, &mut pose, self.flap.next());
         step_springs(self.own, &mut pose, place, self.springs);
@@ -202,6 +203,8 @@ pub struct Snapshot {
     pub clip: Option<(usize, usize)>,
     /// The clip is the opponent's (a borrowed throw-victim move).
     pub partner: bool,
+    /// A throw's victim (+0x74 < 0): Tekken 3 plays its clip's root at the opponent's size (0x8003890C).
+    pub thrown: bool,
     pub root: Vec3,
     pub yaw: f32,
     /// The pose ease: the joint slots' turns and the root's lift (game units) eased.
@@ -1289,7 +1292,7 @@ impl Game {
     /// What fighter `i` shows now (for the replay record).
     pub fn snapshot(&self, i: usize) -> Snapshot {
         let f = &self.fight.fighters[i];
-        Snapshot { clip: self.clip(i), partner: !std::ptr::eq(self.clip_owner(i), &*self.bodies[i]), root: f.root(), yaw: f.yaw, ease: f.eased() }
+        Snapshot { clip: self.clip(i), partner: !std::ptr::eq(self.clip_owner(i), &*self.bodies[i]), thrown: f.chain < 0, root: f.root(), yaw: f.yaw, ease: f.eased() }
     }
 
     /// The camera's frame, then each fighter's side for the next one: where its pelvis falls on the screen
@@ -1570,7 +1573,7 @@ impl Game {
         let borrowed = self.fight.data.tag_moves && body.character.clip(anim).is_none();
         let partner = f.shown_move().0.bank == kumite_sim::data::Bank::Partner || borrowed;
         let other = if partner { opponent } else { body };
-        let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, root: f.root(), yaw: f.yaw, ease: f.eased() };
+        let shown = Snapshot { clip: other.character.clip(anim).map(|c| (c, frame as usize)), partner, thrown: f.chain < 0, root: f.root(), yaw: f.yaw, ease: f.eased() };
         Some(shown_pose(body, other, &shown))
     }
 
@@ -1946,7 +1949,7 @@ pub fn shown_pose(body: &Body, other: &Body, shown: &Snapshot) -> (Vec<Mat4>, Ma
     // (Tekken Tag: the root's height at the motion's scale, as the sim's root (0x363AB8); Tekken 3's at the body's size)
     let scale = if shown.partner { other.motion_scale } else { body.motion_scale };
     let owner = if shown.partner { &other.character } else { &body.character };
-    let sized = shown.clip.and_then(|(clip, frame)| sized_root(owner.clips.get(clip)?, frame, body.size));
+    let sized = shown.clip.and_then(|(clip, frame)| sized_root(owner.clips.get(clip)?, frame, if shown.thrown { other.size } else { body.size }));
     if let Some(y) = pose.get(body.root).map(|m| m.w_axis.y).filter(|_| scale != 4096 || sized.is_some()) {
         let lift = sized.map_or(((y * UNITS).round() as i32 * scale / 4096) as f32, |r| r.y) / UNITS - y;
         for m in &mut pose {
