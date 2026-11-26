@@ -62,7 +62,7 @@ fn a_vs_match_against_the_cpu_replays_as_recorded() {
     an_ai_match_replays_as_recorded(&mode, "9000", r#""ai":[null,{"style":"Classic","difficulty":1,"level":5},null,null]"#, "p2cpu");
 }
 
-/// Force's co-op of two AIs (chickens, the soldiers split, a down 2P up again: a recorded join): a stage's replay
+/// Force's co-op of two AIs (chickens, the soldiers split, a down 2P down for the stage): a stage's replay
 /// ends as recorded.
 #[test]
 fn a_force_co_op_of_two_ais_replays_as_recorded() {

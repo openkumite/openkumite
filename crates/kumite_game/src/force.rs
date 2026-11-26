@@ -917,8 +917,18 @@ impl ForceStage {
         // an extra stage: its route's free half width (the body's room taken off)
         let side = self.route().map(|r| r.half_width * UNITS);
         let [a, b, c, d] = bd.human_x[usize::from(slanted)];
-        for i in game.players() {
+        let players = game.players();
+        let coop = players.len() > 1;
+        let gd = game.fight.data.clone();
+        for i in players {
+            let held = game.fight.coop.as_ref().is_some_and(|m| m.linked_with(i).is_some());
             let Some(f) = game.fight.actor_mut(i) else { continue };
+            // (co-op, OpenKumite's own: one down lies where it fell, out of play once its fall has played out (no
+            // push, hits or targets), left behind by the camera until the next stage)
+            if coop && f.health <= 0 {
+                f.inactive |= !held && f.current_move(&gd).posture.raw & 0x204 != 0;
+                continue;
+            }
             let root = f.root();
             // game z = −simulation z
             let z0 = -root.z;
