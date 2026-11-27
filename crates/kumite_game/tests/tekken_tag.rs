@@ -862,7 +862,9 @@ fn the_partner_comes_in_turning_to_the_opponent() {
 /// four draws on the grab's frame 2 (0x393A90's rand() picks the situation, 0x3800D8's, 0x394110's two its pitch
 /// and yaw) come where PCSX2's do in the one stream, after the presses' seeds and the attack voice (its state at the
 /// case's checkpoints), so the eye (0x41581C) is PCSX2's on the throw's frames 20, 44 and 65: -2122, -1729, -1478
-/// (its row labelled 21 holds frame 20's eye).
+/// (its row labelled 21 holds frame 20's eye). The case starts on PCSX2's row 0 (P1's move 6 frame 1, P2's 17 frame
+/// 11), a step before the other cases' 61: from there both places and roots are PCSX2's on every row through the
+/// push of the sidestep's frames 11 and 12 (rows 55, 56) and the grab.
 #[test]
 fn yoshimitsus_side_throw_camera_samples_on_odd_frames() {
     let Some(a) = assets() else { return };
@@ -882,16 +884,16 @@ fn yoshimitsus_side_throw_camera_samples_on_odd_frames() {
     let ps2: [(usize, u32); 10] =
         [(1, 461_873), (31, 461_873), (33, 463_849), (43, 463_849), (45, 465_837), (54, 465_837), (55, 2_185_473_762), (56, 2_185_473_762), (58, 1_173_477_166), (107, 1_173_477_166)];
     let (mut seen, mut eyes) = (Vec::new(), Vec::new());
-    for (k, pad) in parse_script("n*61,f*30,n*2,u*1,n*11,1+3*2,n*79").unwrap().into_iter().enumerate() {
+    for (k, pad) in parse_script("n*60,f*30,n*2,u*1,n*11,1+3*2,n*79").unwrap().into_iter().enumerate() {
         b.step([pad, Pad::default()]);
-        if k == 61 {
+        if k == 60 {
             // (PCSX2's row 1: rand()'s state and seed, the vblank count a frame before, the main loop's frame, the faces)
             let o = &mut b.game.fight.objects;
             (o.seed, o.reseed, o.vblanks, o.loops) = (461_873, 461_873, 1944, 1215);
             let f = &mut b.game.tag_faces;
             (f[0].face, f[0].timer, f[1].face, f[1].timer) = (0, -210, 0, 154);
         }
-        if let Some(&(row, _)) = ps2.iter().find(|r| k == 60 + r.0) {
+        if let Some(&(row, _)) = ps2.iter().find(|r| k == 59 + r.0) {
             seen.push((row, b.game.fight.objects.seed));
         }
         let f = &b.game.fight.fighters[0];
