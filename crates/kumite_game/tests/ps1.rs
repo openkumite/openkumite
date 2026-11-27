@@ -240,16 +240,17 @@ fn gons_throw_takes_pauls_own_victim_move_as_on_the_ps1() {
 }
 
 /// Throws done with a direction held connect (engine #324, 0x80030E78), on the PS1's rows (t3sim47's t47paulf / t47xiaoyuf,
-/// Jin standing): Paul's f+1+3 takes 30 on row 939, Xiaoyu's f+2+4 on row 920, every row of hers exact.
+/// Jin standing): Paul's f+1+3 takes 30 on row 939, Xiaoyu's f+2+4 on row 920, every row of both exact. Paul is his
+/// second costume, model 75, as the PS1's select gave him: its slot 15 sits at z 99 (model 71's at 100), which moves
+/// his push spheres 4 and 6 a unit, so his run's pushes on Jin (rows 830 and 851) are the PS1's (t3sim49, P+0xF74).
 #[test]
 fn throws_with_a_direction_held_connect_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let t = rows(&a, [71, 143], None, 1, "n*303,f*60,f+1+3*2,n*178", "n*544", 480);
-    // (shortcut: both stand 5 units short of the PS1's from Paul's run into Jin, rows 850-853, before the throw; the
-    // throw itself (its commit on row 863, the gap, heights, the damage) is the PS1's)
-    for (row, x, hp) in [(867, [698, 1585], 0x8C0000), (899, [587, 1335], 0x8C0000), (931, [1535, 619], 0x8C0000), (939, [1567, 373], 0x6E0000)] {
-        let r = [0, 1].map(|i| at(&t, 487, row, i).0);
-        assert_eq!((r[1] - r[0], r[0] - x[0], at(&t, 487, row, 1).5), (x[1] - x[0], -5, hp), "Paul, PS1 row {row}");
+    let t = rows(&a, [75, 143], None, 1, "n*303,f*60,f+1+3*2,n*178", "n*544", 480);
+    for (row, x, hp) in
+        [(830, [180, 1142], 0x8C0000), (851, [478, 1431], 0x8C0000), (867, [698, 1585], 0x8C0000), (899, [587, 1335], 0x8C0000), (931, [1535, 619], 0x8C0000), (939, [1567, 373], 0x6E0000)]
+    {
+        assert_eq!(([0, 1].map(|i| at(&t, 487, row, i).0), at(&t, 487, row, 1).5), (x, hp), "Paul, PS1 row {row}");
     }
     assert!(at(&t, 487, 863, 0).6.ends_with("@0"), "Paul's throw commits on the PS1's row");
     let t = rows(&a, [127, 143], None, 1, "n*154,f*60,f+2+4*2,n*176", "n*393", 330);
