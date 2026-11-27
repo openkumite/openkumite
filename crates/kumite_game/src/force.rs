@@ -979,6 +979,16 @@ impl ForceStage {
             if let Some(w) = side {
                 f.position.z += r.z.clamp(-w, w) - r.z;
             }
+            // (co-op, OpenKumite's own: within the players' reach, in depth as they are and at most 600 past the
+            // view's sides; out there a soldier fighting another player is beyond the reach of those after it)
+            if coop {
+                let z0 = -f.root().z;
+                let front = if slanted { bd.front_slanted[0] * (r.x - org) + bd.front_slanted[1] } else { bd.front_z };
+                let z = if side.is_some() { z0 } else { z0.clamp(front, bd.back_z) };
+                let (lo, hi) = (a * z / 1000.0 + b - 600.0, c * z / 1000.0 + d + 600.0);
+                f.position.z -= z - z0;
+                f.position.x += f.root().x.clamp(org + lo, org + hi) - f.root().x;
+            }
         }
     }
 

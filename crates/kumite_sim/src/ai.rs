@@ -915,7 +915,9 @@ fn to_pad(out: u16, facing_right: bool) -> Pad {
 fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
     use crate::Fight;
     let (me, f) = (sight.me, s.fight);
-    if me.current_move(sight.gd).posture.raw & 0x204 != 0 || me.airborne_flag(sight.gd) {
+    // (crouched too, posture bit 1 (0x2021, 0x2829): a sidestep's tap down crouches on, some stances a walk never
+    // leaves; the routine's moves stand up)
+    if me.current_move(sight.gd).posture.raw & 0x205 != 0 || me.airborne_flag(sight.gd) {
         return None;
     }
     let p = me.root();
@@ -941,17 +943,25 @@ fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
     }
     let near: Vec<usize> = (0..f.actor_count()).filter(|&i| !Fight::is_player(i) && standing(i).is_some() && dist2(pos(i), p) < 2500.0 * 2500.0).collect();
     let partners: Vec<usize> = (0..f.actor_count()).filter(|&i| i != s.me && Fight::is_player(i) && standing(i).is_some()).collect();
+    let foes: Vec<usize> = (0..f.actor_count()).filter(|&i| !Fight::is_player(i) && standing(i).is_some()).collect();
+    let coop = !partners.is_empty();
     if near.is_empty() || sight.op.inactive {
+        // co-op: a soldier standing further off (a partner's fight): on to it
+        if let Some(i) = foes.iter().copied().filter(|_| coop).min_by(|&a, &b| dist2(pos(a), p).total_cmp(&dist2(pos(b), p))) {
+            return Some(force_go(me, pos(i), f));
+        }
         let ahead = |q: glam::Vec3| q.dot(f.screen_right);
-        let on = partners.iter().map(|&i| ahead(pos(i)) + 600.0 - ahead(p)).fold(1500.0, f32::min);
+        // (co-op: on together, 800 ahead of the group's middle, which the camera follows)
+        let on = if coop { (partners.iter().map(|&i| ahead(pos(i))).sum::<f32>() + ahead(p)) / (partners.len() + 1) as f32 + 800.0 - ahead(p) } else { 1500.0 };
         // (along the middle line: the players stay within the camera's view, narrow at the stage's front and back,
-        // so a walk on by an edge stops at the view's side for good; in co-op a lane either side of it, 1P's and 2P's)
-        let lane = if partners.is_empty() {
-            0.0
-        } else if s.me == 0 {
-            -400.0
-        } else {
-            400.0
+        // so a walk on by an edge stops at the view's side for good; in co-op a lane each, 1P's and 2P's either side
+        // of it, 3P's and 4P's further out)
+        let lane = match s.me {
+            _ if !coop => 0.0,
+            0 => -400.0,
+            3 => 400.0,
+            4 => -1200.0,
+            _ => 1200.0,
         };
         let from = glam::Vec3::new(p.x, 0.0, lane);
         return Some(force_go(me, from + f.screen_right * on, f));
@@ -969,13 +979,18 @@ fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
             return Some(force_go(me, p + side * (800.0 / side.length().max(1.0)), f));
         }
     }
-    // co-op: a partner nearer my foe takes it on while a soldier near is nobody's: that one is mine
+    // co-op: a partner nearer my foe takes it on while a soldier is taken on by fewer: that one is mine
     let foe = f.opponent_index(s.me);
     if partners.iter().any(|&i| f.opponent_index(i) == foe && dist2(pos(i), pos(foe)) < dist2(p, pos(foe))) {
-        let free = near.iter().copied().filter(|&i| i != foe && partners.iter().all(|&j| f.opponent_index(j) != i));
-        if let Some(i) = free.min_by(|&a, &b| dist2(pos(a), p).total_cmp(&dist2(pos(b), p))) {
+        let crowd = |o: usize| partners.iter().filter(|&&j| f.opponent_index(j) == o).count();
+        let fewer = foes.iter().copied().filter(|&i| i != foe && crowd(i) < crowd(foe));
+        if let Some(i) = fewer.min_by(|&a, &b| crowd(a).cmp(&crowd(b)).then(dist2(pos(a), p).total_cmp(&dist2(pos(b), p)))) {
             return Some(force_go(me, pos(i), f));
         }
+    }
+    // co-op: my foe out of reach (both waiting on the other): in to it, as a player does
+    if coop && dist2(pos(foe), p) > 1100.0 * 1100.0 {
+        return Some(force_go(me, pos(foe), f));
     }
     None
 }

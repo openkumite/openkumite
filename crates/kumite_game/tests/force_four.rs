@@ -8,6 +8,7 @@ use kumite_assets::Assets;
 use kumite_game::bout::{Bout, Phase};
 use kumite_game::force::{ForceData, ForceEvent, ForceStage};
 use kumite_game::{Actor, Game};
+use kumite_sim::ai::{Ai, Style};
 use kumite_sim::input::Pad;
 use ok_converter_common::io::StdFs;
 use std::path::PathBuf;
@@ -54,8 +55,9 @@ struct Seen {
 }
 
 /// Stage 1 of `a`'s force.json with `models` as the players (1P, 2P, 3P, 4P; selections `stride` a character),
-/// all mashing, for `frames` frames; the bout and stage after.
-fn coop(a: &Assets, models: &[usize], stride: usize, frames: usize, hook: &mut dyn FnMut(usize, &mut Bout, &ForceStage)) -> (Seen, Bout, ForceStage) {
+/// all mashing (`ai`: the AI seats in these styles, as `--ai 1,2,3,4` plays them, hard at level 9), for `frames`
+/// frames; the bout and stage after.
+fn coop(a: &Assets, models: &[usize], stride: usize, frames: usize, ai: Option<[Style; 4]>, hook: &mut dyn FnMut(usize, &mut Bout, &ForceStage)) -> (Seen, Bout, ForceStage) {
     let data: Arc<ForceData> = Arc::new(a.gamedata("force.json").unwrap());
     let roster: serde_json::Value = a.gamedata("roster.json").unwrap();
     let record = |sel: usize| {
@@ -85,18 +87,50 @@ fn coop(a: &Assets, models: &[usize], stride: usize, frames: usize, hook: &mut d
         b.game.join_player(p, &Actor::load(a, m).unwrap());
     }
     assert_eq!(b.game.players().len(), models.len());
+    if let Some(styles) = ai {
+        let seat = |k: usize| Ai::new(2, 9, 0).with_style(styles[k]);
+        b.set_cpu(0, Some((2, 9)));
+        b.cpu[0] = Some(seat(0));
+        b.partner_cpu = Some(seat(1));
+        for k in 0..models.len() - 2 {
+            b.more_cpu[k] = Some(seat(2 + k));
+        }
+        for i in b.game.players() {
+            b.game.fight.actor_mut(i).unwrap().guard_input = false;
+        }
+    }
     let mut seen = Seen::default();
     for f in 0..frames {
-        b.partner_pad = mash(1, f);
-        for (k, slot) in b.more_human.iter_mut().take(2).enumerate() {
-            *slot = Some(mash(2 + k, f));
-        }
-        b.step([mash(0, f), Pad::default()]);
+        let pad = if ai.is_some() {
+            Pad::default()
+        } else {
+            b.partner_pad = mash(1, f);
+            for (k, slot) in b.more_human.iter_mut().take(2).enumerate() {
+                *slot = Some(mash(2 + k, f));
+            }
+            mash(0, f)
+        };
+        b.step([pad, Pad::default()]);
         let fighting = b.phase == Phase::Fight;
         let won = matches!(b.phase, Phase::RoundOver { winner: Some(0) } | Phase::MatchOver { winner: Some(0) });
         st.step(&mut b.game, fighting, won);
-        if std::mem::take(&mut st.events).iter().any(|e| matches!(e, ForceEvent::Swapped)) {
-            b.swap_cpus();
+        for e in std::mem::take(&mut st.events) {
+            match e {
+                ForceEvent::Swapped => b.swap_cpus(),
+                // (a boss a player, as the app loads them)
+                ForceEvent::LoadBoss(ch, cos) => {
+                    let picks: Vec<(usize, usize)> = (0..b.game.players().len()).map(|j| if j == 0 { (ch, cos) } else { data.boss(body * stride, body, j) }).collect();
+                    let model = |(c, k): (usize, usize)| {
+                        let sels = roster["characters"].as_array().unwrap().iter().find(|e| e["id"] == c).unwrap()["selections"].as_array().unwrap().clone();
+                        record(sels[k.min(sels.len() - 1)].as_u64().unwrap() as usize)
+                    };
+                    let actors: Vec<Actor> = picks.iter().map(|&p| Actor::load(a, model(p)).unwrap()).collect();
+                    st.set_bosses(&mut b.game, &actors, &picks);
+                    b.extra_cpu = Some(Ai::new(d, l, 1));
+                    b.set_cpu(1, Some((d, l)));
+                }
+                _ => {}
+            }
         }
         let player = kumite_sim::Fight::is_player;
         for h in &b.game.fight.hits {
@@ -116,13 +150,13 @@ fn coop(a: &Assets, models: &[usize], stride: usize, frames: usize, hook: &mut d
 /// The co-op checks on `models`: hits both ways and none between players, the same hashes again, each player's
 /// points adding to the total's share, the round on while one stands and lost when all are down.
 fn check(a: &Assets, models: &[usize], stride: usize) {
-    let (seen, mut b, st) = coop(a, models, stride, 60 * 40, &mut |_, _, _| {});
+    let (seen, mut b, st) = coop(a, models, stride, 60 * 40, None, &mut |_, _, _| {});
     println!("{} players: soldiers struck {}, players landed {}, friendly {}; score {} {:?}", models.len(), seen.struck, seen.landed, seen.friendly, st.score, st.player_scores);
     assert_eq!(seen.friendly, 0, "no player hits another");
     assert!(seen.struck > 0, "the soldiers hit the players");
     assert!(seen.landed > 0, "the players hit the soldiers");
     assert!(st.player_scores.iter().sum::<u32>() <= st.score && st.player_scores.iter().filter(|&&s| s > 0).count() > 1, "{:?} of {}", st.player_scores, st.score);
-    let again = coop(a, models, stride, 60 * 40, &mut |_, _, _| {}).0;
+    let again = coop(a, models, stride, 60 * 40, None, &mut |_, _, _| {}).0;
     assert_eq!(seen.hashes, again.hashes, "a second run is the same");
     // down one by one: the round goes on until the last
     let players = b.game.players();
@@ -158,7 +192,7 @@ fn tekken_tag_force_co_op_of_two_and_of_four() {
 /// standing.
 fn lies_where_it_fell(a: &Assets, models: &[usize], stride: usize, who: usize) {
     let (mut down_at, mut lying, mut moved, mut struck, mut targeted) = (None, None::<glam::Vec3>, 0.0f32, 0, 0);
-    let (seen, b, _) = coop(a, models, stride, 60 * 60, &mut |f, b, _| {
+    let (seen, b, _) = coop(a, models, stride, 60 * 60, None, &mut |f, b, _| {
         if f == 120 {
             b.game.fight.actor_mut(who).unwrap().health = kumite_sim::ONE;
         }
@@ -203,4 +237,66 @@ fn tekken_tag_a_downed_player_lies_where_it_fell() {
     lies_where_it_fell(&a, &[372, 345], 8, 3);
     lies_where_it_fell(&a, &[372, 345, 432], 8, 0);
     lies_where_it_fell(&a, &[372, 345, 432, 351], 8, 4);
+}
+
+/// How four AI seats played stage 1: the frames a standing player spent stuck (in the last second it neither
+/// moved 150 units nor struck or was struck: standing about, walking into a wall or a partner, swinging at air),
+/// of all its standing frames; the frame the stage was cleared (None: not within `frames`).
+fn stuck(a: &Assets, models: &[usize], stride: usize, styles: [Style; 4], frames: usize) -> (usize, usize, Option<usize>) {
+    const SECOND: usize = 60;
+    let (mut trail, mut last_hit) = (vec![Vec::<glam::Vec3>::new(); 6], [0usize; 6]);
+    let (mut stuck, mut standing, mut cleared) = (0, 0, None);
+    coop(a, models, stride, frames, Some(styles), &mut |f, b, st| {
+        if matches!(b.phase, Phase::RoundOver { winner: Some(0) } | Phase::MatchOver { winner: Some(0) }) {
+            cleared.get_or_insert(f);
+        }
+        let g = &b.game.fight;
+        for h in &g.hits {
+            for i in [h.attacker, h.victim].into_iter().filter(|&i| i < 6) {
+                last_hit[i] = f;
+            }
+        }
+        for i in b.game.players() {
+            let Some(p) = g.actor(i).filter(|p| p.health > 0 && !p.inactive) else { continue };
+            let t = &mut trail[i];
+            t.push(p.root());
+            if b.phase != Phase::Fight || t.len() <= SECOND {
+                continue;
+            }
+            standing += 1;
+            let then = t[t.len() - 1 - SECOND];
+            let moved = glam::Vec2::new(p.root().x - then.x, p.root().z - then.z).length();
+            stuck += usize::from(moved < 150.0 && f >= last_hit[i] + SECOND);
+            if std::env::var_os("STUCK_DEBUG").is_some() && moved < 150.0 && f >= last_hit[i] + SECOND && f % 30 == 0 {
+                let m = g.coop.as_ref().unwrap();
+                let o = m.facing(i);
+                let foes: Vec<String> = (0..g.actor_count()).filter(|&j| !kumite_sim::Fight::is_player(j)).filter_map(|j| g.actor(j).filter(|x| !x.inactive && x.health > 0).map(|x| format!("{j}@{:.0},{:.0}", x.root().x, x.root().z))).collect();
+                let mates: Vec<String> = b.game.players().into_iter().filter_map(|j| g.actor(j).map(|x| format!("{j}@{:.0},{:.0}", x.root().x, x.root().z))).collect();
+                eprintln!("f{f} seat{i} at {:.0},{:.0} cam {} m{} s{} tgt {o} {} {:#x} | foes {foes:?} | players {mates:?}", p.root().x, p.root().z, st.cam_x, st.camera_mode, st.state, p.current_move(&g.data).anim, p.current_move(&g.data).posture.raw);
+            }
+        }
+    });
+    (stuck, standing, cleared)
+}
+
+/// Four AI seats on Tekken Tag's Force stage 1 play like players: hardly a moment stuck, the stage cleared in good
+/// time (the 0.7.0 video's four stood bunched against a wall for half a minute).
+#[test]
+fn tekken_tag_four_ai_players_keep_fighting() {
+    let Some(a) = ttt() else { return };
+    use Style::*;
+    // (Lei, Paul, Xiaoyu, Paul; Bryan, Julia, Lee, Anna as the video's; Hwoarang, King, Nina, Kunimitsu)
+    let picks = [
+        ([372, 345, 432, 351], [Classic, Rushdown, Juggler, Thrower]),
+        ([351, 372, 345, 432], [Evasive, Classic, Counter, Defensive]),
+        ([510, 486, 630, 573], [Classic; 4]),
+        ([426, 390, 414, 654], [Rushdown, Thrower, Evasive, Juggler]),
+    ];
+    let (mut stuck_all, mut standing_all, mut slowest) = (0, 0, 0);
+    for (models, styles) in picks {
+        let (s, n, cleared) = stuck(&a, &models, 8, styles, 60 * 240);
+        println!("{models:?} {styles:?}: stuck {s} of {n} frames ({:.1}%), cleared at {cleared:?}", 100.0 * s as f32 / n.max(1) as f32);
+        (stuck_all, standing_all, slowest) = (stuck_all + s, standing_all + n, slowest.max(cleared.unwrap_or(usize::MAX)));
+    }
+    println!("stuck {stuck_all} of {standing_all} ({:.1}%), the slowest clear at {slowest}", 100.0 * stuck_all as f32 / standing_all as f32);
 }
