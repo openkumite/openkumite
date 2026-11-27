@@ -8175,6 +8175,14 @@ impl App {
             }
             WindowEvent::RedrawRequested if self.suspended => {}
             WindowEvent::RedrawRequested => {
+                // the frame at the window's size: a mode change can come without its Resized (leaving an exclusive
+                // full screen, a window made at another size), and the frame would stay stretched at the old one
+                if let (Some(r), Some(w)) = (self.renderer.as_mut(), &self.window) {
+                    let (s, max) = (w.inner_size(), r.max_texture());
+                    if r.size() != [s.width.min(max), s.height.min(max)] {
+                        r.resize(s.width, s.height);
+                    }
+                }
                 // gamepad buttons drive the menus like the keyboard; so do scripted keys (--keys)
                 let pressed = self.gamepads.as_mut().map(|g| g.poll(&self.records.controls)).unwrap_or_default();
                 // (Tekken Tag's select: a shoulder button is the fifth, costume 4's: 0x3CA428)
