@@ -686,6 +686,42 @@ fn the_cpu_beats_an_idle_player_and_poses() {
     assert!(down_after_ko, "a KO'd player should lie on the floor at the end of the round ({knockouts} KOs)");
 }
 
+/// #347: every fighter's every win pose (□ △ × ○ held) plays on its own motion to its last frame, never into its stance,
+/// and the result ends there, as the PS1's 0x8003D30C (+0x58 >= the motion's length - 1; PCSX-Redux, Heihachi's
+/// motion_137 and motion_136); the Tekken 2 fighters too.
+#[test]
+fn every_win_pose_holds_to_its_last_frame_and_ends_the_result() {
+    let Some(a) = assets() else { return };
+    let index: MovesetIndex = kumite_sim::data::load(&a.root.join("gamedata/movesets/index.json")).unwrap();
+    let mut files = std::collections::BTreeSet::new();
+    for m in index.models.iter().filter(|m| files.insert(m.moveset_file.clone())) {
+        for pick in 0..4 {
+            let other = if m.model_record == MODEL_71 { MODEL_79 } else { MODEL_71 };
+            let mut b = Bout::new(Game::load(&a, [m.model_record, other]).unwrap(), kumite_game::ai_data(&a).unwrap(), 1, false);
+            let pad = Pad { buttons: 1 << pick, ..Pad::default() };
+            let mut pose = None;
+            for _ in 0..60 * 60 {
+                if b.phase == Phase::Fight {
+                    b.game.fight.fighters[1].health = 0;
+                }
+                b.step([pad, Pad::default()]);
+                let f = &b.game.fight.fighters[0];
+                let what = format!("model {} pick {pick}: {:?} at {:?}", m.model_record, f.animation(&b.game.fight.data), b.phase);
+                match b.phase {
+                    Phase::Result { .. } => assert_eq!(*pose.get_or_insert(f.current), f.current, "{what}: left the pose"),
+                    Phase::MatchOver { .. } => {
+                        assert_eq!(pose, Some(f.current), "{what}: left the pose");
+                        assert_eq!(f.frame + 1, f.current_move(&b.game.fight.data).frames, "{what}: the result ends on the last frame");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            assert!(b.finished(), "model {}: no result", m.model_record);
+        }
+    }
+}
+
 /// A CPU that knocks out the human for the match: the loser shot, but in Team Battle and Survival (ctx+0xA) the
 /// CPU's win pose (PS1, t3sim45: GON WINS! after Yoshimitsu's K.O. in Team Battle).
 #[test]

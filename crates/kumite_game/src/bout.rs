@@ -230,8 +230,8 @@ struct ReplayRun {
 /// How the result phase ends (0x8003D27C).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ResultKind {
-    /// The winner's motion ends it.
-    Pose(usize),
+    /// The winner's motion ends it (and the loser's, with a round won: whose motions have ended).
+    Pose(usize, [bool; 2]),
     /// The loser shot: 60 frames.
     Loser,
     /// No winner: 75 frames.
@@ -272,6 +272,8 @@ pub struct Bout {
     /// START was pressed during the replay (it ends; with rounds to go the pose is skipped too).
     skip: bool,
     skipped: bool,
+    /// START ended the win pose this step: the voices are keyed off (0x8003D3DC -> 0x8004B688).
+    pub start_ended: bool,
     result: ResultKind,
     /// The pads of the last step (a held button picks the win pose; Force's TARGET).
     pub last_pads: [Pad; 2],
@@ -334,6 +336,7 @@ impl Bout {
             replay: None,
             skip: false,
             skipped: false,
+            start_ended: false,
             result: ResultKind::Draw,
             last_pads: [Pad::default(); 2],
             counters: COUNTERS.map(|c| c.load(Ordering::Relaxed)),
@@ -563,6 +566,7 @@ impl Bout {
     pub fn step(&mut self, pads: [Pad; 2]) {
         let pads = self.taped(pads);
         self.events.clear();
+        self.start_ended = false;
         self.ai_rng.low = self.game.rounds.is_some() && self.shared();
         // (a step that does not run the fight starts no sounds)
         if let Some(s) = self.game.sound.as_mut() {
@@ -785,14 +789,20 @@ impl Bout {
                 let cap = self.game.rounds.as_ref().map_or(cap, |r| r.pose_frames);
                 let done = match self.result {
                     // Tekken Tag (0x36E888): as soon as the winner's or its partner's pose ends
-                    ResultKind::Pose(w) if self.game.rounds.is_some() => (0..2).filter(|&i| i == w || self.game.visible[i]).any(|i| {
+                    ResultKind::Pose(w, _) if self.game.rounds.is_some() => (0..2).filter(|&i| i == w || self.game.visible[i]).any(|i| {
                         let f = &self.game.fight.fighters[i];
                         f.frame + 1 >= f.current_move(&self.game.fight.data).frames
                     }),
-                    ResultKind::Pose(w) => {
-                        let f = &self.game.fight.fighters[w];
-                        let mv = f.current_move(&self.game.fight.data);
-                        !self.posing(w) || f.frame + 1 >= mv.frames
+                    // Tekken 3 (0x8003D30C): each fighter with a round won (+0x48) once its motion has reached its last
+                    // frame (+0x58 >= the length - 1, latched), one without at once
+                    ResultKind::Pose(w, ended) => {
+                        let data = &self.game.fight.data;
+                        let ended = std::array::from_fn(|i| {
+                            let f = &self.game.fight.fighters[i];
+                            ended[i] || self.wins[i] == 0 || f.frame + 1 >= f.current_move(data).frames
+                        });
+                        self.result = ResultKind::Pose(w, ended);
+                        ended == [true; 2]
                     }
                     // Ball's loser shot lasts 240 frames
                     ResultKind::Loser => self.phase_frame >= if self.game.ball.is_some() { 240 } else { loser_frames },
@@ -800,20 +810,13 @@ impl Bout {
                     ResultKind::TeamLose(frames) => self.phase_frame >= frames,
                 };
                 if done || self.skip || self.phase_frame >= cap {
-                    self.skip = false;
+                    self.start_ended = std::mem::take(&mut self.skip);
                     self.end_result(winner);
                 }
             }
             Phase::MatchOver { .. } => self.game.step([Pad::default(); 2]),
             Phase::Interlude => {}
         }
-    }
-
-    /// Fighter `w` is still in its win motion.
-    fn posing(&self, w: usize) -> bool {
-        let f = &self.game.fight.fighters[w];
-        let aliases = f.moveset.aliases.as_ref();
-        WIN_POSES.iter().any(|&p| aliases.and_then(|a| a.get(p)).is_some_and(|r| r.bank == f.current.bank && r.index == Some(f.current.index)))
     }
 
     /// The round is over (0x8003E474 sets the result flags, 0x8003DEC0 calls one of them).
@@ -1012,7 +1015,7 @@ impl Bout {
                 let cam = EndCam::winner(&data, &p, b_variant, turn, &mut rnd);
                 self.game.camera_mode = CameraMode::End { cam, who: w };
                 self.game.visible = if partner { [true; 2] } else { [w == 0, w == 1] };
-                self.result = ResultKind::Pose(w);
+                self.result = ResultKind::Pose(w, [false; 2]);
             }
             Some(w) => {
                 // a CPU won the match: the loser shot (overhead when knocked out, else the orbit)
