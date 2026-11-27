@@ -2390,8 +2390,14 @@ impl Fighter {
                 None
             };
         }
-        // the walk only runs while nothing is queued (0x8002DA14); the END link still applies at the end
-        let end_alias = if self.queued.is_none() { self.walk_cancels(gd) } else { self.end_link(gd) };
+        // the walk only runs while nothing is queued (0x8002DA14); the END link still applies at the end. A thrower
+        // linked on contact last step (frame 0) is not walked: the PS1 commits the throw in this step's move logic
+        // (0x80030E78), so a held direction or button does not reach its END look-ahead and drop the victim
+        let end_alias = match (self.queued, self.frame) {
+            (None, 0) if !self.thrown => None,
+            (None, _) => self.walk_cancels(gd),
+            _ => self.end_link(gd),
+        };
         let mv = self.current_move(gd);
         let (mv_frames, next_alias, hold) = (mv.frames.max(1), mv.next.alias, mv.bytes_18.hold_frame);
         // a queued move takes over at its exec frame (255 = when the animation ends)

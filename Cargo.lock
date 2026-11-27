@@ -3927,7 +3927,7 @@ dependencies = [
 [[package]]
 name = "ok_tekken2_converter"
 version = "0.3.0"
-source = "git+https://github.com/openkumite/ok_tekken2_converter?branch=main#054a2c4b2a345aaef64a33cc0ff5c397a661d434"
+source = "git+https://github.com/openkumite/ok_tekken2_converter?branch=main#070d73f813ee37dbc2a2db5add401c3420fec4bf"
 dependencies = [
  "anyhow",
  "image",
