@@ -45,6 +45,11 @@ pub struct RoundRules {
     pub round_frames: u32,
     /// The arcade lost (0x36E6C8): the losing pair's motion and its frames.
     pub team_lose: (usize, u32),
+    /// The pairs posing their own (0x43AC38 for a win, 0x43B140 for the team lose) and a win's nudges: [winner's
+    /// moveset, partner's, dx, dz, alias] (0x43B5C0; [`crate::Game::pose_places`]).
+    pub win_pairs: Vec<[kumite_sim::camera::PairMember; 2]>,
+    pub lose_pairs: Vec<[kumite_sim::camera::PairMember; 2]>,
+    pub win_nudges: Vec<[i64; 5]>,
 }
 
 impl RoundRules {
@@ -54,6 +59,7 @@ impl RoundRules {
         let at = |p: &str| -> anyhow::Result<u32> { r.pointer(p).and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()).with_context(|| format!("{}: {p}", path.display())) };
         let both = |p: &str| -> anyhow::Result<[u32; 2]> { Ok([at(&format!("{p}/first_round"))?, at(&format!("{p}/other_rounds"))?]) };
         let pose = |k: usize| at(&format!("/win_poses/aliases/{k}")).map(|a| a as usize);
+        let table = |p: &str| r.pointer(p).cloned().with_context(|| format!("{}: {p}", path.display()));
         Ok(Self {
             fight_starts: both("/call/fight_starts")?,
             banner: [[at("/call/banner/first_round/0")?, at("/call/banner/first_round/1")?], [at("/call/banner/other_rounds/0")?, at("/call/banner/other_rounds/1")?]],
@@ -69,6 +75,9 @@ impl RoundRules {
             // (the default option is not written by any code found: the 60 s one, option 2)
             round_frames: at("/round_time/options_frames/2")?,
             team_lose: (at("/team_lose/alias")? as usize, at("/team_lose/frames")?),
+            win_pairs: serde_json::from_value(table("/win_poses/pairs")?)?,
+            lose_pairs: serde_json::from_value(table("/team_lose/pairs")?)?,
+            win_nudges: serde_json::from_value(table("/win_poses/nudges")?)?,
         })
     }
 
@@ -918,16 +927,14 @@ impl Bout {
             Some(w) if decided && self.team_lose && self.cpu[w].is_some() && self.cpu[1 - w].is_none() && tag.is_some() => {
                 let (alias, frames) = tag.as_ref().map_or((0, 0), |r| r.team_lose);
                 let l = 1 - w;
-                self.game.fight.fighters[l].play_alias(alias);
+                let partner = self.game.pose_partner(l);
+                self.game.pose_places(l, true, [alias; 2]);
                 let p = self.game.subject(l);
                 let turn = self.game.camera.world_turn;
                 let mut rnd = |n: i64| self.end_random(n);
                 let cam = EndCam::winner(&data, &p, true, turn, &mut rnd);
                 self.game.camera_mode = CameraMode::End { cam, who: l };
-                self.game.visible = [l == 0, l == 1];
-                if self.game.pose_partner(l) {
-                    self.game.visible = [true; 2];
-                }
+                self.game.visible = if partner { [true; 2] } else { [l == 0, l == 1] };
                 self.result = ResultKind::TeamLose(frames);
             }
             // (Tekken Tag has no loser shot outside the arcade)
@@ -945,11 +952,20 @@ impl Bout {
                 } else {
                     (self.frames & 1) as usize
                 };
-                let win = tag.as_ref().map_or(motions.win, |r| r.win_poses.to_vec());
-                let alias = tag.as_ref().map_or(win.get(pick).copied().unwrap_or(WIN_POSES[0]), |r| r.win_pose(pick, self.game.bodies[w].model_record, self.frames));
-                let f = &mut self.game.fight.fighters[w];
-                if !f.play_alias(alias) {
-                    f.play_alias(win.first().copied().unwrap_or(WIN_POSES[0]));
+                let mut partner = false;
+                match &tag {
+                    // a tag battle: the winner's partner poses beside it (0x3B5DB0), the same pick for its own model
+                    Some(r) => {
+                        partner = self.game.pose_partner(w);
+                        let aliases = [0, 1].map(|i| r.win_pose(pick, self.game.bodies[i].model_record, self.frames));
+                        self.game.pose_places(w, false, aliases);
+                    }
+                    None => {
+                        let (win, f) = (motions.win, &mut self.game.fight.fighters[w]);
+                        if !f.play_alias(win.get(pick).copied().unwrap_or(WIN_POSES[0])) {
+                            f.play_alias(win.first().copied().unwrap_or(WIN_POSES[0]));
+                        }
+                    }
                 }
                 let b_variant = self.count(WINNER).is_multiple_of(2);
                 let p = self.game.subject(w);
@@ -957,14 +973,7 @@ impl Bout {
                 let mut rnd = |n: i64| self.end_random(n);
                 let cam = EndCam::winner(&data, &p, b_variant, turn, &mut rnd);
                 self.game.camera_mode = CameraMode::End { cam, who: w };
-                self.game.visible = [w == 0, w == 1];
-                // a tag battle: the winner's partner poses the same pick beside it (0x3B5DB0), for its own model
-                if let Some(r) = &tag {
-                    if self.game.pose_partner(w) {
-                        self.game.fight.fighters[1 - w].play_alias(r.win_pose(pick, self.game.bodies[1 - w].model_record, self.frames));
-                        self.game.visible = [true; 2];
-                    }
-                }
+                self.game.visible = if partner { [true; 2] } else { [w == 0, w == 1] };
                 self.result = ResultKind::Pose(w);
             }
             Some(w) => {

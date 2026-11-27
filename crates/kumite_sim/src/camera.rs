@@ -287,6 +287,12 @@ pub struct WinCam {
     #[serde(skip)]
     turns: bool,
 }
+impl WinCam {
+    /// This arena's light 0 direction (4096ths of a turn; 0x3D7DA8 without the world's turn).
+    pub fn light(&self) -> i64 {
+        self.light
+    }
+}
 
 /// Tekken Tag's special cameras (0x38C1E8): situation types 1-30 (0x508908), the camera lists by move camera id
 /// (0x434C78, after the boot's 0x393898) and the camera motions of disc file 12.
