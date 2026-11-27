@@ -301,11 +301,16 @@ impl Run {
                 if cands.is_empty() {
                     cands = first.into_iter().filter(|c| roster.by_id(*c).is_some()).collect();
                 }
-                let least = cands.iter().map(|&c| s.beaten.get(c).copied().unwrap_or(0)).min().unwrap_or(0);
+                // fewest beaten first, ties by id (0x8004CD80's insertion sort), then those within the spread
+                cands.sort_by_key(|&c| s.beaten.get(c).copied().unwrap_or(0));
+                let least = cands.first().map_or(0, |&c| s.beaten.get(c).copied().unwrap_or(0));
                 let spread = if s.total() >= 20 { 4 } else { 0 };
                 cands.retain(|&c| s.beaten.get(c).copied().unwrap_or(0) <= least + spread);
+                // the draw: 0x8004CE54's x * 5 + 1 (0x8009F2A8) modulo the count; the PS1 also steps it while its
+                // main loop waits for the vsync (0x80029720, ~2000-3000 times a frame), so only its picks match
+                *seed = seed.wrapping_mul(5).wrapping_add(1);
                 // (no candidate in the pools: the roster's first, not a panic)
-                let id = cands.get(rand(seed) as usize % cands.len().max(1)).copied().unwrap_or_else(|| roster.characters.first().map_or(0, |c| c.id));
+                let id = cands.get((*seed % cands.len().max(1) as u32) as usize).copied().unwrap_or_else(|| roster.characters.first().map_or(0, |c| c.id));
                 let costume = (frame & 1) as usize;
                 s.recent.push(id);
                 if s.recent.len() > 4 {
@@ -871,6 +876,36 @@ mod tests {
             run.frames = frames;
             assert!(matches!(run.after(&setup, Some(0), [health, 0], [max; 2], &data, &mut records, &roster), Next::Fight));
             assert_eq!(run.start_health[0], Some(next));
+        }
+    }
+
+    #[test]
+    fn survival_picks_as_on_the_ps1() {
+        let gd = crate::test_assets().join("gamedata");
+        if !kumite_fs::exists(&gd.join("screens.json")) {
+            return;
+        }
+        let roster = Roster::load(&gd);
+        let data = ModeData::load(&roster.screens);
+        // PS1 (t3sim46 sv1, Xiaoyu from Eddy on): the beaten so far, the last opponents, 0x8004CE54's draw and the
+        // frame counter 0x800AE218 -> the opponent (id, costume)
+        let picks: [(&[usize], &[usize], u32, u32, (usize, usize)); 4] = [
+            (&[8], &[8], 0x50D0_8171, 0x7BB, (5, 1)),
+            (&[8, 5], &[8, 5], 0x32CF_C196, 0xC88, (7, 0)),
+            (&[8, 5, 7], &[8, 5, 7], 0x0573_D6E4, 0x117D, (3, 1)),
+            (&[8, 5, 7, 3], &[8, 5, 7, 3], 0x81D6_5037, 0x167F, (1, 1)),
+        ];
+        for (beaten, recent, draw, frame, want) in picks {
+            let mut run = Run::survival((0, 0));
+            if let Kind::Survival(s) = &mut run.kind {
+                s.wins = beaten.len() as u32;
+                beaten.iter().for_each(|&c| s.beaten[c] += 1);
+                s.recent = recent.to_vec();
+            }
+            // (the state before the draw: x * 5 + 1 undone)
+            let mut seed = draw.wrapping_sub(1).wrapping_mul(0xCCCC_CCCD);
+            let (idx, costume) = run.setup(&roster, &data, &mut seed, frame).players[1];
+            assert_eq!((roster.characters[idx].id, costume), want, "after {beaten:?}");
         }
     }
 

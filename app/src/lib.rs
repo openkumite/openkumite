@@ -2523,7 +2523,22 @@ impl App {
             let mut sounds = fight.step_sounds();
             // the announcer: round calls, results, the match winner (YOU WIN if a human won)
             let humans = [fight.bout.cpu[0].is_none(), fight.bout.cpu[1].is_none()];
-            sounds.extend(fight.bout.events.iter().filter_map(|&e| sound.announce(e, humans)));
+            // (Team Battle and Survival call no round, only FIGHT: 0x8003DA8C's battle types 2 and 4 enter at 0x8003DBA0)
+            use kumite_game::bout::Announcement as A;
+            let call = !matches!(mode, Some(Mode::TeamBattle | Mode::Survival));
+            let events = fight.bout.events.iter().filter(|e| call || !matches!(e, A::Round(_) | A::RoundNumber(_) | A::FinalRound));
+            // the match's winner in Team Battle or between two humans: its own call (0x8003E060 -> 0x800757A8), but
+            // YOU WIN for Tiger (selection 34)
+            let own = self.roster.ttt.is_none() && (humans == [true; 2] || mode == Some(Mode::TeamBattle));
+            let call = |w: usize| {
+                let fs = fight.bout.game.sound.as_ref()?;
+                let tiger = fight.setup.as_ref().and_then(|s| s.players.get(w)).is_some_and(|&(i, c)| self.roster.characters.get(i).is_some_and(|ch| ch.id * 4 + c == 34));
+                (!tiger).then(|| sound.winner_voice(fs.banks.get(w)?, *fs.voices.get(w)?)).flatten()
+            };
+            sounds.extend(events.filter_map(|&e| match e {
+                A::Wins(w) if own => call(w).or_else(|| sound.announce(e, [true; 2])),
+                _ => sound.announce(e, humans),
+            }));
             if let Some(audio) = self.audio.as_mut() {
                 for s in sounds {
                     audio.sfx(&s.file, s.volume, s.speed);

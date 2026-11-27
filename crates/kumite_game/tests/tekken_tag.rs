@@ -1310,6 +1310,22 @@ fn true_ogres_arm_waves_as_on_the_ps2() {
     }
 }
 
+/// True Ogre's wave counter (+0xB120) starts again with each round: PCSX2 (t3sim46, a time-up into round 2) calls
+/// 0x363150 at round 2's set-up and on its next frame, and the counter stands at 90 on round 2's first fight frame.
+#[test]
+fn true_ogres_wave_starts_again_with_the_round_as_on_the_ps2() {
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [TRUE_OGRE, HWOARANG]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    b.game.fight.clock = 30;
+    while !(b.round == 2 && b.phase == Phase::Fight) {
+        b.step([Pad::default(); 2]);
+    }
+    assert_eq!(b.game.flaps[0].count, 90);
+}
+
 /// Yoshimitsu's b, b+1+2, b, 1 (move 2365) blows mist (slot 0x19, 0x3A5810) on each of its active frames 21-28:
 /// eight puffs, drawn magenta; from where he stands it misses Hwoarang, as in PCSX2.
 #[test]

@@ -115,6 +115,29 @@ fn print_trace() {
     trace_of(&a, models, env("BALL_SERVER").parse().unwrap_or(1), &env("BALL_P1"), &env("BALL_P2"), env("BALL_FRAMES").parse().unwrap_or(1800));
 }
 
+/// A whole point with nobody moving (t3sim46's idle recording, Xiaoyu against Jin, P1 serving): the serve hovers, the
+/// charged ball strikes the server, it drops from the net and bounces, and is served again from the net; the ball
+/// matches the PS1 on all its 2009 rows (here our steps `row - 2`), these among them.
+#[test]
+fn an_idle_point_runs_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = trace_of(&a, [127, JIN], 0, "", "", 1600);
+    let ps1: [(usize, Frame); 9] = [
+        (101, (8, [-3328, -1280, 0], [0, 0, 0], 512)),
+        (133, (9, [-3328, -1280, 5], [0, 0, 0], 512)),
+        (600, (9, [-3328, -1478, 5], [0, 239104, 0], 512)),
+        (640, (6, [-3328, -384, 5], [0, 512, 0], 512)),
+        (656, (1, [0, -3648, 46], [0, 0, 0], 256)),
+        (700, (2, [0, -3582, 50], [0, 3072, 0], 256)),
+        (1464, (6, [0, -390, 50], [0, 682, 0], 512)),
+        (1480, (1, [0, -3648, 50], [0, 0, 0], 256)),
+        (1600, (2, [0, -600, 47], [0, -7424, 0], 512)),
+    ];
+    for (row, want) in ps1 {
+        assert_eq!(t[row - 2], want, "PS1 row {row}");
+    }
+}
+
 /// The PS1 trace's rows (the ball as the step before left it) are our steps `row + 3` (its first hover frame, row
 /// 128, is our step 131).
 const PS1_ROW: usize = 3;
