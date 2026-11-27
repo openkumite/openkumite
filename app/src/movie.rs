@@ -53,6 +53,8 @@ pub struct Movie {
     pub white: bool,
     /// The picture in the 240-line screen (w, h), centred; None: the whole frame.
     size: Option<(f32, f32)>,
+    /// Black steps before it starts.
+    pub wait: u32,
     captions: Vec<Caption>,
     pictures: PathBuf,
     caption_tex: RefCell<std::collections::HashMap<String, egui::TextureHandle>>,
@@ -77,6 +79,7 @@ impl Movie {
             looped: false,
             white: false,
             size: None,
+            wait: 0,
             captions: Vec::new(),
             pictures: assets.join("pictures"),
             caption_tex: RefCell::new(Default::default()),
@@ -150,6 +153,10 @@ impl Movie {
             log::warn!("movie: {e:#}");
             return true;
         }
+        if self.wait > 0 {
+            self.wait -= 1;
+            return false;
+        }
         if !self.playing {
             if !self.ready() {
                 return false;
@@ -173,6 +180,9 @@ impl Movie {
     pub fn draw(&self, ctx: &egui::Context, painter: &egui::Painter, rect: egui::Rect) {
         let clear = if self.white { egui::Color32::WHITE } else { egui::Color32::BLACK };
         painter.rect_filled(ctx.content_rect(), 0.0, clear);
+        if self.wait > 0 {
+            return;
+        }
         // still arriving: a thin bar of how much
         if let Some(f) = self.loading() {
             let w = rect.width() * 0.4;
