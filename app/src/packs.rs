@@ -358,7 +358,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ok_packs_older_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(game_root(&root, Game::Ttt)).unwrap();
-        std::fs::write(root.join("manifest.json"), format!("{{\"format\": {}, \"fingerprint\": \"x\"}}", Part::T3.format() - 1)).unwrap();
+        std::fs::write(root.join("manifest.json"), format!("{{\"format\": {}, \"fingerprint\": \"x\"}}", Part::T3.full_from() - 1)).unwrap();
         std::fs::write(dir(Part::Ttt, &root).join("manifest.json"), serde_json::json!({"pack": "ttt", "format": Part::Ttt.format() - 1}).to_string()).unwrap();
         std::fs::write(game_root(&root, Game::Ttt).join("manifest.json"), r#"{"game": "ttt", "format": 8, "fingerprint": "t"}"#).unwrap();
         let (t3, ttt) = (State::of(&root, Game::T3), State::of(&root, Game::Ttt));

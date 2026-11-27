@@ -75,10 +75,19 @@ impl Part {
         }
     }
 
-    /// A manifest of an older conversion than its converter's now (Tekken 3's format 9 brought Gon's fire and gas
+    /// The oldest format that plays in full: its converter's now, but Tekken 3's 17 while 18 is (18 brought only FREE
+    /// PLAY's text, which the HUD has without it), so its players need not convert their disc again for it.
+    pub fn full_from(self) -> i64 {
+        match self.format() {
+            18 if self == Part::T3 => 17,
+            f => f,
+        }
+    }
+
+    /// A manifest of an older conversion than [`Part::full_from`] (Tekken 3's format 9 brought Gon's fire and gas
     /// pictures): what the new one adds is missing until it is converted again.
     pub fn outdated(self, manifest: &Value) -> bool {
-        manifest["format"].as_i64().is_some_and(|f| f < self.format())
+        manifest["format"].as_i64().is_some_and(|f| f < self.full_from())
     }
 }
 
@@ -259,7 +268,8 @@ mod tests {
             std::fs::write(dir.join("manifest.json"), m.to_string()).unwrap();
             part.manifest(&fs).map(|m| part.outdated(&m))
         };
-        assert_eq!(found(Part::T3, json!({"format": Part::T3.format() - 1})), Some(true));
+        assert_eq!(found(Part::T3, json!({"format": Part::T3.full_from() - 1})), Some(true));
+        assert_eq!(found(Part::T3, json!({"format": Part::T3.full_from()})), Some(false));
         assert_eq!(found(Part::T3, json!({"format": Part::T3.format()})), Some(false));
         assert_eq!(found(Part::T3, json!({})), None);
         for part in [Part::T2, Part::Cs, Part::Arcade, Part::Ttt] {
@@ -285,7 +295,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ok_packs_older_t3_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let old = StdFs(dir.join("old"));
-        m["format"] = json!(Part::T3.format() - 1);
+        m["format"] = json!(Part::T3.full_from() - 1);
         old.write("manifest.json", m.to_string().as_bytes()).unwrap();
         for (name, base) in [("older", Layered { top: &old, below: vec![&t3] }), ("fresh", Layered { top: &t3, below: vec![] })] {
             assert_eq!(Part::T3.manifest(&base).map(|m| Part::T3.outdated(&m)), Some(name == "older"));
