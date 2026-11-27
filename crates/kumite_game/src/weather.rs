@@ -245,7 +245,8 @@ pub struct Weather {
     snow_look: (usize, f32, f32),
     /// The tasks' frame count (0: not started).
     count: u32,
-    seed: u32,
+    /// Its rand()'s state (in a Tekken Tag fight the fight's, kumite_sim's `Objects::seed`, while it steps).
+    pub seed: u32,
     flashes: Flashes,
     /// Thunder started (sound entries), for the caller to play.
     pub sounds: Vec<u16>,

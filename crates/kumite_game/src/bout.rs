@@ -254,7 +254,7 @@ pub struct Bout {
     pub cpu: [Option<Ai>; 2],
     ai_data: Arc<AiData>,
     /// The game's random streams the CPUs draw from (shared by both, kept for the whole match).
-    ai_rng: AiRng,
+    pub ai_rng: AiRng,
     /// Announcements made during the last step.
     pub events: Vec<Announcement>,
     /// Round fly-ins on (off: straight to the round call).

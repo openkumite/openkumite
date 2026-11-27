@@ -1543,9 +1543,10 @@ impl Game {
         if intro {
             self.fight.clock = clock;
         }
-        // (Tekken Tag: the fight frame's sounds (0x375B60) draw before the fighters' draw, whose blinks draw before the
-        // task runner (0x346608): one rand())
+        // (Tekken Tag: the blinks (0x362C28) draw before the fight frame's sounds (0x375B60), and those before the CPUs'
+        // input and the task runner (0x346608): one rand(), PCSX2's order in a CPU fight)
         if self.fight.data.tag_moves {
+            self.step_hands();
             self.step_sound();
         }
     }
@@ -1555,7 +1556,9 @@ impl Game {
         let tag = self.fight.data.tag_moves;
         self.step_faces();
         self.step_heads();
-        self.step_hands();
+        if !tag {
+            self.step_hands();
+        }
         self.step_springs();
         if let Some((striking, struck)) = self.fight.objects.pending.take() {
             self.place_burns();

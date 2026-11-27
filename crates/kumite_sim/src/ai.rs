@@ -585,7 +585,7 @@ impl AiData {
 /// `x = x*5 + 3`, never seeded: 0 at boot) and libc `rand()` (0x8007A318, seeded once at boot).
 #[derive(Clone, Debug)]
 pub struct AiRng {
-    lcg: u32,
+    pub lcg: u32,
     /// libc's state (the fight's, [`crate::objects::Objects::seed`], while the CPUs and Tekken Tag's camera draw).
     pub rand: u32,
     /// Tekken Tag's rand() (0x40FBD0): the state's low 31 bits, the fight's one stream.
@@ -1084,6 +1084,8 @@ pub struct Ai {
     waket: i32,
     /// +0x70 / +0x72 and the table 0x8009F978: candidates and the pool count.
     cand: Vec<Cand>,
+    /// Tekken Tag's S+0x90: the attack (or 0x80000 move) the neutral offence picked last (0x3874F4).
+    last_pick: Option<Current>,
     npool: i32,
     /// +0x74 / +0x78: handlers for his moveset and mine (`AiData::routines`); +0x7C: the low / ground move filter
     /// (0x800613CC).
@@ -1281,6 +1283,7 @@ impl Ai {
             pwait: 0,
             waket: 0,
             cand: Vec::with_capacity(180),
+            last_pick: None,
             npool: 0,
             h_vs: None,
             h_self: None,
@@ -1346,6 +1349,12 @@ impl Ai {
         self.pending = true;
     }
 
+    /// Back to where Tekken Tag's round setup (0x380568) leaves a CPU that has not thought yet, with its attack and
+    /// movement cooldowns (S+0x94, S+0x5C): for a case run from an emulator's state.
+    pub fn resume(&mut self, cd: i32, movement: i32) {
+        (self.cd, self.mvcd40, self.ticks, self.fprev, self.phase) = (cd, movement, self.slot, -1, 0);
+    }
+
     /// The round setup (0x80059654 -> 0x800593C8) if one is pending. The game sets up both CPUs (slot order)
     /// before either thinks: call this for both, then [`Ai::think`].
     pub fn prepare(&mut self, data: &AiData, rng: &mut AiRng, s: &Sight) {
@@ -1378,6 +1387,7 @@ impl Ai {
         self.safe = false;
         self.npool = 0;
         self.cand.clear();
+        self.last_pick = None;
         self.lc_c = 0;
         self.list_c.clear();
         self.hp_prev = s.me.health;
@@ -1558,7 +1568,7 @@ impl Ai {
             a: me.angles(),
             mf: me.frame as i32,
             hf: op.frame as i32,
-            dist: (d.x * d.x + d.z * d.z).sqrt() as i32,
+            dist: me.pair_dist.filter(|_| data.ttt).unwrap_or((d.x * d.x + d.z * d.z).sqrt() as i32),
             me_air: me.airborne_flag(gd),
             op_air: op.airborne_flag(gd),
             my_moveset: me.moveset.moveset_id.unwrap_or(-1),
@@ -1880,11 +1890,11 @@ impl Ai {
             self.move_prev = m.id;
             if cx.data.ttt {
                 // (0x3835A0: with the END link's next move's entries)
-                self.build(cx, false);
+                self.build(cx, false, false);
                 self.stun_tiers(cx);
                 return;
             }
-            self.build(cx, true);
+            self.build(cx, true, false);
             if !self.cand.is_empty() && cx.chance(self.p.stun_recovery_prob) && self.mark(|c| c.e.trans == 0x1C || c.e.trans == 0x1D) > 0 {
                 self.pick(cx);
                 return;
@@ -1917,7 +1927,14 @@ impl Ai {
         }
 
         // ---- 4.H per-character handlers
-        if self.call_handler(cx, true) || self.call_handler(cx, false) {
+        if self.call_handler(cx, true) {
+            return;
+        }
+        // (Tekken Tag's step 0x16 between them, 0x38AD00: step 6's draw, its handler 0x38BF38 always -1)
+        if cx.data.ttt && self.wlock < 0 {
+            cx.rand();
+        }
+        if self.call_handler(cx, false) {
             return;
         }
 
@@ -1951,7 +1968,8 @@ impl Ai {
                         }
                     }
                 }
-                handled = true;
+                // (Tekken Tag's step 10 goes on when a list is empty, 0x385CCC)
+                handled = !cx.data.ttt || !self.list_c.is_empty();
                 if self.list_c.is_empty() {
                     self.lc_c = 0;
                 } else {
@@ -1989,7 +2007,7 @@ impl Ai {
                     }
                 }
                 self.nc_b = n;
-                handled = true;
+                handled = !cx.data.ttt || n > 0;
                 if n > 0 {
                     self.out = self.prev_out & 0xF000;
                 } else {
@@ -2016,7 +2034,7 @@ impl Ai {
                         }
                     }
                     self.nc_d = n;
-                    handled = true;
+                    handled = !cx.data.ttt || n > 0;
                     if n < 1 {
                         (self.nc_d, self.lc_d) = (0, 0);
                     } else {
@@ -2029,8 +2047,9 @@ impl Ai {
         self.frame_prev = cx.mf;
 
         // ---- 4.K candidates; a move held for over 220 frames takes anything [0x8005BE14..0x8005BF2C]
-        if !handled {
-            self.build(cx, false);
+        // (Tekken Tag's step 10, 0x385C80, builds after the lists too)
+        if !handled || cx.data.ttt {
+            self.build(cx, false, true);
             let wanted = !cx.data.ttt || self.tag_wanted;
             if self.inmove > 220 && self.mark(|c| wanted || !Cx::is_tag(&c.e)) > 0 {
                 self.pick(cx);
@@ -2191,7 +2210,7 @@ impl Ai {
         }
         self.npool = 0;
         self.move_prev = cx.m.id;
-        self.build(cx, true);
+        self.build(cx, true, false);
         if self.cand.is_empty() {
             self.out = 0;
             return true;
@@ -2662,6 +2681,9 @@ impl Ai {
         }
         if self.last_rec.is_some_and(|r| matches!(r.rec4 & 0xFFFF, 0x2021 | 0x2829)) {
             self.chold = 12;
+        }
+        if mvp.as_ != 0 || mvp.rec4 & 0x8_0000 != 0 {
+            self.last_pick = mvp.id;
         }
         Flow::Fin
     }
@@ -3307,7 +3329,13 @@ impl Ai {
         if op.whiffed && self.myzone < 2 && cx.chance(self.p.counter_attack_prob) {
             self.cd -= 3;
         }
-        if me.health < self.hp_prev && (cx.lcg() & 0xFFF) as i32 >= self.p.gate_always_zero {
+        // (Tekken Tag draws before the health test, 0x380DA8)
+        let hit = if cx.data.ttt {
+            (cx.lcg() & 0xFFF) as i32 >= self.p.gate_always_zero && me.health < self.hp_prev
+        } else {
+            me.health < self.hp_prev && (cx.lcg() & 0xFFF) as i32 >= self.p.gate_always_zero
+        };
+        if hit {
             self.cd -= 3;
             // rage: hit a third time by the same move -> the level 9 profile for 600 frames
             self.rage = false;
@@ -3350,18 +3378,33 @@ impl Ai {
 
     /// 0x80056764: the candidates (entries usable now) of my list; without `end_links` also the entries of the
     /// END link's next move usable on its first frame, then the exclusions and the filter.
-    fn build(&mut self, cx: &mut Cx, end_links: bool) {
+    /// Tekken Tag's (0x382AD8; 0x3835A0 without `fresh`) test the per-alias rule after the requirement and leave out
+    /// the moves of rec4 bit 0x800000; `fresh`: 7 times in 8 (rand() & 7) the neutral offence's last pick once too.
+    fn build(&mut self, cx: &mut Cx, end_links: bool, fresh: bool) {
         self.cand.clear();
         let cur = cx.me.current;
+        let ttt = cx.data.ttt;
+        let mut drop_last = ttt && fresh && cx.rand() & 7 != 0;
+        // (an alias that does not resolve would be a garbage record in the game; none is known in the data)
+        let take = |s: &mut Self, cx: &Cx, e: &Ent, drop_last: &mut bool| -> Option<Rec> {
+            let mv = cx.rec(e.dest)?;
+            if ttt && mv.rec4 & 0x80_0000 != 0 {
+                return None;
+            }
+            if *drop_last && mv.id == s.last_pick {
+                *drop_last = false;
+                return None;
+            }
+            Some(mv)
+        };
         for e in cx.my_list() {
-            if !cx.in_window(&e) || !cx.req_ok(&e) || !self.cond_ok(cx, &e) {
+            if !cx.in_window(&e) || !cx.req_ok(&e) || (ttt && !cx.data.follow_ok(e.dest, cx.my_moveset, self.difficulty, cx.rng)) || !self.cond_ok(cx, &e) {
                 continue;
             }
             if self.cand.len() >= 180 {
                 break;
             }
-            // (an alias that does not resolve would be a garbage record in the game; none is known in the data)
-            if let Some(mv) = cx.rec(e.dest) {
+            if let Some(mv) = take(self, cx, &e, &mut drop_last) {
                 self.cand.push(Cand { mv, e, state: 0 });
             }
         }
@@ -3377,27 +3420,28 @@ impl Ai {
                     // last shared sub-list): a compiler artefact kept on purpose
                     let mut stale = next[0];
                     let frame = cx.mf;
-                    let push = |s: &mut Self, e: Ent| -> bool {
+                    let push = |s: &mut Self, cx: &Cx, e: Ent, drop_last: &mut bool| -> bool {
                         if s.cand.len() >= 180 {
                             return false;
                         }
-                        if let Some(mv) = cx.rec(e.dest) {
+                        if let Some(mv) = take(s, cx, &e, drop_last) {
                             s.cand.push(Cand { mv, e, state: 0 });
                         }
                         true
                     };
+                    let rule = |s: &Self, cx: &mut Cx, e: &Ent| !ttt || cx.data.follow_ok(e.dest, cx.my_moveset, s.difficulty, cx.rng);
                     'all: for top in next.iter().take_while(|t| t.cmd != 0xC000) {
                         if top.cmd == 0xC00C {
                             for k in top.dest..top.dest + top.extra {
                                 let Some(e) = cx.shared(k) else { continue };
-                                if e.ws < 2 && frame <= e.we && cx.req_ok(&e) && self.link_cond(cx, &e, &e) && !push(self, e) {
+                                if e.ws < 2 && frame <= e.we && cx.req_ok(&e) && rule(self, cx, &e) && self.link_cond(cx, &e, &e) && !push(self, cx, e, &mut drop_last) {
                                     break 'all;
                                 }
                             }
                             if let Some(r) = cx.shared(top.dest + top.extra) {
                                 stale = r;
                             }
-                        } else if top.ws < 2 && frame <= top.we && cx.req_ok(top) && self.link_cond(cx, top, &stale) && !push(self, *top) {
+                        } else if top.ws < 2 && frame <= top.we && cx.req_ok(top) && rule(self, cx, top) && self.link_cond(cx, top, &stale) && !push(self, cx, *top, &mut drop_last) {
                             break 'all;
                         }
                     }
@@ -3511,7 +3555,9 @@ impl Ai {
         }
         let mut k = cx.randint(self.npool);
         let n = self.cand.len() as i32;
-        let idx = if self.ticks & 1 == 0 {
+        // (Tekken Tag's 0x385318 counts from the start when the tick's parity is its side, S+0)
+        let from_end = if cx.data.ttt { self.ticks & 1 != self.slot & 1 } else { self.ticks & 1 == 0 };
+        let idx = if from_end {
             let mut i = n - 1;
             loop {
                 if i < 0 {

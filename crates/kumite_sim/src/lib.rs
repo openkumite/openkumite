@@ -756,6 +756,9 @@ pub struct Fighter {
     /// Tekken Tag: the root at the last body push (its step since then shares the push, 0x377338); none before the
     /// first.
     pub push_prev: Option<Vec3>,
+    /// Tekken Tag: the pair's distance as the fight frame starts (gp-0x74C8, after the distance limit, 0x371940), which
+    /// the CPUs read after the moves.
+    pub pair_dist: Option<i32>,
     /// In its move's jump window as the facing pass left it (Tekken Tag's +0x135, set after the tracking modes,
     /// 0x370858): the modes of both games read last frame's.
     jump_window: bool,
@@ -885,6 +888,7 @@ impl Fighter {
             screen_right: 0.0,
             juggle_bias: 0,
             push_prev: None,
+            pair_dist: None,
             jump_window: false,
             ease: Ease::default(),
             ease_last: None,
@@ -3626,6 +3630,10 @@ impl Fight {
         // (Tekken Tag's fights: after the facing angle 0x371330 took the roots, before the moves)
         if gd.tag_moves && self.extra.is_none() && self.ball.is_none() && self.fighters.iter().all(|f| !f.inactive) {
             self.keep_together(&gd);
+            let (a, b) = (self.fighters[0].root(), self.fighters[1].root());
+            let (x, z) = ((b.x as i32 - a.x as i32) as i64, (b.z as i32 - a.z as i32) as i64);
+            let d = Some(camera::isqrt(x * x + z * z) as i32);
+            self.fighters.iter_mut().for_each(|f| f.pair_dist = d);
         }
         // no one to fight: the player faces the idle target
         let idle = self.idle_point();

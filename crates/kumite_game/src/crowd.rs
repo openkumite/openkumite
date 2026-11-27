@@ -47,7 +47,8 @@ pub struct Walker {
     wait: i32,
     budget: i32,
     gone: bool,
-    seed: u32,
+    /// Its rand()'s state (in a Tekken Tag fight the fight's, kumite_sim's `Objects::seed`, while it steps).
+    pub seed: u32,
 }
 
 fn i(v: &Value) -> i64 {
