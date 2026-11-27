@@ -2740,3 +2740,93 @@ fn extra_fighters_play_no_move_of_their_donor() {
         assert!(anims.iter().any(|x| x.starts_with("t2") && x != stance), "{file}: f+1 standing up: {anims:?}");
     }
 }
+
+/// Every Tekken 2 fighter's basic inputs (each direction with 1, 2, 3, 4, 1+2, 3+4) from every stance (standing, a
+/// full crouch, standing up, the run, back turned, lying) start a move, unless the system does nothing there (for its
+/// Tekken 3 donor or most Tekken 3 fighters), and none is the donor's own (#302's fix left a full crouch's d+2, King's
+/// crouching 2 before, doing nothing).
+#[test]
+fn extra_fighters_have_no_dead_input() {
+    let Some(a) = assets() else { return };
+    let index: MovesetIndex = kumite_sim::data::load(&a.root.join("gamedata/movesets/index.json")).unwrap();
+    let mut files: Vec<&str> = index.models.iter().map(|m| m.moveset_file.as_str()).collect();
+    files.sort();
+    files.dedup();
+    let model = |file: &str| index.models.iter().find(|m| m.moveset_file == file).unwrap().model_record;
+    if !files.iter().any(|f| f.starts_with("moveset_t2_")) {
+        return;
+    }
+    let sets: Vec<(&str, Moveset)> = files.iter().map(|f| (*f, moveset(&a, f))).collect();
+    let dirs = ["d/b", "d", "d/f", "b", "n", "f", "u/b", "u", "u/f"];
+    let buttons = ["1", "2", "3", "4", "1+2", "3+4"];
+    // (the way in, turned round, lying)
+    let stances = [
+        ("stand", "n*40", false, false),
+        ("crouch", "d*40", false, false),
+        ("standing up", "d*40,n*2", false, false),
+        ("run", "n*2,f,n,f*20", false, false),
+        ("back turned", "n*40", true, false),
+        ("lying", "n*10", false, true),
+    ];
+    // the inputs from which nothing starts, and those that start one of `own`
+    let probe = |model: usize, own: &dyn Fn(kumite_sim::Current) -> bool| {
+        let (mut none, mut owns) = (std::collections::BTreeSet::new(), Vec::new());
+        for (name, way, back, lying) in stances {
+            let mut g = load_vs_dummy(&a, [model, MODEL_71]);
+            // (4 m apart: a run near the opponent ends)
+            let to = g.fight.fighters[1].position;
+            g.fight.fighters[0].position = to + (g.fight.fighters[0].position - to).normalize() * 4000.0;
+            for pad in parse_script(way).unwrap() {
+                g.step([pad, Pad::default()]);
+            }
+            if lying {
+                assert!(g.fight.fighters[0].play_alias(167), "model {model}: no face-up down");
+                for _ in 0..40 {
+                    g.step([Pad::default(); 2]);
+                }
+            }
+            for d in dirs {
+                for b in buttons {
+                    let run = |pads: &str| {
+                        let mut g = g.clone();
+                        let mut seen = Vec::new();
+                        for pad in parse_script(pads).unwrap() {
+                            if back {
+                                g.fight.fighters[0].yaw = g.fight.fighters[1].yaw;
+                            }
+                            g.step([pad, Pad::default()]);
+                            seen.push(g.fight.fighters[0].current);
+                        }
+                        seen
+                    };
+                    let (idle, pressed) = (run(&format!("{d}*8")), run(&format!("{d}+{b},{d}*7")));
+                    match pressed.iter().find(|c| !idle.contains(c)) {
+                        None => _ = none.insert(format!("{name} {d}+{b}")),
+                        Some(&c) if own(c) => owns.push(format!("{name} {d}+{b}")),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        (none, owns)
+    };
+    // (where the system does nothing: for the donor, or for half the Tekken 3 fighters or more)
+    let t3: Vec<&(&str, Moveset)> = sets.iter().filter(|s| s.0.len() == "moveset_00.json".len()).collect();
+    let nones: Vec<_> = t3.iter().map(|s| probe(model(s.0), &|_| false).0).collect();
+    let mut counts = std::collections::BTreeMap::new();
+    for x in nones.iter().flatten() {
+        *counts.entry(x).or_insert(0) += 1;
+    }
+    let mut found = Vec::new();
+    for (file, ms) in sets.iter().filter(|s| s.0.starts_with("moveset_t2_")) {
+        // (the donor: the Tekken 3 set the Tekken 2 one starts with)
+        let same = |d: &Moveset| d.moves.len() < ms.moves.len() && d.moves.iter().zip(&ms.moves).filter(|(x, y)| x.anim == y.anim).count() * 10 > d.moves.len() * 9;
+        let donor = t3.iter().position(|(_, d)| same(d)).unwrap_or_else(|| panic!("{file}: no donor"));
+        let n_donor = t3[donor].1.moves.len();
+        let (none, owns) = probe(model(file), &|c| c.bank == Bank::Own && c.index < n_donor && ms.moves[c.index].anim.starts_with("motion_"));
+        let system = |x: &String| nones[donor].contains(x) || counts.get(x).is_some_and(|n| n * 2 >= t3.len());
+        found.extend(none.iter().filter(|x| !system(x)).map(|x| format!("{file} {x}: nothing")));
+        found.extend(owns.iter().map(|x| format!("{file} {x}: the donor's own move")));
+    }
+    assert!(found.is_empty(), "{} dead inputs:\n{}", found.len(), found.join("\n"));
+}
