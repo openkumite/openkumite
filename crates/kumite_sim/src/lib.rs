@@ -733,6 +733,9 @@ pub struct Fighter {
     /// 0x800442D8); the own attack reached its last active frame without contact (+0xD2, 0x80044374).
     pub struck: bool,
     pub struck_in_move: bool,
+    /// Where a throw attempt made contact with it in this frame's hit pass (game units): Tekken 3's struck flag
+    /// (+0xCE, 0x800442DC) with no damage, whose spark is the no-damage one (0x8004497C -> 0x80076BD0 index 1).
+    pub grabbed: Option<Vec3>,
     /// Tekken Tag: struck by the last hit pass or throw damage (+0x12F, 0x371F5C): a move started on the frame after
     /// keeps +0xF3 (`struck_in_move`, 0x36A8EC).
     struck_last: bool,
@@ -881,6 +884,7 @@ impl Fighter {
             chain: 0,
             struck: false,
             struck_in_move: false,
+            grabbed: None,
             struck_last: false,
             whiffed: false,
             pushed: false,
@@ -3864,7 +3868,7 @@ impl Fight {
         step_objects(&mut self.objects, &gd, &self.fighters, &[&bodies[0], &bodies[1]], &anims, &struck, !gd.tag_moves);
         // the hit pass's per-frame flags (cleared at 0x80044008) and the body push's
         for f in &mut self.fighters {
-            (f.struck, f.whiffed, f.pushed) = (false, false, false);
+            (f.struck, f.whiffed, f.pushed, f.grabbed) = (false, false, false, None);
         }
         let pair = !self.fighters[0].inactive && !self.fighters[1].inactive;
         let extra_on = self.extra.as_ref().is_some_and(|e| !e.inactive) && !self.fighters[0].inactive;
@@ -4573,6 +4577,7 @@ impl Fight {
             if mv.damage_type == 1 {
                 self.fighters[1 - a].struck_in_move = true;
                 self.fighters[1 - a].struck_last = gd.tag_moves;
+                self.fighters[1 - a].grabbed = Some(point);
                 // a throw attempt: contact only (+0xD1); its command list links the throw (reactions.md §5.1)
                 continue;
             }

@@ -25,7 +25,7 @@ use crate::{Game, UNITS};
 use glam::Vec3;
 use kumite_sim::detmath::DetMath;
 use kumite_sim::MoveEffect;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -359,6 +359,20 @@ pub struct Vfx {
     /// The auras' pictures this frame, and each actor's aura particles' frame counters (+0x16).
     auras: Vec<Sprite>,
     aura_frames: HashMap<usize, Vec<u32>>,
+    /// Tekken 3's effect log (0x8004A468): each recorded frame's spawns and the effect objects as they ran, for the
+    /// K.O. replay; the record frames logged this round; a replay showing.
+    log: VecDeque<(Spawns, kumite_sim::objects::Objects)>,
+    logged: u64,
+    replaying: bool,
+}
+
+/// What a step's effects spawn from: its hits, where throw attempts made contact, and each actor's (own index,
+/// opponent index, root, move effects).
+#[derive(Clone, Debug, Default)]
+pub struct Spawns {
+    hits: Vec<kumite_sim::HitEvent>,
+    grabs: Vec<Vec3>,
+    actors: Vec<(usize, usize, Vec3, Vec<MoveEffect>)>,
 }
 
 /// A fire on a fighter Gon's fire struck (effect object 0xB, 0x80072E74): on a bone slot of the victim for 60-75
@@ -438,6 +452,9 @@ impl Vfx {
             burns: Vec::new(),
             auras: Vec::new(),
             aura_frames: HashMap::new(),
+            log: VecDeque::new(),
+            logged: 0,
+            replaying: false,
         }
     }
 
@@ -599,6 +616,11 @@ impl Vfx {
     /// One 60 Hz step: the effects move (each is drawn before it moves), then the last fight step's hits, move
     /// effects and landings spawn new ones.
     pub fn step(&mut self, game: &Game) {
+        let t3 = self.data.as_ref().is_some_and(|d| d.bursts.is_empty());
+        // (the replay's end resets the effects, 0x800B8CD8)
+        if std::mem::take(&mut self.replaying) {
+            self.clear();
+        }
         let (eye, _, _) = crate::view_camera(&game.camera.view);
         let models: Vec<usize> = (0..4).map(|k| game.body_of(k).map_or(0, |b| b.model_record)).collect();
         let fight = &game.fight;
@@ -607,7 +629,7 @@ impl Vfx {
         if let Some(p) = fight.partner.as_deref() {
             actors.push((p, 3, fight.opponent_index(3)));
         }
-        self.step_actors(
+        let spawns = self.step_actors(
             &fight.hits,
             &models,
             &actors,
@@ -620,6 +642,9 @@ impl Vfx {
             game.dust.is_some(),
         );
         self.objects(&fight.objects, &models);
+        if t3 {
+            self.log_frame(game, (spawns, fight.objects.clone()));
+        }
         self.auras.clear();
         for &(_, i, _) in &actors {
             let Some((pose, place)) = game.pose_actor(i) else { continue };
@@ -643,6 +668,54 @@ impl Vfx {
                 None => self.laser_off(i),
             }
         }
+    }
+
+    /// Logs what the frame the game just recorded spawned (a new round starts the record again).
+    fn log_frame(&mut self, game: &Game, frame: (Spawns, kumite_sim::objects::Objects)) {
+        if game.recorded_total < self.logged {
+            self.log.clear();
+            self.logged = 0;
+        }
+        while self.logged < game.recorded_total {
+            self.logged += 1;
+            self.log.push_back(if self.logged == game.recorded_total { frame.clone() } else { Default::default() });
+        }
+        while self.log.len() > game.recorded.len() {
+            self.log.pop_front();
+        }
+    }
+
+    /// A frame of Tekken 3's K.O. replay, record frame `k` of the game's (`new`: shown first this frame): the replay's
+    /// start resets the effects (0x8003EE94); the spawns logged with a frame come again when it is reached (0x8004A6BC)
+    /// and the effect objects run once a frame shown (0x8006F5C0 on 0x80033788's half-frames), here as they ran then.
+    /// Tekken Tag's replay: [`Vfx::step`].
+    /// shortcut: the objects are shown as recorded, the PS1 runs them again on the shared rand() (which the next round's
+    /// draws then follow); run them on the fight's stream if a later round's PS1 rand log differs
+    pub fn replay(&mut self, game: &Game, (k, new): (usize, bool)) {
+        if !self.data.as_ref().is_some_and(|d| d.bursts.is_empty()) {
+            return self.step(game);
+        }
+        if !std::mem::replace(&mut self.replaying, true) {
+            self.clear();
+        }
+        // (the step that started the replay)
+        self.log_frame(game, Default::default());
+        self.advance();
+        self.landings.clear();
+        let first = game.recorded_total - game.recorded.len() as u64;
+        let Some((spawns, objects)) = (first + k as u64).checked_sub(self.logged - self.log.len() as u64).and_then(|i| self.log.get(i as usize)).cloned() else { return };
+        let models: Vec<usize> = (0..4).map(|k| game.body_of(k).map_or(0, |b| b.model_record)).collect();
+        if new {
+            let (eye, _, _) = crate::view_camera(&game.camera.view);
+            let at = |i: usize, node: usize| {
+                let (pose, place) = game.pose_actor(i)?;
+                Some(place.transform_point3(pose.get(node)?.w_axis.truncate()))
+            };
+            self.spawn(&spawns, &models, eye, &at, &|i, name| game.body_of(i)?.character.nodes.iter().position(|n| n.name == name), false);
+            // (the shakes are not logged)
+            self.shake = None;
+        }
+        self.objects(&objects, &models);
     }
 
     /// Devil's beam from `from` to `to` (metres) this frame on actor `i` of model record `model` (0x3A8D08): a strip
@@ -720,7 +793,7 @@ impl Vfx {
     /// The same for any number of actors: `models[k]` actor k's model record; `actors` (fighter, own index,
     /// opponent index) whose move effects play; `at(k, node)` a node's world position (metres) in actor k's pose
     /// shown, `node(k, joint)` the node of a joint name; `tag_dust` the dust is the fight's tasks (Tekken Tag's game,
-    /// [`crate::Game::dust`]), drawn by [`Vfx::objects`].
+    /// [`crate::Game::dust`]), drawn by [`Vfx::objects`]. Returns what they spawned from.
     pub fn step_actors(
         &mut self,
         hits: &[kumite_sim::HitEvent],
@@ -730,11 +803,21 @@ impl Vfx {
         at: &dyn Fn(usize, usize) -> Option<Vec3>,
         node: &dyn Fn(usize, &str) -> Option<usize>,
         tag_dust: bool,
-    ) {
+    ) -> Spawns {
         self.advance();
         self.landings.clear();
+        let spawns = Spawns { hits: hits.to_vec(), grabs: actors.iter().filter_map(|a| a.0.grabbed).collect(), actors: actors.iter().map(|&(f, i, o)| (i, o, f.root(), f.effects.clone())).collect() };
+        self.spawn(&spawns, models, eye, at, node, tag_dust);
+        spawns
+    }
+
+    /// The effects a step's [`Spawns`] start (as [`Vfx::step_actors`]).
+    fn spawn(&mut self, spawns: &Spawns, models: &[usize], eye: Vec3, at: &dyn Fn(usize, usize) -> Option<Vec3>, node: &dyn Fn(usize, &str) -> Option<usize>, tag_dust: bool) {
         let Some(data) = self.data.clone() else { return };
-        for h in hits {
+        // (Tekken 3: a throw's damage comes outside the hit slots, 0x800449B4, and the hit effects are only the slots'
+        // (0x80044760 tests +0xCE): none; a throw attempt's contact is a slot's no-damage hit, its spark)
+        let t3 = data.bursts.is_empty();
+        for h in spawns.hits.iter().filter(|h| !(t3 && h.throw)) {
             let pos = h.point / UNITS;
             let strike = Vec3::new(h.strike.x, h.strike.y, h.strike.z);
             // (Tekken Tag's bursts turn with the strike; Tekken 3's guard and zero sparks stand still)
@@ -761,21 +844,25 @@ impl Vfx {
                 }
             }
         }
+        for &p in spawns.grabs.iter().filter(|_| t3) {
+            self.effect("zero", &data.zero, p / UNITS, None, Blend::Add, eye);
+        }
         self.burn(at, node);
-        for &(f, i, o) in actors {
-            for e in &f.effects {
+        for (i, o, root, effects) in &spawns.actors {
+            let (i, o) = (*i, *o);
+            for e in effects {
                 match *e {
                     MoveEffect::Shake(n) => self.shake = Some((n as usize, 0)),
                     MoveEffect::GroundImpact | MoveEffect::LandingImpact => {
-                        self.landings.push(f.root() / UNITS);
+                        self.landings.push(*root / UNITS);
                         if !tag_dust {
-                            self.ground(f.root() / UNITS);
+                            self.ground(*root / UNITS);
                         }
                     }
                     MoveEffect::AtBone { op, slot } => {
                         let Some(p) = self.slots_joints.get(slot as usize).and_then(|name| node(i, name)).and_then(|n| at(i, n)) else { continue };
                         match op {
-                            6 => self.char_spark(models[i], p, None, eye),
+                            6 => self.char_spark(models.get(i).copied().unwrap_or(0), p, None, eye),
                             7 => {
                                 // (an opponent past the four bodies: no spark, as its sound is skipped)
                                 if let Some(&m) = models.get(o) {
@@ -1109,6 +1196,9 @@ mod tests {
             burns: vec![],
             auras: vec![],
             aura_frames: HashMap::new(),
+            log: VecDeque::new(),
+            logged: 0,
+            replaying: false,
         };
         v.effect("block", &data.block, Vec3::new(1.0, 1.0, 0.0), None, Blend::Add, Vec3::ZERO);
         assert!(v.sprites().is_empty() && v.slots.iter().all(Option::is_none));
