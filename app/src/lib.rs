@@ -4253,7 +4253,7 @@ impl App {
             let mut models: [HashMap<usize, SkinnedModel>; 2] = Default::default();
             for slot in &mut models {
                 for (&m, ch) in &scene.characters {
-                    slot.insert(m, skinned_character(&r, ch, m));
+                    slot.insert(m, skinned_character(&r, ch, kumite_game::embu::record(m)));
                 }
             }
             if let Some(v) = self.vfx.as_mut() {
@@ -4292,7 +4292,7 @@ impl App {
                     }
                 }
                 kumite_game::embu::EmbuEvent::Effect { op, pos, model } => {
-                    let record = |m: usize| 71 + 4 * m;
+                    let record = kumite_game::embu::record;
                     let other = models.iter().copied().find(|&m| m != model).unwrap_or(model);
                     if let Some(v) = self.vfx.as_mut() {
                         v.effect_at(op, pos, record(model), record(other), eye);

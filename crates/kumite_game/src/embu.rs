@@ -132,6 +132,11 @@ enum Slot {
     Playing { mv: usize, cur: u32, end: u32 },
 }
 
+/// Model index `m`'s model record (71 + 4 m): its shadow mesh and its sparks are the record's.
+pub fn record(m: usize) -> usize {
+    71 + 4 * m
+}
+
 pub struct EmbuScene {
     pub data: Arc<EmbuData>,
     pub variant: usize,
