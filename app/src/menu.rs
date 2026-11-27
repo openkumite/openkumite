@@ -1429,7 +1429,7 @@ impl Screen {
                             // VS MODE has its own grid select (screen B), with a fresh win tally
                             Entry::Mode(Mode::Versus) => Screen::Grid(Box::new(crate::grid::GridSelect::new(roster.grid.clone(), m.difficulty, Default::default()))),
                             // Team Battle picks its teams on the grid too
-                            Entry::Mode(Mode::TeamBattle) => Screen::Grid(Box::new(crate::grid::GridSelect::team(roster, m.difficulty))),
+                            Entry::Mode(Mode::TeamBattle) => Screen::Grid(Box::new(crate::grid::GridSelect::team(roster, m.difficulty, 0, None))),
                             Entry::Mode(Mode::Ball) => Screen::BallModes { frame: 0, cursor: 0, difficulty: m.difficulty },
                             Entry::Mode(mode) => Screen::Select(Box::new(Select::new(mode, m.difficulty, roster, *seed))),
                             Entry::Tag => Screen::TagModes { frame: 0, cursor: 1, difficulty: m.difficulty },
@@ -1652,6 +1652,11 @@ impl Screen {
             },
             Screen::Results(r) => {
                 if key == Key::Start {
+                    // Team Battle (0x800EF4AC): START once faded in opens TEAM BATTLE SELECT at once, its pad joined
+                    if let (crate::modes::ResultKind::Team { run }, true) = (&r.kind, r.fade >= 256 || r.leaving) {
+                        *self = Screen::Grid(Box::new(crate::grid::GridSelect::team(roster, run.difficulty, player, Some(run.teams.each_ref().map(|t| t.members.len())))));
+                        return Outcome::None;
+                    }
                     r.skip();
                 }
             }

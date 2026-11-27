@@ -530,7 +530,8 @@ impl Results {
                 _ => ResultEvent::Banner,
             };
         }
-        let limit = if matches!(self.kind, ResultKind::Team { .. }) { 1800 } else { RESULT_FRAMES };
+        // Team Battle counts its 1800 from the banner's end (0x800EF4AC sub-state 6), the others from the start
+        let limit = if matches!(self.kind, ResultKind::Team { .. }) { end + 1800 } else { RESULT_FRAMES };
         if self.frame >= limit {
             self.leaving = true;
         }
@@ -951,6 +952,34 @@ mod tests {
         assert_eq!(at[&51], (Some(6), false));
         assert_eq!(at[&72], (Some(263), false));
         assert_eq!(at[&73], (Some(275), true));
+    }
+
+    /// #385, PS1 issue385/ps1 (0x800EF4AC): START once faded in opens TEAM BATTLE SELECT on the next frame (state 8),
+    /// not the records; left alone, the fade starts 1800 frames after the banner, then the ranking (state 16).
+    #[test]
+    fn team_results_start_goes_back_to_team_select() {
+        let gd = crate::test_assets().join("gamedata");
+        if !kumite_fs::exists(&gd.join("screens.json")) {
+            return;
+        }
+        let roster = Roster::load(&gd);
+        let run = TeamBattle { teams: [Team::default(), Team::default()], fight: 1, log: vec![Some(1)], incoming: 1, difficulty: 0, just_lost: None };
+        let results = || Results { kind: ResultKind::Team { run: run.clone() }, frame: 0, step: 0, fade: 0, leaving: false, data: Value::Null };
+        let mut r = results();
+        while r.tick() != ResultEvent::Banner {}
+        let banner = r.frame;
+        while !r.leaving {
+            r.tick();
+        }
+        assert_eq!(r.frame, banner + 1800);
+        for (frames, grid) in [(10, false), (40, true)] {
+            let mut s = crate::menu::Screen::Results(Box::new(results()));
+            if let crate::menu::Screen::Results(r) = &mut s {
+                (0..frames).for_each(|_| _ = r.tick());
+            }
+            s.key(1, crate::menu::Key::Start, &roster, &mut 1);
+            assert_eq!(matches!(s, crate::menu::Screen::Grid(_)), grid, "START after {frames} frames");
+        }
     }
 
     #[test]
