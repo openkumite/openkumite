@@ -633,7 +633,9 @@ impl SoundData {
             let row = characters[i];
             let second = self.system_start.get(row).copied().flatten().is_some();
             let now = (fighter.current, fighter.frame);
-            let started = fighter.frame <= 1 && state.last[i].is_none_or(|(c, fr)| c != fighter.current || fr > 1);
+            // (a move a link puts on frame 0, a throw's, starts on its frame 1 as the PS1's sound player sees it: the link
+            // commits in the next step's move logic, t3sim53 c138 / c139)
+            let started = fighter.frame == 1 && state.last[i].is_none_or(|(c, fr)| c != fighter.current || fr != 1);
             let advanced = state.last[i] != Some(now);
             let last_move = state.last[i].map(|(c, _)| c);
             state.last[i] = Some(now);
@@ -657,10 +659,11 @@ impl SoundData {
             }
             // timed sound scripts (type 8, 0x800413E0): a move's script starts with it and keeps running after the
             // move changes; its counter is the move's frame; each entry fires on its frame. cmd 0 plays a table
-            // sound, cmd 1 an entry for this fighter, cmd 2 for the opponent
-            let new_move = started || last_move.is_none_or(|c| c != fighter.current);
+            // sound, cmd 1 an entry for this fighter, cmd 2 for the opponent; script 0 is none (0x8004136C: Gun Jack's
+            // motion_101 has it, and its frame 1 still draws the attack voice, t3sim53 c148)
+            let new_move = started || fighter.frame != 0 && last_move.is_none_or(|c| c != fighter.current);
             if new_move {
-                if let Some(e) = entries.iter().find(|e| e.kind == 8 && e.index != 255) {
+                if let Some(e) = entries.iter().find(|e| e.kind == 8 && !matches!(e.index, 0 | 255)) {
                     state.script[i] = Some((e.index as usize, fighter.frame.saturating_sub(1)));
                 }
             }
@@ -778,10 +781,17 @@ impl SoundData {
                 if advanced && js != 0 && fighter.frame == js && fighter.frame != 1 {
                     out.extend(self.table(m.take_off & 0xFFF));
                 }
-                match fighter.landing {
-                    1 => out.extend(self.table(m.landing & 0xFFF)),
-                    2 => out.extend(self.table(m.air_landing & 0xFFF)),
-                    _ => {}
+                // (a jump move lands on its jump window's last frame too, 0x8004033C: +0xDD when struck in it with
+                // posture state 9 or bit 4, else +0xDC; t3sim53 c148, Gun Jack's motion_101. shortcut: not its
+                // +0x6A / +0xB8 / +0x90 tests, upgrade when a case lands a jump move in those states)
+                let j1 = mv.bytes_18.jump_end;
+                let jumped = advanced && j1 > 1 && fighter.frame == j1;
+                let dd = jumped && fighter.struck_in_move && ((mv.posture.raw >> 11) & 0x1F == 9 || mv.posture.raw & 4 != 0);
+                if fighter.landing == 2 || jumped && !dd {
+                    out.extend(self.table(m.air_landing & 0xFFF));
+                }
+                if fighter.landing == 1 || dd {
+                    out.extend(self.table(m.landing & 0xFFF));
                 }
             }
             // the attack's swing, hit or not: the original's whoosh (`move_sounds.swing`) the frame before
