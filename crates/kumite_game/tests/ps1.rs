@@ -416,6 +416,17 @@ fn a_reaction_keeps_the_struck_moves_root_as_on_the_ps1() {
     }
 }
 
+/// Nina's reversal (f+1+3 held back: b+1+3) takes Paul's 2: her height eases in from her stance's over 4 frames
+/// from the link's own step, as her root update eases it (t3sim52 c128: ours took the reversal's first height there,
+/// 97 off).
+#[test]
+fn a_reversal_eases_in_from_the_links_step_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [75, 115], None, 1, "n*318,f*39,n+2*2,n*30,f+2*2,n*30,d/f+2*2,n*94", "n*319,b*39,f+1+3*4,n*26,f+1+3*4,n*26,f+2+4*4,n*96", 400);
+    let h: Vec<i32> = (863..=866).map(|row| at(&t, 494, row, 1).1).collect();
+    assert_eq!(h, [-968, -977, -985, -992]);
+}
+
 /// Mokujin as Kuma (round 2's draw, the pool's entry 11) against Gun Jack (t3sim51 c120): walk, u+1, d+4 struck
 /// into a flight, as on the PS1.
 #[test]
