@@ -4,7 +4,7 @@
 //! Or, for a replay made a video (`video.rs`), nothing plays: what would is noted with the game step it starts at
 //! ([`Audio::capture`]), and mixed afterwards.
 
-use kumite_game::sound::Track;
+use kumite_game::sound::{Sound, Track};
 use rodio::source::{Buffered, ChannelVolume, Source};
 use rodio::{Decoder, MixerDeviceSink, Player};
 use std::collections::HashMap;
@@ -19,8 +19,11 @@ type Clip = Buffered<Decoder<BufReader<File>>>;
 pub enum Event {
     /// The music: a track, or none.
     Music(Option<Track>),
-    /// A one-shot sound at this volume (the effects' volume included) and speed.
-    Sfx(PathBuf, f32, f32),
+    /// A one-shot sound at this volume (the effects' volume included) and speed; Tekken 3's on its voice (cut at the
+    /// voice's next sound or key off) and a looping one's loop point ([`Sound`]).
+    Sfx(PathBuf, f32, f32, Option<u8>, Option<f64>),
+    /// A voice keyed off.
+    Off(u8),
     /// The music's level against the track's (a pause's duck, a fade out; a new track starts at 1).
     Duck(f32),
 }
@@ -50,6 +53,8 @@ pub struct Audio {
     current: Option<Track>,
     /// Decoded sound effects, kept for replay.
     cache: HashMap<PathBuf, Clip>,
+    /// Tekken 3's sounds playing by their voice (no player in capture).
+    voices: HashMap<u8, Option<Player>>,
     pub muted: bool,
     pub music_volume: f32,
     pub sfx_volume: f32,
@@ -73,6 +78,7 @@ impl Audio {
                     music: None,
                     current: None,
                     cache: HashMap::new(),
+                    voices: HashMap::new(),
                     muted: false,
                     music_volume: 0.55,
                     sfx_volume: 0.9,
@@ -96,6 +102,7 @@ impl Audio {
             music: None,
             current: None,
             cache: HashMap::new(),
+            voices: HashMap::new(),
             muted: false,
             music_volume: 0.55,
             sfx_volume: 0.9,
@@ -159,24 +166,10 @@ impl Audio {
             return;
         }
         if let Some(c) = self.capture.as_mut() {
-            c.note(Event::Sfx(path.to_path_buf(), volume * self.sfx_volume, speed));
+            c.note(Event::Sfx(path.to_path_buf(), volume * self.sfx_volume, speed, None, None));
             return;
         }
-        let Some(sink) = self.sink.as_ref() else { return };
-        let clip = match self.cache.get(path) {
-            Some(c) => c.clone(),
-            None => match File::open(kumite_fs::resolve(path)).map_err(anyhow::Error::from).and_then(|f| Decoder::try_from(f).map_err(anyhow::Error::from)) {
-                Ok(d) => {
-                    let c = d.buffered();
-                    self.cache.insert(path.to_path_buf(), c.clone());
-                    c
-                }
-                Err(e) => {
-                    log::warn!("sound {}: {e:#}", path.display());
-                    return;
-                }
-            },
-        };
+        let (Some(clip), Some(sink)) = (self.clip(path), self.sink.as_ref()) else { return };
         let clip = clip.amplify(volume * self.sfx_volume).speed(speed);
         if self.mono {
             sink.mixer().add(ChannelVolume::new(clip, vec![1.0; 2]));
@@ -185,8 +178,73 @@ impl Audio {
         }
     }
 
+    /// A sound file decoded (kept).
+    fn clip(&mut self, path: &Path) -> Option<Clip> {
+        if let Some(c) = self.cache.get(path) {
+            return Some(c.clone());
+        }
+        match File::open(kumite_fs::resolve(path)).map_err(anyhow::Error::from).and_then(|f| Decoder::try_from(f).map_err(anyhow::Error::from)) {
+            Ok(d) => {
+                let c = d.buffered();
+                self.cache.insert(path.to_path_buf(), c.clone());
+                Some(c)
+            }
+            Err(e) => {
+                log::warn!("sound {}: {e:#}", path.display());
+                None
+            }
+        }
+    }
+
+    /// A fight's sound: Tekken 3's keys its voice off first (SePlay 0x800753BC; one without a file only that), a
+    /// looping one plays on from its loop point until then; the others as [`Audio::sfx`].
+    pub fn sound(&mut self, s: &Sound) {
+        let Some(v) = s.voice else { return self.sfx(&s.file, s.volume, s.speed) };
+        self.key_off(v);
+        if s.file.as_os_str().is_empty() || self.muted {
+            return;
+        }
+        if let Some(c) = self.capture.as_mut() {
+            c.note(Event::Sfx(s.file.clone(), s.volume * self.sfx_volume, s.speed, Some(v), s.loop_at));
+            self.voices.insert(v, None);
+            return;
+        }
+        let (Some(clip), Some(sink)) = (self.clip(&s.file), self.sink.as_ref()) else { return };
+        let player = Player::connect_new(sink.mixer());
+        let level = s.volume * self.sfx_volume;
+        let looped = s.loop_at.map(|at| clip.clone().skip_duration(std::time::Duration::from_secs_f64(at.max(0.0))).repeat_infinite());
+        // (the samples are mono: both speakers alike)
+        player.append(ChannelVolume::new(clip.amplify(level).speed(s.speed), vec![1.0; 2]));
+        if let Some(l) = looped {
+            player.append(ChannelVolume::new(l.amplify(level).speed(s.speed), vec![1.0; 2]));
+        }
+        self.voices.insert(v, Some(player));
+    }
+
+    /// Voice `v` keyed off (SsUtKeyOffV 0x80088938).
+    fn key_off(&mut self, v: u8) {
+        let Some(p) = self.voices.remove(&v) else { return };
+        if let Some(p) = p {
+            p.stop();
+        }
+        if let Some(c) = self.capture.as_mut() {
+            c.note(Event::Off(v));
+        }
+    }
+
+    /// The voices keyed off as 0x8004B688 does (never 2 and 3; a pause's, `pause`, not 1, 6 and 7 either): a pause, a
+    /// round, the fight's end.
+    pub fn voices_off(&mut self, pause: bool) {
+        let keep = |v: u8| v == 2 || v == 3 || (pause && matches!(v, 1 | 6 | 7));
+        let off: Vec<u8> = self.voices.keys().copied().filter(|&v| !keep(v)).collect();
+        for v in off {
+            self.key_off(v);
+        }
+    }
+
     pub fn toggle_mute(&mut self) -> bool {
         self.muted = !self.muted;
+        self.voices_off(false);
         if let Some(p) = &self.music {
             p.set_volume(self.level());
         }

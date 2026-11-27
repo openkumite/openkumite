@@ -819,7 +819,8 @@ fn sounds_of(a: &Assets, p1: &str, p2_human: bool) -> Vec<String> {
     let mut out = Vec::new();
     for pad in parse_script(p1).unwrap() {
         b.step([pad, Pad::default()]);
-        for snd in s.step(&b, &mut last, ["m071", "m071"], [0, 0]) {
+        // (a voice keyed off has no file)
+        for snd in s.step(&b, &mut last, ["m071", "m071"], [0, 0]).into_iter().filter(|s| !s.file.as_os_str().is_empty()) {
             assert!(snd.file.exists(), "{}", snd.file.display());
             out.push(snd.file.file_name().unwrap().to_string_lossy().to_string() + "@" + &snd.file.parent().unwrap().file_name().unwrap().to_string_lossy());
         }
@@ -1361,6 +1362,26 @@ fn win_poses_play_their_sound_scripts() {
     assert!(heard.iter().any(|(f, _)| (30..45).contains(f)), "the whoosh: {heard:?}");
 }
 
+/// Gun Jack's intro (script 386, PCSX-Redux): his motor hum (0xC010, voice 0) loops from frame 20 until the script's
+/// type-0 entry keys it off at frame 100, then the pistons (0x60C4) each cut the last on voice 8.
+#[test]
+fn gun_jacks_intro_hum_loops_until_keyed_off() {
+    let Some(a) = assets() else { return };
+    let sound = kumite_game::sound::SoundData::load(&a).unwrap();
+    let mut b = bout(&a, [207, MODEL_71], [None, None], true);
+    let mut last = kumite_game::sound::SoundState::default();
+    let mut heard = Vec::new();
+    for f in 0..200 {
+        b.step([Pad::default(); 2]);
+        heard.extend(sound.step(&b, &mut last, ["m207", "m071"], [17, 0]).into_iter().map(|s| (f, s)));
+    }
+    let hum: Vec<_> = heard.iter().filter(|(_, s)| s.file.ends_with("m207/16.wav")).collect();
+    assert!(hum.len() == 1 && hum[0].1.voice == Some(0) && hum[0].1.loop_at.is_some(), "one looping hum: {hum:?}");
+    let off = heard.iter().find(|(_, s)| s.file.as_os_str().is_empty() && s.voice == Some(0)).map(|h| h.0);
+    assert_eq!(off.map(|f| f - hum[0].0), Some(80), "keyed off 80 frames on: {heard:?}");
+    assert!(heard.iter().filter(|(_, s)| s.file.ends_with("sys/05.wav")).all(|(_, s)| s.voice == Some(8)), "{heard:?}");
+}
+
 /// No hit leaves the victim stuck: every damaging move of two characters lands on a walking opponent, who must
 /// get back to its own moves (getting up when it tries to) instead of looping in a reaction - transition 0x1A
 /// continues a self-cancelling reaction at the next frame rather than restarting it (0x80030424).
@@ -1863,7 +1884,7 @@ fn jump_and_landing_sounds() {
     let mut out = Vec::new();
     for (k, pad) in p1.into_iter().enumerate() {
         b.step([pad, p2.get(k).copied().unwrap_or_default()]);
-        for snd in s.step(&b, &mut last, ["m071", "m079"], [0, 1]) {
+        for snd in s.step(&b, &mut last, ["m071", "m079"], [0, 1]).into_iter().filter(|s| !s.file.as_os_str().is_empty()) {
             out.push(snd.file.file_name().unwrap().to_string_lossy().to_string() + "@" + &snd.file.parent().unwrap().file_name().unwrap().to_string_lossy());
         }
     }
@@ -1938,7 +1959,7 @@ fn extra_fighters_attacks_cry_random_voices_and_throws_play_their_scripts() {
         let mut out = Vec::new();
         for pad in parse_script(script).unwrap() {
             b.step([pad, Pad::default()]);
-            for x in s.step(&b, &mut state, ["m900", "m071"], [23, 0]) {
+            for x in s.step(&b, &mut state, ["m900", "m071"], [23, 0]).into_iter().filter(|x| !x.file.as_os_str().is_empty()) {
                 out.push(x.file.strip_prefix(a.root.join("audio/sfx")).unwrap().to_string_lossy().to_string());
             }
         }
@@ -2411,7 +2432,7 @@ fn fighters_groan_shout_and_scream() {
             b.game.fight.fighters[1].health = 2 * ONE;
         }
         b.step([pad, Pad::default()]);
-        let out = s.step(&b, &mut state, ["m071", "m071"], [0, 0]);
+        let out: Vec<_> = s.step(&b, &mut state, ["m071", "m071"], [0, 0]).into_iter().filter(|x| !x.file.as_os_str().is_empty()).collect();
         voices += out.iter().filter(|x| x.file.parent().unwrap().ends_with("m071")).count();
         if b.game.fight.fighters[1].health <= 0 && !ko {
             ko = true;
@@ -2440,7 +2461,7 @@ fn an_extra_fighter_swings_and_lands_with_its_own_sounds() {
     let mut heard = Vec::new();
     for pad in parse_script("f*40,n*4,f+2,n*40").unwrap() {
         b.step([pad, Pad::default()]);
-        for x in s.step(&b, &mut state, ["m935", "m071"], [row, 0]) {
+        for x in s.step(&b, &mut state, ["m935", "m071"], [row, 0]).into_iter().filter(|x| !x.file.as_os_str().is_empty()) {
             heard.push(x.file.strip_prefix(a.root.join("audio/sfx")).unwrap().display().to_string());
         }
     }
