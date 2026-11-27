@@ -1903,13 +1903,13 @@ fn draw_title(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, fra
     let full = crate::art::FULL;
     if frame < WHITE_HOLD {
         let level = (frame * 10).min(255) as u8;
-        Art::shade(painter, v, full, [Color32::from_gray(level); 4]);
+        Art::fade(painter, Color32::from_gray(level));
         return;
     }
     title_picture(painter, v, art, false);
     if frame < WHITE_OUT {
         let level = 255 - (frame - WHITE_HOLD) * 3;
-        Art::shade(painter, v, full, [additive(Color32::from_gray(level.min(255) as u8)); 4]);
+        Art::fade(painter, additive(Color32::from_gray(level.min(255) as u8)));
         return;
     }
     // the publisher's logo, copyright, PUSH START (48 frames on, 16 off)
