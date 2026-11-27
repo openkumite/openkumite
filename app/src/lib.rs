@@ -687,7 +687,8 @@ struct App {
     roll_music: Option<usize>,
     /// The character id of a lost 1P session under CONTINUE? (counted as played at GAME OVER).
     continue_player: Option<usize>,
-    /// Arcade cleared: the frames the last picture still holds before the ending (round state 9).
+    /// Arcade cleared or a Team Battle match over: the frames the last picture still holds before what follows (round
+    /// state 9, [`load_hold`]).
     ending_hold: u32,
     embu_data: Option<Arc<kumite_game::embu::EmbuData>>,
     embu: Option<EmbuRun>,
@@ -2309,7 +2310,7 @@ impl App {
         let p2_script = (!self.p2_script.is_empty() && fighting).then(|| self.p2_script.remove(0));
         self.tapped.clear();
         let select = self.select_held();
-        // the arcade cleared: the picture holds while the ending loads, then the movie
+        // the arcade cleared, a Team Battle match over: the picture holds while what follows loads
         if self.ending_hold > 0 {
             self.ending_hold -= 1;
             if self.ending_hold == 0 {
@@ -2685,9 +2686,9 @@ impl App {
                 self.replay_ended();
                 return;
             }
-            // the arcade cleared: round state 9 holds the last picture 164 vsyncs on the PS1 (the ending's load)
-            if fight.setup.as_ref().is_some_and(|s| s.mode == Mode::Arcade && s.level + 1 >= fight.ladder.len()) && matches!(fight.bout.phase, Phase::MatchOver { winner: Some(0) }) {
-                self.ending_hold = menu::ENDING_HOLD;
+            let hold = load_hold(fight.setup.as_ref(), fight.ladder.len(), fight.bout.phase);
+            if hold > 0 {
+                self.ending_hold = hold;
                 return;
             }
             self.save_replay();
@@ -7572,6 +7573,16 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
     }
 }
 
+/// Round state 9 on the PS1: the fight's last picture holds, still, while what follows loads (vsyncs from the result's
+/// end): the arcade cleared 164 (the ending), a Team Battle match 70 (the next member or the results, #347); 0: none.
+fn load_hold(setup: Option<&menu::FightSetup>, ladder: usize, phase: Phase) -> u32 {
+    match (setup, phase) {
+        (Some(s), Phase::MatchOver { winner: Some(0) }) if s.mode == Mode::Arcade && s.level + 1 >= ladder => menu::ENDING_HOLD,
+        (Some(s), Phase::MatchOver { .. }) if s.mode == Mode::TeamBattle => menu::TEAM_HOLD,
+        _ => 0,
+    }
+}
+
 /// The pause items shown: screens.json hud.pause.items' CANCEL, COMMAND and RESET (COMMAND only with a pack that has
 /// the command lists, format 20); Ball adds ball_items' RULES.
 fn pause_items(screens: &serde_json::Value) -> &'static [usize] {
@@ -9677,6 +9688,21 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Round state 9's hold: the arcade's last stage won (the ending), any Team Battle match over (the next member or
+    /// the results; #347: the win pose's last picture, not the next screen at once); none in VS or mid-ladder.
+    #[test]
+    fn the_last_picture_holds_while_what_follows_loads() {
+        use super::{load_hold, menu, Mode, Phase};
+        let setup = |mode, level| menu::FightSetup { mode, players: [(0, 0); 2], stage: 0, difficulty: 0, level, handicap: [100; 2], ball: None, partners: None };
+        let over = |w| Phase::MatchOver { winner: w };
+        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 9)), 10, over(Some(0))), menu::ENDING_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 3)), 10, over(Some(0))), 0);
+        assert_eq!(load_hold(Some(&setup(Mode::TeamBattle, 0)), 0, over(Some(0))), menu::TEAM_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::TeamBattle, 0)), 0, over(Some(1))), menu::TEAM_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::Versus, 0)), 0, over(Some(0))), 0);
+        assert_eq!(load_hold(None, 0, over(Some(0))), 0);
+    }
+
     /// Force's final stage at its start (eye (0, -3500, -7000), pitch 170): the floor from row 324, as the PS1 shows
     /// it (PCSX-Redux, vsync 1080).
     #[test]
