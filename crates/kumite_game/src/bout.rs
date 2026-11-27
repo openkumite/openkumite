@@ -903,6 +903,10 @@ impl Bout {
             }
         }
         let decided = self.decided();
+        if decided {
+            // the match's call as its result shows (0x8003E060 from the display's 0x8003D814), not after the pose
+            self.events.push(self.match_winner().map_or(Announcement::Draw, Announcement::Wins));
+        }
         if !decided && self.skipped {
             // START skipped the replay with rounds to go: no win pose
             return self.end_result(winner);
@@ -990,6 +994,11 @@ impl Bout {
         self.game.step_camera_only();
     }
 
+    /// The match's winner by the rounds won (None: a draw).
+    fn match_winner(&self) -> Option<usize> {
+        (self.wins[0] != self.wins[1]).then(|| usize::from(self.wins[1] > self.wins[0]))
+    }
+
     /// The result is over: the next round, or the match result.
     fn end_result(&mut self, _winner: Option<usize>) {
         // the human (the only one) has a round and the CPU is short of the match: the cut-scene
@@ -1004,10 +1013,8 @@ impl Bout {
             }
         }
         if self.decided() {
-            let winner = if self.wins[0] == self.wins[1] { None } else { Some(if self.wins[0] > self.wins[1] { 0 } else { 1 }) };
-            self.phase = Phase::MatchOver { winner };
+            self.phase = Phase::MatchOver { winner: self.match_winner() };
             self.phase_frame = 0;
-            self.events.push(winner.map_or(Announcement::Draw, Announcement::Wins));
         } else {
             self.next_round();
         }

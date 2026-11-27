@@ -454,6 +454,11 @@ impl SoundData {
         self.table(index)
     }
 
+    /// The match winner's own call (0x800757A8): code 0xC640 of its bank, 0xC64B for voice row 21 (True Ogre).
+    pub fn winner_voice(&self, own: &str, row: usize) -> Option<Sound> {
+        self.sound_of(if row == 21 { 0xC64B } else { 0xC640 }, own, row)
+    }
+
     /// The announcer outside the fight.
     pub fn call(&self, c: Call) -> Option<Sound> {
         let index = match c {

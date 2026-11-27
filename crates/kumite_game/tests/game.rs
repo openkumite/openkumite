@@ -709,6 +709,31 @@ fn a_cpu_winner_poses_in_team_battle_and_survival() {
     }
 }
 
+/// The match's call comes as its result shows (PS1, t3sim46: Survival's YOU WIN with the pose's first frame, not after
+/// it); in VS between two humans the winner calls its own name (0xC640 of its bank: Xiaoyu's after her time-up win).
+#[test]
+fn the_match_call_comes_as_the_result_shows() {
+    use kumite_game::bout::Announcement;
+    let Some(a) = assets() else { return };
+    let mut b = Bout::new(Game::load(&a, [MODEL_71, MODEL_79]).unwrap(), kumite_game::ai_data(&a).unwrap(), 1, false);
+    let mut called = None;
+    for _ in 0..60 * 60 {
+        if b.phase == Phase::Fight {
+            b.game.fight.fighters[1].health = 0;
+        }
+        b.step([Pad::default(); 2]);
+        if b.events.contains(&Announcement::Wins(0)) {
+            called = Some(b.phase);
+            break;
+        }
+    }
+    assert_eq!(called, Some(Phase::Result { winner: Some(0) }));
+    let s = kumite_game::sound::SoundData::load(&a).unwrap();
+    let file = s.winner_voice("m127", 7).map(|v| v.file);
+    assert_eq!(file.as_deref(), s.file(0xC640, "m127"));
+    assert!(file.is_some());
+}
+
 #[test]
 fn cpu_matches_are_deterministic() {
     let Some(a) = assets() else { return };
