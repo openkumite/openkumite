@@ -253,6 +253,9 @@ fn coop_boss_health(hp: i32, players: usize) -> i32 {
 
 /// The clock (60 s), its cap (99 s).
 pub const CLOCK: u32 = 3600;
+
+/// The final stage's places (P+0x0) of the player and its character at the start: VS's marks (PS1, #327).
+const FINAL_MARKS: [Vec3; 2] = [Vec3::new(-1000.0, 0.0, 0.0), Vec3::new(1000.0, 0.0, 0.0)];
 const CLOCK_CAP: u32 = 5940;
 
 /// Something for the app to do this frame.
@@ -633,7 +636,12 @@ impl ForceStage {
             }
             7 => self.tally(game),
             8 => {
-                // the final stage: its character in slot 0 from the start (the app has loaded it)
+                // the final stage: its character in slot 0 from the start (the app has loaded it); after the call's
+                // first step it leaves its intro for its stance (alias 3) on its mark, its frame 1 the next step (PS1,
+                // t3sim48: alike for every rand() draw)
+                let f = &mut game.fight.fighters[1];
+                f.play_alias(f.moveset.fixed.neutral);
+                (f.position, f.offset, f.frame) = (FINAL_MARKS[1], Vec3::ZERO, 0);
                 self.set_camera_mode(2);
                 self.boss_phase = true;
                 game.fight.ko_rule = kumite_sim::KoRule::Both;
@@ -1085,7 +1093,7 @@ impl ForceStage {
         self.set_boss(game, actor, boss);
         self.state = 8;
         let [p, b] = &mut game.fight.fighters;
-        (p.position, b.position) = (Vec3::new(-1000.0, 0.0, 0.0), Vec3::new(1000.0, 0.0, 0.0));
+        (p.position, b.position) = (FINAL_MARKS[0], FINAL_MARKS[1]);
         b.yaw = -std::f32::consts::FRAC_PI_2;
         b.root_yaw = b.yaw;
     }
