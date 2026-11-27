@@ -5832,6 +5832,8 @@ impl App {
         #[cfg(any(target_arch = "wasm32", target_os = "android"))]
         let multi = self.tag.is_some() || self.fight.as_ref().is_some_and(|f| f.bout.game.fight.coop.is_some()) || self.force_fight();
         let marks = self.target_marks();
+        // Tekken Force's stage (its floor's light)
+        let force_last = self.force_fight().then(|| self.force.as_ref().and_then(|r| r.stage.as_ref()));
         let Some(r) = self.renderer.as_mut() else { return };
         // (paused: the step itself)
         let k = if held { 1.0 } else { self.lag.as_secs_f32() / STEP.as_secs_f32() };
@@ -6026,6 +6028,10 @@ impl App {
                         None => Camera { roll: view.roll as f32 * std::f32::consts::TAU / 4096.0, ..Camera::new(eye, eye + forward, fov_y) },
                     },
                 };
+                // Tekken 3's PS1 projects about x 192 (OFX, read in PCSX-Redux) of the 368 it shows: 8 pixels right
+                if game.camera.data().director.is_none() {
+                    cam.x_shift = 8.0 / 184.0;
+                }
                 // the stage around what the camera frames: the fighters as shown (the replay's)
                 // (the ranking's: both at 0, 0x3B77B8)
                 let shown = |i: usize| match ranking {
@@ -6039,7 +6045,8 @@ impl App {
                     let xz = |p: glam::Vec3| [p.x.round() as i32, -p.z.round() as i32];
                     let depth = |x: i32, z: i32| ((glam::Vec3::new(x as f32, 0.0, -z as f32) / u - eye).dot(forward) * u).round() as i32;
                     let ogre = game.fight.fighters.iter().any(|f| f.character == Some(20));
-                    let (centre, shades) = kumite_game::floor::shades(l, [xz(shown(0)), xz(shown(1))], xz(eye * u), depth, ogre, fight.bout.decided());
+                    let force = force_last.map(|last| last.is_some_and(|st| st.index == st.data.final_index()));
+                    let (centre, shades) = kumite_game::floor::shades(l, [xz(shown(0)), xz(shown(1))], xz(eye * u), depth, ogre && force.is_none(), fight.bout.decided(), force);
                     kumite_render::FloorShades { centre: [centre[0] as f32 / u, -centre[1] as f32 / u], tile: l.tile as f32 / u, shades }
                 });
                 // Tekken Tag's fight: nothing of the arena's scenery stands before the fighters (its z guard)

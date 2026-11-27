@@ -774,7 +774,7 @@ fn floor_fades_as_the_ps1() {
     let Some(l) = a.stage(0).unwrap().floor_shading else { return eprintln!("skipping: the pack predates the floors' shading") };
     let want = [(1800, 7200, 12726, 96), (-3600, 9000, 14369, 85), (5400, 9000, 14630, 83), (3600, 1800, 7381, 124), (0, 3600, 9076, 117), (-3600, 5400, 10770, 108), (3600, 0, 5582, 128)];
     let depth = |x, z| want.iter().find(|w| (w.0, w.1) == (x, z)).map_or(0, |w| w.2);
-    let (centre, s) = kumite_game::floor::shades(&l, [[-62, 55], [833, 1]], [214, -5487], depth, false, false);
+    let (centre, s) = kumite_game::floor::shades(&l, [[-62, 55], [833, 1]], [214, -5487], depth, false, false, None);
     assert_eq!(centre, [0, 0]);
     for (x, z, _, c) in want {
         assert_eq!(s[((z / 1800 + 5) * 11 + x / 1800 + 5) as usize], c, "at {x}, {z}");

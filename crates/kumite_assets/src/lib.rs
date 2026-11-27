@@ -639,14 +639,15 @@ pub enum Motion {
 
 /// Tekken 3's floor colours (0x80048E58, 0x80049848): mode 0 fades the far floor by `shade` (the `fade` table at
 /// depths past the eye's distance to the fighters, scaled by `fade_depth`: before the match is decided, after), mode 1
-/// lights it from each fighter (`spot[0]` / d²), mode 2 from their midpoint (`spot[1]` / d², at most `cap`); with True
-/// Ogre in the fight mode 0 is mode 2 at most `true_ogre_cap`. The grid's `tile` in game units.
+/// lights it from each fighter (`spot[0]` / d²), mode 2 from their midpoint (`spot[1]` / d², at most `cap`), Tekken
+/// Force's 3 from the player and 4 from beside the eye (`spot[2]`, `spot[3]`); with True Ogre in the fight mode 0 is
+/// mode 2 at most `true_ogre_cap`. The grid's `tile` in game units.
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct FloorShading {
     pub mode: u32,
     pub shade: i32,
     pub tile: i32,
-    pub spot: [i32; 2],
+    pub spot: Vec<i32>,
     pub cap: i32,
     pub true_ogre_cap: i32,
     pub fade: Vec<u8>,

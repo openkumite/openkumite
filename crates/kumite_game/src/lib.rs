@@ -1317,7 +1317,8 @@ impl Game {
     }
 
     /// What the camera samples from both fighters (0x8006465C), in game space (Y down, Z = −glTF Z):
-    /// the root on the floor, chest height − 290, and the side each is on (its pelvis on the screen, +0x1278).
+    /// the root (or its place, as below) on the floor, chest height − 290, and the side each is on (its pelvis on the
+    /// screen, +0x1278).
     /// Ball 2 ON 2 (OpenKumite's own): a side's fighter who is out gives its place to its partner still in play
     /// (actor 3 beside 1P, 2 beside 2P), its side under the last view.
     pub fn camera_samples(&self) -> [Sample; 2] {
@@ -1334,8 +1335,12 @@ impl Game {
             }
             let (pose, place) = self.pose(i);
             let chest = place.transform_point3(pose[self.bodies[i].chest].w_axis.truncate()) * UNITS;
-            let root = self.fight.fighters[i].root();
-            Sample { x: root.x.round() as i64, y: -(chest.y.round() as i64) - 290, z: -(root.z.round() as i64), side: self.fight.fighters[i].side as i64 }
+            let f = &self.fight.fighters[i];
+            // Tekken 3's: the root in a throw (either's +0x74) or on a move with flags bit 29, else the place (+0x0);
+            // Tekken Tag's sampler picks its own
+            let throw = self.fight.fighters.iter().take(2).any(|f| f.chain != 0);
+            let root = if self.camera.data().director.is_some() || throw || f.current_move(&self.fight.data).flags24.raw & 1 << 29 != 0 { f.root() } else { f.position };
+            Sample { x: root.x.round() as i64, y: -(chest.y.round() as i64) - 290, z: -(root.z.round() as i64), side: f.side as i64 }
         })
     }
 

@@ -55,7 +55,8 @@ struct Globals {
     grass: array<vec4<f32>, 289>,
     // OpenKumite's enhancements: x 1 soft shadows
     enhance: vec4<f32>,
-    // Tekken 3's floor colours: the grid's centre (x, z, metres), its tile, w = 1 when on; the colours (128 = 1), a row
+    // Tekken 3's floor colours: the grid's centre (x, z, metres), its tile, w the PS1's line in pixels (0: off); the
+    // colours (128 = 1), a row
     // of 11 from the least x, the rows from the greatest z
     floor_grid: vec4<f32>,
     floor_shades: array<vec4<f32>, 31>,
@@ -495,10 +496,13 @@ fn static_texel(i: VsOut) -> vec4<f32> {
     let t = texel(i.uv);
     var rgb = t.rgb * i.color.rgb * floor_light(i.world);
     // Tekken 3's floor as the PS1's GPU draws it: the texel's bytes times its colour (an integer) >> 7, at most 255,
-    // dithered to 5 bits by its ordered matrix (-4..3): 4 less on average
-    if (g.floor_grid.w > 0.5) {
+    // dithered to 5 bits by its ordered matrix on its own pixels (480 lines, 368 across the 4:3 picture)
+    if (g.floor_grid.w > 0.0) {
         let r8 = min(floor(round(linear_to_srgb(rgb) * 255.0) * floor(i.shade * 128.0 + 0.001) / 128.0), vec3(255.0));
-        rgb = srgb_to_linear(clamp(r8 - 4.0, vec3(0.0), vec3(248.0)) / 255.0);
+        var dither = array<f32, 16>(-4.0, 0.0, -3.0, 1.0, 2.0, -2.0, 3.0, -1.0, -3.0, 1.0, -4.0, 0.0, 3.0, -1.0, 2.0, -2.0);
+        let q = vec2<u32>(i.clip.xy / (g.floor_grid.w * vec2(640.0 / 368.0, 1.0)));
+        let d = dither[(q.y & 3u) * 4u + (q.x & 3u)];
+        rgb = srgb_to_linear(floor(clamp(r8 + d, vec3(0.0), vec3(255.0)) / 8.0) * 8.0 / 255.0);
     }
     return vec4(mix(rgb, g.fog_colour.rgb, i.fog), t.a);
 }
