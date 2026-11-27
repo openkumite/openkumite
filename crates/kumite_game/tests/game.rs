@@ -688,7 +688,9 @@ fn the_cpu_beats_an_idle_player_and_poses() {
 
 /// #347: every fighter's every win pose (□ △ × ○ held) plays on its own motion to its last frame, never into its stance,
 /// and the result ends there, as the PS1's 0x8003D30C (+0x58 >= the motion's length - 1; PCSX-Redux, Heihachi's
-/// motion_137 and motion_136); the Tekken 2 fighters too.
+/// motion_137 and motion_136); the Tekken 2 fighters too. The loser never holds it, even with a round won before
+/// (+0x48 is the win pose's variant, 0 for the loser; the remake's round_flow `_win_wait`, PCSX-Redux): rounds 0-1, 1-1
+/// and 1-2, the last two on time, so the winner of rounds 2 and 3 poses beside a standing loser with a round.
 #[test]
 fn every_win_pose_holds_to_its_last_frame_and_ends_the_result() {
     let Some(a) = assets() else { return };
@@ -697,25 +699,73 @@ fn every_win_pose_holds_to_its_last_frame_and_ends_the_result() {
     for m in index.models.iter().filter(|m| files.insert(m.moveset_file.clone())) {
         for pick in 0..4 {
             let other = if m.model_record == MODEL_71 { MODEL_79 } else { MODEL_71 };
+            let mut b = Bout::new(Game::load(&a, [other, m.model_record]).unwrap(), kumite_game::ai_data(&a).unwrap(), 2, false);
+            let pad = Pad { buttons: 1 << pick, ..Pad::default() };
+            let (mut pose, mut posed, mut left) = (None, 0, 0);
+            for _ in 0..60 * 60 * 6 {
+                if b.finished() {
+                    break;
+                }
+                if b.phase == Phase::Fight {
+                    // fighter 1 (the one under test) takes round 1 by a K.O., then loses round 2 and wins round 3 on
+                    // time (the loser stands, on its stance's loop)
+                    let fs = &mut b.game.fight.fighters;
+                    match b.wins {
+                        [0, 0] => fs[0].health = 0,
+                        [0, 1] => fs[1].health = 1,
+                        _ => fs[0].health = 1,
+                    }
+                }
+                let before = b.phase;
+                b.step([pad; 2]);
+                let Phase::Result { winner: Some(w) } = before else { continue };
+                let f = &b.game.fight.fighters[w];
+                let what = format!("model {} pick {pick} wins {:?}: {:?} at {:?}", m.model_record, b.wins, f.animation(&b.game.fight.data), b.phase);
+                if let Phase::Result { .. } = b.phase {
+                    assert_eq!(*pose.get_or_insert(f.current), f.current, "{what}: left the pose");
+                    left = f.current_move(&b.game.fight.data).frames - f.frame - 1;
+                } else {
+                    // (a next round has placed the fighters on this step already: the pose's frame one step before)
+                    assert_eq!(left, 1, "{what}: the result ends on the pose's last frame");
+                    pose = None;
+                    posed += 1;
+                }
+            }
+            assert!(b.finished(), "model {}: no result", m.model_record);
+            assert_eq!(posed, 3, "model {}: a pose per round", m.model_record);
+        }
+    }
+}
+
+/// #347: START during every fighter's every win pose ends the result on that step (round state 6 -> 9 at once,
+/// 0x8003D3C8; the remake's round_flow `_win_wait`), on the pose's own frame, and keys the voices off; nothing runs on.
+#[test]
+fn start_ends_every_win_pose_at_once() {
+    let Some(a) = assets() else { return };
+    let index: MovesetIndex = kumite_sim::data::load(&a.root.join("gamedata/movesets/index.json")).unwrap();
+    let mut files = std::collections::BTreeSet::new();
+    let start = Pad { start: true, ..Pad::default() };
+    for m in index.models.iter().filter(|m| files.insert(m.moveset_file.clone())) {
+        for pick in 0..4 {
+            let other = if m.model_record == MODEL_71 { MODEL_79 } else { MODEL_71 };
             let mut b = Bout::new(Game::load(&a, [m.model_record, other]).unwrap(), kumite_game::ai_data(&a).unwrap(), 1, false);
             let pad = Pad { buttons: 1 << pick, ..Pad::default() };
-            let mut pose = None;
             for _ in 0..60 * 60 {
                 if b.phase == Phase::Fight {
                     b.game.fight.fighters[1].health = 0;
                 }
-                b.step([pad, Pad::default()]);
-                let f = &b.game.fight.fighters[0];
-                let what = format!("model {} pick {pick}: {:?} at {:?}", m.model_record, f.animation(&b.game.fight.data), b.phase);
-                match b.phase {
-                    Phase::Result { .. } => assert_eq!(*pose.get_or_insert(f.current), f.current, "{what}: left the pose"),
-                    Phase::MatchOver { .. } => {
-                        assert_eq!(pose, Some(f.current), "{what}: left the pose");
-                        assert_eq!(f.frame + 1, f.current_move(&b.game.fight.data).frames, "{what}: the result ends on the last frame");
-                        break;
-                    }
-                    _ => {}
+                if matches!(b.phase, Phase::Result { .. }) && b.phase_frame == 20 {
+                    let pose = b.game.fight.fighters[0].current;
+                    b.step([start, pad]);
+                    let f = &b.game.fight.fighters[0];
+                    let what = format!("model {} pick {pick}: {:?}", m.model_record, f.animation(&b.game.fight.data));
+                    assert!(b.finished(), "{what}: START did not end the result");
+                    assert!(b.start_ended, "{what}: the voices go on");
+                    assert_eq!(f.current, pose, "{what}: left the pose");
+                    assert!(f.frame + 1 < f.current_move(&b.game.fight.data).frames, "{what}: the pose ran on");
+                    break;
                 }
+                b.step([pad, Pad::default()]);
             }
             assert!(b.finished(), "model {}: no result", m.model_record);
         }

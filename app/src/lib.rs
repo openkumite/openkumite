@@ -7617,11 +7617,13 @@ fn sky_row(p: &kumite_assets::SkyPicture, pitch: f32) -> f32 {
 }
 
 /// Round state 9 on the PS1: the fight's last picture holds, still, while what follows loads (vsyncs from the result's
-/// end): the arcade cleared 164 (the ending), a Team Battle match 70 (the next member or the results, #347); 0: none.
+/// end): the arcade cleared 164 (the ending), a Team Battle match 70 (the next member or the results, #347), the next
+/// Survival, Arcade or Time Attack opponent as long (the same VS screen's load); 0: none.
 fn load_hold(setup: Option<&menu::FightSetup>, ladder: usize, phase: Phase) -> u32 {
     match (setup, phase) {
         (Some(s), Phase::MatchOver { winner: Some(0) }) if s.mode == Mode::Arcade && s.level + 1 >= ladder => menu::ENDING_HOLD,
-        (Some(s), Phase::MatchOver { .. }) if s.mode == Mode::TeamBattle => menu::TEAM_HOLD,
+        (Some(s), Phase::MatchOver { .. }) if s.mode == Mode::TeamBattle => menu::LOAD_HOLD,
+        (Some(s), Phase::MatchOver { winner: Some(0) }) if matches!(s.mode, Mode::Arcade | Mode::TimeAttack | Mode::Survival) => menu::LOAD_HOLD,
         _ => 0,
     }
 }
@@ -9765,16 +9767,19 @@ mod tests {
     }
 
     /// Round state 9's hold: the arcade's last stage won (the ending), any Team Battle match over (the next member or
-    /// the results; #347: the win pose's last picture, not the next screen at once); none in VS or mid-ladder.
+    /// the results; #347: the win pose's last picture, not the next screen at once), the next Survival or ladder
+    /// opponent; none in VS or after a ladder lost.
     #[test]
     fn the_last_picture_holds_while_what_follows_loads() {
         use super::{load_hold, menu, Mode, Phase};
         let setup = |mode, level| menu::FightSetup { mode, players: [(0, 0); 2], stage: 0, difficulty: 0, level, handicap: [100; 2], ball: None, partners: None };
         let over = |w| Phase::MatchOver { winner: w };
         assert_eq!(load_hold(Some(&setup(Mode::Arcade, 9)), 10, over(Some(0))), menu::ENDING_HOLD);
-        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 3)), 10, over(Some(0))), 0);
-        assert_eq!(load_hold(Some(&setup(Mode::TeamBattle, 0)), 0, over(Some(0))), menu::TEAM_HOLD);
-        assert_eq!(load_hold(Some(&setup(Mode::TeamBattle, 0)), 0, over(Some(1))), menu::TEAM_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 3)), 10, over(Some(0))), menu::LOAD_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 3)), 10, over(Some(1))), 0);
+        assert_eq!(load_hold(Some(&setup(Mode::Survival, 0)), 0, over(Some(0))), menu::LOAD_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::TeamBattle, 0)), 0, over(Some(0))), menu::LOAD_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::TeamBattle, 0)), 0, over(Some(1))), menu::LOAD_HOLD);
         assert_eq!(load_hold(Some(&setup(Mode::Versus, 0)), 0, over(Some(0))), 0);
         assert_eq!(load_hold(None, 0, over(Some(0))), 0);
     }

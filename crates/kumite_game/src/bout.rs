@@ -230,8 +230,8 @@ struct ReplayRun {
 /// How the result phase ends (0x8003D27C).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ResultKind {
-    /// The winner's motion ends it (and the loser's, with a round won: whose motions have ended).
-    Pose(usize, [bool; 2]),
+    /// The winner's motion ends it.
+    Pose(usize),
     /// The loser shot: 60 frames.
     Loser,
     /// No winner: 75 frames.
@@ -789,20 +789,16 @@ impl Bout {
                 let cap = self.game.rounds.as_ref().map_or(cap, |r| r.pose_frames);
                 let done = match self.result {
                     // Tekken Tag (0x36E888): as soon as the winner's or its partner's pose ends
-                    ResultKind::Pose(w, _) if self.game.rounds.is_some() => (0..2).filter(|&i| i == w || self.game.visible[i]).any(|i| {
+                    ResultKind::Pose(w) if self.game.rounds.is_some() => (0..2).filter(|&i| i == w || self.game.visible[i]).any(|i| {
                         let f = &self.game.fight.fighters[i];
                         f.frame + 1 >= f.current_move(&self.game.fight.data).frames
                     }),
-                    // Tekken 3 (0x8003D30C): each fighter with a round won (+0x48) once its motion has reached its last
-                    // frame (+0x58 >= the length - 1, latched), one without at once
-                    ResultKind::Pose(w, ended) => {
-                        let data = &self.game.fight.data;
-                        let ended = std::array::from_fn(|i| {
-                            let f = &self.game.fight.fighters[i];
-                            ended[i] || self.wins[i] == 0 || f.frame + 1 >= f.current_move(data).frames
-                        });
-                        self.result = ResultKind::Pose(w, ended);
-                        ended == [true; 2]
+                    // Tekken 3 (0x8003D30C): once the winner's motion has reached its last frame (+0x58 >= the length - 1);
+                    // the loser's +0x48 (the win pose's variant, cleared each round) is 0, so it never waits on the loser
+                    // (PCSX-Redux: Paul's round 2 pose against Xiaoyu with a round won ends at its last frame)
+                    ResultKind::Pose(w) => {
+                        let f = &self.game.fight.fighters[w];
+                        f.frame + 1 >= f.current_move(&self.game.fight.data).frames
                     }
                     // Ball's loser shot lasts 240 frames
                     ResultKind::Loser => self.phase_frame >= if self.game.ball.is_some() { 240 } else { loser_frames },
@@ -1015,7 +1011,7 @@ impl Bout {
                 let cam = EndCam::winner(&data, &p, b_variant, turn, &mut rnd);
                 self.game.camera_mode = CameraMode::End { cam, who: w };
                 self.game.visible = if partner { [true; 2] } else { [w == 0, w == 1] };
-                self.result = ResultKind::Pose(w, [false; 2]);
+                self.result = ResultKind::Pose(w);
             }
             Some(w) => {
                 // a CPU won the match: the loser shot (overhead when knocked out, else the orbit)
