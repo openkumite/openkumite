@@ -66,8 +66,15 @@ its `.bin` files) at once, or the one archive. An `.iso` keeps only each sector'
 from it, without the movies and the streamed (XA) music, and the Game data screen says so; a full image converted again
 adds them. The fingerprint (online play) is the same either way: it covers no music or movies.
 
-The Tekken 3 conversion takes about a minute and 1.4 GB; Tekken 2 adds about 1.7 GB, Counter-Strike 0.1 GB. Packs can
-be added, converted again or removed later. In the game data's folder:
+The Tekken 3 conversion takes about a minute and 1.7 GB; Tekken 2 adds about 1.7 GB, Counter-Strike 0.1 GB. Packs can
+be added, converted again or removed later.
+
+To save room, a game's page lets you skip what the game plays without, each with the room it saves: the ending
+movies (an arcade clear goes straight to the staff roll; Theater greys them), the opening movie (the title comes at
+once), the other movies (Tekken 3's prologue, Tekken Tag's arcade movie) and the music (fights play silent). All of
+them left out, Tekken 3 takes 0.7 GB, Tekken 2 0.8 GB with its fighters installed and Tekken Tag 0.6 GB. On a
+converted game, skipping a part removes it at once; adding it back needs the disc image (CONVERT AGAIN). The
+fingerprint is the same: online play does not mind. In the game data's folder:
 
 ```text
 manifest.json, characters/, stages/, ...   the Tekken 3 pack (as kumite_converter wrote it)
