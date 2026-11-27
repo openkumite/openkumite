@@ -653,8 +653,9 @@ impl GridSelect {
     }
 
     /// Team Battle's select (screen B, its game mode; init 0x80053448): P1 sets the team size (its default at first),
-    /// then picks members in order; P2 can join with START. The mode's colours and title.
-    pub fn team(roster: &Roster, difficulty: usize) -> Self {
+    /// then picks members in order; P2 can join with START. The mode's colours and title. `player` sets the size, the
+    /// other side can join (the result screen's START joins its pad and keeps both sizes, 0x800EF4AC).
+    pub fn team(roster: &Roster, difficulty: usize, player: usize, sizes: Option<[usize; 2]>) -> Self {
         let mut data = roster.grid.clone();
         if let Some(&(a, b)) = data.mode_colours.get(data.mode_rows[0]) {
             (data.colour_a, data.colour_b) = (a, b);
@@ -662,11 +663,13 @@ impl GridSelect {
         if let Some(t) = data.titles.get(data.mode_rows[0]) {
             data.title = t.clone();
         }
-        let size = roster.modes.team_size[2];
+        let [min, max, size] = roster.modes.team_size;
+        let [a, b] = sizes.unwrap_or([size; 2]).map(|n| n.max(min).min(max));
         let mut g = Self::new(data, difficulty, VsRecord::default());
-        g.players[0].state = State::Size;
-        g.players[1].state = State::NotJoined;
-        g.team = Some([(size, Vec::new(), 0), (size, Vec::new(), 0)]);
+        let player = player.min(1);
+        g.players[player].state = State::Size;
+        g.players[1 - player].state = State::NotJoined;
+        g.team = Some([(a, Vec::new(), 0), (b, Vec::new(), 0)]);
         g
     }
 
@@ -1260,7 +1263,7 @@ mod tests {
     #[test]
     fn team_size_repeats_while_held() {
         let Some(r) = roster() else { return };
-        let mut g = GridSelect::team(&r, 1);
+        let mut g = GridSelect::team(&r, 1, 0, None);
         g.team.as_mut().unwrap()[0].0 = 1;
         g.key(0, Key::Right, &r);
         let mut sizes = Vec::new();
@@ -1278,7 +1281,7 @@ mod tests {
     fn random_team_members_wear_the_sides_costume() {
         let Some(r) = roster() else { return };
         let run = |keys: &[(usize, Key)]| {
-            let mut g = GridSelect::team(&r, 1);
+            let mut g = GridSelect::team(&r, 1, 0, None);
             for &(k, key) in keys {
                 g.key(k, key, &r);
             }
