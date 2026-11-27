@@ -406,6 +406,19 @@ fn a_reaction_turns_from_its_commit_step_as_on_the_ps1() {
 /// Paul runs into Law: the push (0x80046D34) shares the spheres' deepest overlap by how far each moved since the last
 /// step, each backing off along its basis, half a step, the spheres on the slots in the PS1's integers as this step's
 /// pose puts them: Paul's root is the PS1's (the sphere push swung z 124 off, the converted joints still 9 and x 51).
+/// Law's d+1 counters Panda's d/b+3 (t3sim50 c116): its segment's end just touches the top of her chest sphere
+/// (zone 8, 130 %); the PS1's box test (0x8004770C, integer halves) passes it over, so it strikes zone 9 (100 %):
+/// 12 * 12 / 10 = 14, not 18.
+#[test]
+fn a_strike_grazing_a_spheres_top_passes_it_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [163, 83], None, 1, "n*157,f*40,n+1+2*2,n*39,d/b+4*2,n*40,f+3*2,n*174", "n*158,b*40,n+2*2,n*29,d+1*2,n*226", 300);
+    for (row, want) in [(779, (-245, 140)), (780, (-212, 126)), (790, (-798, 126))] {
+        let r = at(&t, 571, row, 0);
+        assert_eq!((r.0, r.5 >> 16), want, "PS1 row {row}");
+    }
+}
+
 #[test]
 fn paul_runs_into_law_and_is_pushed_as_on_the_ps1() {
     let Some(a) = assets() else { return };

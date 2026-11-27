@@ -2884,6 +2884,16 @@ fn laser_sweep(head: Vec3, yaw: f32, k: i32) -> (Vec3, Vec3) {
 
 /// Segment against a hurt sphere, the game's way (0x8004770C): a height-band clip, then a horizontal
 /// distance test, so each sphere acts like a short vertical cylinder.
+/// Tekken 3's box test before the segment's (0x8004770C): on each axis the sphere's centre within the segment's
+/// half length plus the radius of its middle, both in integers halved toward zero (so a segment just touching the
+/// sphere's top can miss).
+fn in_box(a: Vec3, b: Vec3, s: &Sphere) -> bool {
+    (0..3).all(|k| {
+        let (p, q, c) = (a[k].round() as i32, b[k].round() as i32, s.centre[k].round() as i32);
+        (c - (p + q) / 2).abs() <= (q - p).abs() / 2 + s.radius as i32
+    })
+}
+
 fn segment_hits(a: Vec3, b: Vec3, s: &Sphere) -> bool {
     let (lo, hi) = (s.centre.y - s.radius, s.centre.y + s.radius);
     let (mut t0, mut t1) = (0.0f32, 1.0f32);
@@ -4444,7 +4454,8 @@ impl Fight {
                 continue;
             }
             // segment by segment, each against spheres 0..13 in order: the first contact decides the zone (0x80047CBC)
-            let contact = segs.iter().find_map(|(p, q)| bodies[1 - a].hurt.iter().find(|s| segment_hits(*p, *q, s)).map(|s| (s, *p, *q)));
+            // (Tekken 3: the PS1's box test first)
+            let contact = segs.iter().find_map(|(p, q)| bodies[1 - a].hurt.iter().find(|s| (gd.tag_juggles || in_box(*p, *q, s)) && segment_hits(*p, *q, s)).map(|s| (s, *p, *q)));
             if let Some((s, p, q)) = contact {
                 // the strike's closest point to the sphere centre, pulled onto the sphere surface
                 let d = q - p;
