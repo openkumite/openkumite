@@ -491,4 +491,33 @@ mod tests {
         assert!(state.playable() && !state.has_packs() && !root.join(EXTRAS).exists());
         assert_eq!(kumite_assets::Assets::new(&root).unwrap().fingerprint(), "faec270495bc58ba434d29b74cabef14");
     }
+
+    /// The games converted slim (every optional part left out): installed and playable, Tekken 2's the same game data
+    /// as its full pack's (online play compares it), none of the parts written; left in OK_PACKS_ROOT for headless runs
+    /// (`--assets`): `OK_T3_BIN=... OK_T2_BIN=... [TTT_DISC=...] OK_PACKS_ROOT=<an empty folder> cargo test --release
+    /// -p openkumite -- --ignored slim_packs`.
+    #[test]
+    #[ignore]
+    fn slim_packs_convert_install_and_play() {
+        let var = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
+        let root = PathBuf::from(var("OK_PACKS_ROOT"));
+        let log = |l: &str| println!("{l}");
+        let all = |p: Part| p.optional().iter().map(|o| o.0.to_string()).collect::<Vec<_>>();
+        let convert = |part: Part, from: String, skip: Vec<String>| run(&root, &Job::Convert(part, from.into(), skip), &log, &AtomicBool::new(false)).unwrap();
+        convert(Part::T3, var("OK_T3_BIN"), all(Part::T3));
+        convert(Part::T2, var("OK_T2_BIN"), Vec::new());
+        assert!(activate(&root).installed);
+        let full = kumite_assets::Assets::new(&root).unwrap().fingerprint();
+        convert(Part::T2, var("OK_T2_BIN"), all(Part::T2));
+        let state = activate(&root);
+        assert!(state.playable() && state.installed && !state.get(Part::T3).is_some_and(|m| Part::T3.outdated(m)));
+        assert_eq!(kumite_assets::Assets::new(&root).unwrap().fingerprint(), full);
+        assert!(["video", "audio/music", "packs/t2/assets"].iter().all(|d| !root.join(d).exists()));
+        assert_eq!(state.get(Part::T2).unwrap()["skipped"], serde_json::json!(all(Part::T2)));
+        if let Ok(disc) = std::env::var("TTT_DISC") {
+            convert(Part::Ttt, disc, all(Part::Ttt));
+            let state = State::of(&root, Game::Ttt);
+            assert!(state.playable() && state.ttt_installed && !game_root(&root, Game::Ttt).join("video").exists());
+        }
+    }
 }

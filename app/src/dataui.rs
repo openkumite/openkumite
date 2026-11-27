@@ -222,7 +222,14 @@ impl Jobs {
         let parts = Part::ALL.map(|p| {
             let m = self.state.get(p);
             let k = Part::ALL.iter().position(|q| *q == p).unwrap_or(0);
-            PartView { converted: m.is_some(), size: self.sizes[k], note: m.and_then(crate::gamedata::missing_note), outdated: m.is_some_and(|m| p.outdated(m)), skipped: m.map(crate::gamedata::skipped).unwrap_or_default(), skip: self.skip[k].clone() }
+            PartView {
+                converted: m.is_some(),
+                size: self.sizes[k],
+                note: m.and_then(crate::gamedata::missing_note),
+                outdated: m.is_some_and(|m| p.outdated(m)),
+                skipped: m.map(crate::gamedata::skipped).unwrap_or_default(),
+                skip: self.skip[k].clone(),
+            }
         });
         let job = self.running.as_ref().map(|r| JobView {
             kind: kind(&r.job),

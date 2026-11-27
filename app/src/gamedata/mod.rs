@@ -967,7 +967,18 @@ impl Screen {
                 }
                 Page::Remove(p, Some(k)) => {
                     let (_, label, size) = optional(p).get(k).copied().unwrap_or_default();
-                    say(&painter, &mut y, &format!("Removes {}'s {} (about {} MB) from this device. The game plays on without; to add back, CONVERT AGAIN from the disc image.", title_case(part_title(p)), label.to_lowercase(), size / 1_000_000), small + 2.0, WHITE);
+                    say(
+                        &painter,
+                        &mut y,
+                        &format!(
+                            "Removes {}'s {} (about {} MB) from this device. The game plays on without; to add back, CONVERT AGAIN from the disc image.",
+                            title_case(part_title(p)),
+                            label.to_lowercase(),
+                            size / 1_000_000
+                        ),
+                        small + 2.0,
+                        WHITE,
+                    );
                 }
                 Page::Remove(p, None) => {
                     let pv = &status.parts[part_index(p)];
