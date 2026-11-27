@@ -45,6 +45,18 @@ pub struct HudInfo {
     pub ttt: Option<std::sync::Arc<crate::ttt::Data>>,
 }
 
+/// The timer: two 16x46 digits of the clock's seconds, the infinity sign (glyphs 10 and 11) when it is off (Ball).
+pub fn timer(d: &HudData, painter: &egui::Painter, v: &View, art: &Art, clock: u32) {
+    let secs = clock.div_ceil(60).min(99) as usize;
+    let digits = if clock > 100 * 60 { d.timer_infinity } else { [secs / 10, secs % 10] };
+    for (k, dg) in digits.into_iter().enumerate() {
+        if let Some(&[u, vv]) = d.timer_uv.get(dg) {
+            let t = Tex { page: d.timer_page, bpp: 4, u, v: vv, clut: Some(d.timer_clut) };
+            art.sprite(painter, v, &["exe"], &t, d.timer_size[0], d.timer_size[1], d.timer_x[k], d.timer_y, Color32::WHITE);
+        }
+    }
+}
+
 /// Ball 2 ON 2: how far below its side's bar and name a partner's are (a bar and a name plate, 368x480 px).
 const PARTNER_DY: f32 = 48.0;
 
@@ -139,6 +151,8 @@ pub struct HudData {
     pub push: Vec<String>,
     push_half: [f32; 2],
     push_colour: u32,
+    /// The blink's other text (FREE PLAY), its half width and the frame bits it shows in (0x8004EF20).
+    free_play: (String, f32, u32),
     stage_colour: u32,
     final_from: u32,
     /// "STAGE%2d" and " FINAL" (record 5).
@@ -209,6 +223,16 @@ struct BallLayout {
 }
 
 impl HudData {
+    /// Side `i`'s blink text at `frame` and its half width ([`Hud::push`]).
+    fn push_text(&self, i: usize, frame: u32) -> Option<(&str, f32)> {
+        let (t, half, bits) = &self.free_play;
+        match frame {
+            f if f & 0x30 == 0 => None,
+            f if f & bits != 0 && !t.is_empty() => Some((t, *half)),
+            _ => Some((self.push.get(i)?, self.push_half[i])),
+        }
+    }
+
     /// The under-bar texts' places (x per side, y) and Force's SCORE / HI-SCORE colours there.
     pub fn under_place(&self) -> ([f32; 2], f32, [u32; 2]) {
         (self.under_x, self.under_y, self.score_colours)
@@ -277,6 +301,11 @@ impl HudData {
                 v => [n(v); 2], // (one for both players before)
             },
             push_colour: h["under_bar"]["push"]["colour"].as_u64().unwrap_or(0) as u32,
+            free_play: {
+                let f = &h["under_bar"]["push"]["free_play"];
+                let bits = f["while"].as_str().and_then(|w| u32::from_str_radix(w.trim_start_matches("frame & 0x"), 16).ok()).unwrap_or(0);
+                (f["text"].as_str().unwrap_or_default().to_string(), n(&f["half_width"]), bits)
+            },
             stage_colour: h["under_bar"]["stage"]["colour"].as_u64().unwrap_or(0) as u32,
             final_from: h["under_bar"]["stage"]["final_from"].as_u64().unwrap_or(u64::MAX) as u32,
             stage_format: h["under_bar"]["stage"]["format"].as_str().unwrap_or_default().to_string(),
@@ -456,6 +485,14 @@ impl Hud {
         out
     }
 
+    /// PUSH Pn START over side `i`'s bar (0x8004EEE8): shown while frame & 0x30, FREE PLAY instead in the frames of
+    /// the credit bit (with a pad in).
+    fn push(&self, painter: &egui::Painter, v: &View, art: &Art, d: &HudData, i: usize) {
+        if let Some((t, half)) = d.push_text(i, self.state.frame) {
+            art.text(painter, v, 0, d.push_colour, d.under_centre[i] - half, d.under_y, t, Color32::WHITE);
+        }
+    }
+
     /// STAGE n (from the final stage STAGE while frame & 0x20, else FINAL: 0x800B1A54-0x800B1A74) and the run's time
     /// mm'ss"cc (record 5 0x800B19B0).
     fn stage_time(&self, painter: &egui::Painter, v: &View, art: &Art, stage: u32, x: f32, y: f32) {
@@ -593,16 +630,7 @@ impl Hud {
                     name_plate(d, &painter, &v, art, model, costume, d.name_x[i], d.name_y + dy, i == 1);
                 }
             }
-            // timer: two 16x46 digits, infinity when the clock is off
-            let secs = bout.game.fight.clock.div_ceil(60).min(99) as usize;
-            // the clock off (Ball): the infinity sign (glyphs 10 and 11)
-            let digits = if bout.game.fight.clock > 100 * 60 { d.timer_infinity } else { [secs / 10, secs % 10] };
-            for (k, dg) in digits.into_iter().enumerate() {
-                if let Some(&[u, vv]) = d.timer_uv.get(dg) {
-                    let t = Tex { page: d.timer_page, bpp: 4, u, v: vv, clut: Some(d.timer_clut) };
-                    art.sprite(&painter, &v, src, &t, d.timer_size[0], d.timer_size[1], d.timer_x[k], d.timer_y, Color32::WHITE);
-                }
-            }
+            timer(d, &painter, &v, art, bout.game.fight.clock);
             // Team Battle: a person icon per member instead of the gems (record 5 0x800B1764): green still to
             // fight, purple with a red slash defeated, the one who just lost blinking
             if let Some(team) = &info.team {
@@ -644,13 +672,7 @@ impl Hud {
                 let (y, x) = (d.under_y, d.under_x[i]);
                 match under {
                     Under::None => {}
-                    Under::Push => {
-                        if self.state.frame & 0x30 != 0 {
-                            if let Some(t) = d.push.get(i) {
-                                art.text(&painter, &v, 0, d.push_colour, d.under_centre[i] - d.push_half[i], y, t, Color32::WHITE);
-                            }
-                        }
-                    }
+                    Under::Push => self.push(&painter, &v, art, d, i),
                     Under::GameOver(t, c, dx) => art.text(&painter, &v, 0, *c, x + dx, y, t, Color32::WHITE),
                     Under::Label(t, c) => art.text(&painter, &v, 0, *c, x, y, t, Color32::WHITE),
                     Under::Stage(stage) => self.stage_time(&painter, &v, art, *stage, x, y),
@@ -674,10 +696,8 @@ impl Hud {
             for (k, m) in ["'", "\""].iter().enumerate() {
                 art.text(&painter, &v, 0, d.time_colour, x + d.marks_dx[k], y + d.marks_dy, m, Color32::WHITE);
             }
-            if self.state.frame & 0x30 != 0 {
-                if let Some(t) = d.push.get(1) {
-                    art.text(&painter, &v, 0, d.push_colour, d.under_centre[1] - d.push_half[1], y, t, Color32::WHITE);
-                }
+            if info.under[1] == Under::None {
+                self.push(&painter, &v, art, d, 1);
             }
         }
         if bout.game.fight.ball.is_some() && !replay {
@@ -934,5 +954,22 @@ mod tests {
         assert!(d.round.text.ends_with("%1x"), "the round's number");
         assert!(!d.ko.text.is_empty() && d.ko.x > 0.0 && d.ko.y > 0.0);
         assert!(!d.pause_items.is_empty() && d.pause_ball_items.len() > d.pause_items.len());
+    }
+
+    /// The blink over a bar (0x8004EEE8): PUSH Pn START while frame & 0x30, FREE PLAY in the frames of 0x40, as the
+    /// PS1's arcade and CONTINUE? show (t3sim48).
+    #[test]
+    fn push_start_takes_turns_with_free_play() {
+        let p = crate::test_assets().join("gamedata/screens.json");
+        let Ok(b) = kumite_fs::read(&p) else { return };
+        let d = HudData::load(&serde_json::from_slice(&b).unwrap(), &Value::Null);
+        if d.free_play.0.is_empty() {
+            return; // (a conversion before format 18)
+        }
+        let shown = |i, f| d.push_text(i, f).map(|(t, h)| (t.to_string(), h));
+        assert_eq!(shown(0, 0x10), Some(("PUSH P1 START".into(), 58.0)));
+        assert_eq!(shown(1, 0x20), Some(("PUSH P2 START".into(), 58.0)));
+        assert_eq!(shown(1, 0x50), Some((" FREE PLAY".into(), 45.0)));
+        assert_eq!(shown(0, 0x40), None);
     }
 }

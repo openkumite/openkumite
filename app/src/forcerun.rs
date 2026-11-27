@@ -300,7 +300,9 @@ impl ForceRun {
         let strip_cluts = [0, 1, 2].map(|k| pair(&b["strip"]["cluts"][k]));
         // the three bars, right-aligned at x + 156 (OpenKumite's own: up to four players on the left, four soldiers or
         // bosses on the right)
-        let slot_in = |k: usize| st.slots.get(k).is_some_and(|s| (4..=7).contains(&s.state));
+        // (the final stage's character: its bar and name from the fight on, after FINAL STAGE / READY? (PS1, t3sim48))
+        let called = st.state >= 8 && bout.phase == kumite_game::bout::Phase::Call;
+        let slot_in = |k: usize| !called && st.slots.get(k).is_some_and(|s| (4..=7).contains(&s.state));
         for (k, &(_, _, shown, trail)) in self.bars.iter().enumerate().take(8) {
             let show = match k {
                 1 | 2 => slot_in(k - 1),
@@ -369,7 +371,7 @@ impl ForceRun {
             }
         }
         for k in 0..st.slots.len().min(4) {
-            if st.slots[k].state < 4 || st.slots[k].state > 7 {
+            if !slot_in(k) {
                 continue;
             }
             if let Some(b) = game.body_of(st.slot_actor(k)) {
@@ -379,6 +381,8 @@ impl ForceRun {
                 crate::hud::name_plate(hd, painter, v, art, b.model_record, cos, sx, sy + pdy * k as f32, true);
             }
         }
+        // the stage's clock between the bars, as the fight's (PS1, t3sim48: 60 at a stage's start)
+        crate::hud::timer(hd, painter, v, art, game.fight.clock);
         // SCORE and HI-SCORE over the bars
         let texts = &self.data.hud;
         let (ux, uy, uc) = hd.under_place();

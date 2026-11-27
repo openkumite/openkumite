@@ -2157,6 +2157,9 @@ impl App {
             if matches!(screen, Screen::Continue { .. } | Screen::GameOver { .. }) || screen.ttt_over_fight() || screen.ttt_over_arena() {
                 if let Some(f) = self.fight.as_mut() {
                     f.bout.step([Pad::default(); 2]);
+                    if matches!(screen, Screen::Continue { .. } | Screen::GameOver { .. }) {
+                        self.hud.step(&f.bout); // (its blinks go on)
+                    }
                 }
             } else if self.fight.is_some() || self.tag.is_some() {
                 self.fight = None;
@@ -2437,6 +2440,11 @@ impl App {
         if mode == Some(Mode::Survival) && matches!(fight.bout.phase, Phase::Result { winner } | Phase::MatchOver { winner } if winner != Some(0)) {
             let (t, c, dx) = self.roster.modes.game_over.clone();
             fight.info.under[0] = hud::Under::GameOver(t, c, dx);
+        }
+        // arcade lost: GAME OVER over the CPU's bar from the K.O. that decides it (record 5 0x800B1CA8, ctx+0x12)
+        if mode == Some(Mode::Arcade) && fight.bout.decided() && fight.bout.wins[0] < fight.bout.rounds_to_win {
+            let (t, c, dx) = self.roster.modes.game_over.clone();
+            fight.info.under[1] = hud::Under::GameOver(t, c, dx);
         }
         // scripted moves (--play): own set first, then the common set (not online: one computer's fight only)
         while self.net.is_none() && self.play_script.first().is_some_and(|p| p.0 <= self.steps + 1) {
@@ -6500,8 +6508,11 @@ impl App {
                             info.under = std::array::from_fn(|i| if info.humans[i] { hud::Under::Push } else { hud::Under::None });
                             hud.draw_with(ctx, art, &f.bout, &info, wide_hud, &|_, _| {});
                         } else if let Some(f) = fight.filter(|_| matches!(screen, Screen::Continue { .. } | Screen::GameOver { .. })) {
-                            // Tekken 3's CONTINUE? and GAME OVER keep the HUD and its YOU LOSE (PS1, t3sim47)
-                            hud.draw_with(ctx, art, &f.bout, &f.info, wide_hud, &|_, _| {});
+                            // Tekken 3's CONTINUE? and GAME OVER keep the HUD and its YOU LOSE (PS1, t3sim47); the
+                            // player's side asks for START instead of the stage and time (0x800AE1F8 cleared)
+                            let mut info = f.info.clone();
+                            (info.stage, info.under[0]) = (None, hud::Under::Push);
+                            hud.draw_with(ctx, art, &f.bout, &info, wide_hud, &|_, _| {});
                         }
                         screen.draw(ctx, art, roster);
                     } else if let Some(cs) = fight.and_then(|f| f.cutscene.as_ref()) {
