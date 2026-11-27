@@ -489,9 +489,10 @@ impl Vfx {
             return;
         }
         let vel = dir.map_or(Vec3::ZERO, |d| d.normalize_or_zero() * SPARK_SPEED);
-        // the strike direction picks a horizontal flip so the streaks point along the hit
+        // the strike direction picks a horizontal flip so the streaks point along the hit: the PS1 flips where
+        // dx (z - eye z) - dz (x - eye x) < 0 (0x80076AF8 -> +0x3C), in its axes (z negated)
         let d = dir.unwrap_or(Vec3::ZERO);
-        let mirror = d.x * (pos.z - eye.z) - d.z * (pos.x - eye.x) < 0.0;
+        let mirror = d.x * (pos.z - eye.z) - d.z * (pos.x - eye.x) > 0.0;
         let pos = Vec3::new(pos.x, pos.y.max(MIN_HEIGHT), pos.z);
         self.slots[self.next] = Some(SpriteFx { pos, vel, age: 1, strip: strip.clone(), blend, fade: blend == Blend::Add, mirror, sheet });
         self.next = (self.next + 1) % self.slots.len();
@@ -1121,6 +1122,16 @@ mod tests {
         v.effect("block", &data.block, Vec3::ZERO, Some(Vec3::X), Blend::Add, Vec3::ZERO);
         v.advance();
         assert!((v.sprites()[0].pos - Vec3::new(0.3, 0.2, -0.1)).length() < 1e-6);
+        // Tekken 3's hit spark flips as the PS1's: Paul's jab right on Law, seen from the front, is not flipped
+        // (PCSX-Redux: slot +0x3C 0, the spark at (1790, -1430, 99), its speed (5452, -205, 13), the eye at
+        // (998, -1112, -5321)); P2's jab left is
+        let strip = Strip { cells: Arc::new(vec![1]), life: 1 };
+        let eye = Vec3::new(0.998, 1.112, 5.321);
+        for (x, flipped) in [(1.0, false), (-1.0, true)] {
+            (v.slots, v.next) = ([None, None, None], 0);
+            v.sprite(&strip, 0, Vec3::new(1.790, 1.430, -0.099), Some(Vec3::new(5.452 * x, 0.205, -0.013)), Blend::Add, eye);
+            assert_eq!(v.slots[0].as_ref().map(|s| s.mirror), Some(flipped));
+        }
         // the arena's dust: so many particles at random, larger, in its colour
         v.bursts.clear();
         v.data.as_mut().unwrap().bursts.insert("dust".into(), BurstSet { random: true, paths: Arc::new(vec![vec![[0.0; 6], [0.1, 0.2, 0.3, 0.5, 0.2, 2.0]]; 2]), ..data.bursts["block"].clone() });
