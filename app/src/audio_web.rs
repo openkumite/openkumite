@@ -3,9 +3,11 @@
 //! after the first key press or touch; some (Safari on iPhone) only on elements first played in one, so the page
 //! unlocks a music element and a pool for the sounds on the first touch (`window.__okaudio`), and those are the ones
 //! played. A track that starts or loops from a point of its own (Tekken Tag's) plays through Web Audio instead
-//! (`__okaudio.loop`: a buffer source, which loops seamlessly from `loopStart`).
+//! (`__okaudio.loop`: a buffer source, which loops seamlessly from `loopStart`), and so do Tekken 3's sounds, each on
+//! its SPU voice (stopped at the voice's next sound or key off) as the native player's.
 
 use kumite_game::sound::Track;
+use std::collections::HashMap;
 use std::path::Path;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlAudioElement;
@@ -23,6 +25,8 @@ pub struct Audio {
     music: Option<HtmlAudioElement>,
     /// The Web Audio track playing (`__okaudio.loop`'s handle: `stop()`, `volume(v)`).
     looper: Option<wasm_bindgen::JsValue>,
+    /// Tekken 3's sounds playing by their voice (`__okaudio.loop`'s handles).
+    voices: HashMap<u8, wasm_bindgen::JsValue>,
     /// The page's sound elements, played in turn (none: a new element a sound).
     pool: Vec<HtmlAudioElement>,
     next: usize,
@@ -62,6 +66,7 @@ impl Audio {
         Some(Self {
             music: None,
             looper: None,
+            voices: HashMap::new(),
             pool: Vec::new(),
             next: 0,
             current: None,
@@ -121,9 +126,7 @@ impl Audio {
         let Some(t) = self.current.clone() else { return };
         let path = &t.file;
         // from a point of its own: Web Audio
-        let looper = page_elements().and_then(|_| js_sys::Reflect::get(&web_sys::window()?.into(), &"__okaudio".into()).ok());
-        let looper = looper.and_then(|a| Some((js_sys::Reflect::get(&a, &"loop".into()).ok()?.dyn_into::<js_sys::Function>().ok()?, a)));
-        if let (Some((f, a)), true) = (looper, t.start > 0.0 || (t.looped && t.loop_at > 0.0)) {
+        if let (Some((f, a)), true) = (page_loop(), t.start > 0.0 || (t.looped && t.loop_at > 0.0)) {
             let args = js_sys::Array::of5(&url(path).into(), &t.start.into(), &t.loop_at.into(), &t.looped.into(), &self.level().into());
             self.looper = f.apply(&a, &args).ok();
             return;
@@ -182,19 +185,43 @@ impl Audio {
         quiet(s.play());
     }
 
-    /// A fight's sound, once. shortcut: no SPU voices in the browser (a looping sound plays once, nothing is keyed
-    /// off); upgrade with a Web Audio graph.
+    /// A fight's sound: Tekken 3's keys its voice off first (SePlay 0x800753BC; one without a file only that), a
+    /// looping one plays on from its loop point until then (Web Audio); the others as [`Audio::sfx`].
     pub fn sound(&mut self, s: &kumite_game::sound::Sound) {
-        if !s.file.as_os_str().is_empty() {
-            self.sfx(&s.file, s.volume, s.speed);
+        let Some(v) = s.voice else { return self.sfx(&s.file, s.volume, s.speed) };
+        self.key_off(v);
+        if s.file.as_os_str().is_empty() || self.muted || !allowed() {
+            return;
+        }
+        let Some((f, a)) = page_loop() else { return self.sfx(&s.file, s.volume, s.speed) };
+        let level = (s.volume * self.sfx_volume).clamp(0.0, 1.0) as f64;
+        let args: [wasm_bindgen::JsValue; 7] =
+            [url(&s.file).into(), 0.0.into(), s.loop_at.unwrap_or(0.0).max(0.0).into(), s.loop_at.is_some().into(), level.into(), (s.speed as f64).into(), true.into()];
+        if let Ok(h) = f.apply(&a, &args.iter().collect()) {
+            self.voices.insert(v, h);
         }
     }
 
-    /// Voices keyed off: none kept in the browser (`sound`).
-    pub fn voices_off(&mut self, _pause: bool) {}
+    /// Voice `v` keyed off (SsUtKeyOffV 0x80088938).
+    fn key_off(&mut self, v: u8) {
+        if let Some(h) = self.voices.remove(&v) {
+            call(&h, "stop", &[]);
+        }
+    }
+
+    /// The voices keyed off as 0x8004B688 does (never 2 and 3; a pause's, `pause`, not 1, 6 and 7 either): a pause, a
+    /// round, the fight's end.
+    pub fn voices_off(&mut self, pause: bool) {
+        let keep = |v: u8| v == 2 || v == 3 || (pause && matches!(v, 1 | 6 | 7));
+        let off: Vec<u8> = self.voices.keys().copied().filter(|&v| !keep(v)).collect();
+        for v in off {
+            self.key_off(v);
+        }
+    }
 
     pub fn toggle_mute(&mut self) -> bool {
         self.muted = !self.muted;
+        self.voices_off(false);
         self.set_level(self.level());
         self.muted
     }
@@ -207,6 +234,13 @@ impl Audio {
         self.ducking = if (target - self.ducking).abs() <= rate + 1e-4 { target } else { self.ducking + rate.copysign(target - self.ducking) };
         self.set_level(self.level());
     }
+}
+
+/// The page's Web Audio player (`__okaudio.loop`) and its object, if it has them.
+fn page_loop() -> Option<(js_sys::Function, wasm_bindgen::JsValue)> {
+    page_elements()?;
+    let a = js_sys::Reflect::get(&web_sys::window()?.into(), &"__okaudio".into()).ok()?;
+    Some((js_sys::Reflect::get(&a, &"loop".into()).ok()?.dyn_into().ok()?, a))
 }
 
 /// `handle.name(args)` of a JavaScript object, its result dropped.

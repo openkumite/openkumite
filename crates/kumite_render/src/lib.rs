@@ -155,6 +155,9 @@ pub struct Camera {
     /// the deck) and the model the fighters behind it. The arcade game sorts its faces instead, and so do the
     /// original's drums here; sorted by triangle, a model's large faces come out in the wrong order.
     pub sky_depth: bool,
+    /// The drum's rows kept straight across the screen, as a panorama drawn in screen space (Tekken 2's, 0x80084560):
+    /// a vertex's height over its depth, not over its distance (a drum of unit radius around the eye).
+    pub sky_rows: bool,
     /// The stage's fill behind everything (sRGB 0..255), else the renderer's clear colour.
     pub background: Option<[u8; 3]>,
     /// The stage meshes' placement (the floor follows the fighters by whole map periods).
@@ -246,6 +249,7 @@ impl Camera {
             sky_first: false,
             sky_cull: true,
             sky_depth: false,
+            sky_rows: false,
             background: None,
             floor: Mat4::IDENTITY,
             hit_light: None,
@@ -1668,7 +1672,7 @@ impl Renderer {
             lights: cam.light.and_then(|l| l.more).map_or([[0.0; 4]; 4], |[(c1, l1), (c2, l2)]| {
                 [l1.normalize_or_zero().extend(0.0).to_array(), c1.extend(0.0).to_array(), l2.normalize_or_zero().extend(0.0).to_array(), c2.extend(0.0).to_array()]
             }),
-            sky_eye: cam.sky.inverse().transform_point3(cam.eye).extend(1.0).to_array(),
+            sky_eye: cam.sky.inverse().transform_point3(cam.eye).extend(f32::from(u8::from(cam.sky_rows))).to_array(),
             view_x: view.row(0).to_array(),
             view_y: view.row(1).to_array(),
             fog_colour: cam.fog.map_or([0.0; 4], |(c, _)| {
