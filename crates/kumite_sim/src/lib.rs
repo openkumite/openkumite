@@ -1658,7 +1658,13 @@ impl Fighter {
     fn start_reaction(&mut self, to: Current, alias: usize) {
         // (the reaction's queue marks the frame it was struck in, 0x8002EE74)
         self.exec_mark = self.frame;
+        // (the root stays where the struck move showed it until the reaction's first root update, a move without the
+        // commit flag's too: its basis turns on that root, t3sim52 c118)
+        let offset = self.offset;
         self.start_facing(to, self.commits_root);
+        if !self.commits_root {
+            self.offset = offset;
+        }
         self.alias = alias;
         self.chain = 0;
         self.root_yaw = self.yaw;
@@ -2691,8 +2697,7 @@ impl Fighter {
             let v = d * w2;
             (v + if v < 0 { 0x1FFF } else { 0 }) >> 13
         };
-        let h = self.anim_root_y.round() as i32;
-        self.shown_height = if e.mode != 0 && e.frames != 0 { (h as i16 as i32 + part(e.height)) as i16 as i32 } else { h };
+        self.shown_height = self.eased_height();
         self.shown_turns = raw;
         if !tag {
             // (Tekken 3's root carries the eased height, 0x8003AB78)
@@ -2709,6 +2714,16 @@ impl Fighter {
                 };
             }
         }
+    }
+
+    /// The root's height with the ease's share of its delta (none without an ease).
+    fn eased_height(&self) -> i32 {
+        let (e, h) = (self.ease, self.anim_root_y.round() as i32);
+        if e.mode == 0 || e.frames == 0 {
+            return h;
+        }
+        let v = e.height * ((e.count << 12) / e.frames * 2);
+        (h as i16 as i32 + ((v + if v < 0 { 0x1FFF } else { 0 }) >> 13)) as i16 as i32
     }
 
     /// Move `c`'s joint turns and root height at `frame`: Tekken Tag's scaled (0x363BD8); Tekken 3's turns none for a
@@ -3787,6 +3802,10 @@ impl Fight {
                     f.ease(&gd, anims[i]);
                 } else if !f.tag_rules(&gd) && !linked {
                     f.anim_root_y = y;
+                } else if !f.tag_rules(&gd) {
+                    // (the linking fighter's height eases in from the link's step on, as its root update eases it:
+                    // Nina's reversal, t3sim52 c128)
+                    f.anim_root_y = f.eased_height() as f32;
                 }
             }
         }

@@ -162,16 +162,17 @@ fn a_hurt_ai_player_goes_for_the_chicken() {
 /// went 23000 on average; with it 16, 108 and 25800; with the PS1's jumps 9, 81 and 23600; with the PS1's push and
 /// distance limit 14, 84 and 24700; with its mist, sizes and eases 20, 102 and 27700; with the strikes placed before
 /// the push 8, 64 and 22800; with an air hit keeping the slide going on 4, 50 and 19600. This spread: 14 and 90 at
-/// #245, 7 and 73 after the PS1's physics, 15 and 91 with the Force seat's own lean).
+/// #245, 7 and 73 after the PS1's physics, 15 and 91 with the Force seat's own lean; 48 runs sat on the bar, one run
+/// either way with a reaction's first root: now 96 of them, the same shares, 21 and 148 before it and after).
 #[test]
 fn the_ai_player_gets_on_through_stage_1() {
     let Some(a) = assets() else { return };
-    let runs: Vec<Run> = (0..48).map(|k| pick(k * 10 + k % 10)).map(|(p, _, s, late)| play(&a, p, None, s, late)).collect();
+    let runs: Vec<Run> = (0..96).map(|k| pick(k * 10 + k % 10)).map(|(p, _, s, late)| play(&a, p, None, s, late)).collect();
     let progress = runs.iter().map(|r| r.progress).sum::<i32>() / runs.len() as i32;
     let cleared = runs.iter().filter(|r| r.cleared).count();
     let pickups: u32 = runs.iter().map(|r| r.pickups).sum();
-    eprintln!("48 runs: {cleared} cleared, {progress} on average, {pickups} chickens");
-    assert!(cleared >= 10 && pickups >= 60, "{cleared} cleared, {pickups} chickens");
+    eprintln!("96 runs: {cleared} cleared, {progress} on average, {pickups} chickens");
+    assert!(cleared >= 20 && pickups >= 120, "{cleared} cleared, {pickups} chickens");
 }
 
 #[test]
