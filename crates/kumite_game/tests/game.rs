@@ -2496,3 +2496,28 @@ fn a_tekken_2_tail_stays_on_the_hips_over_a_clip_change() {
         assert!(off < 0.01, "frame {f}: the tail's root {off} m off the hips");
     }
 }
+
+/// Nina's f+1+2 knocks Paul back into common_189, an airborne state with a jump window (1..33) and no ground impact of
+/// its own: its last frame lands with the juggle landing's dust (0x8004033C -> 0x80040880), as the PS1 does
+/// (PCSX-Redux: 0x8004AC84 on P2's reaction frame 33).
+#[test]
+fn a_knockback_raises_dust_where_it_lands() {
+    let Some(a) = assets() else { return };
+    let index = moveset(&a, "moveset_05.json").moves.iter().position(|m| m.anim == "motion_070").unwrap();
+    let mut g = load_vs_dummy(&a, [111, MODEL_71]);
+    let mut v = Vfx::new(&a);
+    for pad in parse_script("f*10").unwrap() {
+        g.step([pad, Pad::default()]);
+    }
+    g.fight.fighters[0].play(kumite_sim::Current { bank: Bank::Own, index });
+    let mut dust = None;
+    for _ in 0..120 {
+        g.step([Pad::default(); 2]);
+        v.step(&g);
+        let f = &g.fight.fighters[1];
+        if dust.is_none() && v.grounds.iter().flatten().count() > 0 {
+            dust = Some((f.current_move(&g.fight.data).anim.clone(), f.frame, f.landing));
+        }
+    }
+    assert_eq!(dust, Some(("common_189".to_string(), 33, 1)), "the knockback lands with dust and the landing sound");
+}

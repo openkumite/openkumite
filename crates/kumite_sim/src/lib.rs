@@ -2505,6 +2505,19 @@ impl Fighter {
         self.deal_damage = deal;
         self.self_damage = own;
         self.effects = effects;
+        // Tekken 3: a jump window's last frame lands (0x8004033C; not in a flight, whose hold count +0x6A is set): struck
+        // in the move (+0x87) and lying (an airborne state 9 counts), as a juggle's landing, with dust and a shake
+        // (+0xDD, 0x80040880: a knockback such as Nina's f+1+2's); else with landing sound 0x54 only (+0xDC)
+        // shortcut: the air entry +0x90 is not kept after a flight (5, the air setup's, gives +0xDC); keep it if a case needs it
+        let j1 = self.current_move(gd).bytes_18.jump_end;
+        if !self.tag_rules(gd) && j1 != 0 && frame == j1 && frame != 1 && self.air.is_none() && self.pin != 2 {
+            if self.struck_in_move && self.posture(gd) & posture::LYING != 0 {
+                self.landing = 1;
+                self.effects.extend([MoveEffect::LandingImpact, MoveEffect::Shake(0)]);
+            } else {
+                self.landing = 2;
+            }
+        }
         if !self.tag_rules(gd) {
             self.push_back();
         }
