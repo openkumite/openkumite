@@ -1058,6 +1058,16 @@ impl Game {
                     at[o][1] += n[3];
                 }
             }
+            // the team lose (0x3B6050): Ogre turned (-0x2000 at 0, 0x1000 at 0x400), True Ogre at x -0x300 / 0x300
+            None if lose => {
+                for i in 0..2 {
+                    match self.characters[i] {
+                        Some(14) => at[i][2] = if i == s { -0x2000 } else { 0x1000 },
+                        Some(20) => at[i][0] = if i == s { -0x300 } else { 0x300 },
+                        _ => {}
+                    }
+                }
+            }
             None => {}
         }
         // shortcut: light 0 to 4096ths of a turn (the PS2's float to 65535ths), till a pose shows a step off

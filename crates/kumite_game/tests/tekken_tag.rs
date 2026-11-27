@@ -2304,6 +2304,39 @@ fn pairs_pose_their_own() {
     }
 }
 
+/// Light 0 of the win pose by arena as the PS2 has it in a fight (0x1FC42A0, PCSX2: the scenes' entry 0x455170, not
+/// 0x416288's), 4096ths of a turn.
+#[test]
+fn light_0_is_the_fights() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [PAUL, LEI]).unwrap();
+    for (arena, light) in [(2, 1919), (3, 1785), (6, 871), (9, 1780)] {
+        g.set_arena(arena);
+        assert_eq!(g.camera.data().win.as_ref().unwrap().light(), light, "arena {arena}");
+    }
+}
+
+/// The team lose (0x3B6050): Ogre turned, True Ogre stepped aside, beside a partner of no pair.
+#[test]
+fn ogres_lose_their_own_way() {
+    let Some(a) = assets() else { return };
+    for (loser, partner) in [(OGRE_FIRST, PAUL), (TRUE_OGRE, PAUL)] {
+        let mut g = Game::load(&a, [LEI, loser]).unwrap();
+        g.start_tag([kumite_game::Actor::load(&a, LAW).unwrap(), kumite_game::Actor::load(&a, partner).unwrap()]);
+        assert!(g.pose_partner(1));
+        g.pose_places(1, true, [4776; 2]);
+        let f = &g.fight.fighters;
+        let apart = (f[0].position - f[1].position).length();
+        let turned = (f[0].yaw - f[1].yaw).rem_euclid(std::f32::consts::TAU);
+        if loser == OGRE_FIRST {
+            // (Ogre at 0 turned -0x2000, the partner at 0x400 facing 0: an eighth of a turn between them)
+            assert!((apart - 1024.0).abs() < 1.0 && (turned.min(std::f32::consts::TAU - turned) - std::f32::consts::FRAC_PI_4).abs() < 1e-3, "{apart} {turned}");
+        } else {
+            assert!((apart - 1792.0).abs() < 1.0, "{apart}");
+        }
+    }
+}
+
 /// What a match of Paul against Lei did over `frames` steps, each side a CPU at (difficulty, level) or an idle pad:
 /// the state hashes, and per side its fight steps holding forward without a button (walks), its button presses
 /// (attacks), its steps in a guard, the hits it landed unblocked, and the rounds won.
