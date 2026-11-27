@@ -225,7 +225,9 @@ fn cpu_plays_them() {
             assert_eq!(hashes, cpu_fight(&a, [p1, p2]).3);
             landed = [landed[0] + hits[0], landed[1] + hits[1]];
         }
-        assert!(landed[0] >= 10 && landed[1] > 0, "model {p1}: hits {landed:?}");
+        // (8: since the CPUs act on an empty follow-up list and read the frame start's distance as the PS2's, Doctor B.
+        // lands 8 in these two fights)
+        assert!(landed[0] >= 8 && landed[1] > 0, "model {p1}: hits {landed:?}");
     }
 }
 
@@ -546,7 +548,7 @@ fn force_stage(a: &Assets, player: usize, boss: bool, frames: usize) -> ForceRun
     r
 }
 
-/// Tekken Force under Tekken Tag (the slice's force.json): Paul and Jin (the AI playing them) fight Crow's soldiers
+/// Tekken Force under Tekken Tag (the slice's force.json): Paul (the AI playing him) fights Crow's soldiers
 /// through stage 1's first area (the camera at its second arena, 11776): the soldiers are hit and react, they hit the
 /// player, every frame on a motion (Lei's and Hwoarang's hits make them play moves their aliases take from the
 /// player's list, on the player's motions); then the stage's boss (a Tekken Tag fighter, by Tekken 3's route) comes in and is
@@ -571,8 +573,9 @@ fn force_under_tekken_tag() {
             "model {player}: progress {}, kills {}, hits {} / {} reactions, hit {} times, {} frames without a motion",
             r.progress, r.kills, r.soldier_hits, r.reactions, r.player_hits, r.missing
         );
-        // (Lei and Hwoarang are here for their moves on the soldiers, not to clear the area)
-        assert!(r.kills >= 5 && (r.progress >= 11776 || ![PAUL, JIN].contains(&player)), "model {player}: the first area: {r:?}");
+        // (Lei and Hwoarang are here for their moves on the soldiers, not to clear the area; Jin falls in it since the
+        // CPUs act on an empty follow-up list as the PS2's, 0x385CCC)
+        assert!(r.kills >= 5 && (r.progress >= 11776 || player != PAUL), "model {player}: the first area: {r:?}");
         assert!(r.soldier_hits > 0 && r.reactions > 0 && r.player_hits > 0 && r.missing == 0, "model {player}: {:?}", (r.soldier_hits, r.reactions, r.player_hits, r.missing));
         let boss = force_stage(&a, player, true, 60 * 40);
         eprintln!("model {player}: boss {:?}, its health lost {}", boss.boss, boss.boss_lost);

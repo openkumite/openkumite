@@ -254,7 +254,7 @@ pub struct Bout {
     pub cpu: [Option<Ai>; 2],
     ai_data: Arc<AiData>,
     /// The game's random streams the CPUs draw from (shared by both, kept for the whole match).
-    ai_rng: AiRng,
+    pub ai_rng: AiRng,
     /// Announcements made during the last step.
     pub events: Vec<Announcement>,
     /// Round fly-ins on (off: straight to the round call).
@@ -307,6 +307,8 @@ pub struct Bout {
     counters: [usize; 3],
     /// Tekken 3: the round's setup of the players' CPU state is to run (0x800593C8, a human's too).
     setup: bool,
+    /// Tekken Tag: the CPUs' pads for the next fight frame, input in the last one after its sounds (0x36C4C0).
+    cpu_pads: [Pad; 2],
 }
 
 impl Bout {
@@ -350,11 +352,10 @@ impl Bout {
             tape: None,
             playback: None,
             setup: false,
+            cpu_pads: [Pad::default(); 2],
         };
-        // (Tekken 3's one rand(): the fight's, from the CPUs' start)
-        if b.game.rounds.is_none() {
-            b.game.fight.objects.seed = b.ai_rng.rand;
-        }
+        // (the one rand(): the fight's, from the CPUs' start)
+        b.game.fight.objects.seed = b.ai_rng.rand;
         b.next_round();
         b
     }
@@ -429,6 +430,7 @@ impl Bout {
             ai.new_round();
         }
         self.setup = self.game.rounds.is_none();
+        self.cpu_pads = [Pad::default(); 2];
         let variant = (self.count(INTRO) + 1) % 10;
         let intro = self.intros.then_some((variant, self.round == 1));
         // the copying character takes another fighter's moves for the round (0x8004F2DC, every round, player 1
@@ -527,9 +529,18 @@ impl Bout {
     }
 
     /// A fight step: the camera draws from the CPU's random streams, as the PS2's director does (Tekken Tag).
-    fn fight_step(&mut self, pads: [Pad; 2]) {
+    /// `think`: Tekken Tag's CPUs input the next frame's pads after this one's sounds (0x36C4C0), on the fight's rand().
+    fn fight_step(&mut self, pads: [Pad; 2], think: bool) {
+        if think {
+            self.game.step_fight(pads);
+            self.cpu_pads = self.input(pads, true);
+        }
         std::mem::swap(&mut self.ai_rng, &mut self.game.camera.rng);
-        self.game.step(pads);
+        if think {
+            self.game.step_after();
+        } else {
+            self.game.step(pads);
+        }
         std::mem::swap(&mut self.ai_rng, &mut self.game.camera.rng);
     }
 
@@ -667,8 +678,10 @@ impl Bout {
                 }
             }
             Phase::Fight => {
-                let pads = self.input(pads, true);
-                self.fight_step(pads);
+                // (Tekken Tag's CPUs play the pads they input in the last fight frame, none in the first)
+                let tag = self.game.rounds.is_some() && self.game.ball.is_none();
+                let pads = if tag { std::array::from_fn(|i| if self.cpu[i].is_some() { self.cpu_pads[i] } else { pads[i] }) } else { self.input(pads, true) };
+                self.fight_step(pads, tag);
                 if self.free {
                     return;
                 }
@@ -685,7 +698,9 @@ impl Bout {
                         if self.game.rounds.is_some() && self.game.ball.is_none() && self.game.camera.data().replay_shots.is_some() {
                             let loser = if double { 0 } else { 1 - winner };
                             let throw = self.game.fight.fighters.iter().any(|f| f.locked);
+                            self.ai_rng.rand = self.game.fight.objects.seed;
                             self.tag_replay = Some((self.ai_rng.randint(14) as usize, 0, loser, self.game.subject(loser).root, throw));
+                            self.game.fight.objects.seed = self.ai_rng.rand;
                         }
                         self.round_over(if double { None } else { Some(winner) }, false);
                     }
@@ -700,7 +715,7 @@ impl Bout {
                         p[w] = pads[w];
                     }
                 }
-                self.fight_step(p);
+                self.fight_step(p, false);
                 // Tekken Tag: the replay from frame 16 of a K.O., a time up done on frame 160
                 let frames = match &self.game.rounds {
                     Some(r) if self.ko_at.is_some() => r.replay_from,
@@ -897,7 +912,10 @@ impl Bout {
         };
         let at = who(target).map_or(point, |i| self.game.subject(i).root);
         let facing = self.game.subject(if throw { loser } else { 1 - loser }).front;
-        let Some(shot) = Shot::replay(&data, k, at, facing, &mut |n| i64::from(self.ai_rng.randint(n as i32))) else { return };
+        self.ai_rng.rand = self.game.fight.objects.seed;
+        let shot = Shot::replay(&data, k, at, facing, &mut |n| i64::from(self.ai_rng.randint(n as i32)));
+        self.game.fight.objects.seed = self.ai_rng.rand;
+        let Some(shot) = shot else { return };
         self.game.camera_mode = CameraMode::Shot { shot, follow: who(follow) };
     }
 
@@ -1034,16 +1052,11 @@ impl Bout {
     }
 
     /// Human pads, or what each CPU player decides (0x8002C4C4: in slot order, only while it has HP left); `think`
-    /// false: only the two players' round setup. Tekken 3's CPUs draw from the fight's rand().
+    /// false: only the two players' round setup. The CPUs draw from the fight's rand().
     fn input(&mut self, pads: [Pad; 2], think: bool) -> [Pad; 2] {
-        let t3 = self.game.rounds.is_none();
-        if t3 {
-            self.ai_rng.rand = self.game.fight.objects.seed;
-        }
+        self.ai_rng.rand = self.game.fight.objects.seed;
         let out = self.think(pads, think);
-        if t3 {
-            self.game.fight.objects.seed = self.ai_rng.rand;
-        }
+        self.game.fight.objects.seed = self.ai_rng.rand;
         out
     }
 
