@@ -570,16 +570,17 @@ impl RecordsScreen {
             1 => records.survival.get(t).map_or(0, |e| e.0),
             _ => t,
         };
-        let (fx, fy) = at(&rows["face"]);
-        crate::modes::face(painter, v, art, roster, character, fx, fy, 0);
-        let name = roster.by_id(character).map_or_else(String::new, |c| c.name.to_uppercase());
-        let (nx, ny) = at(&rows["name"]);
-        art.text(painter, v, num(&rows["name"]["font"]) as usize, c(1), nx, ny, &name, Color32::WHITE);
+        // the underlines under the face: its bottom covers the line (PS1)
         let grey = &rows["underline_colour"];
         let grey = Color32::from_rgb(num(&grey[0]) as u8, num(&grey[1]) as u8, num(&grey[2]) as u8);
         for u in rows["underlines"].as_array().into_iter().flatten() {
             painter.rect_filled(v.rect(num(&u[0]) as f32, y + num(&u[1]) as f32, num(&u[2]) as f32, num(&u[3]) as f32), 0.0, grey);
         }
+        let (fx, fy) = at(&rows["face"]);
+        crate::modes::face(painter, v, art, roster, character, fx, fy, 0);
+        let name = roster.by_id(character).map_or_else(String::new, |c| c.name.to_uppercase());
+        let (nx, ny) = at(&rows["name"]);
+        art.text(painter, v, num(&rows["name"]["font"]) as usize, c(1), nx, ny, &name, Color32::WHITE);
         let player = &rows["player"];
         let (px, py) = at(player);
         let pf = num(&player["font"]) as usize;
