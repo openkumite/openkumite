@@ -780,3 +780,18 @@ fn floor_fades_as_the_ps1() {
         assert_eq!(s[((z / 1800 + 5) * 11 + x / 1800 + 5) as usize], c, "at {x}, {z}");
     }
 }
+
+/// Tekken Force's stage 1 fades as the PS1's (0x8004960C in PCSX-Redux, vsync 1700 of a Force run): the player's root
+/// at (10, 112), the eye at (0, -7000); (x, z, the vertex's SZ, colour).
+#[test]
+fn force_floor_fades_as_the_ps1() {
+    let Some(a) = assets() else { return };
+    let Some(l) = a.stage(15).unwrap().floor_shading else { return eprintln!("skipping: the pack predates Force's floor shading") };
+    let want = [(-5000, 2500, 10081, 119), (0, 2500, 10081, 119), (0, 0, 7666, 127), (5000, 0, 7666, 127), (0, -2500, 5250, 128)];
+    let depth = |x, z| want.iter().find(|w| (w.0, w.1) == (x, z)).map_or(0, |w| w.2);
+    let (centre, s) = kumite_game::floor::shades(&l, [[10, 112], [0, 0]], [0, -7000], depth, false, false, Some(false));
+    assert_eq!(centre, [0, 0]);
+    for (x, z, _, c) in want {
+        assert_eq!(s[((z / 2500 + 5) * 11 + x / 2500 + 5) as usize], c, "at {x}, {z}");
+    }
+}
