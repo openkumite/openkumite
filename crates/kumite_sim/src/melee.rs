@@ -61,6 +61,9 @@ pub struct Melee {
     /// How much further a foe straight behind counts in the picks of a target (game units; Force's co-op: 0,
     /// the nearest).
     pub behind_cost: f32,
+    /// How much further a foe counts for each of my team already on it (game units; Force's co-op: each takes on
+    /// a foe of its own while there are enough, as players spread out; the tag brawl: 0).
+    pub crowd_cost: f32,
     /// Tekken Tag's pair rules on each pair, as its pair fight's (the tag brawl under Tekken Tag): the distance
     /// limit, the facing from the roots before the moves, the pushback in the facing pass, the push and hits in the
     /// pose of the frame.
@@ -110,6 +113,7 @@ impl Melee {
             hits: Vec::new(),
             leash: Some(LEASH),
             behind_cost: BEHIND_COST,
+            crowd_cost: 0.0,
             tag_pairs: false,
             kept: Vec::new(),
             objects: Default::default(),
@@ -140,6 +144,7 @@ impl Melee {
             hits: Vec::new(),
             leash: None,
             behind_cost: 0.0,
+            crowd_cost: 0.0,
             tag_pairs: false,
             kept: Vec::new(),
             objects: Default::default(),
@@ -279,7 +284,8 @@ impl Melee {
                 }
                 self.locked[i] = false;
             }
-            let dist = |j: usize| self.pick_cost(i, j);
+            let crowd = |j: usize| (0..self.actors.len()).filter(|&k| k != i && self.team[k] == self.team[i] && self.target[k] == j && self.standing(k) && !self.actors[k].inactive).count();
+            let dist = |j: usize| self.pick_cost(i, j) + self.crowd_cost * crowd(j) as f32;
             // (actors out of play are nobody's target)
             let foes: Vec<usize> = (0..self.actors.len()).filter(|&j| self.team[j] != self.team[i] && !self.actors[j].inactive).collect();
             let standing: Vec<usize> = foes.iter().copied().filter(|&j| self.standing(j)).collect();

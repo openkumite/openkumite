@@ -483,6 +483,10 @@ impl ForceStage {
     /// The players are more than two (or two with the widened melee): the soldiers' places for all of them.
     pub fn widen(&mut self, game: &mut Game) {
         game.widen_coop(12);
+        // (OpenKumite's own: each takes on a foe of its own while there are enough, as players spread out)
+        if let Some(m) = game.fight.coop.as_mut() {
+            m.crowd_cost = 1000.0;
+        }
         // (no kind yet: the first spawn loads its body, else the place's stand-in, without one, is never hit)
         while self.slots.len() < 8 {
             self.slots.push(Slot { kind: usize::MAX, ..Default::default() });
