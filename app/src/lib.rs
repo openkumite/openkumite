@@ -243,7 +243,7 @@ fn tag_vfx(v: &mut kumite_game::vfx::Vfx, g: &kumite_game::tag::TagGame) {
         Some(place.transform_point3(pose.get(node)?.w_axis.truncate()))
     };
     let node = |i: usize, name: &str| g.bodies[i].character.nodes.iter().position(|n| n.name == name);
-    v.step_actors(&g.melee.hits, &models, &actors, eye, &at, &node);
+    v.step_actors(&g.melee.hits, &models, &actors, eye, &at, &node, false);
     v.objects(&g.melee.objects, &models);
 }
 
@@ -1189,6 +1189,7 @@ impl App {
         self.scene = Some(scene);
         let mut vfx = kumite_game::vfx::Vfx::new(&self.assets);
         vfx.set_stage(stage);
+        bout.game.dust = vfx.tag_dust().filter(|_| bout.game.fight.data.tag_moves);
         self.vfx = Some(vfx);
         let mode = setup.as_ref().map(|s| s.mode);
         let info = HudInfo {
@@ -4848,7 +4849,9 @@ impl App {
         self.hud.reset(&info);
         hand_arena(&scene, &mut bout.game);
         self.scene = Some(scene);
-        self.vfx = Some(kumite_game::vfx::Vfx::new(&self.assets));
+        let vfx = kumite_game::vfx::Vfx::new(&self.assets);
+        bout.game.dust = vfx.tag_dust().filter(|_| bout.game.fight.data.tag_moves);
+        self.vfx = Some(vfx);
         let banks = models.map(|m| format!("m{m:03}"));
         let characters = [player_char, soldier_char];
         // (the soldiers' voice row: their +0x1A)

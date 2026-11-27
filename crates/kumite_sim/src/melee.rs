@@ -523,6 +523,8 @@ impl Melee {
         if !gd.tag_moves {
             let gon: Vec<bool> = self.actors.iter().map(|f| f.character == Some(17)).collect();
             self.objects.on_hits(&self.hits, &gon);
+        } else {
+            self.objects.tag_hits(&self.hits);
         }
         if self.state == MeleeState::Fighting && self.links.is_empty() {
             self.clock = self.clock.saturating_sub(1);

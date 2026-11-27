@@ -2337,10 +2337,12 @@ impl Ai {
 
     /// 4.H: one handler (0x8005B598). Returns whether the frame is done.
     fn call_handler(&mut self, cx: &mut Cx, vs: bool) -> bool {
-        if self.wlock >= 0 || !cx.chance(self.p.evade_and_handler_prob) {
+        let k = if vs { self.h_vs } else { self.h_self };
+        // (Tekken Tag's 0x38A408 / 0x38A500 draw only with a handler, S+0xB4 / +0xB8)
+        if self.wlock >= 0 || (cx.ps2 && k.is_none()) || !cx.chance(self.p.evade_and_handler_prob) {
             return false;
         }
-        let Some(k) = (if vs { self.h_vs } else { self.h_self }) else { return false };
+        let Some(k) = k else { return false };
         let data = cx.data;
         let Some(f) = data.routines.get(k) else { return false };
         match self.handler(cx, f) {
@@ -2768,7 +2770,10 @@ impl Ai {
         let mut n;
         // (Tekken Tag's 0x386DF8: 10 / 64)
         let crouch_p = if cx.data.ttt { 10 } else { 14 };
-        if self.myzone < 3 && !cx.me_air && self.m4 & 1 == 0 && (cx.lcg() & 0x3F) < crouch_p && !rush {
+        // (Tekken Tag's draws before the air and crouch tests, 0x386DF8)
+        let crouch =
+            if cx.ps2 { self.myzone < 3 && (cx.lcg() & 0x3F) < crouch_p && !cx.me_air && self.m4 & 1 == 0 } else { self.myzone < 3 && !cx.me_air && self.m4 & 1 == 0 && (cx.lcg() & 0x3F) < crouch_p };
+        if crouch && !rush {
             n = self.mark(crouch_na); // crouch (crouch dash / d moves set-up)
         } else if (cx.lcg() & 0x3F) < 0x20 && !rush {
             n = if cx.lcg() & 1 != 0 { self.mark(dash_hop) } else { self.pool_punish_posture(cx) };

@@ -932,15 +932,17 @@ fn arena_tasks(a: &Assets, g: &mut Game, stage: usize) {
 
 /// Two NORMAL level 0 CPUs (Yoshimitsu / Paul against Hwoarang / Paul, arena 16), from PCSX2's state as they start
 /// thinking (audit40's r_cpu16: both players made CPUs, +0x420 = 2): rand()'s state is PCSX2's after every step of
-/// these 227, through the CPUs' 17 to 34 draws a frame in the PS2's order (step 0x16's draw 0x38AD00, the candidates'
+/// these 273, through the CPUs' 17 to 34 draws a frame in the PS2's order (step 0x16's draw 0x38AD00, the candidates'
 /// rand() & 7 and per-alias coins 0x382AD8, the learning draw first 0x380DA8, the pair distance of the frame's start
 /// gp-0x74C8), Hwoarang's blinks (before the sounds) and his d/f+1 (move 1282) picked on step 81 as PCSX2's. On step
 /// 94 it hits Yoshimitsu, who stays in his 2346 at its place for the step (the reaction queued, +0x188): his CPU sees
 /// him there, and the reaction (5146) comes on step 95 as PCSX2's +0xC0 shows it; from then on his face, without
 /// poses, draws as the hit face 0 (0x362B98), the guard after a 0x1A point waits for +0x11A and his front (0x386470),
 /// the general pool takes a tag entry only as an attack (0x383F10: his move 1243 on step 217), and the arena's people
-/// draw in the task runner (person 71's pick 0x3D8848, step 217). (Step 227's hit sparks, 0x3A3958, draw from it too;
-/// ours from the effects' own.)
+/// draw in the task runner (person 71's pick 0x3D8848, step 217). On step 227 Yoshimitsu's 1243 lands for 21 or more:
+/// its 28 fireballs (0x3A6110) draw their 176 in the task runner, the 18 straight ones' (0x3A3928) before the 10
+/// easing (0x3A35C8), as PCSX2's. To step 272: on 273 PCSX2's CPU presses 2 (S+6 0x10) from Yoshimitsu's 1020, whose
+/// list (ours: f+1, 3, 4) has no such entry.
 #[test]
 fn the_cpus_draw_and_choose_as_the_ps2s() {
     let Some(a) = assets() else { return };
@@ -948,6 +950,9 @@ fn the_cpus_draw_and_choose_as_the_ps2s() {
     g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
     g.set_arena(16);
     arena_tasks(&a, &mut g, 16);
+    let mut v = kumite_game::vfx::Vfx::new(&a);
+    v.set_stage(16);
+    g.dust = v.tag_dust();
     let voices = g.fight.fighters.each_ref().map(|f| f.character.unwrap_or(0) as usize);
     g.sound = Some(Box::new(kumite_game::sound::FightSound::new(std::sync::Arc::new(SoundData::load(&a).unwrap()), [String::new(), String::new()], voices, SoundState::default())));
     let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
@@ -956,7 +961,7 @@ fn the_cpus_draw_and_choose_as_the_ps2s() {
     while b.phase != Phase::Fight {
         b.step([Pad::default(); 2]);
     }
-    let ps2: [(usize, u32); 28] = [
+    let ps2: [(usize, u32); 36] = [
         (1, 2_168_043_193),
         (8, 1_405_945_320),
         (16, 3_753_034_624),
@@ -985,9 +990,17 @@ fn the_cpus_draw_and_choose_as_the_ps2s() {
         (216, 116_117_495),
         (217, 3_502_418_051),
         (226, 1_131_039_582),
+        (227, 4_170_602_133),
+        (228, 543_331_969),
+        (239, 923_832_523),
+        (249, 3_506_330_654),
+        (259, 299_439_536),
+        (264, 1_373_473_783),
+        (269, 2_930_286_445),
+        (272, 3_319_213_074),
     ];
     let mut seen = Vec::new();
-    for k in 0..=226 {
+    for k in 0..=272 {
         b.step([Pad::default(); 2]);
         if k == 0 {
             // (PCSX2's row 1: rand()'s state, the AI generator gp-0x64E8, each CPU's cooldowns S+0x94 / S+0x5C)
@@ -1015,11 +1028,72 @@ fn the_cpus_draw_and_choose_as_the_ps2s() {
             94 => assert_eq!(shown(&b), [(2346, 7, -1002), (1282, 13, 1165)]),
             95 => assert_eq!(shown(&b), [(5146, 1, -647), (1282, 14, 1165)]),
             217 => assert_eq!(shown(&b)[0].0, 1243),
+            227 => assert_eq!(b.game.fight.objects.list.iter().filter(|o| matches!(o.kind, kumite_sim::objects::Kind::TagShard { .. })).count(), 28),
             _ => {}
         }
     }
     assert_eq!(seen, ps2);
-    assert_eq!(b.ai_rng.lcg, 1_002_070_443);
+    assert_eq!(b.ai_rng.lcg, 1_680_051_628);
+}
+
+/// A second CPU fight in PCSX2 (audit42's r_cpu42b: King (model 384) / Nina against Law / Xiaoyu, NORMAL level 0 CPUs,
+/// arena 2), from its state as they start thinking: rand()'s state is PCSX2's through step 165 and the AI generator at
+/// its end. Law has no handler against King, so no draw for it (0x38A500 tests S+0xB8 first); the neutral offence
+/// draws its crouch odds before the air and crouch tests (0x386DF8: Law's 1262 past its jump frame 12). On step 166
+/// PCSX2's pair push starts a frame earlier (P1 -683, P2 801 against our -673, 796).
+#[test]
+fn a_second_cpu_fight_draws_as_the_ps2s() {
+    let Some(a) = assets() else { return };
+    let mut g = Game::load(&a, [384, LAW]).unwrap();
+    g.start_tag([kumite_game::Actor::load(&a, NINA).unwrap(), kumite_game::Actor::load(&a, XIAOYU).unwrap()]);
+    g.set_arena(2);
+    arena_tasks(&a, &mut g, 2);
+    let mut v = kumite_game::vfx::Vfx::new(&a);
+    v.set_stage(2);
+    g.dust = v.tag_dust();
+    let voices = g.fight.fighters.each_ref().map(|f| f.character.unwrap_or(0) as usize);
+    g.sound = Some(Box::new(kumite_game::sound::FightSound::new(std::sync::Arc::new(SoundData::load(&a).unwrap()), [String::new(), String::new()], voices, SoundState::default())));
+    let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
+    b.set_cpu(0, Some((1, 0)));
+    b.set_cpu(1, Some((1, 0)));
+    while b.phase != Phase::Fight {
+        b.step([Pad::default(); 2]);
+    }
+    let ps2: [(usize, u32); 11] = [
+        (1, 2_807_846_043),
+        (19, 1_272_246_019),
+        (39, 3_842_671_898),
+        (59, 1_702_161_613),
+        (79, 3_215_151_067),
+        (98, 3_619_286_598),
+        (99, 1_081_542_639),
+        (119, 3_149_860_954),
+        (139, 1_188_070_373),
+        (159, 393_290_989),
+        (165, 3_503_828_391),
+    ];
+    let mut seen = Vec::new();
+    for k in 0..=165 {
+        b.step([Pad::default(); 2]);
+        if k == 0 {
+            // (PCSX2's row 1: rand()'s state, the AI generator, each CPU's cooldowns S+0x94 / S+0x5C)
+            b.game.fight.objects.seed = 2_393_027_834;
+            b.ai_rng.lcg = 1_847_369_318;
+            for (ai, (cd, movement)) in b.cpu.iter_mut().zip([(120, 84), (83, 76)]) {
+                ai.as_mut().unwrap().resume(cd, movement);
+            }
+        }
+        if k == 1 {
+            // (row 2's faces: each one's face and frames left)
+            let f = &mut b.game.tag_faces;
+            (f[0].face, f[0].timer, f[1].face, f[1].timer) = (0, -151, 0, 226);
+        }
+        if ps2.iter().any(|r| r.0 == k) {
+            seen.push((k, b.game.fight.objects.seed));
+        }
+    }
+    assert_eq!(seen, ps2);
+    assert_eq!(b.ai_rng.lcg, 817_779_491);
 }
 
 /// Eddy's run-off (4829) turns to the screen's axis, so its path follows the camera's yaw: the yaw chases the
@@ -2603,8 +2677,8 @@ fn strings_go_on_from_normal_level_4() {
 fn king_throws_canned_and_delays_inputs() {
     let Some(a) = assets() else { return };
     let (normal, hard) = (cpu_run_of(&a, [KING, LEI], [Some((1, 7)), None], 40000, 9), cpu_run_of(&a, [KING, LEI], [Some((2, 0)), None], 15000, 2));
-    // (rare: a few a match)
-    let ultra = cpu_run_of(&a, [LEI, KING], [None, Some((4, 0))], 60000, 9).stats[2];
+    // (rare: 3 in 27 rounds; 9 gave none once the hits' fireballs drew from the fight's rand())
+    let ultra = cpu_run_of(&a, [LEI, KING], [None, Some((4, 0))], 180000, 27).stats[2];
     eprintln!("King NORMAL L7 {:?}, ULTRA HARD L0 delays {ultra}, HARD L0 {:?}", normal.stats, hard.stats);
     assert!(normal.stats[1] > 0, "a canned throw");
     assert!(ultra > 0 && hard.stats[2] == 0, "delayed inputs with P74 only");
