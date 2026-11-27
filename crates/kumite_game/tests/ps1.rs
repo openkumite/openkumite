@@ -419,6 +419,19 @@ fn a_strike_grazing_a_spheres_top_passes_it_as_on_the_ps1() {
     }
 }
 
+/// Ogre's d+1 trades with Anna's jumping u+1 (t3sim50 c112): of hit-stop 0, the PS1 sets no hold (+0x76,
+/// 0x8002F8E4), so her juggle flight goes on in the reaction's commit step even against Ogre's move set (0x8003F248);
+/// ours stood it still a step, her height P1's for one row, then a step behind.
+#[test]
+fn a_flight_struck_without_hit_stop_goes_on_against_ogre_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [187, 235], None, 1, "n*171,f*40,d+1*2,n*40,f/f+3*2,n*40,b+4*2,n*174", "n*172,b*40,n+2*2,n*30,u+1*2,n*226", 280);
+    for (row, want) in [(824, (1233, -1726)), (825, (1314, -1814))] {
+        let r = at(&t, 555, row, 1);
+        assert_eq!((r.0, r.1), want, "PS1 row {row}");
+    }
+}
+
 #[test]
 fn paul_runs_into_law_and_is_pushed_as_on_the_ps1() {
     let Some(a) = assets() else { return };

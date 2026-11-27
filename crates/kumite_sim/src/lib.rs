@@ -682,6 +682,8 @@ pub struct Fighter {
     jump_home: Option<Option<Vec3>>,
     /// Hit-stop: frames the move is frozen (attacker record +0x2C).
     pub freeze: u32,
+    /// The hold +0x76 is set through the freeze: a hit-stop of 1 or more, not on a K.O. (0x8002F8E4).
+    held: bool,
     /// Paired with the opponent by a throw / hold (+0xC4); `thrown` = this fighter is the victim (+0x74 < 0).
     pub locked: bool,
     pub thrown: bool,
@@ -854,6 +856,7 @@ impl Fighter {
             air_frac: [0; 2],
             jump_home: None,
             freeze: 0,
+            held: false,
             locked: false,
             thrown: false,
             escape: None,
@@ -2325,10 +2328,10 @@ impl Fighter {
         self.on_right = !facing_right;
         self.commits_root = self.current_move(gd).flags24.raw & 0x1000_0000 != 0;
         // hit-stop: the move is frozen (input is still read, so presses are not lost); a juggle flight goes on,
-        // except against the last boss's move set (0x8003F248)
+        // except in a hold (+0x76) against the last boss's move set (0x8003F248)
         if self.freeze > 0 {
             self.freeze -= 1;
-            let flies = !self.opponent.moveset_id.is_some_and(|m| gd.characters.hitstop_still.contains(&m));
+            let flies = !self.held || !self.opponent.moveset_id.is_some_and(|m| gd.characters.hitstop_still.contains(&m));
             // Tekken Tag draws the root of the held frame and eases its pose all the same (0x34E748 after the move
             // logic, its ease 0x373428): a new reaction's frame 1 shows its root step and its pose before the body
             // push. Tekken 3's hold (+0x76, 0x8002F4A4) is
@@ -4623,6 +4626,7 @@ impl Fight {
             };
             if !skip_reaction {
                 self.fighters[v].freeze = if ko { 1 } else { hitstop.max(1) };
+                self.fighters[v].held = !ko && hitstop > 0;
             }
             // a clean hit ends both fighters' ki charges (0x8004078C) and the knockdown stun's hold (0x800403E4)
             if !blocked {
