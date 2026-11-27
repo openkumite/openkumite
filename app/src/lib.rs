@@ -5839,16 +5839,17 @@ impl App {
         let k = if held { 1.0 } else { self.lag.as_secs_f32() / STEP.as_secs_f32() };
         r.set_motion(self.logic_steps, k);
         // a tag battle's swap: the side shows its other member's GPU model; the win pose: the loser's place the winner's
-        // partner's (put back first)
+        // partner's (the old pose put back first, the new one after the swaps: a frame drawn once, a --shot, has both)
         if let (Some(fight), Some(scene)) = (self.fight.as_ref(), self.scene.as_mut()) {
             let posing = fight.bout.game.posing_partner;
-            if posing != scene.bench_posing {
-                for w in scene.bench_posing.into_iter().chain(posing) {
-                    if let (Some(m), Some(b)) = (scene.models.get_mut(1 - w.min(1)), scene.bench.get_mut(w)) {
-                        std::mem::swap(m, b);
-                    }
+            let pose = |scene: &mut Scene, w: Option<usize>| {
+                if let Some((m, b)) = w.and_then(|w| scene.models.get_mut(1 - w.min(1)).zip(scene.bench.get_mut(w))) {
+                    std::mem::swap(m, b);
                 }
-                scene.bench_posing = posing;
+            };
+            let changed = posing != scene.bench_posing;
+            if changed {
+                pose(scene, scene.bench_posing);
             }
             if let Some(t) = fight.bout.game.fight.teams.as_ref() {
                 for i in 0..2 {
@@ -5857,6 +5858,10 @@ impl App {
                         scene.bench_active[i] = t[i].active;
                     }
                 }
+            }
+            if changed {
+                pose(scene, posing);
+                scene.bench_posing = posing;
             }
         }
         // the face animation: the blink and the moving pupils copied into each fighter's texture when they change
