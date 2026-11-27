@@ -174,7 +174,7 @@ fn start() {
 
 /// Runs a job: `options` is JSON, `{"job": "convert", "part": "t3" | "t2" | "cs" | "t3arcade" | "ttt", "files": [[path, id], ...]
 /// (the picked files: a disc image's, by name, the image found among them; Counter-Strike: the folder's, by path below
-/// it; the arcade ROM set: its .zip alone, or its files by name), "now": "YYYY-MM-DD HH:MM:SS"}`, `{"job": "remove", "part": ...}` or `{"job": "install"}`; then the packs
+/// it; the arcade ROM set: its .zip alone, or its files by name), "now": "YYYY-MM-DD HH:MM:SS", "skip": [the parts of `Part::optional` left out]}`, `{"job": "remove", "part": ...}`, `{"job": "strip", "part": ..., "what": a part of `Part::optional`}` or `{"job": "install"}`; then the packs
 /// installed again. The state after it ([`state`]'s).
 #[wasm_bindgen]
 pub fn run(options: &str) -> Result<String, String> {
@@ -224,6 +224,7 @@ fn job(options: &str) -> Result<String> {
                 log(&disc.summary());
                 Ok(disc)
             };
+            let skip: Vec<&str> = o["skip"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
             let out = pack(Some(part))?;
             let ctx = Ctx { out: &out, log: &log, jobs: 1 };
             let converted = (|| -> Result<()> {
@@ -231,12 +232,12 @@ fn job(options: &str) -> Result<String> {
                     Part::T3 => {
                         let disc = disc()?;
                         let now = o["now"].as_str().unwrap_or_default();
-                        ok_tekken3_converter::convert_all::convert_resumable(&ctx, disc.data()?, disc.audio(2).map(|t| t as &dyn DiscFile), now)?;
+                        ok_tekken3_converter::convert_all::convert_resumable(&ctx, disc.data()?, disc.audio(2).map(|t| t as &dyn DiscFile), &skip, now)?;
                     }
                     Part::T2 => {
                         let disc = disc()?;
                         let cdda = [2, 3].map(|n| disc.audio(n).map(|t| Box::new(t.clone()) as Box<dyn DiscFile>));
-                        ok_tekken2_converter::pack::convert(&ctx, disc.data()?, &cdda)?;
+                        ok_tekken2_converter::pack::convert(&ctx, disc.data()?, &cdda, &skip)?;
                     }
                     Part::Cs => {
                         // (the folder picked is the Half-Life folder, or its cstrike/: then the levels are the game's)
@@ -261,7 +262,7 @@ fn job(options: &str) -> Result<String> {
                     }
                     Part::Ttt => {
                         let disc = disc()?;
-                        ok_tekken_tag_converter::pack::convert(&ctx, disc.data()?, false)?;
+                        ok_tekken_tag_converter::pack::convert(&ctx, disc.data()?, false, &skip)?;
                     }
                 }
                 Ok(())
@@ -279,6 +280,14 @@ fn job(options: &str) -> Result<String> {
             let p = pack(Some(part))?;
             p.remove_all("")?;
             p.checkpoint(&[])?;
+        }
+        // (nothing is installed again: the fingerprint covers none of an optional part; its room given back)
+        "strip" => {
+            let part = part(o["part"].as_str().unwrap_or_default())?;
+            let p = pack(Some(part))?;
+            part.strip(&p, o["what"].as_str().unwrap_or_default())?;
+            p.compact()?;
+            return Ok(state_json()?.to_string());
         }
         "install" => {}
         other => bail!("no job {other:?}"),

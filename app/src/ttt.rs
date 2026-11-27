@@ -1855,7 +1855,7 @@ impl Front {
             // the attract (0x3BCC88): the logo's 300 frames out of white, then the opening movie (the first of Theater's);
             // shortcut: the PS2's demo fight and CHARACTER USAGE ranking between them are not done
             Page::Title if self.frame == num(&d.raw["title"]["from_white"]) as u32 + TITLE_FRAMES => {
-                let opening = d.endings.as_ref().and_then(|e| e.raw["theater"]["extras"].as_array()?.iter().find_map(|x| x["movie"].as_u64()));
+                let opening = d.endings.as_ref().and_then(|e| e.raw["theater"]["extras"].as_array()?.iter().find_map(|x| x["movie"].as_u64()).filter(|&m| e.movie_there(m as usize)));
                 if let Some(m) = opening {
                     return Outcome::TttMovie(m as usize, Box::new(Page::Title));
                 }
@@ -2069,7 +2069,7 @@ enum Cell {
     Embu(usize),
     Music,
     Exit,
-    /// Not playable here (an older conversion's EMBU).
+    /// Not playable here (an older conversion's EMBU, a movie or an ending the conversion left out).
     None,
 }
 
@@ -2086,14 +2086,16 @@ fn theater(d: &Data, p: &Progress) -> Vec<Vec<(String, Cell)>> {
                 .filter_map(|k| {
                     let label = t["labels"][c][k].as_str()?;
                     let n = e.ending(c, k).filter(|&n| n < 64 && seen >> n & 1 == 1)?;
-                    Some((label.to_string(), Cell::Ending(n, k)))
+                    // (its files left out of the conversion: listed, not playable)
+                    Some((label.to_string(), if e.there(n) { Cell::Ending(n, k) } else { Cell::None }))
                 })
                 .collect()
         })
         .filter(|r: &Vec<_>| !r.is_empty())
         .collect();
     let cell = |x: &Value| match (x["movie"].as_u64(), x["scene"].as_u64()) {
-        (Some(m), _) => Cell::Movie(m as usize),
+        (Some(m), _) if e.movie_there(m as usize) => Cell::Movie(m as usize),
+        (Some(_), _) => Cell::None,
         (_, Some(_)) if !e.embu.is_empty() => Cell::Embu(x["cast"].as_u64().unwrap_or(0) as usize),
         _ => Cell::None,
     };

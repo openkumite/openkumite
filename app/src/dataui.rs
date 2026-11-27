@@ -33,13 +33,15 @@ pub struct Jobs {
     pub pending: Option<(Pending, Job, Option<PathBuf>)>,
     /// What went wrong outside a job (a pick), until the next command.
     pub message: Option<String>,
+    /// What the next conversion of each part leaves out, as the player chose it (None: what its pack left out).
+    pub skip: [Option<Vec<String>>; 5],
 }
 
 /// A part's job kind.
 fn kind(job: &Job) -> Kind {
     match job {
-        Job::Convert(p, _) => Kind::Convert(*p),
-        Job::Remove(_) => Kind::Remove,
+        Job::Convert(p, ..) => Kind::Convert(*p),
+        Job::Remove(_) | Job::Strip(..) => Kind::Remove,
         Job::Install => Kind::Install,
     }
 }
@@ -80,7 +82,7 @@ impl Jobs {
     /// installed at once, Tekken Tag Tournament's extras too (made on the games' data as it was before: web/index.html's
     /// refresh alike).
     pub fn new(root: &Path) -> Self {
-        let mut j = Self { root: root.to_path_buf(), state: State::default(), sizes: [0; 5], running: None, outcome: None, pending: None, message: None };
+        let mut j = Self { root: root.to_path_buf(), state: State::default(), sizes: [0; 5], running: None, outcome: None, pending: None, message: None, skip: Default::default() };
         j.refresh();
         if (j.state.get(Part::T3).is_some() && !j.state.installed) || (j.state.ttt_assets && !j.state.ttt_installed) {
             j.start(Job::Install, None);
@@ -105,15 +107,19 @@ impl Jobs {
     /// A part's input chosen: converted now, or first a question when the space looks short (`scratch`: a folder of the
     /// input's copy, removed when the job ends or the player drops it).
     pub fn convert(&mut self, part: Part, input: PathBuf, scratch: Option<PathBuf>) {
+        let k = Part::ALL.iter().position(|q| *q == part).unwrap_or(0);
+        let skip = self.skip[k].clone().unwrap_or_else(|| self.state.get(part).map(crate::gamedata::skipped).unwrap_or_default());
+        // (what it leaves out is not written)
+        let need = needed(part, &input).saturating_sub(part.optional().iter().filter(|o| skip.iter().any(|s| s == o.0)).map(|o| o.1).sum());
+        let job = Job::Convert(part, input.clone(), skip);
         self.message = None;
-        let need = needed(part, &input);
         let free = free_space(&self.root);
         match free {
             Some(free) if free < need => {
                 let image = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                self.pending = Some((Pending { part, image, needed: need, free }, Job::Convert(part, input), scratch));
+                self.pending = Some((Pending { part, image, needed: need, free }, job, scratch));
             }
-            _ => self.start(Job::Convert(part, input), scratch),
+            _ => self.start(job, scratch),
         }
     }
 
@@ -175,13 +181,14 @@ impl Jobs {
         let job = r.job.clone();
         let log = r.log.lock().map(|l| l.clone()).unwrap_or_default();
         self.running = None;
+        self.skip = Default::default();
         self.refresh();
         let note = |p: Part| self.state.get(p).and_then(crate::gamedata::missing_note);
         let (ok, cancelled, message) = match result {
             Some(Ok(Ok(()))) => match &job {
                 // (removing and installing say nothing when they work: the screen shows the state)
-                Job::Remove(_) | Job::Install => return true,
-                Job::Convert(p, _) => {
+                Job::Remove(_) | Job::Strip(..) | Job::Install => return true,
+                Job::Convert(p, ..) => {
                     let done = match p {
                         Part::T3 => "Tekken 3 is converted: the game can start.",
                         Part::T2 => "Tekken 2 is converted: its fighters are in the roster.",
@@ -196,7 +203,7 @@ impl Jobs {
                 false,
                 true,
                 match &job {
-                    Job::Convert(p, _) => format!("{} was not converted. Convert it again whenever you like.", p.name()),
+                    Job::Convert(p, ..) => format!("{} was not converted. Convert it again whenever you like.", p.name()),
                     _ => "Stopped. The game data is installed again the next time OpenKumite starts.".into(),
                 },
             ),
@@ -215,13 +222,20 @@ impl Jobs {
         let parts = Part::ALL.map(|p| {
             let m = self.state.get(p);
             let k = Part::ALL.iter().position(|q| *q == p).unwrap_or(0);
-            PartView { converted: m.is_some(), size: self.sizes[k], note: m.and_then(crate::gamedata::missing_note), outdated: m.is_some_and(|m| p.outdated(m)) }
+            PartView {
+                converted: m.is_some(),
+                size: self.sizes[k],
+                note: m.and_then(crate::gamedata::missing_note),
+                outdated: m.is_some_and(|m| p.outdated(m)),
+                skipped: m.map(crate::gamedata::skipped).unwrap_or_default(),
+                skip: self.skip[k].clone(),
+            }
         });
         let job = self.running.as_ref().map(|r| JobView {
             kind: kind(&r.job),
             seconds: r.started.elapsed().as_secs_f64(),
             log: r.log.lock().map(|l| l.clone()).unwrap_or_default(),
-            cancellable: !matches!(r.job, Job::Remove(_)),
+            cancellable: !matches!(r.job, Job::Remove(_) | Job::Strip(..)),
             cancelling: r.cancel.load(Ordering::Relaxed),
         });
         Status {
@@ -247,6 +261,8 @@ impl Jobs {
         use crate::gamedata::Command as C;
         match c {
             C::Remove(p) if !self.busy() => self.start(Job::Remove(p), None),
+            C::Strip(p, what) if !self.busy() => self.start(Job::Strip(p, what), None),
+            C::Skip(p, skip) => self.skip[Part::ALL.iter().position(|q| *q == p).unwrap_or(0)] = Some(skip),
             C::Cancel => self.cancel(),
             C::ConvertAnyway => self.pending(true),
             C::DropPending => self.pending(false),
@@ -303,7 +319,7 @@ mod tests {
     fn a_conversion_cancelled_stops_and_says_so() {
         let root = std::env::temp_dir().join(format!("ok_cancel_{}", std::process::id()));
         let mut jobs = Jobs::new(&root);
-        jobs.start(Job::Convert(Part::T3, std::env::var("OK_T3_BIN").unwrap().into()), None);
+        jobs.start(Job::Convert(Part::T3, std::env::var("OK_T3_BIN").unwrap().into(), Vec::new()), None);
         std::thread::sleep(std::time::Duration::from_secs(3));
         assert!(jobs.busy());
         jobs.cancel();
@@ -316,6 +332,15 @@ mod tests {
         assert!(o.cancelled && !o.ok && asked.elapsed().as_secs() < 10);
         assert!(!jobs.state.playable());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The screen's optional parts are the converters' (the browser's game links no converter to ask).
+    #[test]
+    fn the_screen_offers_the_converters_optional_parts() {
+        for p in Part::ALL {
+            let screen: Vec<_> = crate::gamedata::optional(p).iter().map(|o| (o.0, o.2)).collect();
+            assert_eq!(screen, p.optional(), "{p:?}");
+        }
     }
 
     #[test]

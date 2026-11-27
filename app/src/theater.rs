@@ -34,6 +34,8 @@ pub struct Entry {
 pub struct TheaterData {
     pub raw: Value,
     pub entries: Vec<Option<Entry>>,
+    /// Each of `movies` has its file (a conversion can leave the movies out: its cell greyed, not played).
+    there: Vec<bool>,
 }
 
 impl TheaterData {
@@ -53,7 +55,10 @@ impl TheaterData {
                 })
             })
             .collect();
-        Some(Self { raw, entries })
+        let video = gamedata.parent().unwrap_or(gamedata).join("video");
+        let file = |m: &Value| m["file"].as_str()?.parse::<usize>().ok();
+        let there = raw["movies"].as_array().into_iter().flatten().map(|m| file(m).is_some_and(|f| kumite_fs::exists(&video.join(format!("{f:02}.avi"))))).collect();
+        Some(Self { raw, entries, there })
     }
 
     /// An entry's movie, or None when locked (0x801004A8): kind 0 by the endings seen, 1 / 2 the alternate
@@ -95,6 +100,11 @@ impl TheaterData {
             (true, true) => 2,
         };
         v["names"][i].as_str().unwrap_or_default().to_string()
+    }
+
+    /// Movie `p`'s file is there.
+    pub fn there(&self, p: usize) -> bool {
+        self.there.get(p).copied().unwrap_or(false)
     }
 
     /// Movie parameters `p` (theater.json `movies`) with their captions.
@@ -280,8 +290,8 @@ impl Theater {
         if self.focus == Focus::Grid {
             if confirm {
                 return match self.cell(self.cursor).and_then(|e| self.data.status(e, self.seen, self.alt)) {
-                    Some(m) => Event::Movie(m),
-                    None => Event::None,
+                    Some(m) if self.data.there(m) => Event::Movie(m),
+                    _ => Event::None,
                 };
             }
             match key {
@@ -440,18 +450,21 @@ impl Theater {
         let g = &s["grid"];
         let (cols, rows) = (self.columns(), self.rows());
         let (gx, gy, gw, gh) = (num(&g["x"]) as f32, num(&g["y"]) as f32, num(&g["w"]) as f32, num(&g["h"]) as f32);
-        let pic = |file: &str, x: f32, y: f32| {
+        let tinted = |file: &str, x: f32, y: f32, tint: Color32| {
             if let Some((tex, size)) = art.pic(file) {
                 let r = v.rect(x, y, size[0] as f32, size[1] as f32);
-                painter.image(tex.id(), r, egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                painter.image(tex.id(), r, egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint);
             }
         };
+        let pic = |file: &str, x: f32, y: f32| tinted(file, x, y, Color32::WHITE);
         let frame = g["frame"].as_str().unwrap_or_default();
         for r in self.scroll..(self.scroll + rows) {
             for c in 0..cols {
                 let Some(e) = self.cell(r * cols + c) else { continue };
                 let (x, y) = (gx + gw * c as f32, gy + gh * (r - self.scroll) as f32);
                 match self.data.status(e, self.seen, self.alt) {
+                    // (its movie left out of the conversion: greyed)
+                    Some(m) if !self.data.there(m) => tinted(&e.picture, x, y, Color32::from_gray(70)),
                     Some(_) => pic(&e.picture, x, y),
                     None => pic(g["locked"].as_str().unwrap_or_default(), x, y),
                 }

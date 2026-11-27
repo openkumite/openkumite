@@ -37,6 +37,10 @@ pub struct PartView {
     pub note: Option<String>,
     /// Converted by an older version (`kumite_packs::Part::outdated`): it plays, without what the new one adds.
     pub outdated: bool,
+    /// What its pack left out (its manifest's "skipped": [`optional`]'s names).
+    pub skipped: Vec<String>,
+    /// What its next conversion leaves out, as the player chose it (None: what its pack left out).
+    pub skip: Option<Vec<String>>,
 }
 
 /// A job running.
@@ -125,6 +129,10 @@ pub enum Command {
     DropPending,
     Remove(Part),
     Cancel,
+    /// What the part's next conversion leaves out ([`optional`]'s names).
+    Skip(Part, Vec<String>),
+    /// Remove that optional part from its converted pack.
+    Strip(Part, String),
     /// The outcome seen.
     Seen,
     Play,
@@ -140,7 +148,8 @@ pub enum Command {
 enum Page {
     Home,
     Game(Part),
-    Remove(Part),
+    /// The removal's question: of the part, or of its optional part (an index of [`optional`]).
+    Remove(Part, Option<usize>),
 }
 
 /// A row's action.
@@ -148,8 +157,10 @@ enum Page {
 enum Act {
     Part(Part),
     Pick(Part),
-    AskRemove(Part),
-    Remove(Part),
+    AskRemove(Part, Option<usize>),
+    Remove(Part, Option<usize>),
+    /// Keep or leave out an optional part ([`optional`]'s index).
+    Skip(Part, usize),
     Back,
     Play,
     Quit,
@@ -225,6 +236,23 @@ pub fn missing_note(manifest: &serde_json::Value) -> Option<String> {
     let (last, rest) = missing.split_last()?;
     let what = if rest.is_empty() { last.to_string() } else { format!("{} and {last}", rest.join(", ")) };
     Some(format!("Without {what}: the disc image did not hold them. Convert again from a full image (.cue with its .bin files, .chd, ...) to add them."))
+}
+
+/// What a part's conversion can leave out, the game playing without it: the converters' names (`skip`, the
+/// manifest's "skipped"), as the screen says them, and about how many bytes each is (the converters' `OPTIONAL`, which
+/// the browser's game does not link; a test checks them).
+pub fn optional(p: Part) -> &'static [(&'static str, &'static str, u64)] {
+    match p {
+        Part::T3 => &[("endings", "ENDING MOVIES", 250_000_000), ("opening", "OPENING MOVIE", 34_000_000), ("movies", "PROLOGUE MOVIE", 7_000_000), ("music", "MUSIC", 731_000_000)],
+        Part::T2 => &[("endings", "ENDING MOVIES", 267_000_000), ("music", "MUSIC", 668_000_000)],
+        Part::Ttt => &[("endings", "ENDINGS", 178_000_000), ("opening", "OPENING MOVIE", 89_000_000), ("movies", "ARCADE MOVIE", 30_000_000), ("music", "MUSIC", 209_000_000)],
+        Part::Cs | Part::Arcade => &[],
+    }
+}
+
+/// What a pack left out (its manifest's "skipped").
+pub fn skipped(manifest: &serde_json::Value) -> Vec<String> {
+    manifest["skipped"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(str::to_string)).collect()
 }
 
 /// A part converted by an older version, as the screen says it.
@@ -525,7 +553,7 @@ impl Screen {
         if !self.drops.is_empty() || status.dropped {
             let at = self.pointer.and_then(|p| self.drop_targets.iter().find(|(r, _)| r.contains(p)).map(|t| t.1));
             let page = match self.page {
-                Page::Game(p) | Page::Remove(p) => Some(p),
+                Page::Game(p) | Page::Remove(p, _) => Some(p),
                 Page::Home => rows.get(self.focus).and_then(|r| if let Act::Part(p) = r.act { Some(p) } else { None }),
             };
             // (a disc image's: not the arcade ROM set's part)
@@ -610,7 +638,7 @@ impl Screen {
                     match self.page {
                         Page::Home => {}
                         Page::Game(p) => self.go(Page::Home, Some(Act::Part(p)), status),
-                        Page::Remove(p) => self.go(Page::Game(p), None, status),
+                        Page::Remove(p, _) => self.go(Page::Game(p), None, status),
                     }
                 }
             }
@@ -635,13 +663,16 @@ impl Screen {
         match a {
             Act::Part(p) => self.go(Page::Game(p), None, status),
             Act::Pick(p) => self.commands.push(Command::Pick(p)),
-            Act::AskRemove(p) => self.go(Page::Remove(p), Some(Act::Back), status),
-            Act::Remove(p) => {
-                self.commands.push(Command::Remove(p));
+            Act::AskRemove(p, k) => self.go(Page::Remove(p, k), Some(Act::Back), status),
+            Act::Remove(p, k) => {
+                self.commands.push(match k.and_then(|k| optional(p).get(k)) {
+                    Some(o) => Command::Strip(p, o.0.into()),
+                    None => Command::Remove(p),
+                });
                 self.go(Page::Game(p), None, status);
             }
             Act::Back => match self.page {
-                Page::Remove(p) => self.go(Page::Game(p), None, status),
+                Page::Remove(p, _) => self.go(Page::Game(p), None, status),
                 Page::Game(p) => self.go(Page::Home, Some(Act::Part(p)), status),
                 Page::Home => {}
             },
@@ -661,6 +692,22 @@ impl Screen {
             }
             Act::ConvertAnyway => self.commands.push(Command::ConvertAnyway),
             Act::DropPending => self.commands.push(Command::DropPending),
+            Act::Skip(p, k) => {
+                let pv = &status.parts[part_index(p)];
+                let Some(&(name, ..)) = optional(p).get(k) else { return };
+                let mut skip = pv.skip.clone().unwrap_or_else(|| pv.skipped.clone());
+                let leaving = !skip.iter().any(|s| s == name);
+                // (what a converted pack holds is removed now, after the question)
+                if leaving && pv.converted && !pv.skipped.iter().any(|s| s == name) {
+                    return self.go(Page::Remove(p, Some(k)), Some(Act::Back), status);
+                }
+                if leaving {
+                    skip.push(name.into());
+                } else {
+                    skip.retain(|s| s != name);
+                }
+                self.commands.push(Command::Skip(p, skip));
+            }
             Act::MainGame => self.commands.push(Command::MainGame(if status.main == Part::T3 { Part::Ttt } else { Part::T3 })),
             Act::Seen => {
                 self.log = false;
@@ -747,13 +794,24 @@ impl Screen {
                     _ => "CHOOSE DISC IMAGE",
                 };
                 let mut v = vec![row(choose, !busy && !picking, Act::Pick(p))];
+                let skip = pv.skip.clone().unwrap_or_else(|| pv.skipped.clone());
+                for (k, &(name, label, size)) in optional(p).iter().enumerate() {
+                    let has = |l: &[String]| l.iter().any(|s| s == name);
+                    let right = match (has(&skip), pv.converted && has(&pv.skipped)) {
+                        (true, true) => ("LEFT OUT".to_string(), GREY),
+                        (true, false) => (format!("SKIP · SAVES {} MB", size / 1_000_000), GREY),
+                        (false, true) => ("ADD BACK: CONVERT AGAIN".into(), ORANGE),
+                        (false, false) => (format!("KEEP · {} MB", size / 1_000_000), GREEN),
+                    };
+                    v.push(Row { text: label.into(), on: !busy && !picking, act: Act::Skip(p, k), right: Some(right) });
+                }
                 if pv.converted {
-                    v.push(row("REMOVE", !busy && !picking, Act::AskRemove(p)));
+                    v.push(row("REMOVE", !busy && !picking, Act::AskRemove(p, None)));
                 }
                 v.push(row("BACK", true, Act::Back));
                 v
             }
-            Page::Remove(p) => vec![row("REMOVE", !busy, Act::Remove(p)), row("KEEP IT", true, Act::Back)],
+            Page::Remove(p, k) => vec![row("REMOVE", !busy, Act::Remove(p, k)), row("KEEP IT", true, Act::Back)],
         }
     }
 
@@ -788,7 +846,7 @@ impl Screen {
             match self.page {
                 Page::Home => "GAME DATA",
                 Page::Game(p) => part_title(p),
-                Page::Remove(_) => "REMOVE?",
+                Page::Remove(..) => "REMOVE?",
             }
         };
         let r = painter.text(pos2(cx, y), Align2::CENTER_TOP, head, display(46.0 * u), GOLD);
@@ -900,11 +958,29 @@ impl Screen {
                             say(&painter, &mut y, "Or drop it on this window.", small, DIM);
                         }
                     }
+                    if !optional(p).is_empty() {
+                        say(&painter, &mut y, "To save space, skip what the game plays without: no ending movie goes straight to the credits, no music plays silent. Adding a part back needs the disc image (CONVERT AGAIN).", small, DIM);
+                    }
                     if status.picking == Some(p) {
                         say(&painter, &mut y, "Waiting for the files you choose…", small, GOLD);
                     }
                 }
-                Page::Remove(p) => {
+                Page::Remove(p, Some(k)) => {
+                    let (_, label, size) = optional(p).get(k).copied().unwrap_or_default();
+                    say(
+                        &painter,
+                        &mut y,
+                        &format!(
+                            "Removes {}'s {} (about {} MB) from this device. The game plays on without; to add back, CONVERT AGAIN from the disc image.",
+                            title_case(part_title(p)),
+                            label.to_lowercase(),
+                            size / 1_000_000
+                        ),
+                        small + 2.0,
+                        WHITE,
+                    );
+                }
+                Page::Remove(p, None) => {
                     let pv = &status.parts[part_index(p)];
                     say(&painter, &mut y, &format!("{} ({}) is deleted from this device. You can convert it again from your copy later.", title_case(part_title(p)), gb(pv.size)), small + 2.0, WHITE);
                     if p == Part::T3 {
@@ -1165,6 +1241,30 @@ mod tests {
         assert!(note.starts_with("Without movies, XA music and CD audio: "), "{note}");
     }
 
+    /// An optional part: skipped for the next conversion; on a converted pack, removed after the question; one its
+    /// pack left out, added back by the next conversion.
+    #[test]
+    fn an_optional_part_is_skipped_or_removed() {
+        let mut s = Screen::new();
+        let mut st = status();
+        s.page = Page::Game(Part::T3);
+        run(&mut s, &st);
+        s.nav.extend([Nav::Down, Nav::Go]);
+        assert_eq!(run(&mut s, &st), vec![Command::Skip(Part::T3, vec!["endings".into()])]);
+        let mut s = Screen::new();
+        st.parts[0] = PartView { converted: true, skipped: vec!["music".into()], ..Default::default() };
+        s.page = Page::Game(Part::T3);
+        run(&mut s, &st);
+        s.nav.extend([Nav::Down, Nav::Go]);
+        run(&mut s, &st);
+        assert_eq!(s.page, Page::Remove(Part::T3, Some(0)));
+        s.nav.extend([Nav::Up, Nav::Go]);
+        assert_eq!(run(&mut s, &st), vec![Command::Strip(Part::T3, "endings".into())]);
+        assert_eq!(s.page, Page::Game(Part::T3));
+        s.nav.extend([Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Go]);
+        assert_eq!(run(&mut s, &st), vec![Command::Skip(Part::T3, vec![])]);
+    }
+
     #[test]
     fn the_keys_reach_a_game_and_pick_its_image() {
         let mut s = Screen::new();
@@ -1319,8 +1419,9 @@ mod tests {
             size: 1_400_000_000,
             note: Some("Without movies and XA music: the disc image did not hold them. Convert again from a full image (.cue with its .bin files, .chd, ...) to add them.".into()),
             outdated: false,
+            ..Default::default()
         };
-        st.parts[1] = PartView { converted: true, size: 1_700_000_000, note: None, outdated: false };
+        st.parts[1] = PartView { converted: true, size: 1_700_000_000, note: None, outdated: false, ..Default::default() };
         st.playable = true;
         let mut done = st.clone();
         done.outcome = Some(Outcome { kind: Kind::Convert(Part::T2), ok: true, cancelled: false, message: "Tekken 2 is converted: its fighters are in the roster.".into(), log: t3_log.clone() });
@@ -1337,7 +1438,7 @@ mod tests {
         shots.push(("8-home-converted", st.clone(), vec![], true));
         shots.push(("9-remove", st.clone(), vec![Nav::Down, Nav::Go, Nav::Down, Nav::Go], false));
         let mut ttt = st.clone();
-        ttt.parts[4] = PartView { converted: true, size: 1_700_000_000, note: None, outdated: false };
+        ttt.parts[4] = PartView { converted: true, size: 1_700_000_000, note: None, outdated: false, ..Default::default() };
         ttt.main = Part::Ttt;
         ttt.playable = false;
         shots.push(("10-main-game", ttt, vec![], false));
@@ -1345,6 +1446,14 @@ mod tests {
         old.parts[0].outdated = true;
         shots.push(("11-outdated", old.clone(), vec![], false));
         shots.push(("12-outdated-page", old, vec![Nav::Go], false));
+        // what a conversion leaves out: chosen before converting; a converted pack's removed after the question
+        let mut slim = status();
+        slim.parts[0].skip = Some(vec!["endings".into(), "opening".into()]);
+        shots.push(("13-skip-before-converting", slim, vec![Nav::Go, Nav::Down], false));
+        let mut slim = st.clone();
+        slim.parts[4] = PartView { converted: true, size: 680_000_000, skipped: vec!["endings".into(), "opening".into()], skip: Some(vec!["opening".into()]), ..Default::default() };
+        shots.push(("14-converted-slim", slim.clone(), vec![Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Go, Nav::Down], false));
+        shots.push(("15-remove-music", slim, vec![Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Go, Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Go], false));
         for (w, h, tag) in [(1280u32, 720u32, ""), (800, 360, "-phone")] {
             let mut r = kumite_render::Renderer::headless(w, h).unwrap();
             for (name, st, navs, hover) in &shots {
