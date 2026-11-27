@@ -2624,8 +2624,8 @@ impl App {
             self.rumble.fight(g, &g.data, &[(&g.fighters[0], 0, 1), (&g.fighters[1], 1, 0)]);
         }
         if let Some(sound) = &self.sound {
-            // a new round and the K.O. replay key the voices off (0x8004B688)
-            let reset = fight.bout.game.recorded_total < fight.heard.logged || matches!(fight.bout.replay_frame(), Some((0, true)));
+            // a new round, the K.O. replay and START ending the win pose key the voices off (0x8004B688)
+            let reset = fight.bout.game.recorded_total < fight.heard.logged || matches!(fight.bout.replay_frame(), Some((0, true))) || fight.bout.start_ended;
             let mut sounds = fight.step_sounds();
             // WINS after the winner's own call, once the name has played (0x8006F1D4's task)
             match fight.wins.take() {
