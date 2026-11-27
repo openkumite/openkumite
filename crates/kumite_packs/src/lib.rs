@@ -75,11 +75,12 @@ impl Part {
         }
     }
 
-    /// The oldest format that plays in full: its converter's now, but Tekken 3's 17 while 18 is (18 brought only FREE
-    /// PLAY's text, which the HUD has without it), so its players need not convert their disc again for it.
+    /// The oldest format that plays in full: its converter's now, but Tekken 3's 17 while 18 or 19 is (18 brought only
+    /// FREE PLAY's text, which the HUD has without it; 19 changes only what its installer makes for Tekken Tag), so its
+    /// players need not convert their disc again for them.
     pub fn full_from(self) -> i64 {
         match self.format() {
-            18 if self == Part::T3 => 17,
+            18 | 19 if self == Part::T3 => 17,
             f => f,
         }
     }
