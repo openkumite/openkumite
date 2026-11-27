@@ -98,6 +98,8 @@ pub struct PracticeData {
     intro: Text,
     /// The dummy of this move set takes no actions, nor holds up to get up (0x800B81A8).
     pub inactive_moveset: Option<i64>,
+    /// The pack has the command lists (format 20).
+    commands: bool,
 }
 
 impl PracticeData {
@@ -169,6 +171,7 @@ impl PracticeData {
             burst_size: [u(&m["burst"]["w"]), u(&m["burst"]["h"])],
             intro: Text::from(&screens["hud"]["intro"]["practice"]),
             inactive_moveset: p["dummy"]["inactive_moveset"].as_i64(),
+            commands: screens["hud"]["commands"]["lists"].is_object(),
         }
     }
 }
@@ -233,6 +236,8 @@ pub struct Practice {
     pub mode: PracticeMode,
     /// The menu is open (the fight is paused).
     pub open: bool,
+    /// Its COMMAND LIST is open over it.
+    pub commands: bool,
     mode_select: bool,
     cursor_mode: usize,
     cursor_sub: [usize; 3],
@@ -263,6 +268,7 @@ impl Practice {
             data,
             mode: PracticeMode::Freestyle,
             open: false,
+            commands: false,
             mode_select: true,
             cursor_mode: 0,
             cursor_sub: [0; 3],
@@ -387,6 +393,14 @@ impl Practice {
 
     /// A menu key while the menu is open.
     pub fn key(&mut self, key: Key) -> Action {
+        // the command list: START or a button back to the menu (its directions scroll it, the app's)
+        if self.commands {
+            if matches!(key, Key::Start | Key::Button(_) | Key::Back) {
+                sfx::play(sfx::pick());
+                self.commands = false;
+            }
+            return Action::None;
+        }
         // the practice menu's sounds (record 6): cursor and value changes 0x546C, confirm 0x4CEB
         match key {
             Key::Up | Key::Down | Key::Left | Key::Right => sfx::play(sfx::cursor()),
@@ -450,8 +464,11 @@ impl Practice {
                     return Action::Closed;
                 } else if *cur == last {
                     self.mode_select = true;
+                } else if *cur == 1 && self.data.commands {
+                    // COMMAND LIST: the player's list over the menu (0x80078BCC); an older pack has none
+                    self.commands = true;
                 } else {
-                    // a value item: back to OK (COMMAND LIST is not done)
+                    // a value item: back to OK
                     *cur = 0;
                 }
             }
@@ -470,7 +487,7 @@ impl Practice {
             art.text(&painter, &v, t.font, t.colour, t.x, t.y, &t.text, Color32::WHITE);
         }
         self.draw_hud(&painter, &v, art, project);
-        if self.open {
+        if self.open && !self.commands {
             self.draw_menu(&painter, &v, art);
         }
     }
