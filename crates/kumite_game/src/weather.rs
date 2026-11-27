@@ -246,7 +246,7 @@ pub struct Weather {
     /// The snow's set, its alpha (of 1) and how much of it a metre's depth takes.
     snow_look: (usize, f32, f32),
     /// The tasks' frame count (0: not started).
-    count: u32,
+    pub count: u32,
     /// Its rand()'s state (the PS2's is the fight's one, kumite_sim's `Objects::seed`).
     pub seed: u32,
     flashes: Flashes,

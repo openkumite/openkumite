@@ -1090,7 +1090,8 @@ impl Tag {
         };
         // a fighter's hit sounds (types 1 and 7) on the frame its move connects (0x3769D0): a K.O. 0x0A by an arm (end
         // bone below 0xB) else 0x0D; guarded 0x10; the generic ids by the attacker's damage band and limb (end bone 0xC
-        // and up a leg), an arm's band 0 one of two by rand(); the other ids as written
+        // and up a leg), an arm's with a rand() in every band (0x376AB8..0x376C0C), band 0 one of two by its bit 7; the
+        // other ids as written
         let im = &self.impacts;
         let hit_sounds = |out: &mut Vec<Sound>, seed: &mut u32, i: usize| {
             for h in hits.iter().filter(|h| h.attacker == i) {
@@ -1112,7 +1113,8 @@ impl Tag {
                         im.legs[band]
                     } else {
                         let rows = if fa.character.is_some_and(|c| im.arms.bodies.contains(&c)) { &im.arms.rows_of_bodies } else { &im.arms.rows };
-                        let column = if band == 0 { (rand(seed) & 1) as usize } else { 0 };
+                        let r = rand(seed);
+                        let column = if band == 0 { (r >> 7 & 1) as usize } else { 0 };
                         rows.get(band).map_or(0, |r| r[column])
                     };
                     out.extend(self.sound(id, 0, arena, false));
