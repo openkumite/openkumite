@@ -4740,9 +4740,7 @@ impl App {
             let boss = data.constants.last.character;
             let model = self.roster.by_id(boss).and_then(|c| c.costumes.first().copied()).with_context(|| format!("no character {boss}: the final stage's boss"))?;
             let actor = kumite_game::Actor::load(&self.assets, model)?;
-            st.set_boss(&mut bout.game, &actor, (boss, 0));
-            // (set_boss leaves a boss fight, 6: back to the final stage's own start, 8)
-            st.state = 8;
+            st.final_start(&mut bout.game, &actor, (boss, 0));
         }
         run.stage = Some(st);
         run.clear_frames = 0;
@@ -5821,6 +5819,8 @@ impl App {
         let marks = self.target_marks();
         // Tekken Force's stage (its floor's light)
         let force_last = self.force_fight().then(|| self.force.as_ref().and_then(|r| r.stage.as_ref()));
+        // ... its final stage (0x800B6C10 set): no backdrop, a black fill over the far floor ([`force_final_floor_z`])
+        let force_final = force_last.flatten().is_some_and(|st| st.index == st.data.final_index());
         let Some(r) = self.renderer.as_mut() else { return };
         // (paused: the step itself)
         let k = if held { 1.0 } else { self.lag.as_secs_f32() / STEP.as_secs_f32() };
@@ -6031,6 +6031,9 @@ impl App {
                     None => game.display.map_or(game.fight.fighters[i].root(), |d| d[i].root),
                 };
                 stage_view(&mut cam, scene, [shown(0), shown(1)].map(|p| p / kumite_game::UNITS), self.debug.free_cam.is_some());
+                if force_final {
+                    cam.floor_clip = Some([-1e6, 1e6, -(force_final_floor_z(&view) as f32) / kumite_game::UNITS, 1e6]);
+                }
                 // Tekken 3's floor: its vertices' colours as the PS1 works them out each frame, on the game's camera
                 cam.floor_shades = scene.floor_shading.as_ref().map(|l| {
                     let u = kumite_game::UNITS;
@@ -6241,7 +6244,7 @@ impl App {
                     let g = &f.bout.game;
                     let Some(cache) = s.force_models.as_ref() else { return };
                     let models = (0..g.fight.actor_count()).filter_map(|k| g.body_of(k).and_then(|b| cache.get(&(k, b.model_record)))).collect();
-                    (s.sky.iter().collect(), s.statics.iter().collect(), models)
+                    (if force_final { vec![] } else { s.sky.iter().collect() }, s.statics.iter().collect(), models)
                 }
                 None => (s.sky.iter().collect(), s.statics.iter().collect(), s.models.iter().collect()),
             },
@@ -7285,6 +7288,17 @@ fn strip_x(scroll: f32) -> f32 {
     let left = (scroll + 64.0).rem_euclid(1024.0);
     let turn = if (328.0..=656.0).contains(&left) { 1024.0 } else { 0.0 };
     -(left + turn + 184.0)
+}
+
+/// Force's final stage: the far edge (game z) of the floor its black fill leaves (0x800B4A60, OT 0x3F0 over the
+/// floor): rows 20 to 4 above the screen row Y of the floor point 2500 ahead of the eye (0x80082758; H 500, OFY 240,
+/// the view's Y row 7122 / 4096), so the floor shows from row Y + 4, where it lies at this z.
+fn force_final_floor_z(v: &kumite_sim::camera::View) -> f64 {
+    let p = v.pitch as f64 * std::f64::consts::TAU / 4096.0;
+    let (s, c, ys, dy) = (p.sin(), p.cos(), 7122.0 / 4096.0, -v.eye[1] as f64);
+    let row = |d: f64| 240.0 + 500.0 * ys * (c * dy - s * d) / (s * dy + c * d);
+    let q = ((row(2500.0 - v.eye[2] as f64).floor() + 4.0) - 240.0) / 500.0;
+    v.eye[2] as f64 + dy * (ys * c - q * s) / (ys * s + q * c)
 }
 
 /// The shadows are drawn only while the camera looks no more than 0xEF (21 degrees) up (0x80048E9C's flag
@@ -9484,6 +9498,19 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Force's final stage at its start (eye (0, -3500, -7000), pitch 170): the floor from row 324, as the PS1 shows
+    /// it (PCSX-Redux, vsync 1080).
+    #[test]
+    fn force_finals_floor_ends_where_the_ps1s_fill_does() {
+        let v = kumite_sim::camera::View { eye: [0, -3500, -7000], pitch: 170, yaw: 0, h: 500, roll: 0 };
+        let z = super::force_final_floor_z(&v);
+        let p = 170.0 * std::f64::consts::TAU / 4096.0;
+        let (dy, d) = (3500.0, z + 7000.0);
+        let row = 240.0 + 500.0 * 7122.0 / 4096.0 * (p.cos() * dy - p.sin() * d) / (p.sin() * dy + p.cos() * d);
+        assert!((row - 324.0).abs() < 1e-6, "row {row}, z {z}");
+        assert!((2300.0..2400.0).contains(&z), "z {z}");
+    }
+
     /// Ball's strip in a 4:3 window shows the PS1's texels; beside it, out to 21:9, no join of the picture's ends.
     #[test]
     fn balls_strip_is_the_originals_in_4_3_and_has_no_join_beside_it() {
