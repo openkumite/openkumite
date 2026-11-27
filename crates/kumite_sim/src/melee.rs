@@ -465,7 +465,7 @@ impl Melee {
         // the effect objects, seeing last step's contacts (as the pair fight's)
         crate::step_objects(&mut self.objects, &gd, &self.actors, bodies, anims, &landed, true);
         for f in &mut self.actors {
-            (f.struck, f.whiffed, f.pushed) = (false, false, false);
+            (f.struck, f.whiffed, f.pushed, f.grabbed) = (false, false, false, None);
         }
         let free = |m: &Self, i: usize| !m.actors[i].inactive && m.linked_with(i).is_none();
         // (Tekken Tag's: the volumes in the pose of this frame; Tekken 3's the frame before's)

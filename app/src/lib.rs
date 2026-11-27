@@ -1490,7 +1490,10 @@ impl App {
             f.step_sounds();
             self.hud.step(&f.bout);
             if let Some(v) = self.vfx.as_mut() {
-                v.step(&f.bout.game);
+                match f.bout.replay_frame() {
+                    Some(r) => v.replay(&f.bout.game, r),
+                    None => v.step(&f.bout.game),
+                }
             }
         }
     }
@@ -2616,7 +2619,10 @@ impl App {
             p.hits(&fight.bout.game.fight.hits, neutral);
         }
         if let Some(v) = self.vfx.as_mut() {
-            v.step(&fight.bout.game);
+            match fight.bout.replay_frame() {
+                Some(r) => v.replay(&fight.bout.game, r),
+                None => v.step(&fight.bout.game),
+            }
         }
         // the pads' vibration: not in a replay or the attract demo (0x800954A4, battle type 6)
         if fight.bout.replay_frame().is_none() && mode != Some(Mode::Watch) {

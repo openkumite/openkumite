@@ -1177,6 +1177,29 @@ fn a_hit_throws_the_red_spark_and_a_block_shows_the_blue_one() {
     assert!(most <= 3);
 }
 
+/// A throw's sparks as on the PS1 (#383): the attempt's contact is a hit without damage, its pink spark (0x800442DC sets
+/// +0xCE, 0x8004497C -> 0x80076BD0 index 1: as on the PS1's King 1+3, g1throw f01780); the throw's damage (0x800449B4)
+/// is not a hit slot's and shows nothing, not the red spark nor a heavy hit's character spark and light (35 here).
+#[test]
+fn a_throw_shows_the_pink_spark_at_its_grab_and_none_at_its_damage() {
+    let Some(a) = assets() else { return };
+    let data = Vfx::new(&a).data.expect("effects.json");
+    let (mut grab, mut damage, mut shown) = (false, false, false);
+    // (King's 1+3 on Paul: 35 damage on its frame 61)
+    with_vfx(&a, [95, MODEL_71], "f*20,1+3,n*120", "", |_, g, v| {
+        if g.fight.link.is_some() && !grab {
+            grab = v.slots.iter().flatten().any(|s| *s.strip.cells == *data.zero.cells);
+        }
+        if g.fight.hits.iter().any(|h| h.throw && h.damage >= 21) {
+            damage = true;
+            shown |= v.slots.iter().flatten().any(|s| s.age == 1) || v.hit_light().is_some();
+        }
+    });
+    assert!(damage, "the throw's damage");
+    assert!(grab, "the grab's pink spark");
+    assert!(!shown, "the throw's damage showed a spark or lit the fighters");
+}
+
 #[test]
 fn a_heavy_hit_adds_the_character_spark_its_light_and_flying_sparks() {
     let Some(a) = assets() else { return };
@@ -1283,6 +1306,42 @@ fn the_effect_atlas_has_the_game_palettes() {
     assert!(blue[2] > blue[0], "the block spark is blue: {blue:?}");
     let grey = avg(data.dust.cells[6]);
     assert!(grey[0].abs_diff(grey[2]) < 20, "the dust is grey: {grey:?}");
+}
+
+/// The K.O. replay shows the fight's effects as the PS1's does (#384, its effect log 0x8004A468 replayed by 0x8004A6BC):
+/// the lethal hit's red spark comes again, a heavy one's character spark, light and particles with it; it had none.
+#[test]
+fn the_ko_replay_shows_the_hits_effects_again() {
+    let Some(a) = assets() else { return };
+    let data = Vfx::new(&a).data.expect("effects.json");
+    let mut b = bout(&a, [MODEL_71, MODEL_79], [Some((2, 9)), Some((2, 9))], false);
+    let mut v = Vfx::new(&a);
+    // (a round won by a strike: a throw's lethal damage shows nothing, #383)
+    let (mut lethal, mut red, mut lit, mut particles) = (None, false, false, false);
+    for _ in 0..60 * 60 * 20 {
+        b.step([Pad::default(); 2]);
+        match b.replay_frame() {
+            Some(r) => v.replay(&b.game, r),
+            None => v.step(&b.game),
+        }
+        if let Some(h) = b.game.fight.hits.iter().find(|h| h.health <= 0 && !h.blocked).filter(|_| lethal.is_none()) {
+            lethal = Some((h.damage, h.throw));
+        }
+        if matches!(b.phase, Phase::Replay { .. }) {
+            red |= v.slots.iter().flatten().any(|s| s.age == 1 && *s.strip.cells == *data.spark.cells);
+            lit |= v.hit_light().is_some();
+            particles |= v.sprites().len() > v.slots.iter().flatten().count() + v.grounds.iter().flatten().map(|g| g.puffs.len()).sum::<usize>();
+        }
+        if matches!(b.phase, Phase::Result { .. }) && lethal.is_some_and(|l| !l.1) {
+            break;
+        }
+        if matches!(b.phase, Phase::Call) {
+            (lethal, red, lit, particles) = (None, false, false, false);
+        }
+    }
+    let (damage, _) = lethal.expect("a K.O. by a strike");
+    assert!(red, "the replay's red sparks");
+    assert_eq!((lit, particles), (damage >= 21, damage >= 21), "a heavy lethal hit's light and particles ({damage})");
 }
 
 /// After a K.O.: 90 frames, the half-speed replay of at least 150 frames on the replay camera, then the win pose
