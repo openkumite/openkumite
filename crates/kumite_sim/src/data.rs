@@ -28,6 +28,9 @@ pub enum Bank {
     /// A move of the opponent's set, played on this fighter: throw victims play the thrower's victim
     /// animations (the game points the thrown actor at the thrower's records). Never in the data files.
     Partner,
+    /// An alias a Tekken 2 fighter's set turns off (its donor's own moves, ok_tekken2_converter #302): no command goes
+    /// into it and nothing is borrowed for it. (Last: the state hash keeps the others' numbers.)
+    Off,
 }
 
 /// A move reference: which moveset (the character's own, or the shared common set) and the record index.

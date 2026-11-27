@@ -2644,3 +2644,60 @@ fn a_knockback_raises_dust_where_it_lands() {
     }
     assert_eq!(dust, Some(("common_189".to_string(), 33, 1)), "the knockback lands with dust and the landing sound");
 }
+
+/// The Tekken 2 fighters play none of their Tekken 3 donor's own moves (#302: Ganryu, on King's system, did King's
+/// chain throws): no button of any list (the set's, the common set's, the shared ones) enters a donor move (the set's
+/// moves before its first Tekken 2 one) playing one of the donor's own motions, and no throw links into the donor's own
+/// throws; the victims' moves stay. Standing up out of a crouch, f+1 is Tekken 2's (it was the donor's).
+#[test]
+fn extra_fighters_play_no_move_of_their_donor() {
+    let Some(a) = assets() else { return };
+    let index: MovesetIndex = kumite_sim::data::load(&a.root.join("gamedata/movesets/index.json")).unwrap();
+    let Some(g) = index.models.iter().find(|m| m.moveset_file == "moveset_t2_ganryu.json").map(|m| Game::load(&a, [m.model_record, MODEL_71]).unwrap()) else { return };
+    let gd = &g.fight.data;
+    // (where the common moves go on, and the throw victims' and hit reactions' moves)
+    let getups: Vec<usize> =
+        gd.common.moves.iter().map(|m| m.next.alias).chain(gd.reactions.throw_victims.entries.iter().copied()).chain(gd.reactions.entries.iter().flat_map(|e| e.victims.iter().copied())).collect();
+    let mut files: Vec<&str> = index.models.iter().map(|m| m.moveset_file.as_str()).filter(|f| f.starts_with("moveset_t2_")).collect();
+    files.sort();
+    files.dedup();
+    assert_eq!(files.len(), 25);
+    let mut found = Vec::new();
+    for file in files {
+        let ms = moveset(&a, file);
+        let aliases = ms.aliases.as_ref().unwrap();
+        // (the stance, a donor move, plays Tekken 2's motion)
+        let stance = aliases[3].index;
+        let n_donor = (0..ms.moves.len()).find(|&i| ms.moves[i].anim.starts_with("t2") && Some(i) != stance).unwrap();
+        for c in ms.cancels.iter().chain(&gd.common.cancels).chain(&gd.shared.shared_cancels.entries) {
+            if !matches!(c.kind, kumite_sim::data::CancelKind::Command | kumite_sim::data::CancelKind::Sequence) || getups.contains(&c.dest) {
+                continue;
+            }
+            let Some(m) = aliases.get(c.dest).filter(|r| r.bank == Bank::Own).and_then(|r| r.index).filter(|&m| m < n_donor) else { continue };
+            let mv = &ms.moves[m];
+            let button = c.cmd & 0xC000 == 0 && c.cmd & 0xF != 0;
+            let own_motion = mv.anim.starts_with("motion_");
+            if own_motion && (button || c.transition & 0x7F == kumite_sim::TRANSITION_LINK) {
+                found.push(format!("{file}: alias {} ({})", c.dest, mv.anim));
+            }
+        }
+    }
+    found.dedup();
+    let sets: std::collections::BTreeSet<&str> = found.iter().filter_map(|x| x.split(':').next()).collect();
+    assert!(found.is_empty(), "{} donor moves in {} sets, e.g. {:?}", found.len(), sets.len(), &found[..found.len().min(8)]);
+    for file in ["moveset_t2_ganryu.json", "moveset_t2_jun.json"] {
+        let model = index.models.iter().find(|m| m.moveset_file == file).unwrap().model_record;
+        let ms = moveset(&a, file);
+        let stance = &ms.moves[ms.aliases.as_ref().unwrap()[3].index.unwrap()].anim;
+        let mut g = load_vs_dummy(&a, [model, MODEL_71]);
+        let mut anims = Vec::new();
+        for pad in parse_script("d*20,n,f+1,n*40").unwrap() {
+            g.step([pad, Pad::default()]);
+            let anim = g.fight.fighters[0].animation(&g.fight.data).0.to_string();
+            if anims.last() != Some(&anim) {
+                anims.push(anim);
+            }
+        }
+        assert!(anims.iter().any(|x| x.starts_with("t2") && x != stance), "{file}: f+1 standing up: {anims:?}");
+    }
+}
