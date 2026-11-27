@@ -983,6 +983,18 @@ pub const CONTINUE_FRAMES: u32 = 808;
 pub const CONTINUE_STEP: u32 = 90;
 const GAME_OVER_FRAMES: u32 = 120;
 
+/// The continue count's voice at `countdown` (0x80050100): "continue?" as it shows, then each number 8 .. 1 as it
+/// shows (PS1, t3sim47: 88 frames after "continue?", every 90), then the end.
+pub fn continue_call(countdown: u32) -> Option<kumite_game::sound::Call> {
+    use kumite_game::sound::Call;
+    match countdown {
+        CONTINUE_FRAMES => Some(Call::ContinueStart),
+        c if c % CONTINUE_STEP == 0 && c > 0 && c < CONTINUE_FRAMES => Some(Call::Count(c / CONTINUE_STEP)),
+        1 => Some(Call::ContinueZero),
+        _ => None,
+    }
+}
+
 /// Back from OpenKumite's GRAPHICS (`cursor` 1) or KEY CONFIGURATION (2) to OPTIONS: Tekken Tag's on its ADJUST
 /// DISPLAY or CONTROLLER SETUP entry.
 fn options_back(roster: &Roster, cursor: usize, difficulty: usize) -> Screen {
@@ -2815,6 +2827,17 @@ fn draw_versus(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, se
 
 #[cfg(test)]
 mod tests {
+    /// The PS1 speaks every number from 8 down (t3sim47's arcade CONTINUE?: 8 at +88, 1 at +718, the end at +807).
+    #[test]
+    fn the_continue_count_speaks_8_to_1() {
+        use kumite_game::sound::Call;
+        let calls: Vec<(u32, Call)> = (1..=CONTINUE_FRAMES).rev().filter_map(|c| continue_call(c).map(|k| (CONTINUE_FRAMES - c, k))).collect();
+        let mut want = vec![(0, Call::ContinueStart)];
+        want.extend((1..=8).rev().map(|n| (CONTINUE_FRAMES - n * CONTINUE_STEP, Call::Count(n))));
+        want.push((CONTINUE_FRAMES - 1, Call::ContinueZero));
+        assert_eq!(calls, want);
+    }
+
     use super::*;
 
     fn roster() -> Option<Roster> {

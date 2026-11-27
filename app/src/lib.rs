@@ -2052,14 +2052,7 @@ impl App {
         if let Some(screen) = &mut self.screen {
             // the continue countdown is spoken: "continue?", the seconds, then the end
             if let (Screen::Continue { countdown, .. }, Some(sound), Some(audio)) = (&*screen, self.sound.as_ref(), self.audio.as_mut()) {
-                use kumite_game::sound::Call;
-                let step = menu::CONTINUE_STEP;
-                let call = match *countdown {
-                    menu::CONTINUE_FRAMES => Some(Call::ContinueStart),
-                    c if c % step == 0 && c > 0 && c < menu::CONTINUE_FRAMES - step => Some(Call::Count(c / step)),
-                    1 => Some(Call::ContinueZero),
-                    _ => None,
-                };
+                let call = menu::continue_call(*countdown);
                 if let Some(s) = call.and_then(|c| sound.call(c)) {
                     audio.sfx(&s.file, s.volume, s.speed);
                 }
@@ -5296,14 +5289,7 @@ impl App {
             }));
             // TAG ARCADE's continue count is spoken: "continue?", the seconds, then the end
             if let Some(c) = t.cont {
-                use kumite_game::sound::Call;
-                let step = menu::CONTINUE_STEP;
-                let call = match c {
-                    menu::CONTINUE_FRAMES => Some(Call::ContinueStart),
-                    c if c % step == 0 && c > 0 && c < menu::CONTINUE_FRAMES - step => Some(Call::Count(c / step)),
-                    1 => Some(Call::ContinueZero),
-                    _ => None,
-                };
+                let call = menu::continue_call(c);
                 sounds.extend(call.and_then(|c| sound.call(c)));
             }
             if let Some(audio) = self.audio.as_mut() {
