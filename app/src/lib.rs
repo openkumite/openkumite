@@ -2588,7 +2588,9 @@ impl App {
             // (Team Battle and Survival call no round, only FIGHT: 0x8003DA8C's battle types 2 and 4 enter at 0x8003DBA0)
             use kumite_game::bout::Announcement as A;
             let call = !matches!(mode, Some(Mode::TeamBattle | Mode::Survival));
-            let events = fight.bout.events.iter().filter(|e| call || !matches!(e, A::Round(_) | A::RoundNumber(_) | A::FinalRound));
+            // (Tekken 3's attract demo calls nothing: no 0x80040C00 in it, PCSX-Redux)
+            let demo = mode == Some(Mode::Watch) && self.roster.ttt.is_none();
+            let events = fight.bout.events.iter().filter(|e| !demo && (call || !matches!(e, A::Round(_) | A::RoundNumber(_) | A::FinalRound)));
             // the match's winner in Team Battle or between two humans: its own call (0x8003E060 -> 0x800757A8), but
             // YOU WIN for Tiger (selection 34)
             let own = self.roster.ttt.is_none() && (humans == [true; 2] || mode == Some(Mode::TeamBattle));
