@@ -2666,6 +2666,24 @@ fn a_knockback_raises_dust_where_it_lands() {
     assert_eq!(dust, Some(("common_189".to_string(), 33, 1)), "the knockback lands with dust and the landing sound");
 }
 
+/// Angel and Alex play Devil's and Roger's Tekken 2 moves (#378: one set on the disc, its character gates testing the
+/// select slot, 0x800949B8; Angel had 86 of Devil's 103, Alex 116 of Roger's 118): the same moves and commands, only
+/// their voices, strike paths and throw victims their own.
+#[test]
+fn second_slot_costumes_play_the_first_ones_moves() {
+    let Some(a) = assets() else { return };
+    if !a.root.join("gamedata/movesets/moveset_t2_angel.json").exists() {
+        return eprintln!("the Tekken 2 pack is not there: skipped");
+    }
+    for (first, second) in [("devil", "angel"), ("roger", "alex")] {
+        let (f, s) = (moveset(&a, &format!("moveset_t2_{first}.json")), moveset(&a, &format!("moveset_t2_{second}.json")));
+        let anims = |m: &Moveset| m.moves.iter().map(|m| m.anim.clone()).collect::<Vec<_>>();
+        assert_eq!(anims(&f), anims(&s), "{second}'s moves are {first}'s");
+        let cancels = |m: &Moveset| m.cancels.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>();
+        assert_eq!(cancels(&f), cancels(&s), "{second}'s commands are {first}'s");
+    }
+}
+
 /// The Tekken 2 fighters play none of their Tekken 3 donor's own moves (#302: Ganryu, on King's system, did King's
 /// chain throws): no button of any list (the set's, the common set's, the shared ones) enters a donor move (the set's
 /// moves before its first Tekken 2 one) playing one of the donor's own motions, and no throw links into the donor's own
