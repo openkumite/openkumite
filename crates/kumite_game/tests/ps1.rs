@@ -359,7 +359,7 @@ fn julia_juggles_nina_as_on_the_ps1() {
 }
 
 /// Mokujin (P1) stands while Ogre walks in, jabs and kicks low: with the PS1's draw for round 2 (Kuma's moves, the
-/// pool's entry 11; rand() on the PS1, 0x8004F2DC) both roots are the PS1's. (Mokujin's height runs 2 or 3 off: the
+/// pool's entry 11, 0x8004F2DC's draw on the PS1) both roots are the PS1's. (Mokujin's height runs 2 or 3 off: the
 /// PS1 scales Kuma's motion root by Mokujin's size, the converted clips have Kuma's.)
 #[test]
 fn mokujin_as_kuma_stands_as_on_the_ps1() {
@@ -400,6 +400,31 @@ fn a_reaction_turns_from_its_commit_step_as_on_the_ps1() {
     let t = rows(&a, [107, 139], None, 1, "n*174,f*38,n+1+2*2,n*60,b*2,n*4,b*2,n*60,f+2*2,n*88", "n*175,b*38,d+4*2,n*218", 260);
     for (row, want) in [(865, -16135), (868, -15632)] {
         assert_eq!(at(&t, 643, row, 1).3, want, "PS1 row {row}");
+    }
+}
+
+/// Jin's 2 strikes Xiaoyu in her u+1+3 (motion_038, its root 272 off the origin, no commit flag): the reaction's
+/// first step keeps the root where the move showed it, and her basis turns on the attacker from there (t3sim51 c118:
+/// ours went back to the origin, the basis 176 off). Jin's d/f+1 next turns on her root as it stands too.
+#[test]
+fn a_reaction_keeps_the_struck_moves_root_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [131, 147], None, 1, "n*154,f*40,f+4*2,n*40,d+2*2,n*39,u+1+3*2,n*174", "n*155,b*40,d+1*2,n*30,n+2*2,n*225", 300);
+    for (row, i, want) in [(834, 0, (-353, -26, 16879)), (845, 0, (-1510, 42, 16879)), (859, 1, (489, -6, -16161)), (870, 1, (-209, -48, -16161))] {
+        let r = at(&t, 630, row, i);
+        assert_eq!((r.0, r.2, r.4), want, "PS1 row {row}");
+    }
+}
+
+/// Mokujin as Kuma (round 2's draw, the pool's entry 11) against Gun Jack (t3sim51 c120): walk, u+1, d+4 struck
+/// into a flight, as on the PS1.
+#[test]
+fn mokujin_as_kuma_fights_gun_jack_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [195, 211], Some(11), 1, "n*169,f*40,u+1*2,n*40,d+4*2,n*40,f+3*2,n*174", "n*170,b*40,n+2*2,n*30,d+1*2,n*226", 300);
+    for (row, want) in [(760, (-520, -914, 2)), (790, (-454, -1005, 6)), (850, (-1939, -174, -6))] {
+        let r = at(&t, 579, row, 0);
+        assert_eq!((r.0, r.1, r.2), want, "PS1 row {row}");
     }
 }
 

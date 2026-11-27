@@ -1658,7 +1658,13 @@ impl Fighter {
     fn start_reaction(&mut self, to: Current, alias: usize) {
         // (the reaction's queue marks the frame it was struck in, 0x8002EE74)
         self.exec_mark = self.frame;
+        // (the root stays where the struck move showed it until the reaction's first root update, a move without the
+        // commit flag's too: its basis turns on that root, t3sim52 c118)
+        let offset = self.offset;
         self.start_facing(to, self.commits_root);
+        if !self.commits_root {
+            self.offset = offset;
+        }
         self.alias = alias;
         self.chain = 0;
         self.root_yaw = self.yaw;
