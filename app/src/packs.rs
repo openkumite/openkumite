@@ -147,10 +147,12 @@ pub enum Job {
     /// Convert a part from the player's copy: a disc image in any format ok_converter_common reads (Tekken 3, Tekken 2:
     /// .cue, .bin, .iso, .chd, .ccd, .mds, .ecm, .pbp; the files it names beside it; or an archive of them, .zip, .7z,
     /// .tar, .gz, .xz, .zst: unpacked into a temporary file in ROOT while it converts) or the Half-Life folder
-    /// (Counter-Strike); then the packs installed again.
-    Convert(Part, PathBuf),
+    /// (Counter-Strike), the parts of `Part::optional` named left out; then the packs installed again.
+    Convert(Part, PathBuf, Vec<String>),
     /// Remove a pack (or the Tekken 3 pack's files); the rest installed again.
     Remove(Part),
+    /// Remove a part of `Part::optional` from a converted pack (`Part::strip`); nothing is installed again.
+    Strip(Part, String),
     /// Install the packs (into the extras) as they are.
     Install,
 }
@@ -214,7 +216,8 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync), cancel: &AtomicB
     std::fs::create_dir_all(root).with_context(|| format!("cannot make {}", root.display()))?;
     let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
     match job {
-        Job::Convert(part, from) => {
+        Job::Convert(part, from, skip) => {
+            let skip: Vec<&str> = skip.iter().map(String::as_str).collect();
             let fs = StdFs(dir(*part, root));
             let out = Cancellable { inner: &fs, cancel };
             let ctx = Ctx { out: &out, log, jobs };
@@ -223,14 +226,14 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync), cancel: &AtomicB
                     let disc = Disc::open_path_in(from, root, log)?;
                     log(&disc.summary());
                     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                    ok_tekken3_converter::convert_all::convert_resumable(&ctx, disc.data()?, disc.audio(2).map(|t| t as &dyn DiscFile), &now)?;
+                    ok_tekken3_converter::convert_all::convert_resumable(&ctx, disc.data()?, disc.audio(2).map(|t| t as &dyn DiscFile), &skip, &now)?;
                 }
                 // (a pack cut off is no pack: removed, the one before with it)
                 Part::T2 => {
                     let disc = Disc::open_path_in(from, root, log)?;
                     log(&disc.summary());
                     let cdda = [2, 3].map(|n| disc.audio(n).map(|t| Box::new(t.clone()) as Box<dyn DiscFile>));
-                    ok_tekken2_converter::pack::convert(&ctx, disc.data()?, &cdda).inspect_err(|_| drop(remove(&dir(Part::T2, root))))?;
+                    ok_tekken2_converter::pack::convert(&ctx, disc.data()?, &cdda, &skip).inspect_err(|_| drop(remove(&dir(Part::T2, root))))?;
                 }
                 Part::Cs => {
                     let (game, _) = ok_hl_cs_converter::game::game_root(from)?;
@@ -247,7 +250,7 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync), cancel: &AtomicB
                 Part::Ttt => {
                     let disc = Disc::open_path_in(from, root, log)?;
                     log(&disc.summary());
-                    ok_tekken_tag_converter::pack::convert(&ctx, disc.data()?, false).inspect_err(|_| drop(remove(&dir(Part::Ttt, root))))?;
+                    ok_tekken_tag_converter::pack::convert(&ctx, disc.data()?, false, &skip).inspect_err(|_| drop(remove(&dir(Part::Ttt, root))))?;
                 }
             }
         }
@@ -258,14 +261,15 @@ pub fn run(root: &Path, job: &Job, log: &(dyn Fn(&str) + Sync), cancel: &AtomicB
             }
         }
         Job::Remove(part) => remove(&dir(*part, root))?,
+        Job::Strip(part, what) => return part.strip(&StdFs(dir(*part, root)), what),
         Job::Install => {}
     }
     // (Tekken Tag Tournament's extras follow either game's pack)
-    if matches!(job, Job::Convert(Part::T3 | Part::Ttt, _) | Job::Remove(Part::T3 | Part::Ttt) | Job::Install) {
+    if matches!(job, Job::Convert(Part::T3 | Part::Ttt, ..) | Job::Remove(Part::T3 | Part::Ttt) | Job::Install) {
         install_ttt(root, log, cancel)?;
     }
     // (the arcade and Tekken Tag Tournament packs are not installed: nothing of the extras changes with them)
-    if matches!(job, Job::Convert(Part::Arcade | Part::Ttt, _) | Job::Remove(Part::Arcade | Part::Ttt)) {
+    if matches!(job, Job::Convert(Part::Arcade | Part::Ttt, ..) | Job::Remove(Part::Arcade | Part::Ttt)) {
         return Ok(());
     }
     install(root, log, cancel)
@@ -391,7 +395,7 @@ mod tests {
         };
         let root = std::env::temp_dir().join(format!("ok_packs_ttt_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        run(&root, &Job::Convert(Part::Ttt, disc.into()), &|_| {}, &AtomicBool::new(false)).unwrap();
+        run(&root, &Job::Convert(Part::Ttt, disc.into(), Vec::new()), &|_| {}, &AtomicBool::new(false)).unwrap();
         let state = State::of(&root, Game::Ttt);
         assert!(state.get(Part::Ttt).is_some() && state.get(Part::T3).is_none() && state.playable() == state.ttt_assets && !root.join(EXTRAS).exists());
         assert!(dir(Part::Ttt, &root).join("manifest.json").is_file());
@@ -403,6 +407,16 @@ mod tests {
         assert!(size <= crate::dataui::TTT_PACK, "the pack ({size} bytes) outgrew its budget: the space a conversion asks for");
         let manifest = |p: PathBuf| serde_json::from_slice::<Value>(&std::fs::read(p.join("manifest.json")).unwrap()).unwrap()["fingerprint"].clone();
         assert_eq!(manifest(dir(Part::Ttt, &root).join(EXTRAS)), manifest(game_root(&root, Game::Ttt)));
+        // its optional parts removed afterwards: smaller by each, the same game data, still playable and installed
+        let fingerprint = manifest(game_root(&root, Game::Ttt));
+        for (what, _) in Part::Ttt.optional() {
+            let before = size_of(&dir(Part::Ttt, &root));
+            run(&root, &Job::Strip(Part::Ttt, what.to_string()), &|_| {}, &AtomicBool::new(false)).unwrap();
+            assert!(size_of(&dir(Part::Ttt, &root)) < before, "{what}");
+        }
+        let state = State::of(&root, Game::Ttt);
+        assert!(state.playable() && state.ttt_installed && manifest(game_root(&root, Game::Ttt)) == fingerprint);
+        assert_eq!(state.get(Part::Ttt).unwrap()["skipped"], serde_json::json!(Part::Ttt.optional().iter().map(|o| o.0).collect::<Vec<_>>()));
         run(&root, &Job::Remove(Part::Ttt), &|_| {}, &AtomicBool::new(false)).unwrap();
         assert!(State::of(&root, Game::Ttt).get(Part::Ttt).is_none());
         std::fs::remove_dir_all(&root).unwrap();
@@ -417,7 +431,7 @@ mod tests {
         };
         let root = std::env::temp_dir().join(format!("ok_packs_arcade_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        run(&root, &Job::Convert(Part::Arcade, roms.into()), &|_| {}, &AtomicBool::new(false)).unwrap();
+        run(&root, &Job::Convert(Part::Arcade, roms.into(), Vec::new()), &|_| {}, &AtomicBool::new(false)).unwrap();
         let state = State::of(&root, Game::T3);
         assert!(state.get(Part::Arcade).is_some() && !state.has_packs() && state.installed && !root.join(EXTRAS).exists());
         assert_eq!(layers(&root, &state), vec![dir(Part::Arcade, &root).join(kumite_packs::ASSETS)]);
@@ -459,7 +473,7 @@ mod tests {
         let root = PathBuf::from(var("OK_PACKS_ROOT"));
         let log = |l: &str| println!("{l}");
         for (part, from) in [(Part::T3, "OK_T3_BIN"), (Part::T2, "OK_T2_BIN"), (Part::Cs, "OK_CS_DIR")] {
-            run(&root, &Job::Convert(part, var(from).into()), &log, &AtomicBool::new(false)).unwrap();
+            run(&root, &Job::Convert(part, var(from).into(), Vec::new()), &log, &AtomicBool::new(false)).unwrap();
         }
         let state = activate(&root);
         assert!(state.playable() && state.get(Part::T2).is_some() && state.get(Part::Cs).is_some());

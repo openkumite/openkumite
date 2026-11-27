@@ -63,11 +63,35 @@ pub struct EndingData {
     pub embu: Vec<Descriptor>,
     /// Selection (character * 8 + costume) -> model record.
     records: HashMap<usize, usize>,
+    /// The endings and the movies (video/NN.avi) whose files are not there: a conversion can leave them out.
+    left_out: Vec<usize>,
+    left_out_movies: Vec<usize>,
 }
 
 impl EndingData {
     pub fn load(gamedata: &std::path::Path) -> Result<Self> {
-        Self::new(kumite_sim::data::load(&gamedata.join("endings.json"))?, &kumite_sim::data::load(&gamedata.join("roster.json"))?)
+        let mut d = Self::new(kumite_sim::data::load(&gamedata.join("endings.json"))?, &kumite_sim::data::load(&gamedata.join("roster.json"))?)?;
+        let root = gamedata.parent().unwrap_or(gamedata);
+        let p = &d.raw["playback"];
+        let movies = d.raw["theater"]["extras"].as_array().into_iter().flatten().map(|x| &x["movie"]).chain([&p["unknown_movie"]]).filter_map(Value::as_u64);
+        d.left_out_movies = movies.map(|m| m as usize).filter(|m| !kumite_fs::exists(&root.join(format!("video/{m:02}.avi")))).collect();
+        // (Unknown's ending is a movie)
+        let unknown = p["unknown"].as_u64().map(|u| u as usize);
+        let unknown_there = p["unknown_movie"].as_u64().is_none_or(|m| d.movie_there(m as usize));
+        let gone = |e: &Descriptor| e.body.iter().any(|b| !kumite_fs::exists(&root.join("endings").join(b)));
+        let left_out = d.endings.iter().enumerate().filter(|(k, e)| if Some(*k) == unknown { !unknown_there } else { gone(e) }).map(|(k, _)| k).collect();
+        d.left_out = left_out;
+        Ok(d)
+    }
+
+    /// Ending `e`'s files are there.
+    pub fn there(&self, e: usize) -> bool {
+        !self.left_out.contains(&e)
+    }
+
+    /// Movie `m`'s file (video/NN.avi) is there.
+    pub fn movie_there(&self, m: usize) -> bool {
+        !self.left_out_movies.contains(&m)
     }
 
     /// From endings.json and roster.json.
@@ -85,7 +109,7 @@ impl EndingData {
                 Ok(d)
             })
             .collect::<Result<_>>()?;
-        Ok(Self { raw, table, endings, embu, records })
+        Ok(Self { raw, table, endings, embu, records, left_out: Vec::new(), left_out_movies: Vec::new() })
     }
 
     /// The ending of `character` in `costume` (the game's costume number), if it has one.

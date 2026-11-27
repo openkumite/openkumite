@@ -91,6 +91,49 @@ impl Part {
     pub fn outdated(self, manifest: &Value) -> bool {
         manifest["format"].as_i64().is_some_and(|f| f < self.full_from())
     }
+
+    /// What its conversion can leave out (the converter's `skip`; the manifest's "skipped") and about how many bytes
+    /// each is: the game plays without them.
+    pub fn optional(self) -> &'static [(&'static str, u64)] {
+        match self {
+            Part::T3 => &ok_tekken3_converter::convert_all::OPTIONAL,
+            Part::T2 => &ok_tekken2_converter::pack::OPTIONAL,
+            Part::Ttt => &ok_tekken_tag_converter::pack::OPTIONAL,
+            Part::Cs | Part::Arcade => &[],
+        }
+    }
+
+    /// The part of [`Part::optional`] a file of its pack (its path in the pack) is in.
+    fn optional_of(self, path: &str) -> Option<&'static str> {
+        match self {
+            Part::T3 => ok_tekken3_converter::convert_all::optional(path),
+            Part::T2 => ok_tekken2_converter::pack::optional(path),
+            Part::Ttt => path.strip_prefix("assets/").and_then(ok_tekken_tag_converter::pack::optional),
+            Part::Cs | Part::Arcade => None,
+        }
+    }
+
+    /// Removes the part `what` of [`Part::optional`] from its converted pack: its files, then the manifest's "skipped"
+    /// names it, as a conversion that left it out writes it (the fingerprint covers none of them). Adding it back
+    /// takes converting the disc again.
+    pub fn strip(self, pack: &dyn Vfs, what: &str) -> Result<()> {
+        let mut m = self.manifest(pack).context("no pack")?;
+        // (where the optional files are: the movies, the music, Tekken Tag's endings)
+        for dir in ["video", "audio/music", "assets/video", "assets/audio/music", "assets/endings"] {
+            for e in pack.list(dir).unwrap_or_default() {
+                let path = format!("{dir}/{}", e.name);
+                if !e.is_dir && self.optional_of(&path) == Some(what) {
+                    pack.remove_all(&path)?;
+                }
+            }
+        }
+        let mut skipped = m["skipped"].as_array().cloned().unwrap_or_default();
+        if !skipped.iter().any(|s| s == what) {
+            skipped.push(json!(what));
+        }
+        m["skipped"] = Value::Array(skipped);
+        pack.write("manifest.json", serde_json::to_string_pretty(&m)?.as_bytes())
+    }
 }
 
 /// The main game: the one the game plays (the Game data screen's MAIN GAME).
@@ -279,6 +322,29 @@ mod tests {
             assert_eq!(found(part, json!({"pack": part.kind(), "format": part.format()})), Some(false), "{part:?}");
             assert_eq!(found(part, json!({"pack": "other", "format": part.format()})), None, "{part:?}");
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An optional part removed from a converted pack: its files go, the rest stays, the manifest names it once.
+    #[test]
+    fn an_optional_part_is_stripped() {
+        let dir = std::env::temp_dir().join(format!("ok_packs_strip_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let fs = StdFs(dir.clone());
+        for f in ["video/00.avi", "video/00.flac", "video/20.avi", "audio/music/03.flac", "audio/sfx/000/000.wav", "gamedata/x.json"] {
+            fs.write(f, b"x").unwrap();
+        }
+        fs.write("manifest.json", json!({"format": 1, "fingerprint": "f"}).to_string().as_bytes()).unwrap();
+        for _ in 0..2 {
+            Part::T3.strip(&fs, "endings").unwrap();
+        }
+        Part::T3.strip(&fs, "music").unwrap();
+        let there = |f: &str| dir.join(f).exists();
+        assert!(!there("video/00.avi") && !there("video/00.flac") && !there("audio/music/03.flac"));
+        assert!(there("video/20.avi") && there("audio/sfx/000/000.wav") && there("gamedata/x.json"));
+        let m = Part::T3.manifest(&fs).unwrap();
+        assert_eq!((&m["skipped"], &m["fingerprint"]), (&json!(["endings", "music"]), &json!("f")));
+        assert!(Part::T3.optional().iter().any(|o| o.0 == "endings") && Part::Arcade.optional().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

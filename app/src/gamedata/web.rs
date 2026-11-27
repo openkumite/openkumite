@@ -114,6 +114,8 @@ impl WebHost {
                 size: x["size"].as_u64().unwrap_or(0),
                 note: super::missing_note(&x["manifest"]),
                 outdated: x["outdated"].as_bool().unwrap_or(false),
+                skipped: super::skipped(&x["manifest"]),
+                skip: x["skip"].as_array().map(|l| l.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()),
             }
         });
         let job = v["job"].as_object().map(|_| {
@@ -188,6 +190,8 @@ impl WebHost {
             Command::ConvertAnyway => drop(call("convertAnyway", &[])),
             Command::DropPending => drop(call("dropPending", &[])),
             Command::Remove(p) => drop(call("remove", &[part(p)])),
+            Command::Skip(p, skip) => drop(call("skip", &[part(p), JsValue::from_str(&serde_json::to_string(&skip).unwrap_or_default())])),
+            Command::Strip(p, what) => drop(call("strip", &[part(p), JsValue::from_str(&what)])),
             Command::Cancel => self.cancel(),
             Command::Seen => drop(call("seen", &[])),
             Command::Import => drop(call("importFolder", &[])),
