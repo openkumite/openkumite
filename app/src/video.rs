@@ -337,7 +337,7 @@ pub fn mix(events: &[(u64, Event)], steps: u64, music_volume: f32) -> Vec<f32> {
     };
     // the music: each track from its start to the next change
     let changes: Vec<(usize, &Option<kumite_game::sound::Track>)> = events.iter().filter_map(|(s, e)| if let Event::Music(m) = e { Some((sample_of(*s), m)) } else { None }).collect();
-    let ducks: Vec<(usize, bool)> = events.iter().filter_map(|(s, e)| if let Event::Duck(d) = e { Some((sample_of(*s), *d)) } else { None }).collect();
+    let ducks: Vec<(usize, f32)> = events.iter().filter_map(|(s, e)| if let Event::Duck(d) = e { Some((sample_of(*s), *d)) } else { None }).collect();
     for (k, (start, track)) in changes.iter().enumerate() {
         let Some(t) = track else { continue };
         let Some(m) = clip(&t.file) else { continue };
@@ -349,8 +349,8 @@ pub fn mix(events: &[(u64, Event)], steps: u64, music_volume: f32) -> Vec<f32> {
             let j = first + n;
             let j = if t.looped && j >= m.len() && back < m.len() { back + (j - m.len()) % (m.len() - back) } else { j };
             let Some(&s) = m.get(j) else { break };
-            let ducked = ducks.iter().rev().find(|d| d.0 <= i).is_some_and(|d| d.1);
-            out[i] += s * music_volume * t.gain * if ducked { 0.3 } else { 1.0 };
+            let level = ducks.iter().rev().find(|d| d.0 <= i).filter(|d| d.0 >= *start).map_or(1.0, |d| d.1);
+            out[i] += s * music_volume * t.gain * level;
         }
     }
     for (step, e) in events {

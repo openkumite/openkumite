@@ -543,6 +543,17 @@ impl Results {
 
     pub fn draw(&self, painter: &egui::Painter, v: &View, art: &Art, roster: &Roster) {
         Art::shade(painter, v, crate::art::FULL, [Color32::BLACK; 4]);
+        // Survival's and Team Battle's backdrop (0x800F12DC): the select screen's quads in 0xA0C000 / 0x1830F0, its
+        // banner and letters at 0x60
+        let backdrop = match self.kind {
+            ResultKind::Survival { .. } => Some(Color32::from_rgb(0, 192, 160)),
+            ResultKind::Team { .. } => Some(Color32::from_rgb(240, 48, 24)),
+            ResultKind::TimeAttack { .. } => None,
+        };
+        if let Some(c) = backdrop {
+            roster.grid.bands(painter, v, c);
+            roster.grid.scroll(painter, v, art, self.frame, Color32::from_gray(0xC0));
+        }
         // Time Attack's backdrop: record 302's full-screen picture
         if let (ResultKind::TimeAttack { .. }, Some((tex, _))) = (&self.kind, art.pic("r302/000_full.png")) {
             Art::image(painter, v, &tex, 0.0, 0.0, crate::art::SCREEN_W, crate::art::SCREEN_H, Color32::WHITE);
@@ -599,7 +610,7 @@ impl Results {
             // (the big font has no '"': the marks are three ')
             Self::time(art, painter, v, &d["total"], total, [0.0, 0.0]);
             let id = roster.characters[run.player.0].id;
-            face(painter, v, art, roster, id, n(&d["total"]["face"][0]), n(&d["total"]["face"][1]), 0);
+            framed_face(painter, v, art, roster, id, n(&d["total"]["face"][0]), n(&d["total"]["face"][1]), 0);
             if new_record {
                 let t = Text::from(&d["new_record"]);
                 let colours: Vec<u32> = d["new_record"]["colours"].as_array().into_iter().flatten().map(u).collect();
@@ -622,7 +633,7 @@ impl Results {
         let fc = &l["face"];
         for (&(id, count), p) in tally.iter().zip(&places) {
             let (x, y) = (n(&p[0]), n(&p[1]));
-            face(painter, v, art, roster, id, x + n(&fc["dx"]), y + n(&fc["dy"]), u(&fc["flags"]));
+            framed_face(painter, v, art, roster, id, x + n(&fc["dx"]), y + n(&fc["dy"]), u(&fc["flags"]));
             let shown = count.min(left);
             left -= shown;
             let c = colours.get(((shown / 100) & 3) as usize).copied().unwrap_or(6);
@@ -662,6 +673,15 @@ impl Results {
         let (max_rows, columns) = (u(&mb["rows"]) as usize, (u(&lg["columns"]) as usize).max(1));
         // (the log moves down by the rows it does not use: (n0 + n1 + 1) / columns of them, 0x800EE40C)
         let dy = n(&mb["row_dy"]) * (max_rows - ((n0 + n1 + 1) / columns).min(max_rows)) as f32;
+        // the headers' bars (0x800EDAE0): two additive gradients each, P1's red to black, P2's black to orange
+        for (k, [x0, x1, x2, y0, y1], [c0, c1, c2]) in
+            [(0, [16.0, 108.0, 168.0, 84.0, 98.0], [(255, 0, 0), (255, 0, 0), (0, 0, 0)]), (1, [200.0, 256.0, 352.0, 268.0, 282.0], [(0, 0, 0), (255, 192, 0), (255, 192, 0)])]
+        {
+            let [c0, c1, c2] = [c0, c1, c2].map(|(r, g, b)| crate::art::additive(Color32::from_rgb(r, g, b)));
+            let y = y0 + if k == 1 { dy } else { 0.0 };
+            Art::shade(painter, v, [x0, y, x1 - x0, y1 - y0], [c0, c1, c0, c1]);
+            Art::shade(painter, v, [x1, y, x2 - x1, y1 - y0], [c1, c2, c1, c2]);
+        }
         let header = |k: usize| if run.teams[k].human { s(&d["players"][k]) } else { "CPU".to_string() };
         art.text(painter, v, 1, 6, n(&hd["x"][0]), n(&hd["y"][0]), &header(0), Color32::WHITE);
         let h1 = header(1);
@@ -678,15 +698,77 @@ impl Results {
                 }
             }
         }
+        // (0x800EE074: 8 slots, the beaten greyed, the one fighting framed red (P1) or yellow (P2), the empty ones grey
+        // boxes)
         for (k, (team, down)) in run.teams.iter().zip(down).enumerate() {
             let y = if k == 0 { n(&mb["y"][0]) } else { n(&mb["y"][1]) + dy };
-            for (m, &(idx, _)) in team.members.iter().enumerate() {
+            for m in 0..8 {
+                let x = n(&mb["x"]) + n(&mb["dx"]) * m as f32;
+                let Some(&(idx, _)) = team.members.get(m) else {
+                    Art::shade(painter, v, [x, y, 36.0, 64.0], [Color32::from_gray(48); 4]);
+                    let (top, bottom) = (Color32::BLACK, Color32::from_gray(12));
+                    Art::shade(painter, v, [x + 1.0, y + 2.0, 34.0, 60.0], [top, top, bottom, bottom]);
+                    continue;
+                };
                 let id = roster.characters.get(idx).map_or(0, |c| c.id);
-                face(painter, v, art, roster, id, n(&mb["x"]) + n(&mb["dx"]) * m as f32, y, if m < down { 0x60 } else { 0 });
+                let flags = match m.cmp(&down) {
+                    std::cmp::Ordering::Less => 0x60,
+                    std::cmp::Ordering::Equal => 2 - k as u32,
+                    std::cmp::Ordering::Greater => 0,
+                };
+                framed_face(painter, v, art, roster, id, x, y, flags);
             }
         }
         // the log: "n.  VS" row by row in its columns (0x800EE250), with the two members who fought at half size, the
         // loser greyed
+        // (its box, 0x800EE688: black, the lower half a gradient to the winner's colour; the matches to come as dim
+        // rows, and the lines between the members who fought, 0x800EEAB8: the one shown next drawn over 8 frames)
+        let colour = |r: &Option<usize>| match r {
+            Some(0) => Color32::from_rgb(255, 0, 0),
+            Some(_) => Color32::from_rgb(255, 192, 0),
+            None => Color32::from_gray(192),
+        };
+        for i in 0..(n0 + n1).saturating_sub(1) {
+            let (c, row) = (i % columns, i / columns);
+            let (x, y) = (n(&lg["dx"]) * c as f32 + n(&lg["x"]) - 4.0, n(&lg["y"]) + n(&lg["dy"]) * row as f32 + dy);
+            Art::shade(painter, v, [x, y, 95.0, 29.0], [Color32::BLACK; 4]);
+            let low = run.log.get(i).filter(|_| (i as u32) < self.step).map_or(Color32::from_gray(64), colour);
+            Art::shade(painter, v, [x, y + 15.0, 95.0, 14.0], [Color32::BLACK, Color32::BLACK, low, low]);
+            if i as u32 >= self.step {
+                for fx in [31.0, 71.0] {
+                    Art::shade(painter, v, [x + fx, y, 16.0, 29.0], [Color32::from_gray(16); 4]);
+                }
+                art.text(painter, v, 0, 0x1A, x + 4.0, y + n(&lg["text_dy"]), &format!("{:2}.  VS", i + 1), Color32::WHITE);
+            }
+        }
+        let mut at = [0usize; 2];
+        for (i, r) in run.log.iter().enumerate().take(self.step as usize + 1) {
+            let grow = if (i as u32) < self.step { 8 } else { self.frame.saturating_sub(32 + self.step_frames() * self.step).min(8) };
+            let (x0, x1) = (57.0 + 36.0 * at[0] as f32, 57.0 + 36.0 * at[1] as f32);
+            let (top, bottom) = (164.0, n(&mb["y"][1]) + dy);
+            let part = |a: f32, b: f32| a + (b - a) * grow as f32 / 8.0;
+            // (P1's win grows down from its member, P2's up, a draw from the middle)
+            let [ax, ay, bx, by] = match r {
+                Some(0) => [x0, top, part(x0, x1), part(top, bottom)],
+                Some(_) => [part(x1, x0), part(bottom, top), x1, bottom],
+                None => {
+                    let (mx, my) = ((x0 + x1) / 2.0, (top + bottom) / 2.0);
+                    [part(mx, x0), part(my, top), part(mx, x1), part(my, bottom)]
+                }
+            };
+            if grow > 0 {
+                let mut line = egui::Mesh::default();
+                for (px, py) in [(ax, ay), (ax + 3.0, ay), (bx, by), (bx + 3.0, by)] {
+                    line.colored_vertex(v.pos(px, py), colour(r));
+                }
+                line.indices.extend([0, 1, 2, 1, 3, 2]);
+                painter.add(egui::Shape::mesh(line));
+            }
+            match r {
+                Some(w) => at[1 - w] += 1,
+                None => at = [at[0] + 1, at[1] + 1],
+            }
+        }
         let mut at = [0usize; 2];
         for (i, r) in run.log.iter().enumerate().take(self.step as usize) {
             let (c, row) = (i % columns, i / columns);
@@ -722,7 +804,16 @@ impl Results {
                 (s(&b["lose"][0]), u(&b["lose"][1]))
             };
             let y = n(&bn["y"]) + n(&bn["dy"]) * (max_rows - ((n0 + n1 + 1) / 3).min(max_rows)) as f32;
-            art.text(painter, v, 2, colour, crate::art::CENTRE - art.text_w(2, &text) / 2.0, y, &text, Color32::WHITE);
+            // (its half-transparent box, 0x800EDFD8, in the winner's colour. shortcut: the banner's slide in, 0x800FA644,
+            // is left out)
+            let (w, x) = (art.text_w(2, &text), crate::art::CENTRE - art.text_w(2, &text) / 2.0);
+            let box_colour = match left[0].cmp(&left[1]) {
+                std::cmp::Ordering::Equal => (192, 192, 192),
+                std::cmp::Ordering::Greater => (255, 0, 0),
+                std::cmp::Ordering::Less => (255, 192, 0),
+            };
+            Art::shade(painter, v, [x - 8.0, y - 2.0, w + 16.0, 46.0], [Color32::from_rgba_unmultiplied(box_colour.0, box_colour.1, box_colour.2, 128); 4]);
+            art.text(painter, v, 2, colour, x, y, &text, Color32::WHITE);
         }
     }
 }
@@ -732,6 +823,14 @@ impl Results {
 #[allow(clippy::too_many_arguments)]
 pub fn face(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, id: usize, x: f32, y: f32, flags: u32) {
     face_sized(painter, v, art, roster, id, x, y, flags, 1.0);
+}
+
+/// [`face`] in its frame, as 0x8004B928 draws one without flags bit 8: the cell frame's lines in set `flags & 3`, the
+/// face 2, 3 in (0x8004BA58).
+#[allow(clippy::too_many_arguments)]
+fn framed_face(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, id: usize, x: f32, y: f32, flags: u32) {
+    roster.grid.frame_lines(painter, v, x, y, (flags & 3) as usize, 0x80, None);
+    face(painter, v, art, roster, id, x + 2.0, y + 3.0, flags);
 }
 
 /// [`face`] drawn at `scale`.
