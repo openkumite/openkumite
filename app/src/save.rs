@@ -150,17 +150,21 @@ impl Records {
             }
             name(n, MAX_NAME);
         }
-        self.usage.truncate(self.characters());
+        self.usage.truncate(MAX_ROWS);
         name(&mut self.online_name, crate::room::MAX_NAME);
         self.graphics = std::mem::take(&mut self.graphics).sane();
     }
 
+    /// (every fighter by its id: the imported ones, past Tekken 3's table, too)
     fn count(&mut self, id: usize, k: usize) {
-        let n = self.characters();
+        if id >= MAX_ROWS {
+            return;
+        }
+        let n = self.characters().max(id + 1);
         if self.usage.len() < n {
             self.usage.resize(n, [0; 4]);
         }
-        let c = &mut self.usage[id % n][k];
+        let c = &mut self.usage[id][k];
         *c = c.saturating_add(1);
     }
 
@@ -517,7 +521,7 @@ mod tests {
         assert!(!broken);
         let mut r = r.expect("it reads");
         r.sanitize();
-        assert_eq!((r.page, r.difficulty, r.usage.len()), (0, 2, r.time_attack.len()));
+        assert_eq!((r.page, r.difficulty, r.usage.len()), (0, 2, MAX_ROWS));
         assert_eq!(r.survival[0].0, 0);
         assert!(r.survival[0].2.len() <= MAX_NAME && r.time_attack[0].1.len() <= MAX_NAME && r.online_name.len() <= crate::room::MAX_NAME);
         assert!((0.25..=2.0).contains(&r.graphics.scale));
