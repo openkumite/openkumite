@@ -2060,11 +2060,20 @@ impl App {
         let ducked = self.game_paused() && self.bowl.is_none();
         // Tekken Bowl's game over with nobody among TOP 5 BOWLERS: the music out over 240 frames (0x3F1764)
         let faded = self.bowl.as_ref().is_some_and(|b| b.top.as_ref().is_some_and(|(_, placed)| placed.iter().all(Option::is_none)));
+        // Tekken 3's match call fades the music out over 180 frames (0x8003E060 -> 0x8006B6C8), but not YOU LOSE's
+        // (shortcut: the PS1 fades that one too when ctx+0xA is set, not traced)
+        let called = self.fight.as_ref().is_some_and(|f| {
+            let b = &f.bout;
+            let you_lose = |w: usize| b.cpu[w].is_some() && b.cpu[1 - w].is_none() && f.setup.as_ref().is_none_or(|s| s.mode != Mode::TeamBattle);
+            b.game.rounds.is_none() && b.decided() && matches!(b.phase, Phase::Result { winner } | Phase::MatchOver { winner } if !winner.is_some_and(you_lose))
+        });
         if let Some(audio) = self.audio.as_mut() {
-            if faded {
-                audio.pause_level = (0.0, 240);
+            let pause = audio.pause_level;
+            if faded || called {
+                audio.pause_level = (0.0, if faded { 240 } else { 180 });
             }
-            audio.duck(ducked || faded);
+            audio.duck(ducked || faded || called);
+            audio.pause_level = pause;
         }
         // the menus' sounds queued since the last step
         for code in menu::sfx::take() {

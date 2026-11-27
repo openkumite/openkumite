@@ -21,8 +21,8 @@ pub enum Event {
     Music(Option<Track>),
     /// A one-shot sound at this volume (the effects' volume included) and speed.
     Sfx(PathBuf, f32, f32),
-    /// The music quieter (or not).
-    Duck(bool),
+    /// The music's level against the track's (a pause's duck, a fade out; a new track starts at 1).
+    Duck(f32),
 }
 
 /// The sounds asked for, by game step.
@@ -211,9 +211,9 @@ impl Audio {
         self.ducking = if (target - self.ducking).abs() <= rate + 1e-4 { target } else { self.ducking + rate.copysign(target - self.ducking) };
         // (the game says it every step: noted when it changes)
         if let Some(c) = self.capture.as_mut() {
-            let was = c.events.iter().rev().find_map(|e| if let Event::Duck(d) = e.1 { Some(d) } else { None }).unwrap_or(false);
-            if was != ducked {
-                c.note(Event::Duck(ducked));
+            let was = c.events.iter().rev().find_map(|e| if let Event::Duck(d) = e.1 { Some(d) } else { None }).unwrap_or(1.0);
+            if was != self.ducking {
+                c.note(Event::Duck(self.ducking));
             }
         }
         if let Some(p) = &self.music {
