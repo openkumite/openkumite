@@ -1079,6 +1079,17 @@ impl ForceStage {
         self.events.push(ForceEvent::Boss(boss.0, boss.1));
     }
 
+    /// The final stage's start (state 8): its character `actor` loaded as a boss, then both on VS's start marks as the
+    /// PS1 has them (PCSX-Redux, P+0x0 at its first frame): the player at x -1000, the character at 1000, facing.
+    pub fn final_start(&mut self, game: &mut Game, actor: &Actor, boss: (usize, usize)) {
+        self.set_boss(game, actor, boss);
+        self.state = 8;
+        let [p, b] = &mut game.fight.fighters;
+        (p.position, b.position) = (Vec3::new(-1000.0, 0.0, 0.0), Vec3::new(1000.0, 0.0, 0.0));
+        b.yaw = -std::f32::consts::FRAC_PI_2;
+        b.root_yaw = b.yaw;
+    }
+
     /// An extra stage's bosses come in together: the first as `set_boss` places it, the others in the other slot
     /// beside it (on the other side of the line), each at its stage's boss health; all must go down.
     pub fn set_bosses(&mut self, game: &mut Game, actors: &[Actor], bosses: &[(usize, usize)]) {
