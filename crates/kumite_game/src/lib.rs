@@ -464,6 +464,9 @@ pub struct Game {
     /// fight's task runner on its rand(), so they come with its state (a rollback, a replay's seek).
     pub weather: Option<weather::Weather>,
     pub people: Vec<crowd::Walker>,
+    /// Tekken Tag's dust as the app hands it over ([`vfx::Vfx::tag_dust`]): the arena's particles (0x437AC0) and each
+    /// path's frames, which the fight's tasks run on its rand().
+    pub dust: Option<(usize, Arc<Vec<usize>>)>,
     /// Tekken Tag's wings (True Ogre's and Devil's).
     pub wings: [face::WingState; 2],
     /// Tekken Tag's Unknown's wolf: its root's place (world, metres) as 0x34CC38 eases it; none: at once (the round's
@@ -947,6 +950,7 @@ impl Game {
             tag_faces: Default::default(),
             weather: None,
             people: Vec::new(),
+            dust: None,
             wings: Default::default(),
             wolves: Default::default(),
             springs: Default::default(),
@@ -1553,7 +1557,39 @@ impl Game {
         // input and the task runner (0x346608): one rand(), PCSX2's order in a CPU fight)
         if self.fight.data.tag_moves {
             self.step_hands();
+            self.spawn_dust();
             self.step_sound();
+        }
+    }
+
+    /// Tekken Tag's dust of the fight frame (after the blinks, before the sounds): the landings' at the feet
+    /// (0x36DAF8), then the moves' ground impacts' (0x372DF8) and op 0xA's at a bone slot (0x372C40 -> 0x35BF10: 3
+    /// particles more than 500 up), each the arena's count (0x3A2758).
+    fn spawn_dust(&mut self) {
+        let Some((count, paths)) = self.dust.clone() else { return };
+        for landing in [true, false] {
+            for i in [0, 1, 3] {
+                let Some(f) = self.fight.actor(i) else { continue };
+                let root = f.root();
+                let bone = |slot: u32| {
+                    let node = self.body_of(i)?.character.nodes.iter().position(|n| BONE_SLOTS.get(slot as usize) == Some(&n.name.as_str()))?;
+                    let (pose, place) = self.pose_actor(i)?;
+                    Some(place.transform_point3(pose.get(node)?.w_axis.truncate()) * UNITS)
+                };
+                let at: Vec<(Vec3, bool)> = f
+                    .effects
+                    .iter()
+                    .filter_map(|e| match *e {
+                        kumite_sim::MoveEffect::LandingImpact if landing => Some((Vec3::new(root.x, 0.0, root.z), false)),
+                        kumite_sim::MoveEffect::GroundImpact if !landing => Some((Vec3::new(root.x, 0.0, root.z), false)),
+                        kumite_sim::MoveEffect::AtBone { op: 0xA, slot } if !landing => bone(slot).map(|p| (p, p.y > 500.0)),
+                        _ => None,
+                    })
+                    .collect();
+                for (p, high) in at {
+                    self.fight.objects.tag_dust(i, p, if high { 3 } else { count }, &paths, high);
+                }
+            }
         }
     }
 
@@ -1566,12 +1602,13 @@ impl Game {
             self.step_hands();
         }
         self.step_springs();
+        // (the arena's tasks come first in the task list, started as it loads: person 71's draw before the dust's)
+        if tag {
+            self.step_arena_tasks();
+        }
         if let Some((striking, struck)) = self.fight.objects.pending.take() {
             self.place_burns();
             self.fight.objects.step(&striking, &struck, false);
-        }
-        if tag {
-            self.step_arena_tasks();
         }
         let shot = [self.snapshot(0), self.snapshot(1)];
         if self.recorded.len() >= REPLAY_RING {

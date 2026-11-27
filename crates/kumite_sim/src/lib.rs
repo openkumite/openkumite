@@ -3866,6 +3866,7 @@ impl Fight {
                 let feet = roots_before.get(h.victim).copied().unwrap_or_default();
                 self.objects.tag_burn(h.victim, h.attacker, feet);
             }
+            self.objects.tag_hits(&self.hits);
         }
         // the ball after the hit pass (it keeps flying after the K.O.)
         self.ball_step(&gd, &[&bodies[0], &bodies[1]]);

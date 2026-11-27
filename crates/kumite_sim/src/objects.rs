@@ -174,6 +174,19 @@ pub enum Kind {
         victim: usize,
         node: usize,
     },
+    /// Tekken Tag's heavy hit's fireballs (0x3A6110): flying straight (task 0x3A3928) or `easing` along the strike
+    /// (0x3A35C8), `ki` a charged or angry attacker's (file 8's blue frames); `speed` from the first to the second.
+    TagShard {
+        easing: bool,
+        ki: bool,
+        speed: [f32; 2],
+    },
+    /// Tekken Tag's dust (0x3A2758's set 2, task 0x3A06F0): a particle on its `path`, `count` its frames run; `high`
+    /// one of the 3 of a dust more than 500 up (the set's own size and colour, not the arena's).
+    TagDust {
+        path: usize,
+        high: bool,
+    },
 }
 
 /// The drawn nodes a fighter True Ogre's fire struck burns on (0x3A54D8's table 0x5198A0).
@@ -238,9 +251,8 @@ pub struct Objects {
     /// with a new press on a pad the main loop seeds it again (0x35C370): `reseed` (0x439C7C) plus `vblanks` (0x8BD2F4,
     /// an interrupt's count, one a frame). `loops`: the main loop's frame (gp-0x74D8).
     /// The CPUs (their input after the sounds, 0x36C4C0), the camera's director (0x36DDD0) and the arena's tasks in the
-    /// task runner (kumite_game's `Game::weather` and `people`: 0x3A0CE8's smoke, 0x3D8848's people) draw from it too.
-    /// shortcut: the hit sparks (0x3A3958's draws, a few a spark) draw from kumite_game's vfx stream, which the app steps
-    /// outside the bout; move them into Game when a fight past its first spark is matched (audit41's CPU fight, row 228)
+    /// task runner (kumite_game's `Game::weather` and `people`: 0x3A0CE8's smoke, 0x3D8848's people) draw from it too,
+    /// as do the hits' fireballs and the dust, tasks here ([`Kind::TagShard`], [`Kind::TagDust`]).
     pub vblanks: u32,
     pub reseed: u32,
     pub loops: u32,
@@ -293,6 +305,31 @@ impl Objects {
             self.tag_task(Kind::TagBurn { victim, node }, attacker, feet, [0.0; 2]);
         }
         self.tag_task(Kind::TagFloor { scale: 0.0, fade: 0.0 }, attacker, feet, [0.0; 2]);
+    }
+
+    /// Tekken Tag's hits of 21 or more but the fire and projectile attacks' (limb bytes 0x18-0x1C) at their point
+    /// along their strike (0x35BF10 -> 0x3A6110 twice): 18 fireballs flying straight (task 0x3A3928), then 10 easing
+    /// (0x3A35C8).
+    pub fn tag_hits(&mut self, hits: &[crate::HitEvent]) {
+        for h in hits.iter().filter(|h| !h.blocked && h.base_damage != 0 && h.damage.max(h.base_damage) >= 21 && !(0x18..=0x1C).contains(&h.limb)) {
+            let (pitch, yaw) = tag_angles(h.strike);
+            for easing in [false; 18].into_iter().chain([true; 10]) {
+                self.tag_task(Kind::TagShard { easing, ki: h.ki, speed: [0.0; 2] }, h.attacker, h.point, [pitch, yaw]);
+            }
+        }
+    }
+
+    /// Tekken Tag's dust (0x3A2758 kind 3) of `owner` at `at`: `count` particles, each on a path drawn at random of
+    /// `paths` (their frames).
+    pub fn tag_dust(&mut self, owner: usize, at: Vec3, count: usize, paths: &[usize], high: bool) {
+        for _ in 0..if paths.is_empty() { 0 } else { count } {
+            let path = self.libc() as usize % paths.len();
+            let Some(&left) = paths.get(path) else { return };
+            self.tag_task(Kind::TagDust { path, high }, owner, at, [0.0; 2]);
+            if let Some(o) = self.list.last_mut() {
+                o.left = left as i32;
+            }
+        }
     }
 
     /// A draw's odds of a spark or a flame, out of 0x8000: fewer as the pool fills (0x800713BC, `k` 15, 9 or 10).
@@ -452,6 +489,14 @@ impl Objects {
                 Kind::TagFloor { .. } => self.tag_floor(&mut o),
                 Kind::TagBurn { .. } => self.tag_burning(&mut o),
                 Kind::TagMist => self.tag_mist(&mut o, on(TAG_MIST)),
+                Kind::TagShard { .. } => self.tag_shard(&mut o),
+                // (0x3A0834: each frame a draw scales its drift in the arena's wind, 0x3D3D08)
+                // shortcut: the drift is not applied (the effects' bursts have no wind); apply it where a wind blows dust
+                Kind::TagDust { .. } => {
+                    self.unit();
+                    o.count += 1;
+                    o.count < o.left
+                }
                 Kind::Mist(byte) => self.mist(&mut o, on(byte)),
                 Kind::GasSource { heading, next } => {
                     o.count += 1;
@@ -878,6 +923,40 @@ impl Objects {
         o.frames = (o.frames + 1) % 30;
         o.count += 1;
         o.pos.y >= 0.0 && o.count < o.left
+    }
+
+    /// Tekken Tag's heavy hit's fireball: its first run puts a straight one (0x3A3928) up to 127 off, its pitch and yaw
+    /// turned by up to pi / 32, 0-159 a frame, an eighth of it at once, 20-51 frames; an easing one's (0x3A35C8) by up
+    /// to pi / 3, from 0-512 to 1664-2176 32nds a frame, 10-41 frames. Then on along it, the easing one's speed
+    /// (cos(pi t) + 1) x 0.06247 + 0.5 of the way, t its age over its frames. No draws after the first.
+    fn tag_shard(&mut self, o: &mut Object) -> bool {
+        let Kind::TagShard { easing, ki, mut speed } = o.kind else { return false };
+        if o.state == 0 {
+            let turn = |s: &mut Self, by: f32| (s.unit() * 2.0 - 1.0) * by;
+            let [mut pitch, mut yaw] = [o.vel.x, o.vel.y];
+            if easing {
+                pitch += turn(self, std::f32::consts::FRAC_PI_3);
+                yaw += turn(self, std::f32::consts::FRAC_PI_3);
+                speed = [self.unit() * 512.0, self.unit() * 512.0 + 1664.0];
+                o.left = 10 + (self.libc() & 0x1F) as i32;
+            } else {
+                // (the PS2's y down and z negated)
+                for (k, s) in [1.0, -1.0, -1.0].into_iter().enumerate() {
+                    o.pos[k] += s * ((self.libc() & 0xFF) as f32 - 127.0);
+                }
+                pitch += turn(self, std::f32::consts::PI / 32.0);
+                yaw += turn(self, std::f32::consts::PI / 32.0);
+                speed = [self.unit() * 159.0; 2];
+                o.pos += tag_along(pitch, yaw, speed[0] * 0.125);
+                o.left = 20 + (self.libc() & 0x1F) as i32;
+            }
+            (o.state, o.vel, o.kind) = (1, tag_along(pitch, yaw, 1.0), Kind::TagShard { easing, ki, speed });
+            return true;
+        }
+        o.count += 1;
+        let t = o.count as f32 / o.left.max(1) as f32;
+        o.pos += o.vel * if easing { (speed[0] + (speed[1] - speed[0]) * (((std::f32::consts::PI * t).dcos() + 1.0) * 0.06247 + 0.5)) / 32.0 } else { speed[0] };
+        o.count < o.left
     }
 
     /// Tekken Tag's fire on the floor (0x3A4C28): 366 up, burning 60-91 frames, then fading over 32; a spark off it one
