@@ -562,6 +562,7 @@ impl Bout {
     pub fn step(&mut self, pads: [Pad; 2]) {
         let pads = self.taped(pads);
         self.events.clear();
+        self.ai_rng.low = self.game.rounds.is_some() && self.shared();
         // (a step that does not run the fight starts no sounds)
         if let Some(s) = self.game.sound.as_mut() {
             s.heard.clear();
@@ -679,7 +680,7 @@ impl Bout {
             }
             Phase::Fight => {
                 // (Tekken Tag's CPUs play the pads they input in the last fight frame, none in the first)
-                let tag = self.game.rounds.is_some() && self.game.ball.is_none();
+                let tag = self.ai_rng.low;
                 let pads = if tag { std::array::from_fn(|i| if self.cpu[i].is_some() { self.cpu_pads[i] } else { pads[i] }) } else { self.input(pads, true) };
                 self.fight_step(pads, tag);
                 if self.free {
@@ -698,9 +699,14 @@ impl Bout {
                         if self.game.rounds.is_some() && self.game.ball.is_none() && self.game.camera.data().replay_shots.is_some() {
                             let loser = if double { 0 } else { 1 - winner };
                             let throw = self.game.fight.fighters.iter().any(|f| f.locked);
-                            self.ai_rng.rand = self.game.fight.objects.seed;
+                            let shared = self.shared();
+                            if shared {
+                                self.ai_rng.rand = self.game.fight.objects.seed;
+                            }
                             self.tag_replay = Some((self.ai_rng.randint(14) as usize, 0, loser, self.game.subject(loser).root, throw));
-                            self.game.fight.objects.seed = self.ai_rng.rand;
+                            if shared {
+                                self.game.fight.objects.seed = self.ai_rng.rand;
+                            }
                         }
                         self.round_over(if double { None } else { Some(winner) }, false);
                     }
@@ -912,9 +918,14 @@ impl Bout {
         };
         let at = who(target).map_or(point, |i| self.game.subject(i).root);
         let facing = self.game.subject(if throw { loser } else { 1 - loser }).front;
-        self.ai_rng.rand = self.game.fight.objects.seed;
+        let shared = self.shared();
+        if shared {
+            self.ai_rng.rand = self.game.fight.objects.seed;
+        }
         let shot = Shot::replay(&data, k, at, facing, &mut |n| i64::from(self.ai_rng.randint(n as i32)));
-        self.game.fight.objects.seed = self.ai_rng.rand;
+        if shared {
+            self.game.fight.objects.seed = self.ai_rng.rand;
+        }
         let Some(shot) = shot else { return };
         self.game.camera_mode = CameraMode::Shot { shot, follow: who(follow) };
     }
@@ -1051,12 +1062,24 @@ impl Bout {
         }
     }
 
+    /// The CPUs draw from the fight's one rand(): Tekken 3's, and Tekken Tag's but in the modes the PS2 does not have
+    /// (Force, Ball), whose CPUs keep their own stream, Tekken 3's bits, input before the frame, and the AI they were
+    /// tuned on (#274).
+    fn shared(&self) -> bool {
+        self.game.rounds.is_none() || (!self.force && self.game.ball.is_none())
+    }
+
     /// Human pads, or what each CPU player decides (0x8002C4C4: in slot order, only while it has HP left); `think`
-    /// false: only the two players' round setup. The CPUs draw from the fight's rand().
+    /// false: only the two players' round setup.
     fn input(&mut self, pads: [Pad; 2], think: bool) -> [Pad; 2] {
-        self.ai_rng.rand = self.game.fight.objects.seed;
+        let shared = self.shared();
+        if shared {
+            self.ai_rng.rand = self.game.fight.objects.seed;
+        }
         let out = self.think(pads, think);
-        self.game.fight.objects.seed = self.ai_rng.rand;
+        if shared {
+            self.game.fight.objects.seed = self.ai_rng.rand;
+        }
         out
     }
 
@@ -1067,6 +1090,7 @@ impl Bout {
         }
         // the opponent's chest height (+0x994): bone slot 2 of the pose shown
         let chest = [0, 1].map(|i| if self.cpu[1 - i].is_some() { -(self.game.subject(i).chest as f32) } else { 0.0 });
+        let after = self.ai_rng.low;
         let f = &self.game.fight;
         let ball = f.ball_sight();
         // (Ball 2 ON 2: each sees the ball between itself and the foe it faces)
@@ -1076,11 +1100,14 @@ impl Bout {
         let chest_of = |k: usize| if k < 2 { chest[k] } else { 1425.0 };
         let sight = |i: usize| {
             let o = f.opponent_index(i);
-            let op = f.actor(o).unwrap_or(&f.fighters[1 - i.min(1)]);
+            // (Tekken Tag's CPUs, input after the fight frame, see a struck fighter in its old move until the reaction
+            // commits)
+            let (me, op) = (f.actor(i).unwrap_or(&f.fighters[0]), f.actor(o).unwrap_or(&f.fighters[1 - i.min(1)]));
+            let (me, op) = if after { (me.seen(), op.seen()) } else { (me, op) };
             let ball = if doubles { f.ball_sight_for(i) } else { ball };
             Sight {
                 gd: &f.data,
-                me: f.actor(i).unwrap_or(&f.fighters[0]),
+                me,
                 op,
                 facing_right: f.actor_facing_right(i),
                 opp_chest: if coop { chest_of(o).max(1425.0) } else { chest[1 - i.min(1)] },

@@ -713,7 +713,8 @@ pub struct Fighter {
     side_last: u32,
     /// Timed ops 0x0C / 0x0D this frame: damage to itself, less heals (0x800449B4).
     pub self_damage: i32,
-    /// Guard while recovering (+0xB6): set by transitions 0x1A (1) / 0x1B (2), cleared by any other commit;
+    /// Guard while recovering (+0xB6, Tekken Tag's +0x11A): set by transitions 0x1A (1) / 0x1B (2), cleared by any
+    /// other commit (0x36B494, 0x36A834);
     /// back then guards standing, down-back crouching (0x80040598), and 2 also adds 1 to attacks' masks.
     pub recover_guard: u8,
     /// The opponent's move set while playing its moves (`Bank::Partner`).
@@ -778,10 +779,11 @@ pub struct Fighter {
     shown_turns: Turns,
     shown_height: i32,
     reacting: bool,
-    /// Tekken Tag: the move and frame drawn until the next step. A hit's reaction is only queued (+0x188 / +0x178,
-    /// 0x36A2B4, from the pass 0x372A10 after the hits) for the next frame's moves to commit, so the struck one shows
-    /// its old move on the frame of the hit.
-    shown_move: Option<(Current, u32)>,
+    /// Tekken Tag: the fighter until the next step as it was before the reaction a hit started, with the hit's damage
+    /// and struck flags. A hit's reaction is only queued (+0x188 / +0x178, 0x36A2B4, from the pass 0x372A10 after
+    /// the hits) for the next frame's moves to commit, so the struck one shows its old move and place on the frame of
+    /// the hit, and the CPUs (their input after the sounds, 0x36C4C0) see it in them.
+    before_reaction: Option<Box<Fighter>>,
 }
 
 /// Facing angles in game units (u16 turn = 0x10000), as the actor keeps them (0x80043A94): `off` (+0x2E) the
@@ -898,7 +900,7 @@ impl Fighter {
             shown_turns: [[0; 9]; 18],
             shown_height: 0,
             reacting: false,
-            shown_move: None,
+            before_reaction: None,
         };
         f.current = f.resolve(neutral).unwrap_or(f.current);
         f
@@ -981,7 +983,13 @@ impl Fighter {
 
     /// The move and frame drawn.
     pub fn shown_move(&self) -> (Current, u32) {
-        self.shown_move.unwrap_or((self.current, self.frame))
+        let f = self.seen();
+        (f.current, f.frame)
+    }
+
+    /// The fighter as the CPUs see it: before the reaction a hit started this step (Tekken Tag).
+    pub fn seen(&self) -> &Fighter {
+        self.before_reaction.as_deref().unwrap_or(self)
     }
 
     /// Start a move now (debug tools: play any move of the character's set or the common set).
@@ -2306,7 +2314,7 @@ impl Fighter {
 
     /// Advance one frame of move logic.
     fn step(&mut self, gd: &GameData, pad: Pad, facing_right: bool, anims: &dyn Animations) {
-        self.shown_move = None;
+        self.before_reaction = None;
         self.strike_from = None;
         self.started_with = None;
         self.landing = 0;
@@ -4514,8 +4522,8 @@ impl Fight {
             }
             let v = 1 - a;
             let fv = &mut self.fighters[v];
-            if fv.tag_rules(gd) && fv.shown_move.is_none() {
-                fv.shown_move = Some((fv.current, fv.frame));
+            if fv.tag_rules(gd) && fv.before_reaction.is_none() {
+                fv.before_reaction = Some(Box::new(fv.clone()));
             }
             let victim_posture = postures[v];
             // (the actual roots: a fighter's position lags behind by its move's root motion)
@@ -4731,9 +4739,11 @@ impl Fight {
                 let p = gd.reactions.pushback_curves.entries.iter().find(|c| c.index as i32 == curve_ref).map(|curve| Pushback { curve: curve.clone(), frame: 0, direction, tag });
                 self.fighters[v].set_pushback(gd, p);
             }
-            self.fighters[v].struck_in_move = true;
-            self.fighters[v].struck_last = gd.tag_moves;
-            self.fighters[v].reacting = true;
+            let fv = &mut self.fighters[v];
+            (fv.struck_in_move, fv.struck_last, fv.reacting) = (true, gd.tag_moves, true);
+            if let Some(b) = fv.before_reaction.as_deref_mut() {
+                (b.health, b.struck, b.struck_in_move, b.struck_last, b.reacting) = (fv.health, fv.struck, true, fv.struck_last, true);
+            }
             let what = if blocked {
                 "blocks"
             } else if counter {

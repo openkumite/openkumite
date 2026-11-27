@@ -89,9 +89,9 @@ impl Face {
     }
 
     /// One frame (0x362C28, then the timed ops' faces, then the face drawn 0x3DD918); `ops` this frame's (op,
-    /// argument) of the move; `rand` the game's rand().
-    pub fn step(&mut self, p: &Poses, cues: Cues, ops: impl Iterator<Item = (u32, u32)>, rand: &mut impl FnMut() -> u32) {
-        let e = &p.entry;
+    /// argument) of the move; `rand` the game's rand(). A body without face poses runs it all the same (its faces 0:
+    /// a hit or a move pose draws as a blink does), drawing nothing.
+    pub fn step(&mut self, e: &FaceEntry, p: Option<&Poses>, cues: Cues, ops: impl Iterator<Item = (u32, u32)>, rand: &mut impl FnMut() -> u32) {
         if cues.moving {
             self.set(e.moving, 4, -1, rand);
         } else if cues.hit {
@@ -119,6 +119,7 @@ impl Face {
             self.set(kind as i16 - 10, 20, arg as i16, rand);
         }
         // the nodes: each the weight of the way to the pose's
+        let Some(p) = p else { return };
         let w = self.weight;
         let pose = &p.poses[(self.pose.max(0) as usize).min(p.poses.len() - 1)];
         let mut shown = self.shown.take().unwrap_or_else(|| p.bind.clone());
@@ -177,19 +178,19 @@ mod tests {
         let place = |f: &Face| f.shown.as_ref().unwrap()[0].1.x;
         let mut seen = vec![];
         for _ in 0..16 {
-            f.step(&p, Cues::default(), std::iter::empty(), &mut rand);
+            f.step(&p.entry, Some(&p), Cues::default(), std::iter::empty(), &mut rand);
             seen.push(place(&f));
         }
         assert_eq!(seen[..6], [0.5, 1.0, 1.0, 0.5, 0.0, 0.0], "{seen:?}");
         // open again: 9 & 0xFE + 1 = 9 frames, then the next blink
         assert!(seen[6..12].iter().all(|&x| x == 0.0) && seen[12] == 0.5, "{seen:?}");
         // the move's pose while its flag is on, back to open (pose 0) once off
-        f.step(&p, Cues { moving: true, hit: false }, std::iter::empty(), &mut rand);
+        f.step(&p.entry, Some(&p), Cues { moving: true, hit: false }, std::iter::empty(), &mut rand);
         assert_eq!(f.pose, 1);
-        f.step(&p, Cues::default(), std::iter::empty(), &mut rand);
+        f.step(&p.entry, Some(&p), Cues::default(), std::iter::empty(), &mut rand);
         assert_eq!(f.pose, 0);
         // a face op: kind 12 is face 2, held its argument
-        f.step(&p, Cues::default(), [(HAND_OPS + 12, 40)].into_iter(), &mut rand);
+        f.step(&p.entry, Some(&p), Cues::default(), [(HAND_OPS + 12, 40)].into_iter(), &mut rand);
         assert_eq!((f.pose, f.timer), (2, 40));
     }
 }

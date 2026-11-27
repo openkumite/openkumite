@@ -455,7 +455,7 @@ pub struct HandsEntry {
 
 /// A Tekken Tag model's face: `file` its poses (characters/), the poses it blinks with (0x416CB0), shows while the
 /// move's flag 0x800 is on (0x416D38) and while hit (0x416DC0).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct FaceEntry {
     pub file: String,
     pub blink: i16,

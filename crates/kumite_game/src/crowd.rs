@@ -1,11 +1,12 @@
 //! Tekken Tag's arenas' background characters as their scripts move them (stages.json `people`; the converter's
 //! FORMATS.md 12, the PS2's 0x3D8908 start, 0x3D8B20 / 0x3D8848 a step's motion, 0x3D8D38 / 0x3D8E30 a motion's end,
 //! 0x3D9718 the frames): unseen while they wait, a motion of the step's at random, steps repeated and gone back to,
-//! moved on by how far each motion takes them. Drawn only: their own random numbers (the PS2's rand()).
+//! moved on by how far each motion takes them. They draw from the PS2's rand(): a fight's one (kumite_sim's
+//! `Objects::seed`, its task runner in [`crate::Game`]), elsewhere their own.
 
 use glam::Vec3;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A step of a script.
 #[derive(Clone)]
@@ -47,7 +48,9 @@ pub struct Walker {
     wait: i32,
     budget: i32,
     gone: bool,
-    seed: u32,
+    pub seed: u32,
+    /// Each (model, motion)'s frames, of the models it can show (none: one not loaded, which holds it).
+    pub frames: BTreeMap<(usize, usize), i32>,
 }
 
 fn i(v: &Value) -> i64 {
@@ -95,6 +98,7 @@ impl Walker {
             budget: -1,
             gone: false,
             seed,
+            frames: BTreeMap::new(),
         };
         me.restart();
         me
@@ -224,16 +228,17 @@ impl Walker {
         }
     }
 
-    /// A frame on (0x3D9718); `len` a motion's frames.
-    pub fn step(&mut self, len: impl Fn(usize) -> i32) {
-        if self.gone {
+    /// A frame on (0x3D9718).
+    pub fn step(&mut self) {
+        let model = self.model();
+        if self.gone || self.frames.range((model, 0)..=(model, usize::MAX)).next().is_none() {
             return;
         }
         if self.wait > 0 {
             self.wait -= 1;
             return;
         }
-        if self.frame + 1 < len(self.motion) && self.budget != 0 {
+        if self.frame + 1 < self.frames.get(&(model, self.motion)).copied().unwrap_or(1) && self.budget != 0 {
             self.frame += 1;
             if self.budget > 0 {
                 self.budget -= 1;
@@ -241,6 +246,12 @@ impl Walker {
         } else {
             self.end();
         }
+    }
+
+    /// On step `step`'s `motion` at `frame`, seen: for a case run from an emulator's state.
+    pub fn resume(&mut self, step: usize, motion: usize, frame: i32) {
+        (self.step, self.motion, self.frame, self.wait, self.budget, self.gone) = (step, motion, frame, 0, -1, false);
+        self.loops.clear();
     }
 
     /// The model it shows now: its own plus its step's (0x3D87A8).
@@ -283,13 +294,14 @@ mod tests {
             "script": [{"motions": [10], "repeat": 2, "back": 0, "wait": -1, "start": -1, "frames": -1},
                        {"motions": [11], "repeat": 1, "back": 1, "wait": -1, "start": -1, "frames": -1}]});
         let mut w = Walker::new(&p, &json!({"10": [0.0, 1.0, 90.0]}), &json!([]), 1);
+        w.frames = [((0, 10), 4), ((0, 11), 4)].into();
         let mut seen = vec![];
         for _ in 0..40 {
             let (m, f, at, h) = w.now().unwrap();
             if f == 0 {
                 seen.push((m, at.round(), h));
             }
-            w.step(|_| 4);
+            w.step();
         }
         // 10 twice, 11, back: 10 twice, 11 (its repeat done), the script again from where it stood
         let order: Vec<usize> = seen.iter().map(|s| s.0).collect();
@@ -304,11 +316,12 @@ mod tests {
         let p = json!({"at": [0.0, 0.0, 0.0], "heading": 0.0, "motions": [3], "wait": [0, 0], "start": [0, 0], "repeat": -1, "stop": true,
             "script": [{"motions": [3], "repeat": 0, "back": 0, "wait": 2, "start": -1, "frames": 3}]});
         let mut w = Walker::new(&p, &json!({}), &json!([2.0]), 1);
+        w.frames = [((0, 3), 100)].into();
         assert!(w.now().is_none());
-        w.step(|_| 100);
-        w.step(|_| 100);
+        w.step();
+        w.step();
         // seen for its 3 frames, then gone
-        let frames: Vec<Option<usize>> = (0..6).map(|_| (w.now().map(|n| n.1), w.step(|_| 100)).0).collect();
+        let frames: Vec<Option<usize>> = (0..6).map(|_| (w.now().map(|n| n.1), w.step()).0).collect();
         assert_eq!(frames, [Some(0), Some(1), Some(2), Some(3), None, None]);
     }
 }

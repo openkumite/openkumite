@@ -460,6 +460,10 @@ pub struct Game {
     pub hand_live: bool,
     /// Tekken Tag's faces: blinks and expressions.
     pub tag_faces: [tagface::Face; 2],
+    /// Tekken Tag's arena's tasks the app hands over as the arena loads (stages.json `weather`, `people`): run in the
+    /// fight's task runner on its rand(), so they come with its state (a rollback, a replay's seek).
+    pub weather: Option<weather::Weather>,
+    pub people: Vec<crowd::Walker>,
     /// Tekken Tag's wings (True Ogre's and Devil's).
     pub wings: [face::WingState; 2],
     /// Tekken Tag's Unknown's wolf: its root's place (world, metres) as 0x34CC38 eases it; none: at once (the round's
@@ -941,6 +945,8 @@ impl Game {
             hands: Default::default(),
             hand_live: false,
             tag_faces: Default::default(),
+            weather: None,
+            people: Vec::new(),
             wings: Default::default(),
             wolves: Default::default(),
             springs: Default::default(),
@@ -1564,6 +1570,9 @@ impl Game {
             self.place_burns();
             self.fight.objects.step(&striking, &struck, false);
         }
+        if tag {
+            self.step_arena_tasks();
+        }
         let shot = [self.snapshot(0), self.snapshot(1)];
         if self.recorded.len() >= REPLAY_RING {
             self.recorded.pop_front();
@@ -1580,6 +1589,29 @@ impl Game {
             self.step_sound();
         }
         self.step_camera();
+    }
+
+    /// Tekken Tag's arena's tasks in the task runner (0x346608), on the fight's rand(): the weather (arena 8's smoke
+    /// 0x3A0CE8, arena 4's lightning on the camera as it was), then the people (arena 16's 0x3D8848).
+    fn step_arena_tasks(&mut self) {
+        let seed = &mut self.fight.objects.seed;
+        if let Some(w) = self.weather.as_mut() {
+            let shown = |i: usize| self.display.as_ref().map_or(self.fight.fighters[i].root(), |d| d[i].root);
+            let mid = (shown(0) + shown(1)) / 2.0;
+            let (eye, forward, fov) = view_camera(&self.camera.view);
+            let look = glam::camera::rh::view::look_at_mat4(eye, eye + forward, Vec3::Y);
+            let view_proj = glam::camera::rh::proj::directx::perspective(fov, 640.0 / 448.0, 0.05, 400.0) * look * Mat4::from_translation(Vec3::new(mid.x, 0.0, mid.z) / UNITS);
+            std::mem::swap(&mut w.seed, seed);
+            w.sounds.clear();
+            w.step();
+            w.flash(view_proj);
+            std::mem::swap(&mut w.seed, seed);
+        }
+        for p in &mut self.people {
+            std::mem::swap(&mut p.seed, seed);
+            p.step();
+            std::mem::swap(&mut p.seed, seed);
+        }
     }
 
     /// The fighters' sound player (0x8002B4C4, Tekken Tag's 0x375B60) on the fight's rand().
@@ -1942,7 +1974,7 @@ impl Game {
     fn step_hands(&mut self) {
         for i in 0..2 {
             let fight = &mut self.fight;
-            step_hands_face(&self.bodies[i], &fight.fighters[i], &fight.data, self.hand_live, &mut self.hands[i], &mut self.tag_faces[i], &mut || fight.objects.libc());
+            step_hands_face(&self.bodies[i], fight.fighters[i].seen(), &fight.data, self.hand_live, &mut self.hands[i], &mut self.tag_faces[i], &mut || fight.objects.libc());
         }
     }
 
@@ -2165,11 +2197,13 @@ pub(crate) fn step_hands_face(body: &Body, f: &kumite_sim::Fighter, gd: &kumite_
         let ops = m.properties.iter().flatten().filter(|q| q.frame == f.frame).map(|q| (q.op, q.arg));
         hands.step(p, cues, ops);
     }
-    if let Some(p) = &body.face {
+    // (Tekken Tag's faces run for a body without face poses too, on its faces 0)
+    if body.face.is_some() || gd.tag_moves {
         // (Tekken Tag's flag 0x800 and bit 22 are bits 18 and 30 once loaded, kumite_sim::dialect)
         let cues = tagface::Cues { moving: m.flags24.raw & 0x4_0000 != 0, hit: m.posture.raw & 4 != 0 && m.flags24.raw & 0x4000_0000 == 0 };
         let ops = m.properties.iter().flatten().filter(|q| q.frame == f.frame).map(|q| (q.op, q.arg));
-        face.step(p, cues, ops, rand);
+        let none = kumite_sim::data::FaceEntry::default();
+        face.step(body.face.as_ref().map_or(&none, |p| &p.entry), body.face.as_ref(), cues, ops, rand);
     }
 }
 

@@ -908,18 +908,46 @@ fn yoshimitsus_side_throw_camera_samples_on_odd_frames() {
     }
 }
 
+/// Arena `stage`'s weather and people as the app hands them to the fight (stages.json; each person's models with the
+/// frames of its motions, `stages/stage_NN_pK.glb` / `_mK.glb`; its own random numbers from 1 as the app's).
+fn arena_tasks(a: &Assets, g: &mut Game, stage: usize) {
+    let stages: serde_json::Value = serde_json::from_slice(&std::fs::read(a.root.join("gamedata/stages.json")).unwrap()).unwrap();
+    let s = stages["stages"].as_array().unwrap().iter().find(|s| s["id"] == stage).unwrap();
+    g.weather = kumite_game::weather::Weather::new(&s["weather"]);
+    for (n, p) in s["people"].as_array().into_iter().flatten().enumerate() {
+        let mut w = kumite_game::crowd::Walker::new(p, &s["walk"], &s["scales"], n as u32 + 1);
+        let base = p["model"].as_u64().unwrap();
+        let models = std::iter::once(0).chain(p["script"].as_array().unwrap().iter().map(|x| x["model"].as_i64().unwrap_or(0))).map(|d| base.checked_add_signed(d).unwrap());
+        for k in models {
+            let mut ch = kumite_assets::Character::load(&a.root.join(format!("stages/stage_{stage:02}_p{k}.glb"))).unwrap();
+            for m in p["motions"].as_array().unwrap().iter().map(|m| m.as_u64().unwrap()) {
+                ch.add_motions(&std::fs::read(a.root.join(format!("stages/stage_{stage:02}_m{m}.glb"))).unwrap()).unwrap();
+                let c = ch.clip(&format!("stage_{stage:02}_m{m}")).unwrap();
+                w.frames.insert((k as usize, m as usize), ch.clips[c].frames.max(1) as i32);
+            }
+        }
+        g.people.push(w);
+    }
+}
+
 /// Two NORMAL level 0 CPUs (Yoshimitsu / Paul against Hwoarang / Paul, arena 16), from PCSX2's state as they start
 /// thinking (audit40's r_cpu16: both players made CPUs, +0x420 = 2): rand()'s state is PCSX2's after every step of
-/// these 93, through the CPUs' 17 to 34 draws a frame in the PS2's order (step 0x16's draw 0x38AD00, the candidates'
+/// these 227, through the CPUs' 17 to 34 draws a frame in the PS2's order (step 0x16's draw 0x38AD00, the candidates'
 /// rand() & 7 and per-alias coins 0x382AD8, the learning draw first 0x380DA8, the pair distance of the frame's start
-/// gp-0x74C8), Hwoarang's blinks (before the sounds) and his d/f+1 (move 1282) picked on step 81 as PCSX2's.
-/// (On step 94 his hit shows Yoshimitsu's reaction a step before PCSX2's +0xC0 does.)
+/// gp-0x74C8), Hwoarang's blinks (before the sounds) and his d/f+1 (move 1282) picked on step 81 as PCSX2's. On step
+/// 94 it hits Yoshimitsu, who stays in his 2346 at its place for the step (the reaction queued, +0x188): his CPU sees
+/// him there, and the reaction (5146) comes on step 95 as PCSX2's +0xC0 shows it; from then on his face, without
+/// poses, draws as the hit face 0 (0x362B98), the guard after a 0x1A point waits for +0x11A and his front (0x386470),
+/// the general pool takes a tag entry only as an attack (0x383F10: his move 1243 on step 217), and the arena's people
+/// draw in the task runner (person 71's pick 0x3D8848, step 217). (Step 227's hit sparks, 0x3A3958, draw from it too;
+/// ours from the effects' own.)
 #[test]
 fn the_cpus_draw_and_choose_as_the_ps2s() {
     let Some(a) = assets() else { return };
     let mut g = Game::load(&a, [YOSHIMITSU, HWOARANG]).unwrap();
     g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
     g.set_arena(16);
+    arena_tasks(&a, &mut g, 16);
     let voices = g.fight.fighters.each_ref().map(|f| f.character.unwrap_or(0) as usize);
     g.sound = Some(Box::new(kumite_game::sound::FightSound::new(std::sync::Arc::new(SoundData::load(&a).unwrap()), [String::new(), String::new()], voices, SoundState::default())));
     let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
@@ -928,7 +956,7 @@ fn the_cpus_draw_and_choose_as_the_ps2s() {
     while b.phase != Phase::Fight {
         b.step([Pad::default(); 2]);
     }
-    let ps2: [(usize, u32); 17] = [
+    let ps2: [(usize, u32); 28] = [
         (1, 2_168_043_193),
         (8, 1_405_945_320),
         (16, 3_753_034_624),
@@ -946,9 +974,20 @@ fn the_cpus_draw_and_choose_as_the_ps2s() {
         (87, 2_564_654_803),
         (88, 3_169_906_496),
         (93, 33_627_654),
+        (94, 1_926_591_629),
+        (95, 263_761_214),
+        (96, 2_377_311_887),
+        (107, 643_377_634),
+        (149, 2_846_906_539),
+        (150, 3_569_020_279),
+        (178, 40_978_231),
+        (199, 1_683_157_542),
+        (216, 116_117_495),
+        (217, 3_502_418_051),
+        (226, 1_131_039_582),
     ];
     let mut seen = Vec::new();
-    for k in 0..=93 {
+    for k in 0..=226 {
         b.step([Pad::default(); 2]);
         if k == 0 {
             // (PCSX2's row 1: rand()'s state, the AI generator gp-0x64E8, each CPU's cooldowns S+0x94 / S+0x5C)
@@ -957,6 +996,9 @@ fn the_cpus_draw_and_choose_as_the_ps2s() {
             for (ai, (cd, movement)) in b.cpu.iter_mut().zip([(89, 82), (81, 76)]) {
                 ai.as_mut().unwrap().resume(cd, movement);
             }
+            // (the people's one that draws, 71: on its script's step 1 for motion 24's last 117 frames, then 25's 100 to
+            // its draw on row 218; its draws on rows 418 and 868 come 200 and 450 frames apart, 25's and 24's)
+            b.game.people[71].resume(1, 24, 233);
         }
         if k == 1 {
             // (row 2's faces: each one's face and frames left)
@@ -966,11 +1008,18 @@ fn the_cpus_draw_and_choose_as_the_ps2s() {
         if ps2.iter().any(|r| r.0 == k) {
             seen.push((k, b.game.fight.objects.seed));
         }
-        if k == 82 {
-            assert_eq!(b.game.fight.fighters.each_ref().map(|f| (f.current.index, f.frame)), [(6, 24), (1282, 1)]);
+        // (PCSX2's +0xC0, its frame, the place)
+        let shown = |b: &Bout| b.game.fight.fighters.each_ref().map(|f| (f.seen().current.index, f.seen().frame, f.seen().position.x as i32));
+        match k {
+            82 => assert_eq!(b.game.fight.fighters.each_ref().map(|f| (f.current.index, f.frame)), [(6, 24), (1282, 1)]),
+            94 => assert_eq!(shown(&b), [(2346, 7, -1002), (1282, 13, 1165)]),
+            95 => assert_eq!(shown(&b), [(5146, 1, -647), (1282, 14, 1165)]),
+            217 => assert_eq!(shown(&b)[0].0, 1243),
+            _ => {}
         }
     }
     assert_eq!(seen, ps2);
+    assert_eq!(b.ai_rng.lcg, 1_002_070_443);
 }
 
 /// Eddy's run-off (4829) turns to the screen's axis, so its path follows the camera's yaw: the yaw chases the
@@ -2663,6 +2712,9 @@ fn arcade_cell(a: &Assets, cpu: [usize; 2], level: usize, hold: bool, seeds: imp
         g.copy_seed = seed;
         let mut b = Bout::new(g, kumite_game::ai_data(a).unwrap(), 2, false);
         b.set_cpu(1, Some((1, level)));
+        // (as the PS2's matches, rand() reseeded a match: holding back presses, and a press seeds it from the main loop's
+        // count, 0x35C370, the same in every match here)
+        b.game.fight.objects.reseed = seed;
         let mut h = Vec::new();
         for _ in 0..4600 {
             let back = b.game.fight.facing_right(0);

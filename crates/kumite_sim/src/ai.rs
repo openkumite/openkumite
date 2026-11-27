@@ -588,7 +588,8 @@ pub struct AiRng {
     pub lcg: u32,
     /// libc's state (the fight's, [`crate::objects::Objects::seed`], while the CPUs and Tekken Tag's camera draw).
     pub rand: u32,
-    /// Tekken Tag's rand() (0x40FBD0): the state's low 31 bits, the fight's one stream.
+    /// Tekken Tag's rand() (0x40FBD0): the state's low 31 bits, the fight's one stream (its PS2 modes; Force's and
+    /// Ball's CPUs keep their own with Tekken 3's bits).
     pub low: bool,
 }
 
@@ -749,6 +750,9 @@ pub struct ForceSight<'a> {
 /// Per-frame view of the two actors.
 struct Cx<'a> {
     data: &'a AiData,
+    /// Tekken Tag's CPU as PCSX2 shows it (#322's order of its draws, its lists and pools), on the fight's one rand()
+    /// ([`AiRng::low`]); not in the modes the PS2 does not have (Force, Ball), which keep the AI they were tuned on.
+    ps2: bool,
     gd: &'a GameData,
     me: &'a Fighter,
     op: &'a Fighter,
@@ -1557,8 +1561,10 @@ impl Ai {
         let (gd, me, op) = (s.gd, s.me, s.op);
         let (m, h) = (Rec::of(gd, me, me.current).unwrap_or_default(), Rec::of(gd, op, op.current).unwrap_or_default());
         let d = op.root() - me.root();
+        let ps2 = rng.low;
         let mut cx = Cx {
             data,
+            ps2,
             gd,
             me,
             op,
@@ -1568,7 +1574,7 @@ impl Ai {
             a: me.angles(),
             mf: me.frame as i32,
             hf: op.frame as i32,
-            dist: me.pair_dist.filter(|_| data.ttt).unwrap_or((d.x * d.x + d.z * d.z).sqrt() as i32),
+            dist: me.pair_dist.filter(|_| ps2).unwrap_or((d.x * d.x + d.z * d.z).sqrt() as i32),
             me_air: me.airborne_flag(gd),
             op_air: op.airborne_flag(gd),
             my_moveset: me.moveset.moveset_id.unwrap_or(-1),
@@ -1931,7 +1937,7 @@ impl Ai {
             return;
         }
         // (Tekken Tag's step 0x16 between them, 0x38AD00: step 6's draw, its handler 0x38BF38 always -1)
-        if cx.data.ttt && self.wlock < 0 {
+        if cx.ps2 && self.wlock < 0 {
             cx.rand();
         }
         if self.call_handler(cx, false) {
@@ -1969,7 +1975,7 @@ impl Ai {
                     }
                 }
                 // (Tekken Tag's step 10 goes on when a list is empty, 0x385CCC)
-                handled = !cx.data.ttt || !self.list_c.is_empty();
+                handled = !cx.ps2 || !self.list_c.is_empty();
                 if self.list_c.is_empty() {
                     self.lc_c = 0;
                 } else {
@@ -2007,7 +2013,7 @@ impl Ai {
                     }
                 }
                 self.nc_b = n;
-                handled = !cx.data.ttt || n > 0;
+                handled = !cx.ps2 || n > 0;
                 if n > 0 {
                     self.out = self.prev_out & 0xF000;
                 } else {
@@ -2034,7 +2040,7 @@ impl Ai {
                         }
                     }
                     self.nc_d = n;
-                    handled = !cx.data.ttt || n > 0;
+                    handled = !cx.ps2 || n > 0;
                     if n < 1 {
                         (self.nc_d, self.lc_d) = (0, 0);
                     } else {
@@ -2048,7 +2054,7 @@ impl Ai {
 
         // ---- 4.K candidates; a move held for over 220 frames takes anything [0x8005BE14..0x8005BF2C]
         // (Tekken Tag's step 10, 0x385C80, builds after the lists too)
-        if !handled || cx.data.ttt {
+        if !handled || cx.ps2 {
             self.build(cx, false, true);
             let wanted = !cx.data.ttt || self.tag_wanted;
             if self.inmove > 220 && self.mark(|c| wanted || !Cx::is_tag(&c.e)) > 0 {
@@ -3330,7 +3336,7 @@ impl Ai {
             self.cd -= 3;
         }
         // (Tekken Tag draws before the health test, 0x380DA8)
-        let drawn = cx.data.ttt.then(|| (cx.lcg() & 0xFFF) as i32);
+        let drawn = cx.ps2.then(|| (cx.lcg() & 0xFFF) as i32);
         if me.health < self.hp_prev && drawn.unwrap_or_else(|| (cx.lcg() & 0xFFF) as i32) >= self.p.gate_always_zero {
             self.cd -= 3;
             // rage: hit a third time by the same move -> the level 9 profile for 600 frames
@@ -3379,7 +3385,7 @@ impl Ai {
     fn build(&mut self, cx: &mut Cx, end_links: bool, fresh: bool) {
         self.cand.clear();
         let cur = cx.me.current;
-        let ttt = cx.data.ttt;
+        let ttt = cx.ps2;
         let mut drop_last = ttt && fresh && cx.rand() & 7 != 0;
         // (an alias that does not resolve would be a garbage record in the game; none is known in the data)
         let take = |s: &mut Self, cx: &Cx, e: &Ent, drop_last: &mut bool| -> Option<Rec> {
@@ -3552,7 +3558,7 @@ impl Ai {
         let mut k = cx.randint(self.npool);
         let n = self.cand.len() as i32;
         // (Tekken Tag's 0x385318 counts from the start when the tick's parity is its side, S+0)
-        let from_end = if cx.data.ttt { self.ticks & 1 != self.slot & 1 } else { self.ticks & 1 == 0 };
+        let from_end = if cx.ps2 { self.ticks & 1 != self.slot & 1 } else { self.ticks & 1 == 0 };
         let idx = if from_end {
             let mut i = n - 1;
             loop {
@@ -3685,8 +3691,6 @@ impl Ai {
     /// Tekken Tag's steps 0x17 (0x38AC40: the delayed low guard, a crouch guard when its countdown runs out) and 8
     /// (0x388170: no "attack now" on his whiff; while a punish is timed, he is idle or his hit is under 30 frames
     /// away, the guard after a reaction with P72, else holding when already safe). Returns whether the frame is done.
-    /// shortcut: player +0x11A (set by the transition code, read as "after a reaction") is taken as struck during
-    /// this move; read its writer if the CPU guards after the wrong moves.
     fn ttt_guards(&mut self, cx: &mut Cx) -> bool {
         if self.low_guard >= 0 {
             self.low_guard -= 1;
@@ -3699,7 +3703,21 @@ impl Ai {
         if !(self.pwait >= 0 || h.as_ == 0 || h.as_ - 30 < cx.hf) {
             return false;
         }
-        if cx.me.struck_in_move && (cx.rand() & 0xFFF) < self.p.guard_after_reaction_prob {
+        // (after a 0x1A / 0x1B point, +0x11A; 0x386470: none while he is not in front, +0x42, the movement reset
+        // before the draw)
+        if cx.ps2 && cx.me.recover_guard != 0 {
+            if cx.a.quadrant != 0 {
+                return false;
+            }
+            self.reset_mv();
+            if (cx.rand() & 0xFFF) >= self.p.guard_after_reaction_prob {
+                return false;
+            }
+            self.out = if matches!(self.hmask, 0x31F | 0x217 | 0x412) { 0x8000 } else { 0xC000 };
+            return true;
+        }
+        // (Force's and Ball's: after any hit in this move, OpenKumite's)
+        if !cx.ps2 && cx.me.struck_in_move && (cx.rand() & 0xFFF) < self.p.guard_after_reaction_prob {
             self.out = match self.hmask {
                 0x31F | 0x217 => 0x8000,
                 0x412 => 0xC000,
@@ -3965,14 +3983,17 @@ impl Ai {
 
     // ---------------------------------------------------------------- pools (5.6)
 
-    /// 0x800572A4: dashes, hops and in-range attacks (no throws, no jumps).
+    /// 0x800572A4: dashes, hops and in-range attacks (no throws, no jumps). Tekken Tag's 0x383F10 takes a hop or a
+    /// tag entry only as an attack, a tag entry while a tag is wanted as any attack.
     fn pool_general(&mut self, cx: &Cx) -> i32 {
         let zm = cx.data.zm[self.myzone as usize];
+        let (ttt, wanted) = (cx.ps2, self.tag_wanted);
         self.mark(|c| {
             let m = &c.mv;
             let iz = m.range_class() & zm != 0;
-            (m.js == 0 || m.rec4 & 0x8_0000 != 0 || m.rec8 & 0x20_0000 != 0)
-                && (c.e.cmd == 0xC001 || m.rec4 & 0x8_0000 != 0 || (m.as_ != 0 && m.rec8 & 0x40_0000 == 0 && m.rec4 & 0x2_0000 == 0 && (iz || m.rec4 & 0x1_0000 != 0)))
+            let attack = m.as_ != 0 && m.rec8 & 0x40_0000 == 0 && m.rec4 & 0x2_0000 == 0 && (iz || m.rec4 & 0x1_0000 != 0);
+            let tag = ttt && Cx::is_tag(&c.e);
+            (m.js == 0 || m.rec4 & 0x8_0000 != 0 || m.rec8 & 0x20_0000 != 0) && (c.e.cmd == 0xC001 || (m.rec4 & 0x8_0000 != 0 && !tag) || if tag && wanted { m.as_ != 0 } else { attack })
         })
     }
 

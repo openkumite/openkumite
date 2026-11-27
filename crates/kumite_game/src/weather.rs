@@ -2,7 +2,8 @@
 //! EFFECTS.md 5): the smoke and steam streams of particles on their paths (Hwoarang's and Law-B's blown by the
 //! arena's wind), the Unknown's circling wisps and Nina's and King's blinking beacons; arena 4's lightning and arena
 //! 12's signs, the still texture channels their tasks play ([`Weather::flash`]); Yoshimitsu's snow. Drawn only: none
-//! of it touches the fight, and it draws its own random numbers (the PS2's rand(), 0x40FBD0).
+//! of it touches the fighters, but it draws from the PS2's rand() (0x40FBD0): a fight's one (its task runner in
+//! [`crate::Game`]), elsewhere its own.
 
 use crate::vfx::{Blend, Sprite};
 use glam::Vec3;
@@ -233,7 +234,8 @@ struct Snow {
 /// An arena's weather as it is now.
 #[derive(Clone)]
 pub struct Weather {
-    sets: Vec<Set>,
+    /// (shared: a fight's states copy the weather each frame)
+    sets: std::sync::Arc<Vec<Set>>,
     streams: Vec<Stream>,
     particles: Vec<Particle>,
     wind: Wind,
@@ -264,7 +266,7 @@ impl Weather {
     /// The arena's `weather` (stages.json); None when it has none.
     pub fn new(v: &Value) -> Option<Self> {
         let list = |k: &str| v[k].as_array().into_iter().flatten();
-        let sets = list("sets")
+        let sets: Vec<Set> = list("sets")
             .map(|s| Set {
                 cell: s["cell"].as_u64().unwrap_or(0) as u32,
                 paths: s["paths"].as_array().into_iter().flatten().map(|p| p.as_array().into_iter().flatten().map(|x| [0, 1, 2, 3, 4].map(|k| f(&x[k]))).collect()).collect(),
@@ -317,7 +319,7 @@ impl Weather {
             ..Flashes::default()
         };
         let snow_look = (v["snow"]["set"].as_u64().unwrap_or(0) as usize, f(&v["snow"]["level"]), f(&v["snow"]["fade"]));
-        let mut me = Self { sets, streams, particles: vec![], wind, groups, wisps: vec![], beacons: vec![], snow: vec![], snow_look, count: 0, seed: 0, flashes, sounds: vec![] };
+        let mut me = Self { sets: sets.into(), streams, particles: vec![], wind, groups, wisps: vec![], beacons: vec![], snow: vec![], snow_look, count: 0, seed: 0, flashes, sounds: vec![] };
         // the wisps (0x3A16C0, 0x3A18F8 as each one starts)
         for (group, g) in list("wisps").enumerate() {
             for k in 0..g["count"].as_u64().unwrap_or(0).min(256) {
