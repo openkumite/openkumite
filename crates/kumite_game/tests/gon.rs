@@ -110,27 +110,29 @@ fn gons_gas_strikes_close_by() {
     assert!(far.hits.is_empty() && far.objects >= 8, "{far:?}");
 }
 
-/// Gon's kicks strike from his feet: each kick's strike (Tekken 3's path, baked at his 45 %) ends by the drawn foot
-/// of its slot (14 foot_A, 17 foot_B) on its active frames, and lands on Paul in front of him. (The feet are the PS1's
-/// slots, its pose solver bending his short legs on its own full-size ones: f+4's first frame ends 57 off, and on the
-/// PS1 58, its strike 0x8006A230 against slot 14 in PCSX-Redux; 3's and d+3's 10 and 9.)
+/// Gon's kicks strike from his feet: each kick's strike (Tekken 3's path, baked at his 45 %) ends where the PS1's does
+/// from the drawn foot of its slot (14 foot_A, 17 foot_B), and lands on Paul in front of him. (The feet are the PS1's
+/// slots, its pose solver bending his short legs on its own full-size ones, so f+4's path reaches past the foot:
+/// PCSX-Redux, audit39's gonkick, the strike end P+0x1B8 less slot P+0x8F4 + 0x44 s at 0x8003F098, f+4 58 ahead.)
 #[test]
 fn gons_kicks_strike_from_his_feet() {
     let Some(a) = assets() else { return };
-    for (script, foot) in [("f+4,n*60", "foot_A"), ("3,n*60", "foot_B"), ("d+3,n*60", "foot_B")] {
-        let mut g = Game::load(&a, [GON, PAUL]).unwrap();
-        g.fight.fighters[1].position.x += 3000.0;
-        let mut ends = 0;
-        for pad in parse_script(script).unwrap() {
-            g.step([pad, Pad::default()]);
-            let Some(&(_, end)) = g.fight.fighters[0].attack_segments(&g.fight.data).last() else { continue };
-            let (pose, place) = g.pose(0);
-            let node = g.bodies[0].character.nodes.iter().position(|n| n.name == foot).unwrap();
-            let at = place.transform_point3(pose[node].w_axis.truncate()) * 1000.0;
-            assert!(end.distance(at) < 60.0, "{script}: strike end {end} vs {foot} {at}");
-            ends += 1;
-        }
-        assert!(ends > 0, "{script}: no strike");
+    // (the PS1's case: Gon's and Paul's second costumes, the kicks 82 and 81 frames apart, each eased from the last
+    // move as there; the PS1's strike end less its slot in our axes, x ahead, y up)
+    let mut want = [("foot_A", [58.0, 9.0, 3.0]), ("foot_B", [2.0, 0.0, 9.0]), ("foot_B", [7.0, 0.0, 5.0])].into_iter();
+    let mut g = Game::load(&a, [243, 75]).unwrap();
+    g.fight.fighters[1].position.x += 3000.0;
+    for pad in parse_script("n*22,f+4*2,n*80,3*2,n*79,d+3*2,n*60").unwrap() {
+        g.step([pad, Pad::default()]);
+        let Some(&(_, end)) = g.fight.fighters[0].attack_segments(&g.fight.data).last() else { continue };
+        let (foot, ps1) = want.next().expect("three strikes");
+        let (pose, place) = g.pose(0);
+        let node = g.bodies[0].character.nodes.iter().position(|n| n.name == foot).unwrap();
+        let at = place.transform_point3(pose[node].w_axis.truncate()) * 1000.0;
+        assert!((end - at).distance(ps1.into()) < 5.0, "strike end {end} vs {foot} {at}, the PS1's {ps1:?} off");
+    }
+    assert!(want.next().is_none(), "a kick did not strike");
+    for script in ["f+4,n*60", "3,n*60", "d+3,n*60"] {
         let near = gon(&a, script, 900.0);
         assert!(near.hits.len() == 1 && near.hits[0].1 > 0, "{script}: {near:?}");
     }
