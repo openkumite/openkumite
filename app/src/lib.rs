@@ -659,8 +659,9 @@ struct App {
     boss_change: Option<kumite_game::scene::BossChangeData>,
     /// The attract loop: its state, the embu's data and the one running, the demo fight's P1 list (character ids).
     attract: Attract,
-    /// The records screen comes next (after a result screen or the demo), and its music (a new record's BGM 2).
-    open_records: bool,
+    /// The records screen comes next (after a result screen or the staff roll) after these black frames, and its
+    /// music (a new record's BGM 2).
+    open_records: Option<u32>,
     records_music: Option<usize>,
     /// EXIT was chosen: steps left until the game closes (its sound plays out first).
     quit_in: Option<u32>,
@@ -670,6 +671,8 @@ struct App {
     roll_music: Option<usize>,
     /// The character id of a lost 1P session under CONTINUE? (counted as played at GAME OVER).
     continue_player: Option<usize>,
+    /// Arcade cleared: the frames the last picture still holds before the ending (round state 9).
+    ending_hold: u32,
     embu_data: Option<Arc<kumite_game::embu::EmbuData>>,
     embu: Option<EmbuRun>,
     /// Tekken Tag's ending playing.
@@ -1957,7 +1960,7 @@ impl App {
 
     /// One fixed 60 Hz logic step.
     fn step(&mut self) {
-        let thunder = self.step_arena(self.game_paused());
+        let thunder = self.step_arena(self.game_paused() || self.ending_hold > 0);
         // (arena 4's thunder, 0x374D30)
         if let (Some(audio), Some(sound)) = (self.audio.as_mut(), self.sound.as_ref()) {
             for s in thunder.into_iter().filter_map(|code| sound.tag_entry(code, 0, 4)) {
@@ -2065,7 +2068,7 @@ impl App {
                     modes::ResultEvent::Banner | modes::ResultEvent::Voice => menu::sfx::play(self.roster.modes.result_sfx.1),
                     modes::ResultEvent::Done => {
                         self.run = None;
-                        self.open_records = true;
+                        self.open_records = Some(records::RESULTS_LOAD);
                     }
                 }
             }
@@ -2102,13 +2105,15 @@ impl App {
                     theater::RollEvent::Music(id) => self.roll_music = Some(id),
                     theater::RollEvent::Done => {
                         self.roll_music = None;
-                        self.open_records = true;
+                        self.open_records = Some(0);
                     }
                 }
             }
-            if self.open_records {
-                self.open_records = false;
+            if let Some(wait) = self.open_records.take() {
                 self.start_records();
+                if let Some(Screen::Records(r)) = self.screen.as_mut() {
+                    r.wait = wait;
+                }
                 return;
             }
             let Some(screen) = &mut self.screen else { return };
@@ -2231,6 +2236,15 @@ impl App {
         let p2_script = (!self.p2_script.is_empty() && fighting).then(|| self.p2_script.remove(0));
         self.tapped.clear();
         let select = self.select_held();
+        // the arcade cleared: the picture holds while the ending loads, then the movie
+        if self.ending_hold > 0 {
+            self.ending_hold -= 1;
+            if self.ending_hold == 0 {
+                self.save_replay();
+                self.match_over();
+            }
+            return;
+        }
         let Some(fight) = self.fight.as_mut() else { return };
         if fight.pause.is_some() {
             return;
@@ -2580,6 +2594,11 @@ impl App {
             // a replay ends on its last frame (the viewer stays); a match played is saved as one, then goes on
             if self.replay_view.is_some() {
                 self.replay_ended();
+                return;
+            }
+            // the arcade cleared: round state 9 holds the last picture 164 vsyncs on the PS1 (the ending's load)
+            if fight.setup.as_ref().is_some_and(|s| s.mode == Mode::Arcade && s.level + 1 >= fight.ladder.len()) && matches!(fight.bout.phase, Phase::MatchOver { winner: Some(0) }) {
+                self.ending_hold = menu::ENDING_HOLD;
                 return;
             }
             self.save_replay();
@@ -3492,7 +3511,10 @@ impl App {
                             .and_then(|p| t.params(p))
                             .and_then(|p| movie::Movie::with(&self.assets.root, &p).map_err(|e| log::warn!("ending movie: {e:#}")).ok());
                         match m {
-                            Some(m) => Screen::Movie(Box::new(m), menu::AfterMovie::Credits),
+                            Some(mut m) => {
+                                m.wait = menu::ENDING_BLACK;
+                                Screen::Movie(Box::new(m), menu::AfterMovie::Credits)
+                            }
                             None => Screen::StaffRoll(Box::new(theater::StaffRoll::new(t))),
                         }
                     }
@@ -9271,10 +9293,11 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         sound: kumite_game::sound::SoundData::load(&assets).map_err(|e| log::warn!("no sound data: {e:#}")).ok().map(Arc::new),
         boss_change: kumite_game::scene::BossChangeData::load(&assets).map_err(|e| log::warn!("no scenes.json: {e:#}")).ok(),
         attract: Attract::default(),
-        open_records: false,
+        open_records: None,
         records_music: None,
         quit_in: None,
         continue_player: None,
+        ending_hold: 0,
         theater_music: None,
         roll_music: None,
         embu_data: kumite_game::embu::EmbuData::load(&assets).map(Arc::new).map_err(|e| log::warn!("no attract.json embu: {e:#}")).ok(),

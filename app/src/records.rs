@@ -71,7 +71,13 @@ pub struct RecordsScreen {
     tables: Records,
     /// Auto-repeat of the held direction (0x80029F58): frames held.
     held: (i32, u32),
+    /// Black frames before the page starts (its stage loading).
+    pub wait: u32,
 }
+
+/// After a result screen the PS1 stays black 124 vsyncs between the results' fade-out and the page's fade-in (mode
+/// 16 loading the stage).
+pub const RESULTS_LOAD: u32 = 124;
 
 fn num(v: &Value) -> i32 {
     v.as_i64().unwrap_or(0) as i32
@@ -118,6 +124,7 @@ impl RecordsScreen {
             keys: Vec::new(),
             tables: records.clone(),
             held: (0, 0),
+            wait: 0,
         }
     }
 
@@ -170,6 +177,10 @@ impl RecordsScreen {
     }
 
     fn step(&mut self, records: &mut Records, roster: &Roster, held: [bool; 2]) -> Event {
+        if self.wait > 0 {
+            self.wait -= 1;
+            return Event::None;
+        }
         self.frame += 1;
         let keys = std::mem::take(&mut self.keys);
         // START (not on the first frame): the typed name becomes the character's, then the main menu
@@ -704,6 +715,16 @@ mod tests {
         assert!((480..=500).contains(&n), "{n} frames");
         assert_eq!(rec.page, 2);
         assert!(rec.stage_rotor >= 1);
+        // after a result screen: black while the stage loads, then the same page
+        rec.page = 1;
+        let mut s = RecordsScreen::new(&r.screens["records"], &mut rec);
+        s.wait = RESULTS_LOAD;
+        let mut m = 0;
+        while s.tick(&mut rec, &r, [false; 2]) != Event::Done {
+            assert!(m >= RESULTS_LOAD || s.draw == 0);
+            m += 1;
+        }
+        assert_eq!(m, n + RESULTS_LOAD);
     }
 
     /// Typing: a button takes the letter; '<' steps back; a banned name becomes the character's.

@@ -987,6 +987,10 @@ const SELECT_SECONDS: u32 = 20;
 const SELECT_OUTRO: u32 = 50;
 /// The continue count: 808 frames, one number per 90 (9 .. 1), then GAME OVER for 120 frames.
 pub const CONTINUE_FRAMES: u32 = 808;
+/// Arcade cleared, on the PS1: the last picture holds 164 vsyncs from the win pose's end (round state 9, the
+/// ending's load), then 29 black before the movie.
+pub const ENDING_HOLD: u32 = 164;
+pub const ENDING_BLACK: u32 = 29;
 pub const CONTINUE_STEP: u32 = 90;
 const GAME_OVER_FRAMES: u32 = 120;
 
