@@ -203,3 +203,34 @@ fn survey() {
         );
     }
 }
+
+/// The final stage's character leaves its intro for its stance (alias 3) after the call's first step, on its mark,
+/// whatever rand() draws: Doctor B. falls back from 1000 and lies, on the PS1's rows 752-779 (t3sim48, five seeds;
+/// 1 unit short on 766-773).
+#[test]
+fn the_final_stages_character_starts_in_its_stance_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let data: Arc<ForceData> = Arc::new(kumite_sim::data::load(&a.root.join("gamedata/force.json")).unwrap());
+    let soldier = |k: usize| 259 + 4 * data.soldier_costumes[0][k].min(3);
+    let soldiers = [0, 1].map(|k| Actor::load(&a, soldier(k)).unwrap());
+    let mut game = Game::load(&a, [model(0, 0), soldier(0)]).unwrap();
+    game.round_frames = kumite_game::force::CLOCK;
+    let mut bout = Bout::new(game, kumite_game::ai_data(&a).unwrap(), 1, false);
+    bout.force = true;
+    bout.set_cpu(1, Some((1, data.ai_level(0))));
+    let mut st = ForceStage::new(data.clone(), data.final_index(), soldiers, 0, 0, 0, 0, 0, 0);
+    st.setup(&mut bout.game);
+    // (Doctor B.'s model)
+    st.final_start(&mut bout.game, &Actor::load(&a, 247).unwrap(), (data.constants.last.character, 0));
+    let mut xs = Vec::new();
+    for _ in 0..28 {
+        bout.step([Pad::default(); 2]);
+        st.step(&mut bout.game, false, false);
+        xs.push(bout.game.fight.fighters[1].root().x as i32);
+    }
+    let f = &bout.game.fight.fighters[1];
+    assert_eq!(f.alias, f.moveset.fixed.neutral, "in its stance");
+    // (step n is the PS1's row 751 + n: its trace reads the roots a step late)
+    assert_eq!(xs[..14], [1000, 1029, 1049, 1074, 1101, 1132, 1166, 1202, 1225, 1250, 1276, 1301, 1328, 1355]);
+    assert_eq!(xs[22..], [1584, 1599, 1611, 1618, 1622, 1624]);
+}
