@@ -543,6 +543,10 @@ impl Results {
 
     pub fn draw(&self, painter: &egui::Painter, v: &View, art: &Art, roster: &Roster) {
         Art::shade(painter, v, crate::art::FULL, [Color32::BLACK; 4]);
+        // Time Attack's backdrop: record 302's full-screen picture
+        if let (ResultKind::TimeAttack { .. }, Some((tex, _))) = (&self.kind, art.pic("r302/000_full.png")) {
+            Art::image(painter, v, &tex, 0.0, 0.0, crate::art::SCREEN_W, crate::art::SCREEN_H, Color32::WHITE);
+        }
         match &self.kind {
             ResultKind::TimeAttack { run, total, new_record } => self.draw_ta(painter, v, art, roster, run, *total, *new_record),
             ResultKind::Survival { run, ranked, tally } => self.draw_survival(painter, v, art, roster, run, *ranked, tally),
@@ -578,14 +582,14 @@ impl Results {
         let ([bx0, bx1], [by0, by1]) = ([n(&b["x"][0]), n(&b["x"][1])], [n(&b["y"][0]), n(&b["y"][1])]);
         for (k, split) in run.splits.iter().enumerate().take(self.step as usize + 1).take(10) {
             let (Some(&x), Some(&y)) = (xs.get(k), ys.get(k)) else { continue };
-            // the row's box: an additive grey gradient to black (the colour halved: its semi-transparency)
-            let grey = crate::art::additive(Color32::from_gray((u(&b["rgb"][0]) / 2) as u8));
-            let black = crate::art::additive(Color32::BLACK);
-            Art::shade(painter, v, [x + bx0, y + by0, bx1 - bx0, by1 - by0], [grey, black, grey, black]);
+            // the row's box: a subtractive grey gradient to black (PS1: the backdrop less 222 at its left, nothing at
+            // its right)
+            let dark = Color32::from_black_alpha(u(&b["rgb"][0]) as u8);
+            Art::shade(painter, v, [x + bx0, y + by0, bx1 - bx0, by1 - by0], [dark, Color32::TRANSPARENT, dark, Color32::TRANSPARENT]);
             let text = if k + 1 < 10 { fmt[0].replace("%1x", &format!("{:x}", k + 1)) } else { fmt[1].replace("%2d", &format!("{:2}", k + 1)) };
             Text { text, ..label.clone() }.draw_args(painter, v, art, [x, y], &[]);
-            // the opponent's face at half size (0x800F0CFC)
-            face_sized(painter, v, art, roster, split.opponent, x + f[0], y + f[1], 0, 0.5);
+            // the opponent's face at half size (0x800F0CFC), slashed once its row is done (flags 0x40, 0x800EFD24)
+            face_sized(painter, v, art, roster, split.opponent, x + f[0], y + f[1], if (k as u32) < self.step { 0x40 } else { 0 }, 0.5);
             // the time counts up over the row's 16 frames
             let shown = if (k as u32) < self.step { split.frames } else { split.frames * ((self.frame.saturating_sub(32 + per * k as u32)).min(16)) / 16 };
             Self::time(art, painter, v, row, shown, [x, y]);
