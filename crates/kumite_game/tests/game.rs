@@ -735,6 +735,31 @@ fn the_match_call_comes_as_the_result_shows() {
     assert!(file.is_some());
 }
 
+/// Between two humans the call comes after every round, for that round's winner (PS1 VS 2P, t3sim47: XIAOYU WINS!,
+/// JIN WINS! at 1-1, XIAOYU WINS!, each in its own voice; 0x8003D7EC); against a CPU only once the match is decided.
+#[test]
+fn two_humans_get_the_call_after_every_round() {
+    use kumite_game::bout::Announcement;
+    let Some(a) = assets() else { return };
+    for cpu in [None, Some((1, 6))] {
+        let mut b = bout(&a, [MODEL_71, MODEL_79], [None, cpu], false);
+        let mut calls = Vec::new();
+        for _ in 0..60 * 120 {
+            if b.phase == Phase::Fight {
+                // P2 loses round 1, P1 round 2
+                b.game.fight.fighters[if b.wins == [0, 0] { 1 } else { 0 }].health = 0;
+            }
+            b.step([Pad::default(); 2]);
+            calls.extend(b.events.iter().filter(|e| matches!(e, Announcement::Wins(_) | Announcement::Draw)).map(|&e| (b.wins, e)));
+            if b.wins == [1, 1] && b.phase == Phase::Fight {
+                break;
+            }
+        }
+        let want = if cpu.is_none() { vec![([1, 0], Announcement::Wins(0)), ([1, 1], Announcement::Wins(1))] } else { vec![] };
+        assert_eq!(calls, want, "cpu {cpu:?}");
+    }
+}
+
 #[test]
 fn cpu_matches_are_deterministic() {
     let Some(a) = assets() else { return };
