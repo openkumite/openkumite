@@ -543,6 +543,11 @@ impl Results {
 
     pub fn draw(&self, painter: &egui::Painter, v: &View, art: &Art, roster: &Roster) {
         Art::shade(painter, v, crate::art::FULL, [Color32::BLACK; 4]);
+        // Survival's backdrop (0x800F12DC): the select screen's quads in 0xA0C000, its banner and letters at 0x60
+        if matches!(self.kind, ResultKind::Survival { .. }) {
+            roster.grid.bands(painter, v, Color32::from_rgb(0, 192, 160));
+            roster.grid.scroll(painter, v, art, self.frame, Color32::from_gray(0xC0));
+        }
         // Time Attack's backdrop: record 302's full-screen picture
         if let (ResultKind::TimeAttack { .. }, Some((tex, _))) = (&self.kind, art.pic("r302/000_full.png")) {
             Art::image(painter, v, &tex, 0.0, 0.0, crate::art::SCREEN_W, crate::art::SCREEN_H, Color32::WHITE);
@@ -599,7 +604,7 @@ impl Results {
             // (the big font has no '"': the marks are three ')
             Self::time(art, painter, v, &d["total"], total, [0.0, 0.0]);
             let id = roster.characters[run.player.0].id;
-            face(painter, v, art, roster, id, n(&d["total"]["face"][0]), n(&d["total"]["face"][1]), 0);
+            framed_face(painter, v, art, roster, id, n(&d["total"]["face"][0]), n(&d["total"]["face"][1]), 0);
             if new_record {
                 let t = Text::from(&d["new_record"]);
                 let colours: Vec<u32> = d["new_record"]["colours"].as_array().into_iter().flatten().map(u).collect();
@@ -622,7 +627,7 @@ impl Results {
         let fc = &l["face"];
         for (&(id, count), p) in tally.iter().zip(&places) {
             let (x, y) = (n(&p[0]), n(&p[1]));
-            face(painter, v, art, roster, id, x + n(&fc["dx"]), y + n(&fc["dy"]), u(&fc["flags"]));
+            framed_face(painter, v, art, roster, id, x + n(&fc["dx"]), y + n(&fc["dy"]), u(&fc["flags"]));
             let shown = count.min(left);
             left -= shown;
             let c = colours.get(((shown / 100) & 3) as usize).copied().unwrap_or(6);
@@ -732,6 +737,14 @@ impl Results {
 #[allow(clippy::too_many_arguments)]
 pub fn face(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, id: usize, x: f32, y: f32, flags: u32) {
     face_sized(painter, v, art, roster, id, x, y, flags, 1.0);
+}
+
+/// [`face`] in its frame, as 0x8004B928 draws one without flags bit 8: the cell frame's lines in set `flags & 3`, the
+/// face 2, 3 in (0x8004BA58).
+#[allow(clippy::too_many_arguments)]
+fn framed_face(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, id: usize, x: f32, y: f32, flags: u32) {
+    roster.grid.frame_lines(painter, v, x, y, (flags & 3) as usize, 0x80, None);
+    face(painter, v, art, roster, id, x + 2.0, y + 3.0, flags);
 }
 
 /// [`face`] drawn at `scale`.

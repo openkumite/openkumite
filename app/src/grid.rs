@@ -156,6 +156,58 @@ fn on_page(y: f32) -> (usize, f32) {
 }
 
 impl GridData {
+    /// Black, then the backdrop's four quads (0x80054F14) in `colour`.
+    pub fn bands(&self, painter: &egui::Painter, v: &View, colour: Color32) {
+        Art::shade(painter, v, [0.0, 0.0, crate::art::SCREEN_W, crate::art::SCREEN_H], [Color32::BLACK; 4]);
+        for q in &self.background {
+            Art::shade(painter, v, q.rect(), q.colours.map(|c| c.unwrap_or(colour)));
+        }
+    }
+
+    /// The banner, then the big title letters (font 2 glyphs scaled up) in `tint`, scrolling left `frame` frames in.
+    pub fn scroll(&self, painter: &egui::Painter, v: &View, art: &Art, frame: u32, tint: Color32) {
+        let sw = crate::art::SCREEN_W;
+        let (font, colour, y, period, speed) = self.banner_text;
+        let period = period.max(1);
+        let mut x = -(((frame as i32 * -speed) % period) as f32) + speed as f32;
+        while x < sw {
+            art.text(painter, v, font, colour, x, y, &self.banner, Color32::WHITE);
+            x += period as f32;
+        }
+        let [w, h, scale, y, step, period, speed] = self.letters_draw;
+        let period = period.max(1);
+        let base = -(((frame as i32 * -speed) % period) as f32) + speed as f32;
+        for rep in 0..2 {
+            for (k, l) in self.letters.iter().enumerate() {
+                let lx = base + (step * k as i32) as f32 + (period * rep) as f32;
+                if (-((w * scale) as f32) + 1.0..sw).contains(&lx) {
+                    let t = Tex { page: self.letters_page, bpp: 4, u: l[0], v: l[1], clut: Some([l[2], l[3]]) };
+                    art.quad(painter, v, &["exe"], &t, w as u32, h as u32, [lx, y as f32, (w * scale) as f32, (h * scale) as f32], [tint; 4]);
+                }
+            }
+        }
+    }
+
+    /// The cell frame (0x800215EC): 10 one-pixel lines in colour set `set`, brightness `b` (0x80 = as is); `half`
+    /// keeps only that player's half (0 left, 1 right).
+    #[allow(clippy::too_many_arguments)]
+    pub fn frame_lines(&self, painter: &egui::Painter, v: &View, x: f32, y: f32, set: usize, b: u32, half: Option<usize>) {
+        let Some(colours) = self.line_sets.get(set) else { return };
+        let clip = match half {
+            Some(h) => {
+                let [w, ch] = self.cell;
+                painter.with_clip_rect(v.rect(x + w / 2.0 * h as f32, y, w / 2.0, ch))
+            }
+            None => painter.clone(),
+        };
+        for &(ci, [x0, y0, x1, y1]) in &self.lines {
+            let c = colours[ci.min(2)];
+            let s = |ch: u8| ((ch as u32 * 2 * b) >> 8).min(255) as u8;
+            let c = Color32::from_rgb(s(c.r()), s(c.g()), s(c.b()));
+            Art::shade(&clip, v, [x + x0, y + y0, x1 - x0 + 1.0, y1 - y0 + 1.0], [c; 4]);
+        }
+    }
+
     /// The full health in percent of LIFE level `level` (100 past the levels).
     pub fn handicap(&self, level: usize) -> i32 {
         self.percents.get(level).copied().unwrap_or(100)
@@ -885,10 +937,7 @@ impl GridSelect {
         let solid = |c: Color32| [c; 4];
         let (sw, sh) = (crate::art::SCREEN_W, crate::art::SCREEN_H);
         // 1. black, the four backdrop quads in the mode colour
-        Art::shade(painter, v, [0.0, 0.0, sw, sh], solid(Color32::BLACK));
-        for q in &d.background {
-            Art::shade(painter, v, q.rect(), q.colours.map(|c| c.unwrap_or(d.colour_a)));
-        }
+        d.bands(painter, v, d.colour_a);
         // 2. the VS panel: a darkened box with soft sides and a tab below, narrowing to its bottom edge (subtractive in
         // the original)
         let dark = Color32::from_black_alpha(d.darken);
@@ -902,27 +951,8 @@ impl GridSelect {
         }
         tab.indices.extend([0, 1, 2, 1, 3, 2]);
         painter.add(egui::Shape::mesh(tab));
-        // 3. the banner, scrolling left
-        let (font, colour, y, period, speed) = d.banner_text;
-        let period = period.max(1);
-        let mut x = -(((self.frame as i32 * -speed) % period) as f32) + speed as f32;
-        while x < sw {
-            art.text(painter, v, font, colour, x, y, &d.banner, Color32::WHITE);
-            x += period as f32;
-        }
-        // 4. the big title letters (font 2 glyphs scaled up), scrolling left
-        let [w, h, scale, y, step, period, speed] = d.letters_draw;
-        let period = period.max(1);
-        let base = -(((self.frame as i32 * -speed) % period) as f32) + speed as f32;
-        for rep in 0..2 {
-            for (k, l) in d.letters.iter().enumerate() {
-                let lx = base + (step * k as i32) as f32 + (period * rep) as f32;
-                if (-((w * scale) as f32) + 1.0..sw).contains(&lx) {
-                    let t = Tex { page: d.letters_page, bpp: 4, u: l[0], v: l[1], clut: Some([l[2], l[3]]) };
-                    art.quad(painter, v, src, &t, w as u32, h as u32, [lx, y as f32, (w * scale) as f32, (h * scale) as f32], [Color32::WHITE; 4]);
-                }
-            }
-        }
+        // 3. the banner and 4. the big title letters, scrolling left
+        d.scroll(painter, v, art, self.frame, Color32::WHITE);
         // 5. the side glows (additive, colour B)
         for q in &d.glows {
             Art::shade(painter, v, q.rect(), q.colours.map(|c| additive(c.unwrap_or(d.colour_b))));
@@ -933,7 +963,7 @@ impl GridSelect {
             if page != self.page {
                 continue;
             }
-            self.frame_lines(painter, v, cx, cy, 0, 0x80, None);
+            self.data.frame_lines(painter, v, cx, cy, 0, 0x80, None);
             self.face(painter, v, art, roster, id, cx + d.face_d[0], cy + d.face_d[1]);
         }
         // 7. each player's face under the panel (Team: the strip of members), the name with its costume bar
@@ -953,7 +983,7 @@ impl GridSelect {
             }
             let (id, costume) = self.shown(k);
             if self.team.is_none() {
-                self.frame_lines(painter, v, p.strip[0], p.strip[1], 0, 0x80, None);
+                self.data.frame_lines(painter, v, p.strip[0], p.strip[1], 0, 0x80, None);
                 self.face(painter, v, art, roster, id, p.strip[0] + d.face_d[0], p.strip[1] + d.face_d[1]);
             }
             let cos = roster.by_id(id).and_then(|c| c.costumes.get(costume)).and_then(|m| roster.costume_of.get(m)).copied().unwrap_or(0);
@@ -983,7 +1013,7 @@ impl GridSelect {
             }
             let b = if self.players[k].state == State::Choosing { blink } else { 0x80 };
             let half = same.then_some(k);
-            self.frame_lines(painter, v, cx, cy, d.players[k].frame_set, b, half);
+            self.data.frame_lines(painter, v, cx, cy, d.players[k].frame_set, b, half);
             let p = &d.players[k];
             let tint = modulate(b, b, b);
             let (dy, [w, h], page) = d.tag;
@@ -1038,7 +1068,7 @@ impl GridSelect {
                 if next && self.frame & 0x10 == 0 {
                     continue;
                 }
-                self.frame_lines(painter, v, x, y, 0, 0x80, None);
+                self.data.frame_lines(painter, v, x, y, 0, 0x80, None);
                 let id = match picks.get(i) {
                     Some(&(id, _)) => id,
                     None if next => self.cell(k).2,
@@ -1066,26 +1096,6 @@ impl GridSelect {
             }
             State::Done => true,
             _ => false,
-        }
-    }
-
-    /// The cell frame (0x800215EC): 10 one-pixel lines in colour set `set`, brightness `b` (0x80 = as is); `half`
-    /// keeps only that player's half (0 left, 1 right).
-    #[allow(clippy::too_many_arguments)]
-    fn frame_lines(&self, painter: &egui::Painter, v: &View, x: f32, y: f32, set: usize, b: u32, half: Option<usize>) {
-        let Some(colours) = self.data.line_sets.get(set) else { return };
-        let clip = match half {
-            Some(h) => {
-                let [w, ch] = self.data.cell;
-                painter.with_clip_rect(v.rect(x + w / 2.0 * h as f32, y, w / 2.0, ch))
-            }
-            None => painter.clone(),
-        };
-        for &(ci, [x0, y0, x1, y1]) in &self.data.lines {
-            let c = colours[ci.min(2)];
-            let s = |ch: u8| ((ch as u32 * 2 * b) >> 8).min(255) as u8;
-            let c = Color32::from_rgb(s(c.r()), s(c.g()), s(c.b()));
-            Art::shade(&clip, v, [x + x0, y + y0, x1 - x0 + 1.0, y1 - y0 + 1.0], [c; 4]);
         }
     }
 
