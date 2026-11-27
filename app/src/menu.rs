@@ -956,11 +956,18 @@ pub fn arcade_ladder(roster: &Roster, player: usize, seed: &mut u32) -> Vec<usiz
     ladder
 }
 
+/// An arcade opponent's costume (0x800B1FCC): 1 when the player's isn't 0, but 0 for the last stage's Ogre (PS1,
+/// t3sim47: Xiaoyu's second costume met Heihachi in his suit).
+pub fn arcade_costume(roster: &Roster, player_costume: usize, opp: usize, last: bool) -> usize {
+    usize::from(player_costume != 0 && !last && roster.characters.get(opp).is_some_and(|c| c.costumes.len() > 1))
+}
+
 /// Arcade stage `level` for a player pick.
 pub fn arcade_setup(roster: &Roster, player: (usize, usize), difficulty: usize, ladder: &[usize], level: usize) -> FightSetup {
     let opp_id = ladder.get(level).or(ladder.last()).copied().unwrap_or(0);
     let opp = roster.index_of(opp_id).unwrap_or(0);
-    FightSetup { mode: Mode::Arcade, players: [player, (opp, 0)], stage: roster.home_stage(opp_id, 0), difficulty, level, handicap: [100; 2], ball: None, partners: None }
+    let costume = arcade_costume(roster, player.1, opp, level + 1 >= ladder.len());
+    FightSetup { mode: Mode::Arcade, players: [player, (opp, costume)], stage: roster.home_stage(opp_id, 0), difficulty, level, handicap: [100; 2], ball: None, partners: None }
 }
 
 // ---------------------------------------------------------------- screens
@@ -2895,6 +2902,18 @@ mod tests {
         assert_eq!(r.costume_of.get(&71), Some(&0), "character 0's first model is his costume 0");
         // (replays and records: Kuma's costume 1 by its selection's name)
         assert_eq!([159, 163, 71].map(|m| r.model_name(m)), ["Kuma", "Panda", "Paul"]);
+    }
+
+    /// Arcade opponents wear costume 1 when the player's isn't 0, Ogre (the last stage) 0 (0x800B1FCC; PS1 t3sim47:
+    /// Xiaoyu's second costume met Heihachi in his suit, model 179).
+    #[test]
+    fn arcade_opponents_dress_by_the_players_costume() {
+        let Some(r) = roster() else { return };
+        let ladder = [1, 13, 14];
+        let costumes = |c| [0, 1, 2].map(|level| arcade_setup(&r, (0, c), 1, &ladder, level).players[1].1);
+        assert_eq!((costumes(0), costumes(1)), ([0, 0, 0], [1, 1, 0]));
+        let heihachi = arcade_setup(&r, (0, 1), 1, &ladder, 1).players[1];
+        assert_eq!(r.characters[heihachi.0].costumes[heihachi.1], 179);
     }
 
     #[test]
