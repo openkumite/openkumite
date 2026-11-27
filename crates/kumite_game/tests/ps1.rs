@@ -53,12 +53,12 @@ fn rows(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str
     rows_at(a, models, copy, lead, p1, p2, steps, &std::env::var("VS_RAND").unwrap_or_default(), None).0
 }
 
-/// [`rows`] from the PS1's rand() and blinks ([`start_rand`]), and rand()'s state after each step; VS_RAND_LOG=1
-/// prints each step's state ("step rs seed g=count objects"), VS_SOUND=1 the sounds it starts ("step snd file
-/// volume speed"). `intro`: the fighters stand where round 1's intros
-/// (alias 0, the coin flip's neutral pads) left them, not on the start marks, their stances at these frames.
+/// [`rows`] from the PS1's rand() and blinks ([`start_rand`]), and rand()'s state and the sounds started (bank/file)
+/// after each step; VS_RAND_LOG=1 prints each step's state ("step rs seed g=count objects"), VS_SOUND=1 the sounds
+/// ("step snd file volume speed"). `intro`: the fighters stand where round 1's intros (alias 0, the coin flip's
+/// neutral pads) left them, not on the start marks, their stances at these frames.
 #[allow(clippy::too_many_arguments)]
-fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize, start: &str, intro: Option<[u32; 2]>) -> (Vec<Row>, Vec<u32>) {
+fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize, start: &str, intro: Option<[u32; 2]>) -> (Vec<Row>, Vec<u32>, Vec<Vec<String>>) {
     let at = intro.map(|_| intro_ends(a, models));
     let mut g = Game::load(a, models).unwrap();
     g.sound = sound(a, models);
@@ -89,7 +89,7 @@ fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &
     // (the start's "step:frame" entries: the PS1's frame counter from that step on, 0x800AFA4C, t3sim40's rs.lua f=;
     // its main loop runs two steps in one of its frames when it lags, which turns the parity the hurt voices go by)
     let frames: std::collections::BTreeMap<usize, u64> = start.split(',').filter_map(|e| e.split_once(':').and_then(|(k, f)| Some((k.parse().ok()?, f.parse().ok()?)))).collect();
-    let mut seeds = Vec::new();
+    let (mut seeds, mut files) = (Vec::new(), Vec::new());
     let rows = (0..steps)
         .map(|k| {
             if let Some(&f) = frames.get(&k) {
@@ -100,11 +100,18 @@ fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &
                 let l: Vec<String> = g.fight.objects.list.iter().map(|o| format!("{:?}.{}.{}", o.kind, o.state, o.count)).collect();
                 eprintln!("{k} rs {:08x} g={} {}", g.fight.objects.seed, g.fight.objects.count, l.join(" "));
             }
+            let heard: Vec<&kumite_game::sound::Sound> = g.sound.iter().flat_map(|s| &s.heard).collect();
             if sounds {
-                for s in g.sound.iter().flat_map(|s| &s.heard) {
+                for s in &heard {
                     eprintln!("{k} snd {} {:.3} {:.3}", s.file.display(), s.volume, s.speed);
                 }
             }
+            files.push(
+                heard
+                    .iter()
+                    .filter_map(|s| s.file.file_name().map(|f| format!("{}/{}", s.file.parent().and_then(|d| d.file_name()).unwrap_or_default().to_string_lossy(), f.to_string_lossy())))
+                    .collect(),
+            );
             seeds.push(g.fight.objects.seed);
             std::array::from_fn(|i| {
                 let f = &g.fight.fighters[i];
@@ -115,7 +122,7 @@ fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &
             })
         })
         .collect();
-    (rows, seeds)
+    (rows, seeds, files)
 }
 
 /// Where round 1's intros leave the fighters (a bout's call with neutral pads: alias 0 each, as the PS1's case had).
@@ -167,7 +174,7 @@ fn at(rows: &[Row], first: usize, row: usize, i: usize) -> &(i32, i32, i32, i16,
 #[test]
 fn the_breath_turns_on_the_one_rand_stream_as_on_the_ps1() {
     let Some(a) = assets() else { return };
-    let (t, seeds) = rows_at(&a, [203, 99], None, 1, "n*245,f*40,n+1+2*2,n*218", "n*246,b*80,n*180", 503, "a71000eb,57,0,0,1,1", None);
+    let (t, seeds, _) = rows_at(&a, [203, 99], None, 1, "n*245,f*40,n+1+2*2,n*218", "n*246,b*80,n*180", 503, "a71000eb,57,0,0,1,1", None);
     for (row, want) in [(1026, (-286, -999, -24, 9_175_040)), (1027, (-282, -1018, -19, 6_619_136)), (1060, (401, -997, -133, 6_619_136)), (1150, (-410, -170, -32, 6_619_136))] {
         let r = at(&t, 676, row, 1);
         assert_eq!((r.0, r.1, r.2, r.5), want, "PS1 row {row}");
@@ -186,7 +193,7 @@ fn the_breath_turns_on_the_one_rand_stream_as_on_the_ps1() {
 fn heavy_hits_throw_their_particles_off_as_on_the_ps1() {
     let Some(a) = assets() else { return };
     let start = "d06f2765,137,0,0,1,1,0:1442,91:1532,104:1544,145:1584,164:1602,199:1636,224:1660,253:1688,284:1718,307:1740,344:1776,361:1792,363:1793,450:1879,480:1908,494:1921,496:1922,546:1971,556:1980,562:1985,600:2022,607:2028,654:2074";
-    let (t, seeds) = rows_at(&a, [75, 99], None, 1, "n*407,d/f+1*2,n*40,n+4*2,n*50,n+3*2,n*154", "n*358,b*300", 656, start, None);
+    let (t, seeds, _) = rows_at(&a, [75, 99], None, 1, "n*407,d/f+1*2,n*40,n+4*2,n*50,n+3*2,n*154", "n*358,b*300", 656, start, None);
     // (rs.lua's state and count after the PS1's steps 1011, 1067 and 1150: the hits' particles and their ends)
     assert_eq!([seeds[461], seeds[517], seeds[600]], [0x0ecd_4125, 0x3e7a_a644, 0xfb37_3062]);
     assert_eq!(at(&t, 549, 1012, 1).5, 6_553_600, "PS1 row 1012: King's health");
@@ -199,7 +206,7 @@ fn heavy_hits_throw_their_particles_off_as_on_the_ps1() {
 fn a_ki_charge_glows_and_kicks_as_on_the_ps1() {
     let Some(a) = assets() else { return };
     let start = "d06f2765,137,0,0,1,1,0:1442,91:1532,104:1544,145:1584,164:1602,199:1636,224:1660,253:1688,284:1718,307:1740,344:1776,361:1792,363:1793,452:1881,463:1891,468:1895,519:1945,575:2000,623:2047,637:2060,639:2061";
-    let (t, seeds) = rows_at(&a, [75, 99], None, 1, "n*407,1+2+3+4*2,n*79,n+4*2,n*40,n+3*2,n*60,n+4*2,n*120", "n*358,b*300", 655, start, None);
+    let (t, seeds, _) = rows_at(&a, [75, 99], None, 1, "n*407,1+2+3+4*2,n*79,n+4*2,n*40,n+3*2,n*60,n+4*2,n*120", "n*358,b*300", 655, start, None);
     assert_eq!([seeds[470], seeds[500], seeds[600], seeds[652]], [0x2aba_01bf, 0x678c_be36, 0x325e_87c2, 0x17de_4cff]);
     let r = at(&t, 549, 1151, 1);
     assert_eq!((r.0, r.1, r.2, r.5), (-2002, -916, 405, 7_143_424), "PS1 row 1151: King");
@@ -451,10 +458,38 @@ fn the_facing_target_is_taken_afresh_as_the_pair_parts_as_on_the_ps1() {
 fn true_ogres_breath_strikes_king_on_the_ps1s_step() {
     let Some(a) = assets() else { return };
     let start = "a71000eb,57,0,0,1,1,0:1561,104:1664,164:1723,224:1782";
-    let (t, _) = rows_at(&a, [203, 99], None, 1, "n*245,f*40,b+1+2*2,n*60,f,n,f+1+2,n*50,n+1+2*2,n*493", "n*246,b*40,n+1*2,n*30,d+4*2,n*576", 420, start, None);
+    let (t, _, _) = rows_at(&a, [203, 99], None, 1, "n*245,f*40,b+1+2*2,n*60,f,n,f+1+2,n*50,n+1+2*2,n*493", "n*246,b*40,n+1*2,n*30,d+4*2,n*576", 420, start, None);
     assert_eq!(at(&t, 676, 1089, 1).5, 6_160_384, "PS1 row 1089: King's health");
     let r = at(&t, 676, 1091, 1);
     assert_eq!((r.0, r.1, r.2), (1396, -1107, -216), "PS1 row 1091: King");
+}
+
+/// Law juggles Gun Jack, who taps 3+4 (his motion_101, a jump; t3sim53 c148, with the PS1's voice key-ons): its
+/// sound list's script 0 is none, so its frame 1 draws the attack voice as the PS1's rand() did, Law's later voice
+/// comes as the PS1's, and the jump lands with the air landing sound on its window's last frame (0x8004033C).
+#[test]
+fn a_jump_move_lands_with_its_sound_and_script_0_is_none_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let start = "ba72bc3a,64,0,0,1,0,0:1464,90:1553,92:1554,94:1555,96:1556,98:1557,100:1558,102:1559,104:1560,106:1561,108:1562,110:1563,112:1564,114:1565,116:1566,118:1567,120:1568,122:1569,124:1570,126:1571,128:1572,130:1573,132:1574,134:1575,136:1576,138:1577,140:1578,142:1579,144:1580,146:1581,148:1582,150:1583,154:1586,170:1601,174:1604,190:1619,192:1620,194:1621,196:1622,198:1623,200:1624,202:1625,218:1640,223:1644,231:1651,233:1652,237:1655,239:1656,283:1699,285:1700,289:1703,291:1704,295:1707,297:1708,301:1711,303:1712,307:1715,309:1716,316:1722,331:1736,340:1744,344:1747,347:1749,356:1757,358:1758,360:1759,362:1760";
+    let p1 = "n*149,f*40,d/f+2*2,n*20,n+1*2,n*8,n+1*2,n*99,d/f+2*2,n*20,n+1*2,n*8,n+1*2,n*442";
+    let p2 = "n*150,b*40,n*30,n+3+4*2,n*2,n+3+4*2,n*2,n+3+4*2,n*2,n+3+4*2,n*2,n+3+4*2,n*60,n+1*2,n*2,n+1*2,n*2,n+1*2,n*2,n+1*2,n*487";
+    let (_, seeds, files) = rows_at(&a, [83, 211], None, 1, p1, p2, 380, start, None);
+    // (rs.lua's state at the PS1's steps 879 and 1027)
+    assert_eq!([seeds[222], seeds[370]], [0xa987_e6f4, 0x9edc_32fa], "rand() after Gun Jack's frame 1");
+    assert!(files[321].contains(&"sys/13.wav".to_string()), "the jump's landing: {:?}", files[321]);
+    assert!(files[346].contains(&"m083/17.wav".to_string()), "Law's voice: {:?}", files[346]);
+}
+
+/// Paul throws Xiaoyu from behind (her b+3+4 turns her back; t3sim53 c138): the link puts both on frame 0, and the
+/// PS1's sound player voices the throw on its frame 1, a step later than ours did.
+#[test]
+fn a_throws_voice_comes_on_its_frame_1_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let (t, _, files) = rows_at(&a, [75, 131], None, 1, "n*183,f*47,n+1+3*2,n*120,n+2+4*2,n*475", "n*211,f+3+4*2,n*60,f+3+4*2,n*555", 260, "", None);
+    // (PS1 row 822: both in the throw; Paul's voice in the PS1's step 822, our step for row 823)
+    assert_eq!((at(&t, 579, 822, 0).3, at(&t, 579, 822, 1).3), (-28656, -26106));
+    let paul = |k: usize| files[k].iter().any(|f| f == "m075/05.wav");
+    assert_eq!((paul(241), paul(242)), (false, true));
 }
 
 /// Mokujin as Kuma (round 2's draw, the pool's entry 11) against Gun Jack (t3sim51 c120): walk, u+1, d+4 struck
