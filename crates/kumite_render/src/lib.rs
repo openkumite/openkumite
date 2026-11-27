@@ -137,6 +137,9 @@ pub struct Camera {
     /// The picture stretched up and down by so much (Tekken Tag: the PS2 projects as square pixels onto its 640 x 448
     /// screen, which a 4:3 television shows 480 / 448 as high).
     pub y_stretch: f32,
+    /// The picture's middle moved right, in halves of the original's 4:3 width (Tekken 3's PS1 projects about x
+    /// 192, OFX, of the 368 it shows).
+    pub x_shift: f32,
     /// The picture turned anticlockwise about the line of sight (radians).
     pub roll: f32,
     /// The backdrop drum's placement (world, metres) and its view-space Y scale.
@@ -236,6 +239,7 @@ impl Camera {
             target,
             fov_y,
             y_stretch: 1.0,
+            x_shift: 0.0,
             roll: 0.0,
             sky: Mat4::IDENTITY,
             sky_y_scale: 1.0,
@@ -263,7 +267,9 @@ impl Camera {
 
     /// The projection for a picture of `aspect` (width / height).
     pub fn projection(&self, aspect: f32) -> Mat4 {
-        Mat4::from_scale(Vec3::new(1.0, self.y_stretch, 1.0)) * glam::camera::rh::proj::directx::perspective(self.fov_y, aspect, 0.05, 400.0)
+        Mat4::from_translation(Vec3::new(self.x_shift * 4.0 / 3.0 / aspect, 0.0, 0.0))
+            * Mat4::from_scale(Vec3::new(1.0, self.y_stretch, 1.0))
+            * glam::camera::rh::proj::directx::perspective(self.fov_y, aspect, 0.05, 400.0)
     }
 
     /// The view matrix: a right-handed look-at, y up, then the roll.
@@ -321,7 +327,8 @@ struct Globals {
     grass: [[f32; 4]; GRASS],
     // OpenKumite's enhancements: x 1 soft shadows
     enhance: [f32; 4],
-    // Tekken 3's floor colours: the grid's centre (x, z), its tile, 1 when on; the colours (Camera::floor_shades)
+    // Tekken 3's floor colours: the grid's centre (x, z), its tile, the PS1's line in pixels (0: off); the colours
+    // (Camera::floor_shades)
     floor_grid: [f32; 4],
     floor_shades: [[f32; 4]; 31],
 }
@@ -1684,7 +1691,7 @@ impl Renderer {
             grass: cam.grass.map_or([[0.0; 4]; GRASS], |l| l.moves),
             fog_line: cam.fog.map_or([0.0; 4], |(_, l)| [l[0], l[1], 0.0, 1.0]),
             enhance: [f32::from(u8::from(self.settings.soft_shadows)), 0.0, 0.0, 0.0],
-            floor_grid: cam.floor_shades.map_or([0.0; 4], |f| [f.centre[0], f.centre[1], f.tile, 1.0]),
+            floor_grid: cam.floor_shades.map_or([0.0; 4], |f| [f.centre[0], f.centre[1], f.tile, (self.config.height as f32 * self.settings.scale).round().max(1.0) / 480.0]),
             floor_shades: std::array::from_fn(|i| std::array::from_fn(|k| cam.floor_shades.and_then(|f| f.shades.get(4 * i + k).copied()).map_or(0.0, f32::from))),
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));

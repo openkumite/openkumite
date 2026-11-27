@@ -80,8 +80,10 @@ pub fn rules(a: &Assets, models: [usize; 2], team: [usize; 2], camera: Option<&P
                 let (me, mate) = (f.actor(i).unwrap(), f.actor(3 - i).unwrap());
                 let out = me.health <= 0 && mate.health > 0;
                 framed += usize::from(out);
-                let at = if out { mate.root() } else { me.root() };
-                assert_eq!((s.x, s.z), (at.x.round() as i64, -(at.z.round() as i64)), "side {i}'s framed player");
+                // (its root, or its place: Tekken 3's sampler picks by its move)
+                let at = if out { mate } else { me };
+                let xz = |p: glam::Vec3| (p.x.round() as i64, -(p.z.round() as i64));
+                assert!([xz(at.root()), xz(at.position)].contains(&(s.x, s.z)), "side {i}'s framed player");
             }
             if let RoundState::Ko { winner } = f.state {
                 let lost = if winner == 0 { [2, 3] } else { [0, 1] };
