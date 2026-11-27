@@ -111,7 +111,7 @@ impl RecordsScreen {
             grow: 0,
             grow_from: 0,
             rows: Vec::new(),
-            usage: vec![0; records.characters()],
+            usage: vec![0; records.characters().max(records.usage.len())],
             usage_max: 0,
             new_row: None,
             slot: 0,
@@ -151,13 +151,14 @@ impl RecordsScreen {
     }
 
     /// Kind 2's rows (0x800C19B8): characters `always` (0-9) and any played, most played first, as per mille of all
-    /// plays.
+    /// plays; the imported fighters (ids past Tekken 3's table: Tekken 2's) as Tekken 3's.
     fn usage_build(&mut self, records: &Records) {
         let n = |c: usize| records.usage.get(c).map_or(0, |u| u[0] as u32 + u[2] as u32 + u[3] as u32);
         let max = (num(&self.data["usage"]["max_character"]) as usize).min(records.characters() - 1);
-        let total: u32 = (0..records.characters()).map(n).sum();
+        let total: u32 = (0..records.usage.len()).map(n).sum();
         let always = always(&self.data["usage"]["always"]);
-        let mut list: Vec<(usize, u32)> = (0..=max).filter(|&c| always.contains(&c) || n(c) != 0).map(|c| (c, n(c))).collect();
+        let ids = (0..=max).chain(records.characters()..records.usage.len());
+        let mut list: Vec<(usize, u32)> = ids.filter(|&c| always.contains(&c) || n(c) != 0).map(|c| (c, n(c))).collect();
         list.sort_by_key(|e| std::cmp::Reverse(e.1));
         for &(c, k) in &list {
             if let Some(u) = self.usage.get_mut(c) {
@@ -763,6 +764,24 @@ mod tests {
         assert_eq!(rec.time_attack[7].1, "XIA", "AAA is banned");
         assert_eq!(s.draw, 4);
         assert!(rec.new.is_empty());
+    }
+
+    /// An imported fighter's plays (Tekken 2's Kazuya, id 23, past Tekken 3's table) count as his, not another's,
+    /// and the CHARACTERS page ranks him with Tekken 3's (#340).
+    #[test]
+    fn usage_counts_the_imported_fighters() {
+        let Some(r) = roster() else { return };
+        let mut rec = defaults(&r);
+        let kazuya = rec.characters() + 1;
+        for _ in 0..3 {
+            rec.played(kazuya);
+        }
+        rec.two_player([0, kazuya], Some(0));
+        rec.played(1000); // (no such id: nothing counted)
+        assert_eq!((rec.usage[kazuya], rec.usage[0], rec.usage.len()), ([3, 0, 1, 0], [0, 1, 0, 0], kazuya + 1));
+        let mut s = RecordsScreen::new(&r.screens["records"], &mut rec);
+        s.usage_build(&rec);
+        assert_eq!((s.rows[0], s.usage[kazuya]), (kazuya, 1000));
     }
 
     #[test]
