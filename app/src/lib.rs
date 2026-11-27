@@ -224,6 +224,15 @@ pub(crate) struct ArenaCopy {
     cloth: Vec<kumite_game::Cloth>,
 }
 
+/// A Tekken Tag fight's game takes its arena's weather and people, which it runs on its rand() (the scene keeps a copy
+/// to draw, `App::mirror_arena`).
+fn hand_arena(scene: &Scene, game: &mut Game) {
+    if game.fight.data.tag_moves {
+        game.weather = scene.weather.clone();
+        game.people = scene.people.iter().map(|p| p.walker.clone()).collect();
+    }
+}
+
 /// A TAG BRAWL step's effects: the four actors' hits and move effects, the effect objects.
 fn tag_vfx(v: &mut kumite_game::vfx::Vfx, g: &kumite_game::tag::TagGame) {
     let (eye, _, _) = kumite_game::view_camera(&g.camera.view);
@@ -1173,6 +1182,7 @@ impl App {
             }
         }
         self.debug.infinite_health = setup.as_ref().is_some_and(|s| s.mode == Mode::Practice) || (setup.is_none() && self.debug.infinite_health);
+        hand_arena(&scene, &mut bout.game);
         self.scene = Some(scene);
         let mut vfx = kumite_game::vfx::Vfx::new(&self.assets);
         vfx.set_stage(stage);
@@ -1737,7 +1747,10 @@ impl App {
                 continue;
             }
             // (each its own random numbers, the same each time the arena loads)
-            let walker = kumite_game::crowd::Walker::new(p, &json["walk"], &json["scales"], out.len() as u32 + 1);
+            let mut walker = kumite_game::crowd::Walker::new(p, &json["walk"], &json["scales"], out.len() as u32 + 1);
+            for (k, ch, _, clips, _) in &bodies {
+                walker.frames.extend(clips.iter().map(|(&m, &c)| ((*k, m), ch.clips.get(c).map_or(1, |c| c.frames.max(1) as i32))));
+            }
             out.push(Person { bodies, walker, hidden: Default::default() });
         }
         out
@@ -1879,6 +1892,18 @@ impl App {
         })
     }
 
+    /// A Tekken Tag fight's arena weather and people as its game runs them, into the scene that draws them.
+    fn mirror_arena(&mut self) {
+        let (Some(f), Some(s)) = (self.fight.as_ref(), self.scene.as_mut()) else { return };
+        let g = &f.bout.game;
+        if g.fight.data.tag_moves {
+            s.weather.clone_from(&g.weather);
+            for (p, w) in s.people.iter_mut().zip(&g.people) {
+                p.walker.clone_from(w);
+            }
+        }
+    }
+
     /// The fighters' swaying nodes and the arena's step (its clock, weather, objects and people), before the match's
     /// (`paused`: the arena held); the thunder it started. What a replay's seek runs too.
     fn step_arena(&mut self, paused: bool) -> Vec<u16> {
@@ -1937,7 +1962,14 @@ impl App {
                 let proj = glam::camera::rh::proj::directx::perspective(fov, 640.0 / 448.0, 0.05, 400.0) * look;
                 (s.eye, s.view_proj) = (eye - s.arena, proj * glam::Mat4::from_translation(s.arena));
             }
-            if let Some(w) = s.weather.as_mut() {
+            // (a Tekken Tag fight runs its arena's weather and people itself, `hand_arena`: the thunder its last step
+            // started)
+            let game = self.fight.as_ref().map(|f| &f.bout.game).filter(|g| g.fight.data.tag_moves);
+            let own = game.is_none();
+            if let Some(w) = game.and_then(|g| g.weather.as_ref()) {
+                thunder.clone_from(&w.sounds);
+            }
+            if let Some(w) = s.weather.as_mut().filter(|_| own) {
                 w.step();
                 w.flash(s.view_proj);
                 thunder = std::mem::take(&mut w.sounds);
@@ -1945,11 +1977,8 @@ impl App {
             if let Some(m) = s.objects.as_mut() {
                 m.step(s.eye, s.view_proj, &fighters, &landings);
             }
-            for p in &mut s.people {
-                let shown = p.walker.model();
-                let Some((_, ch, _, clips, _)) = p.bodies.iter().find(|b| b.0 == shown) else { continue };
-                let len = |m: usize| clips.get(&m).and_then(|&c| ch.clips.get(c)).map_or(1, |c| c.frames.max(1) as i32);
-                p.walker.step(len);
+            for p in s.people.iter_mut().filter(|_| own) {
+                p.walker.step();
             }
         }
         thunder
@@ -4786,6 +4815,7 @@ impl App {
         // (Tekken Tag: the run's HUD in its pictures, forcerun's)
         let info = HudInfo { models, names: names.clone(), humans: [true, false], hidden: true, intro: Some(intro), no_result: true, ttt: self.roster.ttt.clone(), ..Default::default() };
         self.hud.reset(&info);
+        hand_arena(&scene, &mut bout.game);
         self.scene = Some(scene);
         self.vfx = Some(kumite_game::vfx::Vfx::new(&self.assets));
         let banks = models.map(|m| format!("m{m:03}"));
@@ -5819,6 +5849,7 @@ impl App {
 
     fn draw(&mut self) {
         self.debug.frame_tick();
+        self.mirror_arena();
         let page_full = self.page_full_screen();
         let held = self.debug.paused || self.game_paused();
         // (TARGET with more than two on the stage: TAG BRAWL, Ball 2 ON 2, Force: the touch pads' button; its markers)
