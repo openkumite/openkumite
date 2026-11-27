@@ -26,6 +26,7 @@ struct Sample {
     /// The tone's index in its program (what SePlay's code names, SsUtKeyOnV 0x800885D8), when the bank has them.
     tone: Option<u32>,
     file: PathBuf,
+    seconds: f64,
 }
 
 /// A music track as its game's sound driver plays it: the file, whether it loops, where it starts and where a loop
@@ -300,7 +301,8 @@ impl SoundData {
                 for t in s["tones"].as_array().into_iter().flatten() {
                     let v = |k: usize| t[k].as_u64().unwrap_or(0) as u32;
                     let tone = t.get(3).and_then(|x| x.as_u64()).map(|x| x as u32);
-                    banks.entry(key.clone()).or_default().push(Sample { program: v(0), keys: (v(1), v(2)), tone, file: sfx_dir.join(file) });
+                    let seconds = s["seconds"].as_f64().unwrap_or(0.0);
+                    banks.entry(key.clone()).or_default().push(Sample { program: v(0), keys: (v(1), v(2)), tone, file: sfx_dir.join(file), seconds });
                 }
             }
         }
@@ -457,6 +459,13 @@ impl SoundData {
     /// The match winner's own call (0x800757A8): code 0xC640 of its bank, 0xC64B for voice row 21 (True Ogre).
     pub fn winner_voice(&self, own: &str, row: usize) -> Option<Sound> {
         self.sound_of(if row == 21 { 0xC64B } else { 0xC640 }, own, row)
+    }
+
+    /// WINS after the winner's own call: 0x800757A8's caller starts task 0x8006F1D4, which plays 0x86DA once the
+    /// name's voice has ended (0x80074494 polls 0x8008D658); the steps after the name (PS1: Xiaoyu 73, Jin 72, Gon 48).
+    pub fn wins_after(&self, name: &Sound) -> Option<(u32, Sound)> {
+        let seconds = self.banks.values().flatten().find(|s| s.file == name.file)?.seconds;
+        Some(((seconds * 60.0).ceil() as u32 + 1, self.sound(0x86DA, "")?))
     }
 
     /// The announcer outside the fight.

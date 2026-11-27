@@ -199,6 +199,14 @@ struct TeamIcons {
     slash_y: f32,
 }
 
+impl TeamIcons {
+    /// Side `i`'s member `k`: its x and width for [`Art::quad`] (P2's mirrored in place, over its slash).
+    fn icon_x(&self, i: usize, k: usize) -> [f32; 2] {
+        let w = self.size[0] as f32;
+        [self.x[i] + self.step[i] * k as f32, if i == 0 { w } else { -w }]
+    }
+}
+
 /// Ball's gauges (record 8 0x800B49A8) and floating texts (0x800B3F98).
 #[derive(Clone, Debug, Default)]
 struct BallLayout {
@@ -641,13 +649,11 @@ impl Hud {
                 let ([w, h], [sw, sh]) = (tm.size, tm.slash_size);
                 for (i, &(size, down, just)) in team.iter().enumerate() {
                     for k in 0..size {
-                        let x = tm.x[i] + tm.step[i] * k as f32;
+                        let [x, qw] = tm.icon_x(i, k);
                         let lost = k < down;
                         let blink = just && k + 1 == down && self.state.frame & 0x10 == 0;
                         let t = Tex { clut: Some(tm.cluts[usize::from(lost && !blink)]), ..tm.icon };
-                        // P2's are mirrored
-                        let (x0, qw) = if i == 0 { (x, w as f32) } else { (x + w as f32, -(w as f32)) };
-                        art.quad(&painter, &v, src, &t, w, h, [x0, tm.y, qw, h as f32], [Color32::WHITE; 4]);
+                        art.quad(&painter, &v, src, &t, w, h, [x, tm.y, qw, h as f32], [Color32::WHITE; 4]);
                         if lost && !blink {
                             art.sprite(&painter, &v, src, &tm.slash, sw, sh, x, tm.slash_y, Color32::WHITE);
                         }
@@ -961,6 +967,22 @@ mod tests {
         assert!(d.round.text.ends_with("%1x"), "the round's number");
         assert!(!d.ko.text.is_empty() && d.ko.x > 0.0 && d.ko.y > 0.0);
         assert!(!d.pause_items.is_empty() && d.pause_ball_items.len() > d.pause_items.len());
+    }
+
+    /// Team Battle's member icons cover their slashes' places on both sides (#337; PS1 t3sim47 frame 5561: P1's from
+    /// x 156..166 leftwards, P2's mirrored from 202..212 rightwards, 9 apart).
+    #[test]
+    fn team_icons_sit_over_their_slashes_as_on_the_ps1() {
+        let p = crate::test_assets().join("gamedata/screens.json");
+        let Ok(b) = kumite_fs::read(&p) else { return };
+        let tm = HudData::load(&serde_json::from_slice(&b).unwrap(), &Value::Null).team;
+        for k in 0..4 {
+            for (i, x) in [(0, 156.0 - 9.0 * k as f32), (1, 202.0 + 9.0 * k as f32)] {
+                let [ix, w] = tm.icon_x(i, k);
+                let (a, b) = crate::art::span(ix, w);
+                assert_eq!((a.min(b), a.max(b)), (x, x + 10.0), "side {i}, member {k}");
+            }
+        }
     }
 
     /// The blink over a bar (0x8004EEE8): PUSH Pn START while frame & 0x30, FREE PLAY in the frames of 0x40, as the

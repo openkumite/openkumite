@@ -861,9 +861,9 @@ pub fn face_sized(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster,
         }
     };
     // an extra fighter: its own face picture (greyed when beaten), slashed as the others
-    if let Some(t) = art.extra_face_tex(roster, id) {
-        let tint = if flags & 0x20 != 0 { Color32::from_gray(0x60) } else { Color32::WHITE };
-        Art::image(painter, v, &t, x, y, w * scale, hh * scale, tint);
+    let grey = (flags & 0x20 != 0).then(|| art.extra_face_grey(roster, id, roster.ui.grey_clut)).flatten();
+    if let Some(t) = grey.or_else(|| art.extra_face_tex(roster, id)) {
+        Art::image(painter, v, &t, x, y, w * scale, hh * scale, Color32::WHITE);
         slash();
         return;
     }

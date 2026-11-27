@@ -509,6 +509,8 @@ struct Fight {
     ttt_practice: Option<ttt::Practice>,
     /// The fight's sounds' log (a replay's seek copies keep it).
     heard: Heard,
+    /// WINS after the winner's own call: the steps until it plays.
+    wins: Option<(u32, kumite_game::sound::Sound)>,
     /// Character ids of the two fighters.
     characters: [usize; 2],
     /// The boss-change scene, while it runs.
@@ -1253,6 +1255,7 @@ impl App {
             practice,
             ttt_practice: (mode == Some(Mode::Practice)).then(|| self.roster.ttt.as_deref().map(ttt::Practice::new)).flatten(),
             heard: Heard::default(),
+            wins: None,
             characters,
             cutscene: None,
             seats: None,
@@ -2583,6 +2586,12 @@ impl App {
         }
         if let Some(sound) = &self.sound {
             let mut sounds = fight.step_sounds();
+            // WINS after the winner's own call, once the name has played (0x8006F1D4's task)
+            match fight.wins.take() {
+                Some((n, s)) if n > 1 => fight.wins = Some((n - 1, s)),
+                Some((_, s)) => sounds.push(s),
+                None => {}
+            }
             // the announcer: round calls, results, the match winner (YOU WIN if a human won)
             let humans = [fight.bout.cpu[0].is_none(), fight.bout.cpu[1].is_none()];
             // (Team Battle and Survival call no round, only FIGHT: 0x8003DA8C's battle types 2 and 4 enter at 0x8003DBA0)
@@ -2599,10 +2608,18 @@ impl App {
                 let tiger = fight.setup.as_ref().and_then(|s| s.players.get(w)).is_some_and(|&(i, c)| self.roster.characters.get(i).is_some_and(|ch| ch.id * 4 + c == 34));
                 (!tiger).then(|| sound.winner_voice(fs.banks.get(w)?, *fs.voices.get(w)?)).flatten()
             };
+            let mut wins = None;
             sounds.extend(events.filter_map(|&e| match e {
-                A::Wins(w) if own => call(w).or_else(|| sound.announce(e, [true; 2])),
+                A::Wins(w) if own => match call(w) {
+                    Some(name) => {
+                        wins = sound.wins_after(&name);
+                        Some(name)
+                    }
+                    None => sound.announce(e, [true; 2]),
+                },
                 _ => sound.announce(e, humans),
             }));
+            fight.wins = wins.or(fight.wins.take());
             if let Some(audio) = self.audio.as_mut() {
                 for s in sounds {
                     audio.sfx(&s.file, s.volume, s.speed);
@@ -4880,6 +4897,7 @@ impl App {
             practice: None,
             ttt_practice: None,
             heard: Heard::default(),
+            wins: None,
             characters,
             cutscene: None,
             seats: None,
