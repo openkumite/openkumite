@@ -1986,6 +1986,100 @@ fn extra_fighters_win_with_their_own_poses_and_start_in_the_stance() {
     }
 }
 
+/// Every Tekken 2 fighter's every throw (the 1+3 / 2+4 attempts and the command throws, each link of their lists:
+/// front, back, the sides, a held direction's variant) against Tekken 3's Paul and another Tekken 2 fighter: on the
+/// link frame the victim plays the thrower's victim move, and it loses health before it is let go. (Against another
+/// Tekken 2 fighter the victim once played its own set's alias of that number, free; the command throws struck.)
+#[test]
+fn extra_fighters_every_throw_links_its_victim() {
+    let Some(a) = assets() else { return };
+    let index: MovesetIndex = kumite_sim::data::load(&a.root.join("gamedata/movesets/index.json")).unwrap();
+    let mut models: Vec<(usize, String)> = Vec::new();
+    for m in index.models.iter().filter(|m| m.moveset_file.starts_with("moveset_t2_")) {
+        if !models.iter().any(|x| x.1 == m.moveset_file) {
+            models.push((m.model_record, m.moveset_file.clone()));
+        }
+    }
+    let (mut checked, mut failed) = (0, Vec::new());
+    for (model, file) in &models {
+        let ms = moveset(&a, file);
+        let aliases = ms.aliases.as_ref().unwrap();
+        let own = |alias: usize| aliases.get(alias).filter(|r| r.bank == Bank::Own).and_then(|r| r.index);
+        // the attempts (grabs, damage type 1) and their links to Tekken 2 throws
+        let mut links = Vec::new();
+        for (alias, i) in (0..aliases.len()).filter_map(|k| own(k).map(|i| (k, i))) {
+            let m = &ms.moves[i];
+            if m.damage_type != 1 || links.iter().any(|l: &(usize, usize, u32, u32, usize)| l.1 == i) {
+                continue;
+            }
+            for c in ms.cancels[m.cancel_start..].iter().take_while(|c| c.kind != kumite_sim::data::CancelKind::End) {
+                if c.transition == kumite_sim::TRANSITION_LINK && (2..=5).contains(&c.cond) && own(c.dest).is_some_and(|t| ms.moves[t].anim.starts_with("t2")) {
+                    links.push((alias, i, c.cond, c.cmd, c.dest));
+                }
+            }
+        }
+        let other = if *model == 900 { 938 } else { 900 };
+        for (k, &(attempt, _, cond, cmd, thrower)) in links.iter().enumerate() {
+            let (opp, seat) = [(MODEL_71, 0), (other, 1), (MODEL_71, 1), (other, 0)][k % 4];
+            // (Tekken 3's throw codes: 2 front, 3 back, 4 / 5 the sides)
+            let turns: &[f32] = match cond {
+                2 => &[0.0],
+                3 => &[std::f32::consts::PI],
+                _ => &[std::f32::consts::FRAC_PI_2, -std::f32::consts::FRAC_PI_2],
+            };
+            // a held direction picks a variant (the pad's: P2 faces left)
+            let mut dirs = ["d/b", "d", "d/f", "b", "n", "f", "u/b", "u", "u/f"];
+            if seat == 1 {
+                dirs = ["d/f", "d", "d/b", "f", "n", "b", "u/f", "u", "u/b"];
+            }
+            let dir = (5..14).find(|b| cmd >> b & 1 != 0).map_or("n", |b| dirs[b - 5]);
+            let mut outcome = String::from("no link");
+            for &turn in turns {
+                let mut g = Game::load(&a, if seat == 0 { [*model, opp] } else { [opp, *model] }).unwrap();
+                let v = 1 - seat;
+                g.fight.fighters[v].guard_input = false;
+                let to = g.fight.fighters[v].position;
+                g.fight.fighters[seat].position = to + (g.fight.fighters[seat].position - to).normalize() * 800.0;
+                let f = &mut g.fight.fighters[v];
+                (f.yaw, f.root_yaw) = (f.yaw + turn, f.root_yaw + turn);
+                let hp = g.fight.fighters[v].health;
+                g.step([Pad::default(); 2]);
+                assert!(g.fight.fighters[seat].play_alias(attempt));
+                let mut pads = [Pad::default(); 2];
+                pads[seat] = parse_script(dir).unwrap()[0];
+                let (mut linked, mut victim) = (false, None);
+                for _ in 0..400 {
+                    g.step(pads);
+                    if !linked && g.fight.link.is_some() {
+                        linked = true;
+                        let (t, vf, gd) = (&g.fight.fighters[seat], &g.fight.fighters[v], &g.fight.data);
+                        if t.current.index != own(thrower).unwrap() {
+                            break;
+                        }
+                        let entry = gd.reactions.throw_victims.entries[ms.moves[t.current.index].reaction.index];
+                        let want = kumite_sim::Current { bank: Bank::Partner, index: own(entry).unwrap() };
+                        victim = Some(vf.current == want);
+                    }
+                    if linked && g.fight.link.is_none() {
+                        break;
+                    }
+                }
+                let hurt = g.fight.fighters[v].health < hp;
+                outcome = format!("victim move {victim:?}, hurt {hurt}, let go {}", g.fight.link.is_none());
+                if victim == Some(true) && hurt && g.fight.link.is_none() {
+                    break;
+                }
+            }
+            checked += 1;
+            if !outcome.starts_with("victim move Some(true), hurt true, let go true") {
+                failed.push(format!("{file} alias {attempt:#x} cond {cond} {dir} (P{} vs {opp}): {outcome}", seat + 1));
+            }
+        }
+    }
+    eprintln!("{checked} throws checked");
+    assert!(failed.is_empty(), "{} of {checked}:\n{}", failed.len(), failed.join("\n"));
+}
+
 /// An extra level's walls hold the fighters: walking back stops at the wall (a blocked column 3 m behind
 /// P1 here), and the arena's own walk grid keeps its stage-40 fight spot free.
 #[test]
