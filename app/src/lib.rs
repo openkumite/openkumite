@@ -6557,9 +6557,8 @@ impl App {
                     }
                     if embu_white > 0 {
                         // the embu's additive white
-                        let view = art::Screen::fit(ctx.content_rect());
                         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("embu_fade")));
-                        Art::shade(&painter, &view, [0.0, 0.0, art::SCREEN_W, art::SCREEN_H], [art::additive(egui::Color32::from_gray(embu_white)); 4]);
+                        Art::fade(&painter, art::additive(egui::Color32::from_gray(embu_white)));
                     }
                     if let (Some((roll, (black, white), overlays)), Some(d)) = (&ending, roster.ttt.as_deref()) {
                         let view = art::Screen::fit(ctx.content_rect());
@@ -6583,10 +6582,8 @@ impl App {
                     } else if let Some(cs) = fight.and_then(|f| f.cutscene.as_ref()) {
                         // the scene has no HUD; its white fade adds over the picture
                         if cs.scene.white > 0 {
-                            let view = art::Screen::fit(ctx.content_rect());
                             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("scene_fade")));
-                            let full = [0.0, 0.0, art::SCREEN_W, art::SCREEN_H];
-                            Art::shade(&painter, &view, full, [art::additive(egui::Color32::from_gray(cs.scene.white)); 4]);
+                            Art::fade(&painter, art::additive(egui::Color32::from_gray(cs.scene.white)));
                         }
                     } else if let (Some(b), Some(d)) = (bowl, roster.ttt.as_deref()) {
                         let view = art::Screen::fit(ctx.content_rect());

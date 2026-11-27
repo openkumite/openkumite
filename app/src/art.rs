@@ -485,6 +485,17 @@ impl Art {
         self.fonts.get(font).map_or(0.0, |f| f.advance * text.chars().count() as f32)
     }
 
+    /// A full-screen fade or flash: the whole window, past the 4:3 picture (a wide window shows the scene beside it).
+    pub fn fade(painter: &egui::Painter, colour: Color32) {
+        let window = painter.ctx().content_rect();
+        let mut mesh = egui::Mesh::default();
+        mesh.add_colored_rect(window, colour);
+        // (not `with_clip_rect`: that keeps the 4:3 clip of the menus' painter)
+        let mut painter = painter.clone();
+        painter.set_clip_rect(window);
+        painter.add(egui::Shape::mesh(mesh));
+    }
+
     /// A flat quad with per-corner colours (top-left, top-right, bottom-left, bottom-right).
     pub fn shade(painter: &egui::Painter, screen: &Screen, dst: [f32; 4], colours: [Color32; 4]) {
         let [x, y, w, h] = dst;

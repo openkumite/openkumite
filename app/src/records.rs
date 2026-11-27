@@ -466,7 +466,7 @@ impl RecordsScreen {
     pub fn draw(&self, painter: &egui::Painter, v: &View, art: &Art, roster: &Roster) {
         let records = &self.tables;
         if self.draw == 0 {
-            painter.rect_filled(v.rect, 0.0, Color32::BLACK);
+            Art::fade(painter, Color32::BLACK);
             return;
         }
         let rows = &self.data["rows"];
@@ -517,7 +517,7 @@ impl RecordsScreen {
             _ => 0,
         };
         if fade > 0 {
-            painter.rect_filled(v.rect, 0.0, Color32::from_black_alpha(fade as u8));
+            Art::fade(painter, Color32::from_black_alpha(fade as u8));
         }
     }
 
