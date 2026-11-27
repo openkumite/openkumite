@@ -124,6 +124,8 @@ pub struct GridData {
     /// The title (font, colour, y, idle frames before the ticker) and the ticker (font, y, colours).
     title_text: (usize, u32, f32, u32),
     ticker_text: (usize, f32, [u32; 2]),
+    /// The pad's auto-repeat (0x80029F58): a held direction repeats this many frames after the press, then every n.
+    repeat: [u32; 2],
 }
 
 /// The LIFE gauge's pieces (screens.json `grid.vs.gauge.draw`).
@@ -339,6 +341,7 @@ impl GridData {
             gauge_slide: n(&g["vs"]["gauge"]["slide"]),
             title_text: (u(&g["title"]["font"]) as usize, u(&g["title"]["colour"]), n(&g["title"]["y"]), u(&g["title"]["idle_frames"])),
             ticker_text: (u(&g["ticker"]["font"]) as usize, n(&g["ticker"]["y"]), [u(&g["ticker"]["colours"][0]), u(&g["ticker"]["colours"][1])]),
+            repeat: [0, 1].map(|k| u(&screens["records"]["entry"]["repeat"][k]).max(1)),
             cells: arr(&g["cells"]).iter().map(|c| (n(&c["x"]), n(&c["y"]), u(&c["character"]) as usize)).collect(),
             colour_a: rgb(&g["mode_colours"][vs][0]).unwrap_or(Color32::RED),
             colour_b: rgb(&g["mode_colours"][vs][1]).unwrap_or(Color32::BLUE),
@@ -420,6 +423,8 @@ pub struct GridSelect {
     ball: Option<BallPick>,
     /// The page of cells shown (the extra fighters' is 1): the last moved cursor's.
     page: usize,
+    /// Team Battle: each side's held direction and the frames since its press.
+    held: [(Option<Key>, u32); 2],
 }
 
 /// Ball's select state (ctx+0x41 / +0x40 / +0x43, the chooser's ball +0x68 / +0x78 / +0xB0).
@@ -442,7 +447,7 @@ impl GridSelect {
             Player { state: State::Choosing, col, row, pick: None, level: data.default_level, gauge: p.gauge_hidden }
         };
         let players = [start(0), start(1)];
-        Self { data, difficulty, record, players, frame: 0, idle: 0, team: None, ball: None, page: 0 }
+        Self { data, difficulty, record, players, frame: 0, idle: 0, team: None, ball: None, page: 0, held: [(None, 0); 2] }
     }
 
     /// Ball's select (screen B, its game mode): VS's grid, P2 joins with START; the first player done with
@@ -662,6 +667,23 @@ impl GridSelect {
         g.players[1].state = State::NotJoined;
         g.team = Some([(size, Vec::new()), (size, Vec::new())]);
         g
+    }
+
+    /// Team Battle: each side's held direction repeats as the pad's auto-repeat does (its team size and its cursor
+    /// read 0x800ADF00, the repeating pad of 0x80029F58).
+    pub fn hold(&mut self, held: [Option<Key>; 2], roster: &Roster) {
+        if self.team.is_none() {
+            return;
+        }
+        let [first, every] = self.data.repeat;
+        for (k, dir) in held.into_iter().enumerate() {
+            let (was, n) = self.held[k];
+            self.held[k] = if dir == was { (dir, n + 1) } else { (dir, 0) };
+            let n = self.held[k].1;
+            if let Some(key) = dir.filter(|_| n >= first && (n - first).is_multiple_of(every)) {
+                self.key(k, key, roster);
+            }
+        }
     }
 
     /// A Team Battle key of side `k` (states 1 / 2 / 9 of 0x80053448's table).
@@ -1227,6 +1249,22 @@ mod tests {
         // back out of the grid
         let mut g = GridSelect::new(r.grid.clone(), 1, VsRecord::default());
         assert!(matches!(g.key(0, Key::Back, &r), Outcome::Quit));
+    }
+
+    /// Team Battle: right held from the press raises the size again 19 frames later, then every 4 (PS1, 0x80029F58).
+    #[test]
+    fn team_size_repeats_while_held() {
+        let Some(r) = roster() else { return };
+        let mut g = GridSelect::team(&r, 1);
+        g.team.as_mut().unwrap()[0].0 = 1;
+        g.key(0, Key::Right, &r);
+        let mut sizes = Vec::new();
+        for _ in 0..28 {
+            g.hold([Some(Key::Right), None], &r);
+            sizes.push(g.team.as_ref().unwrap()[0].0);
+        }
+        assert_eq!(sizes[..19], [2; 19]);
+        assert_eq!(sizes[19..], [3, 3, 3, 3, 4, 4, 4, 4, 5]);
     }
 
     /// Some extra fighters are two each (the second their second costume, as in their own game, its own name): both

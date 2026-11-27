@@ -2091,6 +2091,14 @@ impl App {
         } else {
             [false; 2]
         };
+        // Team Battle's select: each side's held direction for the pad's auto-repeat
+        if matches!(self.screen, Some(Screen::Grid(_))) {
+            let p = self.pads();
+            let dir = |p: Pad| [(p.left, Key::Left), (p.right, Key::Right), (p.up, Key::Up), (p.down, Key::Down)].into_iter().find_map(|(on, k)| on.then_some(k));
+            if let Some(Screen::Grid(g)) = &mut self.screen {
+                g.hold([dir(p[0]), dir(p[1])], &self.roster);
+            }
+        }
         if let Some(screen) = &mut self.screen {
             // the continue countdown is spoken: "continue?", the seconds, then the end
             if let (Screen::Continue { countdown, .. }, Some(sound), Some(audio)) = (&*screen, self.sound.as_ref(), self.audio.as_mut()) {
