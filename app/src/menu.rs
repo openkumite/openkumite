@@ -991,6 +991,10 @@ pub const CONTINUE_FRAMES: u32 = 808;
 /// ending's load), then 29 black before the movie.
 pub const ENDING_HOLD: u32 = 164;
 pub const ENDING_BLACK: u32 = 29;
+/// Team Battle: the last picture holds 70 vsyncs from the win pose's end (round state 9, the next member's load; the
+/// reporter's PS1 video, Beetle PSX; PCSX-Redux's CD loads it in 47, the results screen in 100).
+/// shortcut: one length for the next member and the results, as the PS1's CD load varies; measure on hardware to split.
+pub const TEAM_HOLD: u32 = 70;
 pub const CONTINUE_STEP: u32 = 90;
 const GAME_OVER_FRAMES: u32 = 120;
 
