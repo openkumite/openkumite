@@ -7545,7 +7545,7 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
     // the 10 x 10 tile patch around the midpoint snapped to whole tiles (0x80082E60 / 0x8008364C)
     if scene.camera_drum {
         cam.sky = drum_place(cam);
-        (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, true, false);
+        (cam.sky_y_scale, cam.sky_first, cam.sky_cull, cam.sky_rows) = (1.0, true, false, true);
     }
     // an arena with walls: the camera stays over the free floor. From the fighters' midpoint towards the eye,
     // the free run h (to 0.3 m short of the first blocked cell); when the eye's distance D does not fit, it
@@ -7594,8 +7594,8 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
 }
 
 /// An extra stage's drum around the camera, drawn in screen space as the original does (0x80084560): turned by the
-/// yaw alone, its rows straight, moved down the screen by 597 tan(pitch) (s5) as the camera looks up (Gun Jack's
-/// flight, #353), not turned with the pitch.
+/// yaw alone, its rows straight (`Camera::sky_rows`), moved down the screen by 597 tan(pitch) (s5) as the camera
+/// looks up (Gun Jack's flight, #353), not turned with the pitch.
 fn drum_place(cam: &Camera) -> glam::Mat4 {
     let f = cam.target - cam.eye;
     let flat = glam::Vec3::new(f.x, 0.0, f.z);
@@ -9747,6 +9747,17 @@ mod tests {
         for (a, y) in [(-0.46, 0.0), (-0.1, 0.3), (-0.8, 0.6), (-0.46, -0.2)] {
             let (p, q) = (screen(&up, a, y), screen(&level, a, y) + down);
             assert!(p.distance(q) < 1e-4, "{a} {y}: {p} {q}");
+        }
+        // a row straight across the screen with the height times the depth (vs_sky, sky_rows); without, it bows
+        let m = up.projection(4.0 / 3.0) * up.view() * drum_place(&up);
+        let row = |a: f32, y: f32| {
+            let w = (m * glam::Vec4::new(-a.sin(), 0.0, -a.cos(), 1.0)).w;
+            let c = m * glam::Vec4::new(-a.sin(), y * w, -a.cos(), 1.0);
+            glam::Vec2::new(c.x, c.y) / c.w
+        };
+        for y in [0.6, 0.2, -0.2] {
+            let (l, mid, r) = (row(-0.46 - 0.5, y), row(-0.46, y), row(-0.46 + 0.5, y));
+            assert!((mid - l).perp_dot((r - l).normalize()).abs() < 1e-5, "row {y}: {l} {mid} {r}");
         }
         let p = kumite_assets::SkyPicture { image: 0, fov: 48.0, ybase: -32.0, pitchmul: 288.0, top: None, bottom: None, max_y: Some(0.0), min_y: Some(-64.0) };
         assert_eq!(sky_row(&p, -400.0), 418.0);

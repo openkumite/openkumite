@@ -40,7 +40,8 @@ struct Globals {
     floor_centre: vec4<f32>,
     // Tekken Tag's two other lights: towards light 1, its colour, towards light 2, its colour
     lights: array<vec4<f32>, 4>,
-    // Tekken Tag's arena: the eye in the drum's placement (metres), the camera's x and y axes
+    // Tekken Tag's arena: the eye in the drum's placement (metres; w 1: the drum's rows straight, Camera::sky_rows),
+    // the camera's x and y axes
     sky_eye: vec4<f32>,
     view_x: vec4<f32>,
     view_y: vec4<f32>,
@@ -437,6 +438,8 @@ fn vs_sky(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) 
           @location(3) cell: vec4<f32>, @location(4) normal: vec4<f32>) -> VsOut {
     var o: VsOut;
     o.clip = g.sky_view_proj * vec4(pos, 1.0);
+    // (a unit drum around the eye: w is the depth, its height not changing it; y times it keeps a row at one height)
+    if (g.sky_eye.w > 0.5) { o.clip = g.sky_view_proj * vec4(pos.x, pos.y * o.clip.w, pos.z, 1.0); }
     o.dropped = select(0.0, 1.0, cut_near(o.clip.w, cell));
     o.uv = env_uv(uv, normal, pos, g.sky_eye.xyz);
     o.fog = fog_of(normal, o.clip.w);
