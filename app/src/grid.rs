@@ -381,8 +381,9 @@ pub struct VsRecord {
     pub draws: u32,
 }
 
-/// A team being picked: its size and the members so far (character id, costume).
-type TeamPicks = (usize, Vec<(usize, usize)>);
+/// A team being picked: its size, the members so far (character id, costume) and the costume of those chosen for it
+/// (side +0x34, 0x80053870: 1 when the size was set with a kick).
+type TeamPicks = (usize, Vec<(usize, usize)>, usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
@@ -665,7 +666,7 @@ impl GridSelect {
         let mut g = Self::new(data, difficulty, VsRecord::default());
         g.players[0].state = State::Size;
         g.players[1].state = State::NotJoined;
-        g.team = Some([(size, Vec::new()), (size, Vec::new())]);
+        g.team = Some([(size, Vec::new(), 0), (size, Vec::new(), 0)]);
         g
     }
 
@@ -715,6 +716,7 @@ impl GridSelect {
                 }
                 Key::Button(_) | Key::Start => {
                     self.players[k].state = State::Choosing;
+                    team(self, k).2 = usize::from(matches!(key, Key::Button(2 | 3)));
                     sfx::play(sfx::pick());
                 }
                 Key::Back => {
@@ -803,17 +805,20 @@ impl GridSelect {
         }
         let mut teams: [crate::modes::Team; 2] = Default::default();
         let mut picks: [Vec<(usize, usize)>; 2] = [0, 1].map(|k| if joined[k] { team[k].1.clone() } else { Vec::new() });
+        let hand = picks.each_ref().map(Vec::len);
         for k in 0..2 {
             let size = if joined[k] { team[k].0 } else { team[1 - k].0 };
             let picked = picks[k].len();
-            // the rest at random, each in a costume the other team has not taken (no model twice on screen)
+            // the rest at random in the side's costume (a side nobody plays: the one the other's is not), the other
+            // costume where the other side picked the same by hand (0x800B25A8)
+            let costume = if joined[k] { team[k].2 } else { usize::from(team[1 - k].2 == 0) };
             let costumes = |id: usize| roster.by_id(id).map_or(1, |c| c.costumes.len());
-            let free = |id: usize, theirs: &[(usize, usize)]| crate::menu::free_costume(costumes(id), 0, |c| theirs.contains(&(id, c)));
+            let free = |id: usize, theirs: &[(usize, usize)]| crate::menu::free_costume(costumes(id), costume, |c| theirs.contains(&(id, c)));
             let mut pool: Vec<usize> = roster.characters.iter().map(|c| c.id).filter(|id| !picks[k].iter().any(|m| m.0 == *id)).collect();
             while picks[k].len() < size && !pool.is_empty() {
                 *seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
                 let id = pool.remove(((*seed >> 16) & 0x7FFF) as usize % pool.len());
-                if let Some(c) = free(id, &picks[1 - k]) {
+                if let Some(c) = free(id, &picks[1 - k][..hand[1 - k]]) {
                     picks[k].push((id, c));
                 }
             }
@@ -1265,6 +1270,32 @@ mod tests {
         }
         assert_eq!(sizes[..19], [2; 19]);
         assert_eq!(sizes[19..], [3, 3, 3, 3, 4, 4, 4, 4, 5]);
+    }
+
+    /// Team Battle's members chosen at random wear the costume of the button that set the size, a kick's the second
+    /// (0x80053870); a side nobody plays, the one the other's is not (0x800B0808); #363.
+    #[test]
+    fn random_team_members_wear_the_sides_costume() {
+        let Some(r) = roster() else { return };
+        let run = |keys: &[(usize, Key)]| {
+            let mut g = GridSelect::team(&r, 1);
+            for &(k, key) in keys {
+                g.key(k, key, &r);
+            }
+            match g.tick(&r, &mut 7) {
+                Outcome::Run(run) => match run.kind {
+                    crate::modes::Kind::Team(t) => t.teams.map(|t| t.members.iter().map(|m| m.1.min(1)).collect::<Vec<_>>()),
+                    _ => panic!("a team run"),
+                },
+                _ => panic!("the team battle should start"),
+            }
+        };
+        // (a costume past a one-costume character's is its first)
+        let ones = |v: &[usize]| v.iter().filter(|&&c| c == 1).count();
+        let [p1, p2] = run(&[(0, Key::Button(0)), (0, Key::Start), (1, Key::Start), (1, Key::Button(2)), (1, Key::Start)]);
+        assert_eq!((ones(&p1), ones(&p2) * 2 > p2.len()), (0, true), "P1 punch, P2 kick: {p1:?} {p2:?}");
+        let [p1, p2] = run(&[(0, Key::Button(3)), (0, Key::Start)]);
+        assert!(ones(&p1) * 2 > p1.len() && ones(&p2) == 0, "P1 kick, the CPU the first: {p1:?} {p2:?}");
     }
 
     /// Some extra fighters are two each (the second their second costume, as in their own game, its own name): both

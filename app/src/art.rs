@@ -162,6 +162,23 @@ pub struct Art {
 }
 
 /// An original-hardware 15-bit colour (0 = transparent).
+/// The x of a quad's left and right texel columns on screen ([`Art::quad`]): a negative `dw` mirrors it in place,
+/// over x .. x - dw.
+pub fn span(x: f32, dw: f32) -> (f32, f32) {
+    if dw < 0.0 {
+        (x - dw, x)
+    } else {
+        (x, x + dw)
+    }
+}
+
+/// A colour through the grey CLUT `grey` at its luminance's place ([`Art::extra_face_grey`]).
+fn greyed(grey: &[u16], [r, g, b]: [u8; 3]) -> [u8; 3] {
+    let i = ((0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) * 1.18) as usize;
+    let [r, g, b, _] = ps_color(grey.get(i.clamp(1, 255)).copied().unwrap_or(0));
+    [r, g, b]
+}
+
 fn ps_color(v: u16) -> [u8; 4] {
     if v == 0 {
         return [0; 4];
@@ -320,6 +337,33 @@ impl Art {
         roster.by_id(id)?.face.as_deref().and_then(|f| self.pic(f)).map(|p| p.0)
     }
 
+    /// An extra fighter's face greyed as 0x8004B928 greys the others' (flags 0x20: their indexes through the grey CLUT
+    /// at `grey`): each pixel the grey CLUT's colour at its luminance's place (Tekken 3's 24 face CLUTs run dark to
+    /// light, index ~ 1.18 x luminance).
+    pub fn extra_face_grey(&self, roster: &crate::menu::Roster, id: usize, grey: [u32; 2]) -> Option<TextureHandle> {
+        let file = roster.by_id(id)?.face.clone()?;
+        let key = (file.clone(), grey);
+        if let Some((tex, _)) = self.recoloured.borrow().get(&key) {
+            return Some(tex.clone());
+        }
+        // (the picture first: a browser fetches it)
+        let _ = self.pic(&file)?;
+        let colours = self.clut(&["exe"], grey, 256)?;
+        let im = load_png(&self.dir.join(&file)).ok()?;
+        let rgba: Vec<u8> = im
+            .pixels
+            .iter()
+            .flat_map(|p| {
+                let [r, g, b, a] = p.to_srgba_unmultiplied();
+                let [r, g, b] = greyed(&colours, [r, g, b]);
+                [r, g, b, a]
+            })
+            .collect();
+        let tex = self.ctx.load_texture(format!("{file}@grey"), egui::ColorImage::from_rgba_unmultiplied(im.size, &rgba), egui::TextureOptions::NEAREST);
+        self.recoloured.borrow_mut().insert(key, (tex.clone(), im.size));
+        Some(tex)
+    }
+
     /// A plain picture (a texture of its own) at screen (x, y), w x h.
     #[allow(clippy::too_many_arguments)]
     pub fn image(painter: &egui::Painter, screen: &Screen, tex: &TextureHandle, x: f32, y: f32, w: f32, h: f32, tint: Color32) {
@@ -420,7 +464,7 @@ impl Art {
         let (u0, v0) = (off[0] as f32 / sw, off[1] as f32 / sh);
         let (u1, v1) = ((off[0] + w) as f32 / sw, (off[1] + h) as f32 / sh);
         let [x, y, dw, dh] = dst;
-        let (xa, xb) = if dw < 0.0 { (x - dw, x) } else { (x, x + dw) };
+        let (xa, xb) = span(x, dw);
         let screen = &screen.side((xa + xb) / 2.0);
         let mut mesh = egui::Mesh::with_texture(id);
         let corners = [(xa, y, u0, v0), (xb, y, u1, v0), (xa, y + dh, u0, v1), (xb, y + dh, u1, v1)];
@@ -552,6 +596,30 @@ mod tests {
         assert_eq!(art.indexed_size("names/x.png"), None);
         assert_eq!(super::Art::load(&egui::Context::default(), &dir).indexed_size("names/x.png"), Some([2, 1]));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An extra fighter's face greys as Tekken 3's do (#336): each colour of Tekken 3's face CLUTs, greyed by its
+    /// luminance, comes near the grey CLUT's colour at its index (what 0x8004B928 draws): 14 off on average; the old
+    /// dim tint (0x60) was 45 off.
+    #[test]
+    fn extra_faces_grey_as_tekken_3s() {
+        let root = crate::test_assets();
+        if !kumite_fs::exists(&root.join("gamedata/screens.json")) {
+            return;
+        }
+        let roster = crate::menu::Roster::load(&root.join("gamedata"));
+        let art = super::Art::load(&egui::Context::default(), &root);
+        let grey = art.clut(&["exe"], roster.ui.grey_clut, 256).unwrap();
+        let (mut off, mut n) = (0, 0);
+        for c in roster.ui.faces.iter().filter(|f| f.bpp == 8).filter_map(|f| art.clut(&["exe"], f.clut?, 256)) {
+            for (i, &v) in c.iter().enumerate().skip(1) {
+                let ([r, g, b, _], want) = (super::ps_color(v), super::ps_color(grey[i]));
+                let got = super::greyed(&grey, [r, g, b]);
+                off += (0..3).map(|k| u32::from(got[k].abs_diff(want[k]))).sum::<u32>();
+                n += 3;
+            }
+        }
+        assert!(n > 0 && off / n <= 16, "{} off on average", off / n.max(1));
     }
 
     #[test]

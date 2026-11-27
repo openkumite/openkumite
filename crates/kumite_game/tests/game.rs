@@ -735,6 +735,19 @@ fn the_match_call_comes_as_the_result_shows() {
     assert!(file.is_some());
 }
 
+/// WINS follows the winner's own call once its name has ended (PS1 t3sim46 / t3sim47: 0x86DA 73 steps after
+/// Xiaoyu's 0xC640, 72 after Jin's, 48 after Gon's).
+#[test]
+fn wins_follows_the_winners_name_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let s = kumite_game::sound::SoundData::load(&a).unwrap();
+    for (bank, steps) in [("m127", 73), ("m143", 72), ("m239", 48)] {
+        let (after, wins) = s.winner_voice(bank, 0).and_then(|n| s.wins_after(&n)).unwrap();
+        assert_eq!(after, steps, "{bank}");
+        assert_eq!(Some(wins.file.as_path()), s.file(0x86DA, ""));
+    }
+}
+
 /// The round's winner is called after every round, not only the match's (PS1, t3sim47: VS 2P XIAOYU WINS!, JIN WINS!
 /// at 1-1, XIAOYU WINS!, each in its own voice; ARCADE's YOU WIN after round 1; 0x8003D7EC); START's skip mutes it.
 #[test]
