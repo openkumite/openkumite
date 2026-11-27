@@ -918,6 +918,7 @@ impl Fighter {
         let Some(r) = self.moveset.aliases.as_ref()?.get(alias) else { return self.partner_entry(alias).filter(|_| self.moveset.fixed.missing == usize::MAX) };
         match r.bank {
             Bank::None | Bank::Partner => self.borrow(alias),
+            Bank::Off => None,
             bank => Some(Current { bank, index: r.index? }),
         }
     }
@@ -2033,7 +2034,7 @@ impl Fighter {
         if self.frame < c.win_start || self.frame > c.win_end {
             return None;
         }
-        if !self.passes_gate(c.req) {
+        if !self.passes_gate(c.req) || self.moveset.aliases.as_ref().and_then(|a| a.get(c.dest)).is_some_and(|r| r.bank == Bank::Off) {
             return None;
         }
         if !self.condition(gd, c.cond, c.param) || (c.cond_tag && !self.tag_test(c.param)) {

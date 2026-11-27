@@ -25,6 +25,9 @@ pub enum Bank {
     Own,
     Common,
     None,
+    /// An alias a Tekken 2 fighter's set turns off (its donor's own moves, ok_tekken2_converter): no command goes
+    /// into it and nothing is borrowed for it.
+    Off,
     /// A move of the opponent's set, played on this fighter: throw victims play the thrower's victim
     /// animations (the game points the thrown actor at the thrower's records). Never in the data files.
     Partner,
