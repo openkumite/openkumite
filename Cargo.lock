@@ -3895,7 +3895,7 @@ dependencies = [
 [[package]]
 name = "ok_converter_common"
 version = "0.3.0"
-source = "git+https://github.com/openkumite/ok_converter_common?branch=main#542b17df36983c833913f5b686ed0afe7846e92b"
+source = "git+https://github.com/openkumite/ok_converter_common?branch=main#da0edae4bc5250e3b93704973f1104d3388a575a"
 dependencies = [
  "anyhow",
  "chd",
@@ -3927,7 +3927,7 @@ dependencies = [
 [[package]]
 name = "ok_tekken2_converter"
 version = "0.3.0"
-source = "git+https://github.com/openkumite/ok_tekken2_converter?branch=main#873f84f367b17ef7e1524030efb9d58087ac0687"
+source = "git+https://github.com/openkumite/ok_tekken2_converter?branch=main#ebb383fbe0cf1b3144a817783e1066376499f21d"
 dependencies = [
  "anyhow",
  "image",
