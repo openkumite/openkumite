@@ -537,6 +537,13 @@ impl Results {
         ResultEvent::None
     }
 
+    /// Team Battle's banner: how far left of its place its text is, None before the last step. It slides in from the
+    /// left, a screen's width over the 30 frames from the last step, the box drawn at their end (PS1 t3sim52).
+    fn banner_slide(&self) -> Option<f32> {
+        let last = 32 + self.step_frames() * self.steps();
+        (self.step >= self.steps() && self.frame >= last).then(|| (crate::art::SCREEN_W as u32 * (last + 30).saturating_sub(self.frame) / 30) as f32)
+    }
+
     fn done_counting(&self) -> bool {
         self.step >= self.steps() && self.frame >= 32 + self.step_frames() * self.steps() + 30
     }
@@ -789,7 +796,7 @@ impl Results {
                 None => at = [at[0] + 1, at[1] + 1],
             }
         }
-        if self.done_counting() {
+        if let Some(slide) = self.banner_slide() {
             let left = [n0.saturating_sub(down[0]), n1.saturating_sub(down[1])];
             let both = run.teams[0].human && run.teams[1].human;
             let b = &d["banners"];
@@ -804,16 +811,17 @@ impl Results {
                 (s(&b["lose"][0]), u(&b["lose"][1]))
             };
             let y = n(&bn["y"]) + n(&bn["dy"]) * (max_rows - ((n0 + n1 + 1) / 3).min(max_rows)) as f32;
-            // (its half-transparent box, 0x800EDFD8, in the winner's colour. shortcut: the banner's slide in, 0x800FA644,
-            // is left out)
+            // (its half-transparent box, 0x800EDFD8, in the winner's colour)
             let (w, x) = (art.text_w(2, &text), crate::art::CENTRE - art.text_w(2, &text) / 2.0);
             let box_colour = match left[0].cmp(&left[1]) {
                 std::cmp::Ordering::Equal => (192, 192, 192),
                 std::cmp::Ordering::Greater => (255, 0, 0),
                 std::cmp::Ordering::Less => (255, 192, 0),
             };
-            Art::shade(painter, v, [x - 8.0, y - 2.0, w + 16.0, 46.0], [Color32::from_rgba_unmultiplied(box_colour.0, box_colour.1, box_colour.2, 128); 4]);
-            art.text(painter, v, 2, colour, x, y, &text, Color32::WHITE);
+            if self.done_counting() {
+                Art::shade(painter, v, [x - 8.0, y - 2.0, w + 16.0, 46.0], [Color32::from_rgba_unmultiplied(box_colour.0, box_colour.1, box_colour.2, 128); 4]);
+            }
+            art.text(painter, v, 2, colour, x - slide, y, &text, Color32::WHITE);
         }
     }
 }
@@ -926,6 +934,24 @@ pub fn draw_team_vs(painter: &egui::Painter, v: &View, art: &Art, roster: &Roste
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PS1 t3sim52 (TEAM BATTLE RESULTS, 1 v 1, YOU LOSE!; its frames 3092 on are ours from 0): the one log row's
+    /// step at frame 43, the text's right edge at x 6 at 51 (3143), at its place (275) with the box at 73 (3165).
+    #[test]
+    fn the_team_banner_slides_in_as_on_the_ps1() {
+        let run = TeamBattle { teams: [Team::default(), Team::default()], fight: 1, log: vec![Some(1)], incoming: 1, difficulty: 0, just_lost: None };
+        let mut r = Results { kind: ResultKind::Team { run }, frame: 0, step: 0, fade: 0, leaving: false, data: Value::Null };
+        let mut at = std::collections::BTreeMap::new();
+        for _ in 0..80 {
+            r.tick();
+            at.insert(r.frame, (r.banner_slide().map(|s| (275.0 - s).round() as i32), r.done_counting()));
+        }
+        assert_eq!(at[&42], (None, false));
+        assert_eq!(at[&43], (Some(-93), false));
+        assert_eq!(at[&51], (Some(6), false));
+        assert_eq!(at[&72], (Some(263), false));
+        assert_eq!(at[&73], (Some(275), true));
+    }
 
     #[test]
     fn survival_brings_the_extra_fighters_after_seven_wins() {
