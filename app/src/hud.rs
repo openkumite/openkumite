@@ -712,6 +712,10 @@ impl Hud {
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("hud_front"))).with_clip_rect(v.rect);
         if info.demo {
             d.demo.draw(&painter, &v, art);
+            // (Tekken 3's attract demo shows no ROUND, FIGHT or K.O.: PCSX-Redux)
+            if info.ttt.is_none() {
+                return;
+            }
         }
         let first = usize::from(bout.round != 1);
         match bout.phase {
