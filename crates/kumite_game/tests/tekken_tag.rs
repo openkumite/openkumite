@@ -2262,6 +2262,32 @@ fn xiaoyus_uniform_never_does_the_handstand() {
     }
 }
 
+/// The pair win poses (0x3B4F88, 0x3B60F0, 0x3D7E10; PCSX2: player +4, +0xC, +0x1A): Kuma (costume 0, 2) and Heihachi
+/// pose 4775 at the pair's places (1562 apart); Panda (costume 1) and Heihachi the picked pose, the partner at x 0x400,
+/// z -0xC00; Eddy and Nina posing 4771 nudged together (Nina at z -0xC00). Player 0 faces light 0 (Panda's facing 0).
+#[test]
+fn pairs_pose_their_own() {
+    let Some(a) = assets() else { return };
+    for (winner, partner, pick, aliases, apart) in
+        [(498, 522, 4770, [4775, 4775], 1562.0), (492, 522, 4770, [4775, 4775], 1562.0), (501, 522, 4770, [4770, 4770], 3238.0), (456, NINA, 4771, [4771, 4771], 3072.0)]
+    {
+        let mut g = Game::load(&a, [winner, PAUL]).unwrap();
+        g.start_tag([kumite_game::Actor::load(&a, partner).unwrap(), kumite_game::Actor::load(&a, LAW).unwrap()]);
+        assert!(g.pose_partner(0));
+        g.pose_places(0, false, [pick; 2]);
+        let f = &g.fight.fighters;
+        assert_eq!(f.each_ref().map(|f| f.alias), aliases, "model {winner}");
+        assert!(((f[0].position - f[1].position).length() - apart).abs() < 2.0, "model {winner}");
+        if winner == 501 {
+            let light = g.camera.data().win.as_ref().unwrap().light() - g.camera.world_turn;
+            // (the yaw half a turn less light 0's angle: the win camera's eye in front of it)
+            let tau = std::f32::consts::TAU;
+            let off = (f[0].yaw - (tau / 2.0 - light as f32 * tau / 4096.0)).rem_euclid(tau);
+            assert!(off.min(tau - off) < 1e-4, "{} {light}", f[0].yaw);
+        }
+    }
+}
+
 /// What a match of Paul against Lei did over `frames` steps, each side a CPU at (difficulty, level) or an idle pad:
 /// the state hashes, and per side its fight steps holding forward without a button (walks), its button presses
 /// (attacks), its steps in a guard, the hits it landed unblocked, and the rounds won.

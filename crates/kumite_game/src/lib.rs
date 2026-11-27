@@ -1021,23 +1021,71 @@ impl Game {
         Ok(())
     }
 
-    /// The win pose of a tag battle (0x3B5DB0): side `w`'s benched partner takes the loser's place, x 0x400 and z
-    /// -0xC00 from the winner (taken as to its right and behind it), playing the winner's alias. False without a
-    /// partner.
+    /// The win pose of a tag battle (0x3B5DB0): side `w`'s benched partner takes the other's place ([`Game::pose_places`]
+    /// places it). False without a partner.
     pub fn pose_partner(&mut self, w: usize) -> bool {
         let (Some(t), Some(_), None) = (self.fight.teams.as_deref(), self.tag_bench.as_ref(), self.posing_partner) else { return false };
         let m = t[w].partner().clone();
         self.partner_trade(w);
         self.posing_partner = Some(w);
-        let winner = &self.fight.fighters[w];
-        let (sin, cos) = winner.yaw.dsin_cos();
-        let at = winner.root() + Vec3::new(cos, 0.0, -sin) * 1024.0 - Vec3::new(sin, 0.0, cos) * 3072.0;
-        let (alias, yaw, side) = (winner.alias, winner.yaw, self.fight.fighters[1 - w].side);
+        let (at, yaw, side) = (self.fight.fighters[w].root(), self.fight.fighters[w].yaw, self.fight.fighters[1 - w].side);
         let mut f = kumite_sim::Fighter::new(m.moveset, m.max_health, Vec3::new(at.x, 0.0, at.z), yaw, side);
         f.character = m.character;
-        f.play_alias(alias);
         self.fight.fighters[1 - w] = f;
         true
+    }
+
+    /// Tekken Tag's pose (0x3B5DB0, 0x3685B8 / 0x368748): side `s` (the winner; on a team lose the loser) at x 0, z 0
+    /// and its posing partner at x 0x400, z -0xC00 (the team lose: z 0), facing 0, in `aliases` by slot. A pair of
+    /// the win / team-lose table (0x3B4F88) at its own places in its own aliases instead, else a win's nudges move
+    /// the partner (0x3B60F0). Then all turned about `s`'s place (0x3D7E10) so that player 0 (the team lose: the
+    /// two's mean) faces light 0 as the win camera has it (game x, z; facing 65536 a turn).
+    pub fn pose_places(&mut self, s: usize, lose: bool, mut aliases: [usize; 2]) {
+        let Some(r) = self.rounds.clone() else { return };
+        let (o, partner) = (1 - s, self.posing_partner.is_some());
+        let mut at = [[0i64; 3]; 2];
+        at[o] = [0x400, if lose { 0 } else { -0xC00 }, 0];
+        match partner.then(|| self.pair_in(if lose { &r.lose_pairs } else { &r.win_pairs })).flatten() {
+            Some(p) => {
+                at = p.map(|m| [m.x, m.z, m.facing]);
+                aliases = p.map(|m| m.alias);
+            }
+            None if partner && !lose => {
+                let ms = |i: usize| self.fight.fighters[i].moveset.moveset_id;
+                let both = |a: i64| aliases.iter().all(|&b| b as i64 == a);
+                for n in r.win_nudges.iter().filter(|n| Some(n[0]) == ms(s) && Some(n[1]) == ms(o) && both(n[4])) {
+                    at[o][0] += n[2];
+                    at[o][1] += n[3];
+                }
+            }
+            None => {}
+        }
+        // shortcut: light 0 to 4096ths of a turn (the PS2's float to 65535ths), till a pose shows a step off
+        let light = self.camera.data().win.as_ref().map_or(0, |w| w.light()) - self.camera.world_turn;
+        let turn = (light * 16 - if lose { (at[0][2] + at[1][2]) / 2 } else { at[0][2] }).rem_euclid(0x10000);
+        let (sin, cos) = (turn as f32 * std::f32::consts::TAU / 65536.0).dsin_cos();
+        let origin = self.fight.fighters[s].root();
+        for i in (0..2).filter(|&i| i == s || partner) {
+            let [x, z] = [at[i][0] as f32, at[i][1] as f32];
+            let f = &mut self.fight.fighters[i];
+            // (after the alias, which faces the other; the game's z negated, its facing 0x8000 less the yaw)
+            f.play_alias(aliases[i]);
+            f.position = Vec3::new(origin.x + x * cos + z * sin, 0.0, origin.z + x * sin - z * cos);
+            f.yaw = ((0x10000 - at[i][2] - turn).rem_euclid(0x10000) - 0x8000) as f32 * std::f32::consts::TAU / 65536.0;
+            f.root_yaw = f.yaw;
+        }
+    }
+
+    /// The row of pair table `pairs` the slots' fighters make, by slot: its first member in player 0's slot or in
+    /// player 1's (0x3B4F40 compares the costume unless -1).
+    fn pair_in(&self, pairs: &[[kumite_sim::camera::PairMember; 2]]) -> Option<[kumite_sim::camera::PairMember; 2]> {
+        let costume = |i: usize| self.costume_of.iter().find(|c| c.0 == self.bodies[i].model_record).map_or(-1, |c| c.1);
+        let is = |m: &kumite_sim::camera::PairMember, i: usize| Some(m.character) == self.characters[i] && (m.costume == -1 || m.costume == costume(i));
+        pairs.iter().find_map(|[a, b]| match () {
+            _ if is(a, 0) && is(b, 1) => Some([*a, *b]),
+            _ if is(a, 1) && is(b, 0) => Some([*b, *a]),
+            _ => None,
+        })
     }
 
     /// Tekken Tag's team intro before a match's first round (0x3B5328): team `t` on the stage, its fighter in its
@@ -1063,14 +1111,7 @@ impl Game {
         let mut p = kumite_sim::Fighter::new(m.moveset, m.max_health, f.position, f.yaw, f.side);
         p.character = m.character;
         self.fight.fighters[o] = p;
-        // the pair's row: its first member in player 0's slot or in player 1's (0x3B4F40 compares the costume unless -1)
-        let costume = |i: usize| self.costume_of.iter().find(|c| c.0 == self.bodies[i].model_record).map_or(-1, |c| c.1);
-        let is = |m: &kumite_sim::camera::PairMember, i: usize| Some(m.character) == self.characters[i] && (m.costume == -1 || m.costume == costume(i));
-        let pair = ti.pairs.iter().find_map(|[a, b]| match () {
-            _ if is(a, 0) && is(b, 1) => Some([*a, *b]),
-            _ if is(a, 1) && is(b, 0) => Some([*b, *a]),
-            _ => None,
-        });
+        let pair = self.pair_in(&ti.pairs);
         let chars = self.characters;
         let gd = self.fight.data.clone();
         for (i, f) in self.fight.fighters.iter_mut().enumerate() {
