@@ -2014,6 +2014,116 @@ fn extra_fighters_win_with_their_own_poses_and_start_in_the_stance() {
     }
 }
 
+/// The Tekken 2 fighters (Kazuya's, Jun's) move as Tekken 3's: a dash held on runs into the Ultimate Tackle (it had
+/// stopped in a walk), a backdash held back goes on backdashing (it had cut into a walk back), and walking at an
+/// opponent who stepped aside turns to face him (it had walked on askew).
+#[test]
+fn extra_fighters_run_into_the_tackle_backdash_and_face_as_they_walk() {
+    let Some(a) = assets() else { return };
+    let index: MovesetIndex = kumite_sim::data::load(&a.root.join("gamedata/movesets/index.json")).unwrap();
+    for model in [900, 938].into_iter().filter(|m| index.models.iter().any(|x| x.model_record == *m)) {
+        let run = |p1: &str, p2: &str, apart: f32| {
+            let mut g = load_vs_dummy(&a, [model, MODEL_71]);
+            let to = g.fight.fighters[1].position;
+            g.fight.fighters[0].position = to + (g.fight.fighters[0].position - to).normalize() * apart;
+            let (p1, p2) = (parse_script(p1).unwrap(), parse_script(p2).unwrap());
+            let mut anims = Vec::new();
+            for (k, &pad) in p1.iter().enumerate() {
+                g.step([pad, p2.get(k).copied().unwrap_or_default()]);
+                anims.push(g.fight.fighters[0].animation(&g.fight.data).0.to_string());
+            }
+            (g, anims)
+        };
+        // (common_270: Tekken 3's Ultimate Tackle, as Law's run ends in it; common_231: the walk back)
+        let (g, anims) = run("n*2,f,n,f*90", "", 4000.0);
+        assert!(anims.iter().any(|x| x == "common_270") && g.fight.fighters[1].health < g.fight.fighters[1].max_health, "model {model}: the run's tackle: {anims:?}");
+        let (_, anims) = run("n*2,b,n,b*40", "", 2000.0);
+        assert!(!anims.iter().any(|x| x == "common_231"), "model {model}: the held backdash: {anims:?}");
+        let (g, _) = run("n*70,f*40", "n*2,u,n*60", 2000.0);
+        let (f, o) = (&g.fight.fighters[0], &g.fight.fighters[1]);
+        let d = o.root() - f.root();
+        let off = (f.yaw - d.x.atan2(d.z)).to_degrees().rem_euclid(360.0);
+        assert!(off.min(360.0 - off) < 5.0, "model {model}: {off} degrees off the opponent after walking at him");
+    }
+}
+
+/// The Tekken 2 fighters' heavy hits (21 or more) show a character spark and light the fighters, as Tekken 3's do:
+/// their donor's (Kazuya's Jin's, Jun's Julia's). They had the red spark and the particles alone.
+#[test]
+fn extra_fighters_heavy_hits_show_a_character_spark_and_its_light() {
+    let Some(a) = assets() else { return };
+    let index: MovesetIndex = kumite_sim::data::load(&a.root.join("gamedata/movesets/index.json")).unwrap();
+    let data = Vfx::new(&a).data.expect("effects.json");
+    for m in index.models.iter().filter(|m| [900, 938].contains(&m.model_record)) {
+        let spark = data.characters.get(&m.model_record).unwrap_or_else(|| panic!("model {}: no character spark", m.model_record));
+        let ms = moveset(&a, &m.moveset_file);
+        let heavy: Vec<usize> = (0..ms.moves.len()).filter(|&i| ms.moves[i].damage >= 21 && ms.moves[i].damage_type != 1 && ms.moves[i].anim.starts_with("t2m_")).collect();
+        let mut lit = None;
+        'out: for &index in heavy.iter().take(12) {
+            for walk in (10..60).step_by(10) {
+                let mut g = load_vs_dummy(&a, [m.model_record, MODEL_71]);
+                let mut v = Vfx::new(&a);
+                for pad in parse_script(&format!("f*{walk}")).unwrap() {
+                    g.step([pad, Pad::default()]);
+                }
+                g.fight.fighters[0].play(kumite_sim::Current { bank: Bank::Own, index });
+                for _ in 0..120 {
+                    g.step([Pad::default(); 2]);
+                    v.step(&g);
+                    if g.fight.hits.iter().any(|h| h.attacker == 0 && !h.blocked && h.damage.max(h.base_damage) >= 21) {
+                        lit = v.hit_light().map(|l| (l, v.slots.iter().flatten().any(|s| *s.strip.cells == *spark.strip.cells)));
+                        break 'out;
+                    }
+                }
+            }
+        }
+        let ((colour, _, _), shown) = lit.unwrap_or_else(|| panic!("model {}: no heavy hit lit the fighters", m.model_record));
+        assert!(colour == spark.light && shown, "model {}: the character spark and its light", m.model_record);
+    }
+}
+
+/// Tekken 2 Kuma's Double Hammer (1+2) knocks its victim down as in Tekken 2 (its victim's root rises 46 mm, then
+/// falls), not up into the air: it once took a Tekken 3 Kuma launcher's reaction (Paul flew 4.3 m high).
+#[test]
+fn tekken_2_kumas_double_hammer_knocks_down_without_a_launch() {
+    let Some(a) = assets() else { return };
+    let index: MovesetIndex = kumite_sim::data::load(&a.root.join("gamedata/movesets/index.json")).unwrap();
+    let Some(m) = index.models.iter().find(|m| m.model_record == 930) else { return };
+    let ms = moveset(&a, &m.moveset_file);
+    let aliases = ms.aliases.as_ref().unwrap();
+    let hammer = (0..aliases.len()).find(|&k| aliases[k].bank == Bank::Own && aliases[k].index.is_some_and(|i| ms.moves[i].anim == "t2m_071")).expect("the Double Hammer");
+    // (the victim's clips after the hit, Paul's: the highest their root goes, metres)
+    let paul = a.character(MODEL_71).unwrap();
+    let (mut hit, mut high) = (false, 0.0f32);
+    for walk in (0..60).step_by(5) {
+        let mut g = load_vs_dummy(&a, [930, MODEL_71]);
+        for pad in parse_script(&format!("n*2,f*{walk}")).unwrap() {
+            g.step([pad, Pad::default()]);
+        }
+        assert!(g.fight.fighters[0].play_alias(hammer));
+        for _ in 0..150 {
+            g.step([Pad::default(); 2]);
+            hit |= g.fight.hits.iter().any(|h| h.attacker == 0 && !h.blocked);
+            if let Some(c) = paul.clip(g.fight.fighters[1].animation(&g.fight.data).0).filter(|_| hit) {
+                high = paul.clips[c].translations.iter().flatten().flatten().fold(high, |h, t| h.max(t.y));
+            }
+        }
+        if hit {
+            break;
+        }
+    }
+    assert!(hit, "the Double Hammer hits");
+    assert!(high < 1.5, "the victim flew {high} m high");
+}
+
+/// Tekken 2's Hong Kong (Lei's stage, 65 here) animates its floor's lights: three CLUT animations as texture channels.
+#[test]
+fn the_tekken_2_hong_kong_floor_lights_animate() {
+    let Some(a) = assets() else { return };
+    let Ok(stage) = a.stage(65) else { return eprintln!("skipping: no Tekken 2 pack") };
+    assert_eq!(stage.channels.len(), 3);
+}
+
 /// Every Tekken 2 fighter's every throw (the 1+3 / 2+4 attempts and the command throws, each link of their lists:
 /// front, back, the sides, a held direction's variant) against Tekken 3's Paul and another Tekken 2 fighter: on the
 /// link frame the victim plays the thrower's victim move, and it loses health before it is let go. (Against another
