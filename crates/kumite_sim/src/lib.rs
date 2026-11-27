@@ -622,7 +622,7 @@ pub struct Fighter {
     /// The facing target (Tekken Tag's +0x44, Tekken 3's +0x34 as its 16-bit angle) of the last facing pass with the
     /// pair more than 0x200 apart (0x370FEC, 0x80043C1C: nearer, it is kept).
     basis: Option<f32>,
-    /// Tekken 3: the pair 0x200 or nearer at this step's facing pass (+0xF8 as the next pass reads it).
+    /// Tekken 3: the pair 0x200 or nearer at this step's facing pass (+0xF8 as the next step's commit reads it).
     pair_near: bool,
     pub health: i32,
     /// Full health (16.16; the VS handicap scales it: 70..140 %).
@@ -1488,10 +1488,13 @@ impl Fighter {
     fn track_t3(&mut self, gd: &GameData, seen: Option<[Vec3; 2]>) {
         let [me, opp] = seen.unwrap_or([self.root(), self.opponent.root]);
         let (a2a, off, target) = self.geometry16(me, opp);
-        // (the target +0x34 is kept while the pair was 0x200 or nearer a step before, +0xF8, 0x80043C1C)
+        // (the target +0x34 is kept while the pair is 0x200 or nearer, +0xF8, 0x80043C1C: the pass reads this step's,
+        // which the pair table 0x80043684 writes just before it, and the step's end (0x80045248) takes it afresh on these
+        // roots while last step's was farther; the next step's commit reads this step's, t3sim53 c129)
         let d = opp - me;
-        let near = std::mem::replace(&mut self.pair_near, (d.x as i64).pow(2) + (d.z as i64).pow(2) < 0x201 * 0x201);
-        if self.basis.is_none() || !near {
+        let near = (d.x as i64).pow(2) + (d.z as i64).pow(2) < 0x201 * 0x201;
+        let was = std::mem::replace(&mut self.pair_near, near);
+        if self.basis.is_none() || !near || !was {
             self.basis = Some(target as f32);
         }
         let target = self.basis.map_or(target, |t| t as i32);

@@ -54,7 +54,8 @@ fn rows(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str
 }
 
 /// [`rows`] from the PS1's rand() and blinks ([`start_rand`]), and rand()'s state after each step; VS_RAND_LOG=1
-/// prints each step's state ("step rs seed g=count objects"). `intro`: the fighters stand where round 1's intros
+/// prints each step's state ("step rs seed g=count objects"), VS_SOUND=1 the sounds it starts ("step snd file
+/// volume speed"). `intro`: the fighters stand where round 1's intros
 /// (alias 0, the coin flip's neutral pads) left them, not on the start marks, their stances at these frames.
 #[allow(clippy::too_many_arguments)]
 fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &str, p2: &str, steps: usize, start: &str, intro: Option<[u32; 2]>) -> (Vec<Row>, Vec<u32>) {
@@ -82,6 +83,7 @@ fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &
     }
     start_rand(&mut g, start);
     let log = std::env::var_os("VS_RAND_LOG").is_some();
+    let sounds = std::env::var_os("VS_SOUND").is_some();
     let (s1, s2) = (parse_script(p1).unwrap(), parse_script(p2).unwrap());
     let angle = |y: f32| (0x8000 - (y / std::f32::consts::TAU * 65536.0).round() as i32) as i16;
     // (the start's "step:frame" entries: the PS1's frame counter from that step on, 0x800AFA4C, t3sim40's rs.lua f=;
@@ -97,6 +99,11 @@ fn rows_at(a: &Assets, models: [usize; 2], copy: Option<usize>, lead: u32, p1: &
             if log {
                 let l: Vec<String> = g.fight.objects.list.iter().map(|o| format!("{:?}.{}.{}", o.kind, o.state, o.count)).collect();
                 eprintln!("{k} rs {:08x} g={} {}", g.fight.objects.seed, g.fight.objects.count, l.join(" "));
+            }
+            if sounds {
+                for s in g.sound.iter().flat_map(|s| &s.heard) {
+                    eprintln!("{k} snd {} {:.3} {:.3}", s.file.display(), s.volume, s.speed);
+                }
             }
             seeds.push(g.fight.objects.seed);
             std::array::from_fn(|i| {
@@ -425,6 +432,29 @@ fn a_reversal_eases_in_from_the_links_step_as_on_the_ps1() {
     let t = rows(&a, [75, 115], None, 1, "n*318,f*39,n+2*2,n*30,f+2*2,n*30,d/f+2*2,n*94", "n*319,b*39,f+1+3*4,n*26,f+1+3*4,n*26,f+2+4*4,n*96", 400);
     let h: Vec<i32> = (863..=866).map(|row| at(&t, 494, row, 1).1).collect();
     assert_eq!(h, [-968, -977, -985, -992]);
+}
+
+/// Heihachi's crouch dash into his EWGF launches Hwoarang, and Heihachi's next dash passes under him (t3sim53 c129):
+/// the pair near, Hwoarang's target is kept from the step's end before it (0x80045248), and the step they part takes
+/// it afresh, so his flight's last turn lands him 193 round as on the PS1 (ours kept it a step more).
+#[test]
+fn the_facing_target_is_taken_afresh_as_the_pair_parts_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [179, 123], None, 1, "n*324,f,n,d,d/f,d/f+2,n*39,f,n,d,d/f,n*8,n+1*2,n*561", "n*295,b*39,n+2*2,n*30,n+1*2,n*575", 420);
+    let f: Vec<(i16, i16)> = [816, 822, 823, 836].iter().map(|&row| (at(&t, 431, row, 1).3, at(&t, 431, row, 1).4)).collect();
+    assert_eq!(f, [(-17005, -17456), (-17007, -17456), (-17200, -17456), (-17200, -17200)]);
+}
+
+/// True Ogre's breath (b+1+2), f,f+1+2 and 1+2 on King (t3sim53 c137, re-recorded with rs.lua and the blinks): from
+/// the PS1's rand() and frame counter the breath strikes King on the PS1's step (without them a step late).
+#[test]
+fn true_ogres_breath_strikes_king_on_the_ps1s_step() {
+    let Some(a) = assets() else { return };
+    let start = "a71000eb,57,0,0,1,1,0:1561,104:1664,164:1723,224:1782";
+    let (t, _) = rows_at(&a, [203, 99], None, 1, "n*245,f*40,b+1+2*2,n*60,f,n,f+1+2,n*50,n+1+2*2,n*493", "n*246,b*40,n+1*2,n*30,d+4*2,n*576", 420, start, None);
+    assert_eq!(at(&t, 676, 1089, 1).5, 6_160_384, "PS1 row 1089: King's health");
+    let r = at(&t, 676, 1091, 1);
+    assert_eq!((r.0, r.1, r.2), (1396, -1107, -216), "PS1 row 1091: King");
 }
 
 /// Mokujin as Kuma (round 2's draw, the pool's entry 11) against Gun Jack (t3sim51 c120): walk, u+1, d+4 struck
