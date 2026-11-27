@@ -858,28 +858,51 @@ fn the_partner_comes_in_turning_to_the_opponent() {
 
 /// Yoshimitsu's 1+3 from Hwoarang's side (sidestep, then the grab: move 5903, camera id 0xAE): while he spins, his
 /// root swings ~450 units each frame, and the sampler takes his side on its odd frames only (CAM+0xC0 = 0 in
-/// PCSX2), so the eye glides. PCSX2 (0x41581C) on the throw's frames 20, 44 and 65: -1934, -1528, -1276 (its row
-/// labelled 21 holds frame 20's eye: the log's next rows -1921, -1920, -1905 are ours on frames 21-23).
+/// PCSX2), so the eye glides. From PCSX2's rand() as the case starts (audit39's r_yoshi, arena 16), the director's
+/// four draws on the grab's frame 2 (0x393A90's rand() picks the situation, 0x3800D8's, 0x394110's two its pitch
+/// and yaw) come where PCSX2's do in the one stream, after the presses' seeds and the attack voice (its state at the
+/// case's checkpoints), so the eye (0x41581C) is PCSX2's on the throw's frames 20, 44 and 65: -2122, -1729, -1478
+/// (its row labelled 21 holds frame 20's eye).
 #[test]
 fn yoshimitsus_side_throw_camera_samples_on_odd_frames() {
     let Some(a) = assets() else { return };
-    let mut g = Game::load(&a, [YOSHIMITSU, 426]).unwrap();
+    let mut g = Game::load(&a, [YOSHIMITSU, HWOARANG]).unwrap();
     g.start_tag([kumite_game::Actor::load(&a, PAUL).unwrap(), kumite_game::Actor::load(&a, PAUL).unwrap()]);
+    g.set_arena(16);
+    // (the sound player: Yoshimitsu's grab draws its voice, 0x376578, two frames before its camera's draws)
+    let voices = g.fight.fighters.each_ref().map(|f| f.character.unwrap_or(0) as usize);
+    g.sound = Some(Box::new(kumite_game::sound::FightSound::new(std::sync::Arc::new(SoundData::load(&a).unwrap()), [String::new(), String::new()], voices, SoundState::default())));
     let mut b = Bout::new(g, kumite_game::ai_data(&a).unwrap(), 2, false);
     while b.phase != Phase::Fight {
         b.step([Pad { buttons: 3, ..Pad::default() }; 2]);
     }
-    let mut seen = Vec::new();
-    for pad in parse_script("n*61,f*30,n*2,u*1,n*11,1+3*2,n*79").unwrap() {
+    // (PCSX2's presses seed rand() as its main loop reads them, a frame before the move takes them, ours with the move,
+    // and its director runs at the start of the frame after the grab's, ours at the end of the grab's: rows 32, 44
+    // and 57 are a frame apart; at row 108 the arena's people draw, 0x3D8848, which ours do on their own stream)
+    let ps2: [(usize, u32); 10] =
+        [(1, 461_873), (31, 461_873), (33, 463_849), (43, 463_849), (45, 465_837), (54, 465_837), (55, 2_185_473_762), (56, 2_185_473_762), (58, 1_173_477_166), (107, 1_173_477_166)];
+    let (mut seen, mut eyes) = (Vec::new(), Vec::new());
+    for (k, pad) in parse_script("n*61,f*30,n*2,u*1,n*11,1+3*2,n*79").unwrap().into_iter().enumerate() {
         b.step([pad, Pad::default()]);
+        if k == 61 {
+            // (PCSX2's row 1: rand()'s state and seed, the vblank count a frame before, the main loop's frame, the faces)
+            let o = &mut b.game.fight.objects;
+            (o.seed, o.reseed, o.vblanks, o.loops) = (461_873, 461_873, 1944, 1215);
+            let f = &mut b.game.tag_faces;
+            (f[0].face, f[0].timer, f[1].face, f[1].timer) = (0, -210, 0, 154);
+        }
+        if let Some(&(row, _)) = ps2.iter().find(|r| k == 60 + r.0) {
+            seen.push((row, b.game.fight.objects.seed));
+        }
         let f = &b.game.fight.fighters[0];
         if f.current.index == 5903 && [20, 44, 65].contains(&f.frame) {
-            seen.push(b.game.camera.view.eye[0]);
+            eyes.push(b.game.camera.view.eye[0]);
         }
     }
-    assert_eq!(seen.len(), 3, "{seen:?}");
-    for (x, ps2) in seen.iter().zip([-1934, -1528, -1276]) {
-        assert!((*x - ps2).abs() <= 2, "{seen:?}");
+    assert_eq!(seen, ps2);
+    assert_eq!(eyes.len(), 3, "{eyes:?}");
+    for (x, ps2) in eyes.iter().zip([-2122, -1729, -1478]) {
+        assert!((*x - ps2).abs() <= 2, "{eyes:?}");
     }
 }
 

@@ -1432,7 +1432,16 @@ impl Game {
     /// the camera's framing).
     fn step_camera(&mut self) -> View {
         let last = self.camera.view;
+        // (Tekken Tag's director (0x36DDD0, the next frame's first) draws from the fight's one rand(), after the task
+        // runner, with the CPUs' generator)
+        let tag = self.camera.rng.low;
+        if tag {
+            self.camera.rng.rand = self.fight.objects.seed;
+        }
         let v = self.step_view();
+        if tag {
+            self.fight.objects.seed = self.camera.rng.rand;
+        }
         self.camera.turn_world();
         self.project_sides(&v, &last);
         v
@@ -1500,6 +1509,13 @@ impl Game {
 
     /// One 60 Hz step with both players' pads.
     pub fn step(&mut self, pads: [Pad; 2]) {
+        self.step_fight(pads);
+        self.step_after();
+    }
+
+    /// A step's fight frame and, in Tekken Tag, its sounds (0x375B60): where the PS2 runs the CPUs' input for the next
+    /// frame (0x36C4C0), before the task runner; [`Game::step_after`] the rest.
+    pub fn step_fight(&mut self, pads: [Pad; 2]) {
         let intro = self.camera.in_intro();
         let (pads, clock) = if intro { ([Pad::default(); 2], self.fight.clock) } else { (pads, 0) };
         if self.fight.coop.is_some() && self.fight.partner.is_some() {
@@ -1529,10 +1545,14 @@ impl Game {
         }
         // (Tekken Tag: the fight frame's sounds (0x375B60) draw before the fighters' draw, whose blinks draw before the
         // task runner (0x346608): one rand())
-        let tag = self.fight.data.tag_moves;
-        if tag {
+        if self.fight.data.tag_moves {
             self.step_sound();
         }
+    }
+
+    /// A step after [`Game::step_fight`]: the fighters' draw, Tekken Tag's task runner (0x346608), the camera.
+    pub fn step_after(&mut self) {
+        let tag = self.fight.data.tag_moves;
         self.step_faces();
         self.step_heads();
         self.step_hands();

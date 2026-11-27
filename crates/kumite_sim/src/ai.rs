@@ -524,7 +524,7 @@ impl AiData {
     /// there. Tekken 3's is the PS1's at its first fight: srand(0x800B0000 + the scratchpad's sum, 0 on an emulator)
     /// at boot (0x800B07E4), nothing drawn through the menus.
     pub fn rng(&self, seed: u32, match_seed: u32) -> AiRng {
-        AiRng { lcg: self.lcg_seed, rand: if self.ttt { seed ^ match_seed } else { 0x800B_0000 } }
+        AiRng { lcg: self.lcg_seed, rand: if self.ttt { seed ^ match_seed } else { 0x800B_0000 }, low: self.ttt }
     }
 
     pub fn profile(&self, difficulty: usize, level: usize) -> &Profile {
@@ -586,14 +586,16 @@ impl AiData {
 #[derive(Clone, Debug)]
 pub struct AiRng {
     lcg: u32,
-    /// libc's state (Tekken 3's is the fight's, [`crate::objects::Objects::seed`], while the CPUs draw).
+    /// libc's state (the fight's, [`crate::objects::Objects::seed`], while the CPUs and Tekken Tag's camera draw).
     pub rand: u32,
+    /// Tekken Tag's rand() (0x40FBD0): the state's low 31 bits, the fight's one stream.
+    pub low: bool,
 }
 
 impl AiRng {
     /// `seed`: the libc state (OpenKumite seeds it per bout, so equal inputs give equal fights).
     pub fn new(seed: u32) -> Self {
-        Self { lcg: 0, rand: seed }
+        Self { lcg: 0, rand: seed, low: false }
     }
 
     /// Step the AI LCG, returning its old value (the tests use the old value).
@@ -603,12 +605,14 @@ impl AiRng {
         o
     }
 
-    /// libc rand(): 0..0x7FFF, the state's bits 16-30. (Tekken Tag's 0x40FBD0 returns bits 0-14, but its stream is
-    /// shared with the rest of the game, which scatters the AI's draws; drawn on their own, the low bits repeat with
-    /// a short period (bit 0 alternates) and lock the CPU's choices.)
+    /// libc rand(): Tekken 3's 0..0x7FFF, the state's bits 16-30; Tekken Tag's (0x40FBD0) its low 31 bits.
     pub fn rand(&mut self) -> i32 {
         self.rand = self.rand.wrapping_mul(0x41C6_4E6D).wrapping_add(0x3039);
-        ((self.rand >> 16) & 0x7FFF) as i32
+        if self.low {
+            (self.rand & 0x7FFF_FFFF) as i32
+        } else {
+            ((self.rand >> 16) & 0x7FFF) as i32
+        }
     }
 
     /// 0x800566E8: 0..n from both streams, then the LCG steps.
@@ -4549,7 +4553,7 @@ mod tests {
     }
 
     fn rng(seed: u32) -> AiRng {
-        AiRng { lcg: seed.wrapping_mul(0x9E37_79B9), rand: seed }
+        AiRng { lcg: seed.wrapping_mul(0x9E37_79B9), rand: seed, low: false }
     }
 
     #[test]
