@@ -301,10 +301,13 @@ impl HudData {
                 v => [n(v); 2], // (one for both players before)
             },
             push_colour: h["under_bar"]["push"]["colour"].as_u64().unwrap_or(0) as u32,
-            free_play: {
-                let f = &h["under_bar"]["push"]["free_play"];
-                let bits = f["while"].as_str().and_then(|w| u32::from_str_radix(w.trim_start_matches("frame & 0x"), 16).ok()).unwrap_or(0);
-                (f["text"].as_str().unwrap_or_default().to_string(), n(&f["half_width"]), bits)
+            free_play: match &h["under_bar"]["push"]["free_play"] {
+                // (a pack before format 18 has none: the PS1's own, 0x8002216C and 0x8004EF20, so it needs no new conversion)
+                Value::Null => (" FREE PLAY".into(), 45.0, 0x40),
+                f => {
+                    let bits = f["while"].as_str().and_then(|w| u32::from_str_radix(w.trim_start_matches("frame & 0x"), 16).ok()).unwrap_or(0);
+                    (f["text"].as_str().unwrap_or_default().to_string(), n(&f["half_width"]), bits)
+                }
             },
             stage_colour: h["under_bar"]["stage"]["colour"].as_u64().unwrap_or(0) as u32,
             final_from: h["under_bar"]["stage"]["final_from"].as_u64().unwrap_or(u64::MAX) as u32,
@@ -962,14 +965,18 @@ mod tests {
     fn push_start_takes_turns_with_free_play() {
         let p = crate::test_assets().join("gamedata/screens.json");
         let Ok(b) = kumite_fs::read(&p) else { return };
-        let d = HudData::load(&serde_json::from_slice(&b).unwrap(), &Value::Null);
-        if d.free_play.0.is_empty() {
-            return; // (a conversion before format 18)
+        let mut screens: Value = serde_json::from_slice(&b).unwrap();
+        // (a pack before format 18, without `free_play`, shows it alike)
+        for older in [false, true] {
+            if older {
+                screens["hud"]["under_bar"]["push"].as_object_mut().unwrap().remove("free_play");
+            }
+            let d = HudData::load(&screens, &Value::Null);
+            let shown = |i, f| d.push_text(i, f).map(|(t, h)| (t.to_string(), h));
+            assert_eq!(shown(0, 0x10), Some(("PUSH P1 START".into(), 58.0)));
+            assert_eq!(shown(1, 0x20), Some(("PUSH P2 START".into(), 58.0)));
+            assert_eq!(shown(1, 0x50), Some((" FREE PLAY".into(), 45.0)));
+            assert_eq!(shown(0, 0x40), None);
         }
-        let shown = |i, f| d.push_text(i, f).map(|(t, h)| (t.to_string(), h));
-        assert_eq!(shown(0, 0x10), Some(("PUSH P1 START".into(), 58.0)));
-        assert_eq!(shown(1, 0x20), Some(("PUSH P2 START".into(), 58.0)));
-        assert_eq!(shown(1, 0x50), Some((" FREE PLAY".into(), 45.0)));
-        assert_eq!(shown(0, 0x40), None);
     }
 }
