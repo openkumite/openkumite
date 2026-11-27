@@ -2778,7 +2778,7 @@ fn arena_4s_lightning() {
 }
 
 /// Arena 8's smoke draws from the fight's one rand() as PCSX2's 0x3A0CE8 (audit39's r_yoshi_arena8: rows 24, 56, 88,
-/// 120 and 152), 3 draws every 32 frames and none between, so the app steps it on that stream.
+/// 120 and 152): 3 draws every 32 frames and none between.
 #[test]
 fn arena_8s_smoke_draws_3_every_32_frames() {
     let Some(a) = assets() else { return };

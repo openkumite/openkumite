@@ -3330,12 +3330,8 @@ impl Ai {
             self.cd -= 3;
         }
         // (Tekken Tag draws before the health test, 0x380DA8)
-        let hit = if cx.data.ttt {
-            (cx.lcg() & 0xFFF) as i32 >= self.p.gate_always_zero && me.health < self.hp_prev
-        } else {
-            me.health < self.hp_prev && (cx.lcg() & 0xFFF) as i32 >= self.p.gate_always_zero
-        };
-        if hit {
+        let drawn = cx.data.ttt.then(|| (cx.lcg() & 0xFFF) as i32);
+        if me.health < self.hp_prev && drawn.unwrap_or_else(|| (cx.lcg() & 0xFFF) as i32) >= self.p.gate_always_zero {
             self.cd -= 3;
             // rage: hit a third time by the same move -> the level 9 profile for 600 frames
             self.rage = false;
@@ -3391,7 +3387,7 @@ impl Ai {
             if ttt && mv.rec4 & 0x80_0000 != 0 {
                 return None;
             }
-            if *drop_last && mv.id == s.last_pick {
+            if *drop_last && s.last_pick.is_some() && mv.id == s.last_pick {
                 *drop_last = false;
                 return None;
             }

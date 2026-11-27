@@ -1927,10 +1927,6 @@ impl App {
             _ => None,
         };
         let mut thunder = vec![];
-        // (Tekken Tag: the arena's tasks, its weather 0x3A0CE8 and people 0x3D8848, draw from the fight's one rand())
-        // shortcut: they step before the bout's step, after its director's draws and the fire's tasks (the PS2's come
-        // before both), upgrade if a case with both on one frame is matched
-        let mut seed = self.fight.as_mut().map(|f| &mut f.bout.game.fight).filter(|f| f.data.tag_moves).map(|f| &mut f.objects.seed);
         if let Some(s) = self.scene.as_mut().filter(|_| !paused) {
             s.frame += 1;
             if let Some(mid) = arena {
@@ -1942,10 +1938,8 @@ impl App {
                 (s.eye, s.view_proj) = (eye - s.arena, proj * glam::Mat4::from_translation(s.arena));
             }
             if let Some(w) = s.weather.as_mut() {
-                seed.as_deref_mut().map(|r| std::mem::swap(r, &mut w.seed));
                 w.step();
                 w.flash(s.view_proj);
-                seed.as_deref_mut().map(|r| std::mem::swap(r, &mut w.seed));
                 thunder = std::mem::take(&mut w.sounds);
             }
             if let Some(m) = s.objects.as_mut() {
@@ -1955,9 +1949,7 @@ impl App {
                 let shown = p.walker.model();
                 let Some((_, ch, _, clips, _)) = p.bodies.iter().find(|b| b.0 == shown) else { continue };
                 let len = |m: usize| clips.get(&m).and_then(|&c| ch.clips.get(c)).map_or(1, |c| c.frames.max(1) as i32);
-                seed.as_deref_mut().map(|r| std::mem::swap(r, &mut p.walker.seed));
                 p.walker.step(len);
-                seed.as_deref_mut().map(|r| std::mem::swap(r, &mut p.walker.seed));
             }
         }
         thunder

@@ -237,8 +237,10 @@ pub struct Objects {
     /// Tekken Tag's libc rand() (0x40FBD0) is `seed`, one stream for the tasks, the sounds and the blinks; at a frame
     /// with a new press on a pad the main loop seeds it again (0x35C370): `reseed` (0x439C7C) plus `vblanks` (0x8BD2F4,
     /// an interrupt's count, one a frame). `loops`: the main loop's frame (gp-0x74D8).
-    /// The CPUs (their input after the sounds, 0x36C4C0), the camera's director (0x36DDD0) and the arena's weather and
-    /// people (the app steps them on it) draw from it too.
+    /// The CPUs (their input after the sounds, 0x36C4C0) and the camera's director (0x36DDD0) draw from it too.
+    /// shortcut: the arenas' effects (kumite_game's weather and people; PCSX2: 0x3A0CE8's 3 draws every 32 frames,
+    /// 0x3D8848's, 0x3D47E8's 80 a frame on some) keep their own streams, as the app steps them outside the bout that
+    /// online rollback and replays restore; move them into Game to run them in the task runner on this one
     pub vblanks: u32,
     pub reseed: u32,
     pub loops: u32,
