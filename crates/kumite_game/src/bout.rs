@@ -915,6 +915,10 @@ impl Bout {
         if decided {
             // the match's call as its result shows (0x8003E060 from the display's 0x8003D814), not after the pose
             self.events.push(self.match_winner().map_or(Announcement::Draw, Announcement::Wins));
+        } else if self.game.rounds.is_none() && !self.skipped {
+            // Tekken 3: after every round too, for the round's winner (fighter +0x46), unless START skipped the replay
+            // (0x8003D7EC: 0x80095480 set by START at 0x8002AFD8)
+            self.events.push(winner.map_or(Announcement::Draw, Announcement::Wins));
         }
         if !decided && self.skipped {
             // START skipped the replay with rounds to go: no win pose

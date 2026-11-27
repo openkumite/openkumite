@@ -2052,14 +2052,7 @@ impl App {
         if let Some(screen) = &mut self.screen {
             // the continue countdown is spoken: "continue?", the seconds, then the end
             if let (Screen::Continue { countdown, .. }, Some(sound), Some(audio)) = (&*screen, self.sound.as_ref(), self.audio.as_mut()) {
-                use kumite_game::sound::Call;
-                let step = menu::CONTINUE_STEP;
-                let call = match *countdown {
-                    menu::CONTINUE_FRAMES => Some(Call::ContinueStart),
-                    c if c % step == 0 && c > 0 && c < menu::CONTINUE_FRAMES - step => Some(Call::Count(c / step)),
-                    1 => Some(Call::ContinueZero),
-                    _ => None,
-                };
+                let call = menu::continue_call(*countdown);
                 if let Some(s) = call.and_then(|c| sound.call(c)) {
                     audio.sfx(&s.file, s.volume, s.speed);
                 }
@@ -3579,8 +3572,9 @@ impl App {
         let data = self.boss_change.clone().context("no scenes.json")?;
         let f = self.fight.as_ref().context("no fight")?;
         let human = (0..2).find(|&i| f.bout.cpu[i].is_none()).unwrap_or(0);
-        // the second-to-last stage's opponents always wear costume 0 here (the arcade ladder's)
-        let body = data.body_model(f.characters[human], 0).context("no body model")?;
+        // in the second-to-last stage's boss's costume: 1 when the player's isn't 0 (PS1, t3sim47: Heihachi's suit)
+        let costume = f.setup.as_ref().and_then(|s| s.players.get(human)).map_or(0, |p| usize::from(p.1 != 0));
+        let body = data.body_model(f.characters[human], costume).context("no body model")?;
         let mut models = [0; 2];
         models[human] = body;
         models[1 - human] = f.bout.game.bodies[1 - human].model_record;
@@ -5296,14 +5290,7 @@ impl App {
             }));
             // TAG ARCADE's continue count is spoken: "continue?", the seconds, then the end
             if let Some(c) = t.cont {
-                use kumite_game::sound::Call;
-                let step = menu::CONTINUE_STEP;
-                let call = match c {
-                    menu::CONTINUE_FRAMES => Some(Call::ContinueStart),
-                    c if c % step == 0 && c > 0 && c < menu::CONTINUE_FRAMES - step => Some(Call::Count(c / step)),
-                    1 => Some(Call::ContinueZero),
-                    _ => None,
-                };
+                let call = menu::continue_call(c);
                 sounds.extend(call.and_then(|c| sound.call(c)));
             }
             if let Some(audio) = self.audio.as_mut() {
@@ -6509,6 +6496,9 @@ impl App {
                             let mut info = f.info.clone();
                             info.under = std::array::from_fn(|i| if info.humans[i] { hud::Under::Push } else { hud::Under::None });
                             hud.draw_with(ctx, art, &f.bout, &info, wide_hud, &|_, _| {});
+                        } else if let Some(f) = fight.filter(|_| matches!(screen, Screen::Continue { .. } | Screen::GameOver { .. })) {
+                            // Tekken 3's CONTINUE? and GAME OVER keep the HUD and its YOU LOSE (PS1, t3sim47)
+                            hud.draw_with(ctx, art, &f.bout, &f.info, wide_hud, &|_, _| {});
                         }
                         screen.draw(ctx, art, roster);
                     } else if let Some(cs) = fight.and_then(|f| f.cutscene.as_ref()) {

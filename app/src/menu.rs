@@ -956,11 +956,18 @@ pub fn arcade_ladder(roster: &Roster, player: usize, seed: &mut u32) -> Vec<usiz
     ladder
 }
 
+/// An arcade opponent's costume (0x800B1FCC): 1 when the player's isn't 0, but 0 for the last stage's Ogre (PS1,
+/// t3sim47: Xiaoyu's second costume met Heihachi in his suit).
+pub fn arcade_costume(roster: &Roster, player_costume: usize, opp: usize, last: bool) -> usize {
+    usize::from(player_costume != 0 && !last && roster.characters.get(opp).is_some_and(|c| c.costumes.len() > 1))
+}
+
 /// Arcade stage `level` for a player pick.
 pub fn arcade_setup(roster: &Roster, player: (usize, usize), difficulty: usize, ladder: &[usize], level: usize) -> FightSetup {
     let opp_id = ladder.get(level).or(ladder.last()).copied().unwrap_or(0);
     let opp = roster.index_of(opp_id).unwrap_or(0);
-    FightSetup { mode: Mode::Arcade, players: [player, (opp, 0)], stage: roster.home_stage(opp_id, 0), difficulty, level, handicap: [100; 2], ball: None, partners: None }
+    let costume = arcade_costume(roster, player.1, opp, level + 1 >= ladder.len());
+    FightSetup { mode: Mode::Arcade, players: [player, (opp, costume)], stage: roster.home_stage(opp_id, 0), difficulty, level, handicap: [100; 2], ball: None, partners: None }
 }
 
 // ---------------------------------------------------------------- screens
@@ -982,6 +989,18 @@ const SELECT_OUTRO: u32 = 50;
 pub const CONTINUE_FRAMES: u32 = 808;
 pub const CONTINUE_STEP: u32 = 90;
 const GAME_OVER_FRAMES: u32 = 120;
+
+/// The continue count's voice at `countdown` (0x80050100): "continue?" as it shows, then each number 8 .. 1 as it
+/// shows (PS1, t3sim47: 88 frames after "continue?", every 90), then the end.
+pub fn continue_call(countdown: u32) -> Option<kumite_game::sound::Call> {
+    use kumite_game::sound::Call;
+    match countdown {
+        CONTINUE_FRAMES => Some(Call::ContinueStart),
+        c if c % CONTINUE_STEP == 0 && c > 0 && c < CONTINUE_FRAMES => Some(Call::Count(c / CONTINUE_STEP)),
+        1 => Some(Call::ContinueZero),
+        _ => None,
+    }
+}
 
 /// Back from OpenKumite's GRAPHICS (`cursor` 1) or KEY CONFIGURATION (2) to OPTIONS: Tekken Tag's on its ADJUST
 /// DISPLAY or CONTROLLER SETUP entry.
@@ -2815,6 +2834,17 @@ fn draw_versus(painter: &egui::Painter, v: &View, art: &Art, roster: &Roster, se
 
 #[cfg(test)]
 mod tests {
+    /// The PS1 speaks every number from 8 down (t3sim47's arcade CONTINUE?: 8 at +88, 1 at +718, the end at +807).
+    #[test]
+    fn the_continue_count_speaks_8_to_1() {
+        use kumite_game::sound::Call;
+        let calls: Vec<(u32, Call)> = (1..=CONTINUE_FRAMES).rev().filter_map(|c| continue_call(c).map(|k| (CONTINUE_FRAMES - c, k))).collect();
+        let mut want = vec![(0, Call::ContinueStart)];
+        want.extend((1..=8).rev().map(|n| (CONTINUE_FRAMES - n * CONTINUE_STEP, Call::Count(n))));
+        want.push((CONTINUE_FRAMES - 1, Call::ContinueZero));
+        assert_eq!(calls, want);
+    }
+
     use super::*;
 
     fn roster() -> Option<Roster> {
@@ -2872,6 +2902,18 @@ mod tests {
         assert_eq!(r.costume_of.get(&71), Some(&0), "character 0's first model is his costume 0");
         // (replays and records: Kuma's costume 1 by its selection's name)
         assert_eq!([159, 163, 71].map(|m| r.model_name(m)), ["Kuma", "Panda", "Paul"]);
+    }
+
+    /// Arcade opponents wear costume 1 when the player's isn't 0, Ogre (the last stage) 0 (0x800B1FCC; PS1 t3sim47:
+    /// Xiaoyu's second costume met Heihachi in his suit, model 179).
+    #[test]
+    fn arcade_opponents_dress_by_the_players_costume() {
+        let Some(r) = roster() else { return };
+        let ladder = [1, 13, 14];
+        let costumes = |c| [0, 1, 2].map(|level| arcade_setup(&r, (0, c), 1, &ladder, level).players[1].1);
+        assert_eq!((costumes(0), costumes(1)), ([0, 0, 0], [1, 1, 0]));
+        let heihachi = arcade_setup(&r, (0, 1), 1, &ladder, 1).players[1];
+        assert_eq!(r.characters[heihachi.0].costumes[heihachi.1], 179);
     }
 
     #[test]
