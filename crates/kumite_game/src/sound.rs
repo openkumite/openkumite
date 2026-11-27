@@ -18,6 +18,26 @@ pub struct Sound {
     pub file: PathBuf,
     pub volume: f32,
     pub speed: f32,
+    /// Tekken 3: the SPU voice it plays on (SePlay 0x800753BC: code bits 13-10, voices 6 on player 2's one up), keyed
+    /// off before; with no file it only keys it off (0x800755A4, 0x8004B770).
+    pub voice: Option<u8>,
+    /// A looping sample's loop point (seconds, audio/index.json `loop`): it plays on until its voice is keyed off.
+    pub loop_at: Option<f64>,
+}
+
+impl Sound {
+    /// Voice `v` keyed off.
+    fn off(v: u8) -> Self {
+        Sound { file: PathBuf::new(), volume: 0.0, speed: 1.0, voice: Some(v), loop_at: None }
+    }
+
+    /// On player `p`'s voices (SePlay adds player 2's 1 to voices 6 on).
+    fn of_player(mut self, p: usize) -> Self {
+        if let Some(v) = self.voice.as_mut().filter(|v| **v >= 6) {
+            *v += u8::from(p > 0);
+        }
+        self
+    }
 }
 
 struct Sample {
@@ -27,6 +47,7 @@ struct Sample {
     tone: Option<u32>,
     file: PathBuf,
     seconds: f64,
+    loop_at: Option<f64>,
 }
 
 /// A music track as its game's sound driver plays it: the file, whether it loops, where it starts and where a loop
@@ -302,7 +323,7 @@ impl SoundData {
                     let v = |k: usize| t[k].as_u64().unwrap_or(0) as u32;
                     let tone = t.get(3).and_then(|x| x.as_u64()).map(|x| x as u32);
                     let seconds = s["seconds"].as_f64().unwrap_or(0.0);
-                    banks.entry(key.clone()).or_default().push(Sample { program: v(0), keys: (v(1), v(2)), tone, file: sfx_dir.join(file), seconds });
+                    banks.entry(key.clone()).or_default().push(Sample { program: v(0), keys: (v(1), v(2)), tone, file: sfx_dir.join(file), seconds, loop_at: s["loop"].as_f64() });
                 }
             }
         }
@@ -355,6 +376,10 @@ impl SoundData {
     /// character's own bank (`own` = "m071" etc.); the program's tone of that index (SsUtKeyOnV), or in a bank without
     /// the indices (the extra fighters' ones) the tone whose key range holds tone + 60.
     pub fn file(&self, code: u16, own: &str) -> Option<&Path> {
+        self.sample(code, own).map(|s| s.file.as_path())
+    }
+
+    fn sample(&self, code: u16, own: &str) -> Option<&Sample> {
         let bank = match code >> 14 {
             1 => "sys",
             2 => "ann",
@@ -364,10 +389,10 @@ impl SoundData {
         let (program, tone) = (((code >> 4) & 3) as u32, (code & 0xF) as u32);
         let samples = self.banks.get(bank)?;
         if let Some(s) = samples.iter().find(|s| s.program == program && s.tone == Some(tone)) {
-            return Some(s.file.as_path());
+            return Some(s);
         }
         let note = tone + 60;
-        samples.iter().find(|s| s.program == program && s.tone.is_none() && s.keys.0 <= note && note <= s.keys.1).map(|s| s.file.as_path())
+        samples.iter().find(|s| s.program == program && s.tone.is_none() && s.keys.0 <= note && note <= s.keys.1)
     }
 
     /// The SePlay volume (bits 9-6) through the game's table 0x800278FC (out of 127; full without it).
@@ -413,11 +438,15 @@ impl SoundData {
         if (2..=5).contains(&kind) {
             return self.voice(character, own, kind - 2, index);
         }
+        // (type 0 keys its table sound's voice off, 0x800755A4: a looping one stops)
+        if kind == 0 {
+            return self.codes.get(index).filter(|&&c| c & 0xC000 != 0).map(|&c| Sound::off(((c >> 10) & 0xF) as u8));
+        }
         self.table_for(index, own, character)
     }
 
     fn sound(&self, code: u16, own: &str) -> Option<Sound> {
-        self.file(code, own).map(|f| Sound { file: f.to_path_buf(), volume: self.volume(code), speed: 1.0 })
+        self.sample(code, own).map(|s| Sound { file: s.file.clone(), volume: self.volume(code), speed: 1.0, voice: Some(((code >> 10) & 0xF) as u8), loop_at: s.loop_at })
     }
 
     fn index(&self, path: &[&str]) -> Option<u16> {
@@ -628,7 +657,10 @@ impl SoundData {
         let pick = |list: &[u16], r: u32| list.get(((r & 0xFF) as usize * list.len()) >> 8).copied();
         // the opponents' scripts a type-9 entry 1 stops (applied after the loop)
         let mut stop_script = Vec::new();
+        // (where each actor's sounds start in `out`: they play on its voices)
+        let mut owners = Vec::new();
         for &i in voiced.iter().filter(|&&i| i < n) {
+            owners.push((out.len(), i));
             let fighter = fighters[i];
             let row = characters[i];
             let second = self.system_start.get(row).copied().flatten().is_some();
@@ -648,6 +680,10 @@ impl SoundData {
             let entries: Vec<&kumite_sim::data::SoundEntry> = mv.sounds.iter().flatten().take(3).collect();
             let alive = !(fighter.health <= 0 && !hits.is_empty());
             let mut voiced_now = false;
+            // a clean hit (+0xD0) or a throw's first frame on it keys voice 0 off (0x8004B720)
+            if hits.iter().any(|h| h.victim == i && !h.blocked) || (fighter.chain < 0 && started) {
+                out.push(Sound::off(0));
+            }
             // the K.O. (+0xDE): a category-2 voice (0x80040F0C)
             if !second && hits.iter().any(|h| h.victim == i && h.health <= 0) {
                 let k = self.voices.get(row).map_or(0, |v| v.0[2]);
@@ -810,6 +846,12 @@ impl SoundData {
                 }
             }
         }
+        let ends: Vec<usize> = owners.iter().skip(1).map(|o| o.0).chain([out.len()]).collect();
+        for (&(from, i), &to) in owners.iter().zip(&ends) {
+            for s in &mut out[from..to] {
+                *s = s.clone().of_player(i);
+            }
+        }
         for o in stop_script {
             if let Some(s) = state.script.get_mut(o) {
                 *s = None;
@@ -831,16 +873,16 @@ impl SoundData {
             let (row_a, row_v) = (characters.get(a).copied().unwrap_or(0), characters.get(v).copied().unwrap_or(0));
             let impacts: Vec<u16> = mv.sounds.iter().flatten().take(3).filter(|e| e.kind == 1 || e.kind == 7).map(|e| ((e.kind << 12) | e.index) as u16).collect();
             let system = self.system_start.get(row_a).copied().flatten();
-            let play = |out: &mut Vec<Sound>, index: usize, bank: &str, row: usize| {
+            let play = |out: &mut Vec<Sound>, index: usize, owner: usize, row: usize| {
                 if let Some(code) = self.codes.get(index).copied().filter(|&c| c != 0) {
-                    out.extend(self.sound_of(code, bank, row));
+                    out.extend(self.sound_of(code, banks[owner], row).map(|s| s.of_player(owner)));
                 }
             };
             if h.health <= 0 && !h.blocked {
                 if let Some(start) = system {
-                    play(&mut out, start + self.system_ko[usize::from(limb >= 0xB)], banks[a], row_a);
+                    play(&mut out, start + self.system_ko[usize::from(limb >= 0xB)], a, row_a);
                 } else {
-                    play(&mut out, index(self.impacts.ko[usize::from(limb >= 0xB)]), banks[a], row_a);
+                    play(&mut out, index(self.impacts.ko[usize::from(limb >= 0xB)]), a, row_a);
                 }
                 continue;
             }
@@ -848,36 +890,36 @@ impl SoundData {
             for &code in &impacts {
                 if h.blocked && wooden {
                     // a wooden character's block (on him)
-                    play(&mut out, index(self.impacts.wooden_block[usize::from(limb >= 0xC)]), banks[v], row_v);
+                    play(&mut out, index(self.impacts.wooden_block[usize::from(limb >= 0xC)]), v, row_v);
                 } else if h.blocked {
                     if let Some(start) = system {
-                        play(&mut out, start + self.system_blocked, banks[a], row_a);
+                        play(&mut out, start + self.system_blocked, a, row_a);
                     } else {
-                        play(&mut out, index(self.impacts.blocked[usize::from(limb >= 0xC)]), banks[a], row_a);
+                        play(&mut out, index(self.impacts.blocked[usize::from(limb >= 0xC)]), a, row_a);
                     }
                 } else if let Some((arm, leg)) = self.struck.get(row_v).and_then(|x| *x) {
-                    out.extend(self.sound_of(if limb < 0xB { arm } else { leg }, banks[v], row_v));
+                    out.extend(self.sound_of(if limb < 0xB { arm } else { leg }, banks[v], row_v).map(|s| s.of_player(v)));
                 } else if system.is_none() && Some(row_v) == self.metal_row {
                     let (vd, metal) = (attack_damage(fv.current_move(data)), &self.impacts.metal);
-                    play(&mut out, index(if damage < 7 || vd < 0x10 { metal.light } else { metal.ring[usize::from(frame & 3 == 0)] }), banks[v], row_v);
+                    play(&mut out, index(if damage < 7 || vd < 0x10 { metal.light } else { metal.ring[usize::from(frame & 3 == 0)] }), v, row_v);
                 } else if wooden {
                     // a clean hit on a wooden character: one of the wood sounds (0x80041C40)
                     let wood = &self.impacts.wood.entries;
                     let k = ((rand(&mut state.seed) & 0xFF) as usize * wood.len()) >> 8;
                     if let Some(&w) = wood.get(k) {
-                        play(&mut out, index(w), banks[v], row_v);
+                        play(&mut out, index(w), v, row_v);
                     }
                 } else if system.is_some() || !self.impacts.auto.contains(&code) {
-                    play(&mut out, index(code), banks[a], row_a);
+                    play(&mut out, index(code), a, row_a);
                 } else if limb >= 0xC {
-                    play(&mut out, index(self.impacts.legs[tier(damage)]), banks[a], row_a);
+                    play(&mut out, index(self.impacts.legs[tier(damage)]), a, row_a);
                 } else {
                     let (r, arms) = (rand(&mut state.seed), &self.impacts.arms);
                     let entry = match tier(damage) {
                         0 => arms.light[usize::from((r >> 6) & 2 != 0)],
                         t => arms.tiers[t - 1],
                     };
-                    play(&mut out, index(entry), banks[a], row_a);
+                    play(&mut out, index(entry), a, row_a);
                 }
             }
         }
@@ -1040,7 +1082,13 @@ impl Tag {
         let (pitch, volume) = g.samples.get(n).map_or((0x1000, VOLUME_FULL), |s| (s.pitch, s.volume));
         // (measured in PCSX2: a volume 25 effect plays at 0.8 of the select's music; the music here plays at the file's
         // level, so volume / 51 keeps that balance)
-        Some(Sound { file: self.sfx.join(format!("{bank:03}/{n:03}.wav")), volume: volume as f32 / VOLUME_FULL as f32, speed: pitch as f32 * 48000.0 / 4096.0 / rate as f32 })
+        Some(Sound {
+            file: self.sfx.join(format!("{bank:03}/{n:03}.wav")),
+            volume: volume as f32 / VOLUME_FULL as f32,
+            speed: pitch as f32 * 48000.0 / 4096.0 / rate as f32,
+            voice: None,
+            loop_at: None,
+        })
     }
 
     /// Voice `index` of category `cat` (entry types 2-5) of voice row `row` (0x375AA8).

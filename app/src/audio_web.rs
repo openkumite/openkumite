@@ -182,6 +182,17 @@ impl Audio {
         quiet(s.play());
     }
 
+    /// A fight's sound, once. shortcut: no SPU voices in the browser (a looping sound plays once, nothing is keyed
+    /// off); upgrade with a Web Audio graph.
+    pub fn sound(&mut self, s: &kumite_game::sound::Sound) {
+        if !s.file.as_os_str().is_empty() {
+            self.sfx(&s.file, s.volume, s.speed);
+        }
+    }
+
+    /// Voices keyed off: none kept in the browser (`sound`).
+    pub fn voices_off(&mut self, _pause: bool) {}
+
     pub fn toggle_mute(&mut self) -> bool {
         self.muted = !self.muted;
         self.set_level(self.level());

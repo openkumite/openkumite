@@ -286,9 +286,9 @@ fn their_root_is_as_high_as_in_tekken_3() {
     }
 }
 
-/// What the sound tables make a step play: the files under audio/sfx.
+/// What the sound tables make a step play: the files under audio/sfx (no voice keyed off).
 fn heard(a: &Assets, s: &SoundData, b: &Bout, st: &mut SoundState) -> Vec<String> {
-    s.step(b, st, ["", ""], [0, 0]).iter().map(|x| x.file.strip_prefix(a.root.join("audio/sfx")).unwrap().to_string_lossy().into_owned()).collect()
+    s.step(b, st, ["", ""], [0, 0]).iter().filter(|x| !x.file.as_os_str().is_empty()).map(|x| x.file.strip_prefix(a.root.join("audio/sfx")).unwrap().to_string_lossy().into_owned()).collect()
 }
 
 /// Their sounds (sound.json, its voice groups added): Gon's hit on Paul and Paul's on Gon play the impacts (bank 1);

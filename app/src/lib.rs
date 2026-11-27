@@ -1677,6 +1677,16 @@ impl App {
                 scene.sky_picture = st
                     .sky_picture
                     .filter(|p| st.textures.get(p.image).is_some_and(|t| t.width.max(t.height) <= r.max_texture()))
+                    // (a sky held at max_y has its top never shown in the arcade: above it here the top row's colour)
+                    .map(|mut p| {
+                        if let (Some(_), Some(t)) = (p.max_y, st.textures.get(p.image)) {
+                            let row = t.rgba.as_chunks::<4>().0.iter().take(t.width as usize);
+                            let n = row.len().max(1) as u32;
+                            let sum = row.fold([0u32; 3], |a, x| [a[0] + u32::from(x[0]), a[1] + u32::from(x[1]), a[2] + u32::from(x[2])]);
+                            p.top = Some(sum.map(|c| (c / n) as u8));
+                        }
+                        p
+                    })
                     .and_then(|p| Some((p, tex.get(p.image)?.clone(), st.textures.get(p.image).map(|t| [t.width as f32, t.height as f32])?, r.texture(1, 1, &[255; 4]))));
                 scene.background = st.background;
                 (scene.camera_drum, scene.floor_patch, scene.floor_light, scene.floor_levels, scene.fog) = (st.camera_drum, st.floor_patch, st.floor_light, st.floor_levels, st.fog);
@@ -2070,6 +2080,7 @@ impl App {
         }
         // a fight's pause or practice menu: the music quieter (one call a step: the fade goes on after it)
         let ducked = self.game_paused() && self.bowl.is_none();
+        let fighting = self.fight.is_some() || self.tag.is_some();
         // Tekken Bowl's game over with nobody among TOP 5 BOWLERS: the music out over 240 frames (0x3F1764)
         let faded = self.bowl.as_ref().is_some_and(|b| b.top.as_ref().is_some_and(|(_, placed)| placed.iter().all(Option::is_none)));
         // Tekken 3's match call fades the music out over 180 frames (0x8003E060 -> 0x8006B6C8), YOU LOSE's only where
@@ -2080,6 +2091,10 @@ impl App {
             b.game.rounds.is_none() && b.decided() && matches!(b.phase, Phase::Result { winner } | Phase::MatchOver { winner } if !winner.is_some_and(you_lose))
         });
         if let Some(audio) = self.audio.as_mut() {
+            // Tekken 3's voices keyed off in a pause and out of a fight (0x8004B688)
+            if ducked || !fighting {
+                audio.voices_off(fighting);
+            }
             let pause = audio.pause_level;
             if faded || called {
                 audio.pause_level = (0.0, if faded { 240 } else { 180 });
@@ -2609,6 +2624,8 @@ impl App {
             self.rumble.fight(g, &g.data, &[(&g.fighters[0], 0, 1), (&g.fighters[1], 1, 0)]);
         }
         if let Some(sound) = &self.sound {
+            // a new round and the K.O. replay key the voices off (0x8004B688)
+            let reset = fight.bout.game.recorded_total < fight.heard.logged || matches!(fight.bout.replay_frame(), Some((0, true)));
             let mut sounds = fight.step_sounds();
             // WINS after the winner's own call, once the name has played (0x8006F1D4's task)
             match fight.wins.take() {
@@ -2645,8 +2662,11 @@ impl App {
             }));
             fight.wins = wins.or(fight.wins.take());
             if let Some(audio) = self.audio.as_mut() {
+                if reset {
+                    audio.voices_off(false);
+                }
                 for s in sounds {
-                    audio.sfx(&s.file, s.volume, s.speed);
+                    audio.sound(&s);
                 }
             }
         }
@@ -5419,7 +5439,7 @@ impl App {
             }
             if let Some(audio) = self.audio.as_mut() {
                 for s in sounds {
-                    audio.sfx(&s.file, s.volume, s.speed);
+                    audio.sound(&s);
                 }
             }
         }
@@ -7524,7 +7544,7 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
     // an extra stage (0x80084560): the panorama drum around the camera, drawn first; the floor only on
     // the 10 x 10 tile patch around the midpoint snapped to whole tiles (0x80082E60 / 0x8008364C)
     if scene.camera_drum {
-        cam.sky = glam::Mat4::from_translation(cam.eye);
+        cam.sky = drum_place(cam);
         (cam.sky_y_scale, cam.sky_first, cam.sky_cull) = (1.0, true, false);
     }
     // an arena with walls: the camera stays over the free floor. From the fighters' midpoint towards the eye,
@@ -7571,6 +7591,29 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
         let snap = |v: f32, p: f32| (v / p).round() * p;
         cam.floor = glam::Mat4::from_translation(glam::Vec3::new(snap(mid.x, px), 0.0, snap(mid.z, pz)));
     }
+}
+
+/// An extra stage's drum around the camera, drawn in screen space as the original does (0x80084560): turned by the
+/// yaw alone, its rows straight, moved down the screen by 597 tan(pitch) (s5) as the camera looks up (Gun Jack's
+/// flight, #353), not turned with the pitch.
+fn drum_place(cam: &Camera) -> glam::Mat4 {
+    let f = cam.target - cam.eye;
+    let flat = glam::Vec3::new(f.x, 0.0, f.z);
+    if flat.length() < 1e-3 {
+        return glam::Mat4::from_translation(cam.eye);
+    }
+    // (view space: y moved by tan(pitch) a unit of depth)
+    let shift = glam::Mat4::from_cols(glam::Vec4::X, glam::Vec4::Y, glam::Vec4::new(0.0, f.y / flat.length(), 1.0, 0.0), glam::Vec4::W);
+    let level = glam::camera::rh::view::look_at_mat4(glam::Vec3::ZERO, flat, glam::Vec3::Y);
+    cam.view().inverse() * glam::Mat4::from_rotation_z(cam.roll) * shift * level
+}
+
+/// An arcade sky picture's top row on the 480-row screen for a camera pitch (4096 a turn, down positive):
+/// `SkyPicture`'s, not held at `max_y` (the arcade's cameras never look up so far, the PS1's win poses do, Gun Jack's
+/// flight, #353: the picture follows the pitch, its top row's colour above it, `stage_scene_with`).
+fn sky_row(p: &kumite_assets::SkyPicture, pitch: f32) -> f32 {
+    let y = -pitch * p.pitchmul / 256.0 + p.ybase;
+    p.min_y.map_or(y, |m| y.max(m))
 }
 
 /// Round state 9 on the PS1: the fight's last picture holds, still, while what follows loads (vsyncs from the result's
@@ -7712,9 +7755,7 @@ fn sky_backdrop(cam: &Camera, scene: &Scene) -> Vec<(Arc<kumite_render::Texture>
     // arcade game's, where its sky jumps as the yaw wraps) is turned once a turn instead: no jump, 2 % slower at most
     let turn = 512.0 * 360.0 / p.fov;
     let scroll = yaw / 4096.0 * if (turn - w).abs() < 64.0 { *w } else { turn };
-    let mut y = -pitch * p.pitchmul / 256.0 + p.ybase;
-    y = p.max_y.map_or(y, |m| y.min(m));
-    y = p.min_y.map_or(y, |m| y.max(m));
+    let y = sky_row(p, pitch);
     // (x to either side of the picture: a window up to four times as wide)
     const SIDE: f32 = 4.0;
     let quad = |rows: [f32; 2], u: [f32; 2], v: [f32; 2], colour: [f32; 3]| -> Vec<StaticVertex> {
@@ -7731,13 +7772,14 @@ fn sky_backdrop(cam: &Camera, scene: &Scene) -> Vec<(Arc<kumite_render::Texture>
     let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
     let plain = |c: [u8; 3]| c.map(|x| lin(x as f32 / 255.0));
     let mut out = Vec::new();
+    let column = |x: f32| (scroll + (x + 1.0) * 256.0) / w;
     if let (Some(c), true) = (p.top, y > 0.0) {
         out.push((white.clone(), quad([0.0, y], [0.5; 2], [0.5; 2], plain(c))));
     }
-    let column = |x: f32| (scroll + (x + 1.0) * 256.0) / w;
     out.push((picture.clone(), quad([y, y + h], [column(-SIDE), column(SIDE)], [0.0, 1.0], [1.0; 3])));
-    if let (Some(c), true) = (p.bottom, y + h < 360.0) {
-        out.push((white.clone(), quad([(y + h).max(0.0), 360.0], [0.5; 2], [0.5; 2], plain(c))));
+    // (to the screen's foot: the floor below row 360 is off the screen when the camera looks up)
+    if let (Some(c), true) = (p.bottom, y + h < 480.0) {
+        out.push((white.clone(), quad([(y + h).max(0.0), 480.0], [0.5; 2], [0.5; 2], plain(c))));
     }
     out
 }
@@ -9688,6 +9730,29 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// #353, Gun Jack's flight looking up: an extra stage's drum is moved down the screen by tan(pitch) as the
+    /// original's screen-space rows (not turned with the camera, which bends and tilts them); an arcade sky goes down
+    /// past its `max_y`.
+    #[test]
+    fn the_backdrops_follow_a_camera_looking_up() {
+        use super::{drum_place, sky_row, Camera};
+        let eye = glam::Vec3::new(1.0, 2.0, 3.0);
+        let (mut up, mut level) = (Camera::new(eye, eye + glam::Vec3::new(0.5, 1.0, -1.0), 0.8), Camera::new(eye, eye + glam::Vec3::new(0.5, 0.0, -1.0), 0.8));
+        (up.roll, level.roll) = (0.1, 0.1);
+        // the drum's points (vertex at angle a looks along (-sin a, y, -cos a)) about the view's yaw, -0.46
+        let screen = |c: &Camera, a: f32, y: f32| (c.projection(4.0 / 3.0) * c.view() * drum_place(c)).project_point3(glam::Vec3::new(-a.sin(), y, -a.cos())).truncate();
+        // (tan(pitch) 1 / sqrt(1.25) down the view, turned by the roll, then projected)
+        let proj = up.projection(4.0 / 3.0);
+        let down = glam::Mat2::from_angle(0.1) * glam::Vec2::new(0.0, -1.0 / 1.25f32.sqrt()) * glam::Vec2::new(proj.x_axis.x, proj.y_axis.y);
+        for (a, y) in [(-0.46, 0.0), (-0.1, 0.3), (-0.8, 0.6), (-0.46, -0.2)] {
+            let (p, q) = (screen(&up, a, y), screen(&level, a, y) + down);
+            assert!(p.distance(q) < 1e-4, "{a} {y}: {p} {q}");
+        }
+        let p = kumite_assets::SkyPicture { image: 0, fov: 48.0, ybase: -32.0, pitchmul: 288.0, top: None, bottom: None, max_y: Some(0.0), min_y: Some(-64.0) };
+        assert_eq!(sky_row(&p, -400.0), 418.0);
+        assert_eq!(sky_row(&p, 400.0), -64.0);
+    }
+
     /// Round state 9's hold: the arcade's last stage won (the ending), any Team Battle match over (the next member or
     /// the results; #347: the win pose's last picture, not the next screen at once); none in VS or mid-ladder.
     #[test]

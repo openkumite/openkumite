@@ -317,7 +317,8 @@ fn decode(path: &Path) -> Result<Vec<f32>> {
 }
 
 /// The sounds noted (by game step) mixed to `steps` steps of 48 kHz stereo: the music at `music_volume` and its
-/// level (from its start, looped from its loop point as asked, quieter while ducked), each sound once at its volume.
+/// level (from its start, looped from its loop point as asked, quieter while ducked), each sound once at its volume
+/// (one on a voice to its voice's next sound or key off, a looping one looped till then).
 /// Limited softly, never clipped.
 pub fn mix(events: &[(u64, Event)], steps: u64, music_volume: f32) -> Vec<f32> {
     let len = (steps as usize * RATE / FPS as usize) * 2;
@@ -353,21 +354,22 @@ pub fn mix(events: &[(u64, Event)], steps: u64, music_volume: f32) -> Vec<f32> {
             out[i] += s * music_volume * t.gain * level;
         }
     }
-    for (step, e) in events {
-        let Event::Sfx(path, volume, speed) = e else { continue };
+    for (n, (step, e)) in events.iter().enumerate() {
+        let Event::Sfx(path, volume, speed, voice, loop_at) = e else { continue };
         let Some(s) = clip(path) else { continue };
         let at = sample_of(*step);
-        if *speed == 1.0 {
-            for (o, x) in out.iter_mut().skip(at).zip(&s) {
-                *o += x * volume;
-            }
-            continue;
-        }
-        // (at another speed: linear between the two nearest)
+        let cut = voice.and_then(|v| events[n + 1..].iter().find(|(_, e)| matches!(e, Event::Sfx(_, _, _, Some(w), _) | Event::Off(w) if *w == v)));
+        let end = cut.map_or(len, |c| sample_of(c.0)).min(len);
         let frames = s.len() / 2;
-        for k in 0..(frames as f32 / speed.max(0.01)) as usize {
-            let pos = k as f32 * speed;
-            let (i, t) = (pos as usize, pos.fract());
+        let back = loop_at.map(|t| (t.max(0.0) * RATE as f64) as usize).filter(|&b| b < frames);
+        // (at its speed: linear between the two nearest)
+        for k in 0..end.saturating_sub(at) / 2 {
+            let mut pos = k as f64 * f64::from(*speed);
+            if pos >= frames as f64 {
+                let Some(b) = back else { break };
+                pos = b as f64 + (pos - b as f64) % (frames - b) as f64;
+            }
+            let (i, t) = (pos as usize, pos.fract() as f32);
             for c in 0..2 {
                 let x = s.get(i * 2 + c).copied().unwrap_or(0.0) * (1.0 - t) + s.get((i + 1) * 2 + c).copied().unwrap_or(0.0) * t;
                 if let Some(o) = out.get_mut(at + k * 2 + c) {
@@ -420,7 +422,7 @@ mod tests {
     #[test]
     fn the_mix_places_each_sound_at_its_step() {
         // (no files: an unreadable sound is left out, the rest is silence of the right length)
-        let events = vec![(0, Event::Sfx("/nonexistent.wav".into(), 1.0, 1.0))];
+        let events = vec![(0, Event::Sfx("/nonexistent.wav".into(), 1.0, 1.0, None, None))];
         let out = mix(&events, 120, 0.5);
         assert_eq!(out.len(), 2 * RATE * 2);
         assert!(out.iter().all(|s| *s == 0.0));
