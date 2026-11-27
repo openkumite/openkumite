@@ -239,6 +239,25 @@ fn gons_throw_takes_pauls_own_victim_move_as_on_the_ps1() {
     assert_eq!(at(&t, 938, 1200, 0).4, 16352);
 }
 
+/// Throws done with a direction held connect (engine #324, 0x80030E78), on the PS1's rows (t3sim47's t47paulf / t47xiaoyuf,
+/// Jin standing): Paul's f+1+3 takes 30 on row 939, Xiaoyu's f+2+4 on row 920, every row of hers exact.
+#[test]
+fn throws_with_a_direction_held_connect_as_on_the_ps1() {
+    let Some(a) = assets() else { return };
+    let t = rows(&a, [71, 143], None, 1, "n*303,f*60,f+1+3*2,n*178", "n*544", 480);
+    // (shortcut: both stand 5 units short of the PS1's from Paul's run into Jin, rows 850-853, before the throw; the
+    // throw itself (its commit on row 863, the gap, heights, the damage) is the PS1's)
+    for (row, x, hp) in [(867, [698, 1585], 0x8C0000), (899, [587, 1335], 0x8C0000), (931, [1535, 619], 0x8C0000), (939, [1567, 373], 0x6E0000)] {
+        let r = [0, 1].map(|i| at(&t, 487, row, i).0);
+        assert_eq!((r[1] - r[0], r[0] - x[0], at(&t, 487, row, 1).5), (x[1] - x[0], -5, hp), "Paul, PS1 row {row}");
+    }
+    assert!(at(&t, 487, 863, 0).6.ends_with("@0"), "Paul's throw commits on the PS1's row");
+    let t = rows(&a, [127, 143], None, 1, "n*154,f*60,f+2+4*2,n*176", "n*393", 330);
+    for (row, x, hp) in [(880, [1262, 1812], 0x8C0000), (904, [676, 660], 0x8C0000), (916, [1578, 1454], 0x8C0000), (920, [1574, 1557], 0x6E0000)] {
+        assert_eq!(([0, 1].map(|i| at(&t, 630, row, i).0), at(&t, 630, row, 1).5), (x, hp), "Xiaoyu, PS1 row {row}");
+    }
+}
+
 /// Lei (P1) taps up near the end of the later rounds' start move (240 frames from frame 1, 0x8002D3DC; it kept the
 /// last 150): its END window is open from frame 60, so the stance's sidestep is taken there without a new press
 /// (0x8002DB74), and the sidesteps go round Julia as on the PS1's rows (it waited for the move's end).
