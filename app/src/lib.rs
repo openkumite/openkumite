@@ -762,6 +762,8 @@ struct App {
     suspended: bool,
     /// The Game data screen asked for (its button on the title and the main menu; a browser's is the page's).
     game_data: bool,
+    /// What the Game data screen says when it opens (a fight that did not load).
+    data_message: Option<String>,
     /// Free-camera drag: last cursor position while the left button is held.
     drag: Option<(f64, f64)>,
     cursor: (f64, f64),
@@ -5536,8 +5538,8 @@ impl App {
         self.renderer = Some(r);
     }
 
-    /// A match did not load: said; back to the title, or online out of the room (the others would wait for this
-    /// computer's session for good).
+    /// A match did not load: said; back to the title and the Game data screen, where the game can be converted again,
+    /// or online out of the room (the others would wait for this computer's session for good).
     fn load_failed(&mut self, what: &str, e: &anyhow::Error) {
         log::error!("loading {what}: {e:#}");
         self.debug.say(format!("loading failed: {e:#}"));
@@ -5545,6 +5547,8 @@ impl App {
             self.leave_online("THE MATCH DID NOT LOAD");
         } else {
             self.screen = Some(Screen::title());
+            self.data_message = Some(format!("The fight did not load ({e:#}): its game data is incomplete. Choose the game and CONVERT AGAIN."));
+            self.game_data = true;
         }
     }
 
@@ -9544,6 +9548,7 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         audio: None,
         suspended: false,
         game_data: false,
+        data_message: None,
         assets,
         models,
         tag_models,

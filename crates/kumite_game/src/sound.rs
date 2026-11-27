@@ -946,7 +946,7 @@ struct Tag {
     swing: TagSwing,
     kind3: Vec<u16>,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct TagSwing {
     bodies: Vec<i64>,
     early: Vec<u16>,
@@ -1049,6 +1049,13 @@ impl Tag {
             .iter()
             .filter_map(|b| Some((b["bank"].as_u64()? as u32, b["samples"].as_array()?.iter().map(|s| s["rate"].as_u64().unwrap_or(0) as u32).collect())))
             .collect();
+        // (what a later conversion brought: an older one's swings and kind-3 steps are silent, as before them)
+        let newer = |what: &str| {
+            sound.pointer(what).cloned().unwrap_or_else(|| {
+                log::warn!("sound.json: no {what} (an older conversion; CONVERT AGAIN): silent");
+                serde_json::Value::Null
+            })
+        };
         Ok(Self {
             groups: serde_json::from_value(get("/groups/entries")?)?,
             rates,
@@ -1059,8 +1066,8 @@ impl Tag {
             moves: serde_json::from_value(get("/move_sounds")?)?,
             arenas: serde_json::from_value(get("/arena_sounds")?)?,
             scripts: serde_json::from_value(get("/scripts/entries")?)?,
-            swing: serde_json::from_value(get("/swing")?)?,
-            kind3: serde_json::from_value(get("/script_kind_3/entries")?)?,
+            swing: serde_json::from_value::<Option<_>>(newer("/swing"))?.unwrap_or_default(),
+            kind3: serde_json::from_value::<Option<_>>(newer("/script_kind_3/entries"))?.unwrap_or_default(),
         })
     }
 

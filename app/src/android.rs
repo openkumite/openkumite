@@ -172,6 +172,9 @@ impl Root {
                 let suspended = app.suspended;
                 let mut d = Data::new(&self.files, app.window.take(), app.renderer.take());
                 d.suspended = suspended;
+                if let Some(m) = app.data_message.take() {
+                    d.set_message(m);
+                }
                 self.now = Now::Data(Box::new(d));
             }
             Now::Data(d) if d.play && !d.suspended => {
