@@ -34,3 +34,21 @@ fn embu_actors_stand_on_the_floor() {
         assert!(mean < 0.15, "model {m}'s feet are {mean:.2} m above the floor on average");
     }
 }
+
+/// Every model of every cast variant casts its record's shadow, as on the PS1 (the attract embu: each actor's shadow
+/// on the floor).
+#[test]
+fn every_embu_model_casts_a_shadow() {
+    let root = std::env::var_os("OPENKUMITE_ASSETS").map_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"), std::path::PathBuf::from);
+    let Ok(assets) = kumite_assets::Assets::new(&root) else { return };
+    let Ok(data) = kumite_game::embu::EmbuData::load(&assets) else { return };
+    let shadows: kumite_assets::Shadows = assets.gamedata("shadows.json").unwrap();
+    let data = Arc::new(data);
+    for v in 0..data.variants.len() {
+        let s = kumite_game::embu::EmbuScene::new(&assets, data.clone(), v).unwrap();
+        for (&m, ch) in &s.characters {
+            let shadow = shadows.of(kumite_game::embu::record(m)).and_then(|mesh| ch.shadow(mesh));
+            assert!(shadow.is_some(), "variant {v}: model {m} casts no shadow");
+        }
+    }
+}
