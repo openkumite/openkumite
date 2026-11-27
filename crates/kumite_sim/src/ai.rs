@@ -1354,9 +1354,9 @@ impl Ai {
     }
 
     /// Back to where Tekken Tag's round setup (0x380568) leaves a CPU that has not thought yet, with its attack and
-    /// movement cooldowns (S+0x94, S+0x5C): for a case run from an emulator's state.
-    pub fn resume(&mut self, cd: i32, movement: i32) {
-        (self.cd, self.mvcd40, self.ticks, self.fprev, self.phase) = (cd, movement, self.slot, -1, 0);
+    /// movement cooldowns (S+0x94, S+0x5C) and zone jitter phase (S+0x2C): for a case run from an emulator's state.
+    pub fn resume(&mut self, cd: i32, movement: i32, phase: u32) {
+        (self.cd, self.mvcd40, self.ticks, self.fprev, self.phase) = (cd, movement, self.slot, -1, phase);
     }
 
     /// The round setup (0x80059654 -> 0x800593C8) if one is pending. The game sets up both CPUs (slot order)
@@ -1894,13 +1894,12 @@ impl Ai {
             self.reset_mv();
             self.npool = 0;
             self.move_prev = m.id;
+            // (Tekken Tag's 0x3835A0 builds without the END link's next move too)
+            self.build(cx, true, false);
             if cx.data.ttt {
-                // (0x3835A0: with the END link's next move's entries)
-                self.build(cx, false, false);
                 self.stun_tiers(cx);
                 return;
             }
-            self.build(cx, true, false);
             if !self.cand.is_empty() && cx.chance(self.p.stun_recovery_prob) && self.mark(|c| c.e.trans == 0x1C || c.e.trans == 0x1D) > 0 {
                 self.pick(cx);
                 return;
@@ -3386,7 +3385,8 @@ impl Ai {
     /// 0x80056764: the candidates (entries usable now) of my list; without `end_links` also the entries of the
     /// END link's next move usable on its first frame, then the exclusions and the filter.
     /// Tekken Tag's (0x382AD8; 0x3835A0 without `fresh`) test the per-alias rule after the requirement and leave out
-    /// the moves of rec4 bit 0x800000; `fresh`: 7 times in 8 (rand() & 7) the neutral offence's last pick once too.
+    /// the moves of rec4 bit 0x800000; `fresh`: 7 times in 8 (rand() & 7) the neutral offence's last pick once too;
+    /// without it the tag button's entries unless a tag is wanted (S+0x3E0).
     fn build(&mut self, cx: &mut Cx, end_links: bool, fresh: bool) {
         self.cand.clear();
         let cur = cx.me.current;
@@ -3396,6 +3396,10 @@ impl Ai {
         let take = |s: &mut Self, cx: &Cx, e: &Ent, drop_last: &mut bool| -> Option<Rec> {
             let mv = cx.rec(e.dest)?;
             if ttt && mv.rec4 & 0x80_0000 != 0 {
+                return None;
+            }
+            // (0x383820: the stun and wake-up builder leaves out the tag button's entries unless a tag is wanted)
+            if ttt && !fresh && e.cmd & 0x8000 == 0 && e.cmd & crate::input::TAG_COMMAND != 0 && !s.tag_wanted {
                 return None;
             }
             if *drop_last && s.last_pick.is_some() && mv.id == s.last_pick {
@@ -3419,7 +3423,15 @@ impl Ai {
             return;
         }
         let top = cx.top(cur);
-        if let Some(t) = top.last().filter(|t| t.cmd == 0xC000 && cx.in_window(t)) {
+        // (Tekken Tag's 0x38302C tests the window and follows the destination of its loop pointer at the END: the
+        // entry before it, or the one after the last CALL's sub-list)
+        let link = match top.len().checked_sub(2).map(|i| top[i]) {
+            _ if !ttt => top.last().copied().filter(|t| t.cmd == 0xC000),
+            Some(t) if t.cmd == 0xC00C => cx.shared(t.dest + t.extra),
+            Some(t) => Some(t),
+            None => top.first().copied(),
+        };
+        if let Some(t) = link.filter(|t| cx.in_window(t)) {
             if let Some(nx) = cx.me.resolve(t.dest).and_then(|c| Rec::of(cx.gd, cx.me, c)) {
                 if nx.id != cx.m.id && nx.l0_cmd != 0xC000 {
                     let next = cx.top(nx.id.unwrap_or(cur));
@@ -3441,14 +3453,26 @@ impl Ai {
                         if top.cmd == 0xC00C {
                             for k in top.dest..top.dest + top.extra {
                                 let Some(e) = cx.shared(k) else { continue };
-                                if e.ws < 2 && frame <= e.we && cx.req_ok(&e) && rule(self, cx, &e) && self.link_cond(cx, &e, &e) && !push(self, cx, e, &mut drop_last) {
+                                if e.ws < 2
+                                    && frame <= e.we
+                                    && cx.req_ok(&e)
+                                    && rule(self, cx, &e)
+                                    && (if ttt { self.cond_ok(cx, &e) } else { self.link_cond(cx, &e, &e) })
+                                    && !push(self, cx, e, &mut drop_last)
+                                {
                                     break 'all;
                                 }
                             }
                             if let Some(r) = cx.shared(top.dest + top.extra) {
                                 stale = r;
                             }
-                        } else if top.ws < 2 && frame <= top.we && cx.req_ok(top) && rule(self, cx, top) && self.link_cond(cx, top, &stale) && !push(self, cx, *top, &mut drop_last) {
+                        } else if top.ws < 2
+                            && frame <= top.we
+                            && cx.req_ok(top)
+                            && rule(self, cx, top)
+                            && (if ttt { self.cond_ok(cx, top) } else { self.link_cond(cx, top, &stale) })
+                            && !push(self, cx, *top, &mut drop_last)
+                        {
                             break 'all;
                         }
                     }

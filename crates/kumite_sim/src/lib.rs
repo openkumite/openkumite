@@ -1359,8 +1359,13 @@ impl Fighter {
         let (a0, a1, len) = (mv.active[0], mv.active[1], mv.frames.max(1));
         let attack = a0 != 0 && mv.attack.is_some();
         let (j0, j1) = (mv.bytes_18.jump_start, mv.bytes_18.jump_end);
-        let frame = self.frame;
+        let (frame, posture) = (self.frame, mv.posture.raw);
         let window = std::mem::replace(&mut self.jump_window, j0 != 0 && (j0..=j1).contains(&frame));
+        // a move struck in the air reaching its jump window's last frame lands (+0x137, 0x3708A8): the landing's dust.
+        // shortcut: its +0xD6 == -1 and +0x11D != 2 tests are not read; no case failed them yet
+        if frame == j1 && frame != 1 && self.struck_in_move && !self.air.as_ref().is_some_and(|a| a.kind == 4) && ((posture >> 11) & 0x1F == 9 || posture & 4 != 0) {
+            self.effects.push(MoveEffect::LandingImpact);
+        }
         let airborne = self.juggle != 0 || self.air.is_some() || window;
         let deg = |d: f32| d.to_radians();
         let clamp = |x: f32, l: f32| x.clamp(-l, l);
