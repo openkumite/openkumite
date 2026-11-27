@@ -403,6 +403,15 @@ impl Art {
         painter.image(id, screen.rect(x, y, w as f32, h as f32), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
     }
 
+    /// The texels `src` (x, y, w, h) of a 4-bit index map with the CLUT at VRAM `clut`, into the screen rectangle `dst`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn indexed_part(&self, painter: &egui::Painter, screen: &Screen, sources: &[&str], index: &str, clut: [u32; 2], src: [f32; 4], dst: [f32; 4], tint: Color32) {
+        let Some((id, [w, h])) = self.recolour(index, clut, 4, sources) else { return };
+        let (w, h) = (w as f32, h as f32);
+        let uv = Rect::from_min_max(Pos2::new(src[0] / w, src[1] / h), Pos2::new((src[0] + src[2]) / w, (src[1] + src[3]) / h));
+        painter.image(id, screen.rect(dst[0], dst[1], dst[2], dst[3]), uv, tint);
+    }
+
     /// Rows `row0 .. row0 + rows` of a 4-bit index map at screen (x, y) (a sheet of several names).
     #[allow(clippy::too_many_arguments)]
     pub fn indexed_rows(&self, painter: &egui::Painter, screen: &Screen, sources: &[&str], index: &str, clut: [u32; 2], x: f32, y: f32, row0: usize, rows: usize) {

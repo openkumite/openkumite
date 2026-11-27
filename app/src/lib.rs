@@ -48,6 +48,7 @@ mod audio;
 mod audio;
 mod ballview;
 mod blobshadow;
+mod commands;
 mod controls;
 #[cfg(not(target_os = "android"))]
 mod datascreen;
@@ -503,6 +504,10 @@ struct Fight {
     reset: Option<bool>,
     /// Tekken Tag's COMMAND LIST is open (the pause's): each side's.
     commands: Option<[ttt::CommandList; 2]>,
+    /// Tekken 3's command list: open (the pause's COMMAND or Practice's COMMAND LIST), each side's place in it (kept
+    /// through the fight, 0x800A3618).
+    command_list: bool,
+    scrolls: [commands::Scroll; 2],
     /// Practice mode: its menu, dummy and attack data.
     practice: Option<practice::Practice>,
     /// Tekken Tag's practice: its menu and dummy.
@@ -1250,6 +1255,8 @@ impl App {
             rules: false,
             reset: None,
             commands: None,
+            command_list: false,
+            scrolls: Default::default(),
             practice,
             ttt_practice: (mode == Some(Mode::Practice)).then(|| self.roster.ttt.as_deref().map(ttt::Practice::new)).flatten(),
             heard: Heard::default(),
@@ -2091,6 +2098,22 @@ impl App {
         } else {
             [false; 2]
         };
+        // Tekken 3's command list: each human's held direction repeats, the lists ease (0x80078550)
+        if self.fight.as_ref().is_some_and(|f| f.command_list || f.practice.as_ref().is_some_and(|p| p.commands)) {
+            let p = self.pads();
+            let dir = |p: Pad| [(p.down, Key::Down), (p.up, Key::Up), (p.right, Key::Right), (p.left, Key::Left)].into_iter().find_map(|(on, k)| on.then_some(k));
+            let d = &self.roster.screens["hud"]["commands"];
+            let repeat = [0, 1].map(|k| self.roster.screens["records"]["entry"]["repeat"][k].as_u64().unwrap_or(1) as u32);
+            if let Some(f) = self.fight.as_mut() {
+                for k in 0..2 {
+                    // (Practice: the player's list only)
+                    let human = if f.practice.is_some() { k == 0 } else { f.bout.cpu[k].is_none() };
+                    if f.scrolls[k].step(d, f.bout.game.bodies[k].model_record, dir(p[k]).filter(|_| human), repeat) {
+                        menu::sfx::play(menu::sfx::cursor());
+                    }
+                }
+            }
+        }
         // Team Battle's select: each side's held direction for the pad's auto-repeat
         if matches!(self.screen, Some(Screen::Grid(_))) {
             let p = self.pads();
@@ -4877,6 +4900,8 @@ impl App {
             rules: false,
             reset: None,
             commands: None,
+            command_list: false,
+            scrolls: Default::default(),
             practice: None,
             ttt_practice: None,
             heard: Heard::default(),
@@ -5770,6 +5795,11 @@ impl App {
                 }
                 return true;
             }
+            // its COMMAND LIST: the player's pad scrolls it
+            if p.commands && player == 0 && fight.scrolls[0].key(&self.roster.screens["hud"]["commands"], fight.bout.game.bodies[0].model_record, key) {
+                menu::sfx::play(menu::sfx::cursor());
+                return true;
+            }
             match p.key(key) {
                 practice::Action::None => {}
                 practice::Action::Closed => {
@@ -5815,10 +5845,10 @@ impl App {
             }
             return true;
         }
-        // the game's pause menu: CANCEL, RESET (the soft reset: the main menu), in Ball RULES; COMMAND (the move list)
-        // is not done
+        // the game's pause menu: CANCEL, COMMAND (the command list), RESET (the soft reset: the main menu), in Ball RULES
         let ball = fight.bout.game.ball.is_some();
-        let options = PAUSE_ITEMS.len() + usize::from(ball);
+        let shown = pause_items(&self.roster.screens);
+        let options = shown.len() + usize::from(ball);
         // the rules card: START or a face button closes it, back to the list on CANCEL (record 8 0x800B3BC0)
         if fight.rules {
             if matches!(key, Key::Start | Key::Button(_)) {
@@ -5853,6 +5883,21 @@ impl App {
             }
             return true;
         }
+        // the command list (0x80078DF8): each human's pad its own list; the pauser's START or a button back to the
+        // menu, on CANCEL
+        if let (true, Some((c, pauser))) = (fight.command_list, fight.pause.as_mut()) {
+            if player == *pauser && matches!(key, Key::Start | Key::Button(_) | Key::Back) {
+                menu::sfx::play(menu::sfx::pick());
+                fight.command_list = false;
+                *c = 0;
+            } else if let Some(s) = fight.scrolls.get_mut(player).filter(|_| fight.bout.cpu.get(player).is_some_and(Option::is_none)) {
+                let record = fight.bout.game.bodies.get(player).map_or(0, |b| b.model_record);
+                if s.key(&self.roster.screens["hud"]["commands"], record, key) {
+                    menu::sfx::play(menu::sfx::cursor());
+                }
+            }
+            return true;
+        }
         // (online: no pause, the other side's fight goes on)
         let online = self.net.is_some();
         match (&mut fight.pause, key) {
@@ -5872,14 +5917,18 @@ impl App {
             }
             (Some((c, _)), Key::Start | Key::Button(_)) => {
                 menu::sfx::play(menu::sfx::pick());
-                let choice = *c;
-                if choice == 2 {
+                let choice = shown.get(*c).copied().unwrap_or(3);
+                if choice == 3 {
                     fight.rules = true;
+                    return true;
+                }
+                if choice == 1 {
+                    fight.command_list = true;
                     return true;
                 }
                 fight.pause = None;
                 // RESET: the soft reset, to the main menu (0x8005101C with 0x80098A41 = 3)
-                if choice == 1 {
+                if choice == 2 {
                     if let Some(a) = self.audio.as_mut() {
                         a.duck(false);
                     }
@@ -6635,7 +6684,7 @@ impl App {
                             draw_target_marks(ctx, &cam, size, &marks);
                         }
                         if let Some((c, player)) = t.pause {
-                            draw_pause(ctx, art, &hud.data.pause_items, c, player, frames, false);
+                            draw_pause(ctx, art, &hud.data.pause_items, &[0, 2], c, player, frames, false);
                         }
                         // TAG ARCADE lost: "CONTINUE? n", then GAME OVER, in the big font (as the arcade's)
                         let view = art::Screen::fit(ctx.content_rect());
@@ -6677,6 +6726,12 @@ impl App {
                             let window = ctx.content_rect();
                             let project = |m: glam::Vec3| project_point(&cam, size, window, &view, m);
                             p.draw(ctx, art, f.bout.phase == Phase::Intro, &project);
+                            // its COMMAND LIST: the player's
+                            if p.commands {
+                                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("commands"))).with_clip_rect(view.rect);
+                                commands::draw(&painter, &view, art, f.scrolls[0], 0, f.bout.game.bodies[0].model_record, f.characters[0]);
+                                commands::draw_footer(&painter, &view, art, 0);
+                            }
                         }
                         if let (Some(p), Some(d)) = (f.ttt_practice.as_ref(), roster.ttt.as_deref()) {
                             let view = art::Screen::fit(ctx.content_rect());
@@ -6707,11 +6762,19 @@ impl App {
                             } else {
                                 ttt::draw_pause(&painter, &view, art, d, &ttt::PAUSE_ITEMS, c, player, f.reset, frames as u32);
                             }
+                        } else if let (Some((_, player)), true) = (f.pause, f.command_list) {
+                            // the command list: each human's, "PUSH BUTTON TO EXIT" on the pauser's side
+                            let view = art::Screen::fit(ctx.content_rect());
+                            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("commands"))).with_clip_rect(view.rect);
+                            for k in (0..2).filter(|&k| f.bout.cpu[k].is_none()) {
+                                commands::draw(&painter, &view, art, f.scrolls[k], k, f.bout.game.bodies[k].model_record, f.characters[k]);
+                            }
+                            commands::draw_footer(&painter, &view, art, player);
                         } else if let Some((c, player)) = f.pause {
                             let ball = f.bout.game.ball.is_some();
                             // (no ball_items: the usual items)
                             let items = if ball && !hud.data.pause_ball_items.is_empty() { &hud.data.pause_ball_items } else { &hud.data.pause_items };
-                            draw_pause(ctx, art, items, c, player, frames, ball);
+                            draw_pause(ctx, art, items, pause_items(&roster.screens), c, player, frames, ball);
                         }
                         debug.ui(ctx, &f.bout.game, catalog, &adapter, size);
                     }
@@ -7491,9 +7554,15 @@ fn stage_view(cam: &mut Camera, scene: &Scene, pair: [glam::Vec3; 2], free_cam: 
     }
 }
 
-/// The pause items shown: screens.json hud.pause.items' CANCEL and RESET (COMMAND, the move list, is not done);
-/// Ball adds ball_items' RULES.
-const PAUSE_ITEMS: [usize; 2] = [0, 2];
+/// The pause items shown: screens.json hud.pause.items' CANCEL, COMMAND and RESET (COMMAND only with a pack that has
+/// the command lists, format 20); Ball adds ball_items' RULES.
+fn pause_items(screens: &serde_json::Value) -> &'static [usize] {
+    if screens["hud"]["commands"]["lists"].is_object() {
+        &[0, 1, 2]
+    } else {
+        &[0, 2]
+    }
+}
 
 /// The game's pause box (0x800780BC): a grey-edged navy box with the items in font 0 (the selected one red),
 /// and "nP PAUSE" blinking in font 1 on the side of the player who paused.
@@ -7511,11 +7580,11 @@ fn draw_rules(ctx: &egui::Context, art: &Art) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_pause(ctx: &egui::Context, art: &Art, items: &[String], cursor: usize, player: usize, frame: u64, ball: bool) {
+fn draw_pause(ctx: &egui::Context, art: &Art, items: &[String], shown: &[usize], cursor: usize, player: usize, frame: u64, ball: bool) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("pause")));
     let v = art::Screen::fit(ctx.content_rect());
     let painter = painter.with_clip_rect(v.rect);
-    let mut shown: Vec<&str> = PAUSE_ITEMS.iter().map(|&k| items.get(k).map_or("", String::as_str)).collect();
+    let mut shown: Vec<&str> = shown.iter().map(|&k| items.get(k).map_or("", String::as_str)).collect();
     if ball {
         shown.push(items.get(3).map_or("RULES", String::as_str));
     }
