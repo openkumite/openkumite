@@ -923,6 +923,11 @@ fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
     if me.current_move(sight.gd).posture.raw & if coop { 0x205 } else { 0x204 } != 0 || me.airborne_flag(sight.gd) {
         return None;
     }
+    // co-op: turned more than 90° away from my foe (or, with none, the way on), back turns round first (as the tag
+    // brawl's routine does): forward runs on along the body, which does not turn to one behind it
+    if coop && me.angles().turn > 0x4000 {
+        return Some(Pad { left: sight.facing_right, right: !sight.facing_right, ..Pad::default() });
+    }
     let p = me.root();
     let flat = |v: glam::Vec3| glam::Vec3::new(v.x, 0.0, v.z);
     let dist2 = |a: glam::Vec3, b: glam::Vec3| flat(a - b).length_squared();
