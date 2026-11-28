@@ -998,7 +998,7 @@ pub const ENDING_BLACK: u32 = 29;
 /// shortcut: one length for every next fighter and the results, as the PS1's CD load varies; measure on hardware to split.
 pub const LOAD_HOLD: u32 = 70;
 pub const CONTINUE_STEP: u32 = 90;
-const GAME_OVER_FRAMES: u32 = 120;
+pub const GAME_OVER_FRAMES: u32 = 120;
 
 /// The continue count's voice at `countdown` (0x80050100): "continue?" as it shows, then each number 8 .. 1 as it
 /// shows (PS1, t3sim47: 88 frames after "continue?", every 90), then the end.
@@ -1039,9 +1039,10 @@ pub enum Screen {
         ladder: Vec<usize>,
         countdown: u32,
     },
-    /// After the continue ran out.
+    /// After the continue ran out (a lost Force run's: then the ranking, `records`).
     GameOver {
         frames: u32,
+        records: bool,
     },
     /// VS MODE's grid select (screen B, mode 10).
     Grid(Box<crate::grid::GridSelect>),
@@ -1697,7 +1698,7 @@ impl Screen {
                     return Outcome::Fight(setup.clone(), ladder.clone());
                 }
                 Key::Button(_) => *countdown = countdown.saturating_sub(CONTINUE_STEP).max(1),
-                Key::Back => *self = Screen::GameOver { frames: 0 },
+                Key::Back => *self = Screen::GameOver { frames: 0, records: false },
                 _ => {}
             },
             Screen::GameOver { .. } | Screen::Versus { .. } => {}
@@ -1759,7 +1760,7 @@ impl Screen {
             Screen::Continue { countdown, .. } => {
                 *countdown = countdown.saturating_sub(1);
                 if *countdown == 0 {
-                    *self = Screen::GameOver { frames: 0 };
+                    *self = Screen::GameOver { frames: 0, records: false };
                 }
             }
             // the VS screen: 8 frames of slide, then it stays until 60 frames have passed (and the fight loads)
@@ -1769,9 +1770,10 @@ impl Screen {
                     return Outcome::Load(setup.clone(), ladder.clone());
                 }
             }
-            Screen::GameOver { frames } => {
+            Screen::GameOver { frames, records } => {
                 *frames += 1;
-                if *frames >= GAME_OVER_FRAMES {
+                // (Force's: the app opens the ranking)
+                if *frames >= GAME_OVER_FRAMES && !*records {
                     *self = Screen::title();
                 }
             }
@@ -3241,6 +3243,19 @@ mod tests {
             assert!(frames < 20 * 60 + 100);
         }
         assert!(frames >= 20 * 60);
+    }
+
+    /// GAME OVER goes to the title; a lost Force run's waits for the ranking (PS1: GAME OVER, the CHARACTERS
+    /// ranking, the title).
+    #[test]
+    fn force_game_over_waits_for_the_ranking() {
+        let Some(r) = roster() else { return };
+        let mut seed = 5;
+        for records in [false, true] {
+            let mut s = Screen::GameOver { frames: 0, records };
+            (0..GAME_OVER_FRAMES + 5).for_each(|_| _ = s.tick(&r, &mut seed));
+            assert_eq!(matches!(s, Screen::GameOver { .. }), records);
+        }
     }
 
     #[test]
