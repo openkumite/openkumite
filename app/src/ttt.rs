@@ -30,7 +30,7 @@ use std::sync::Arc;
 const W: f32 = 640.0;
 const H: f32 = 448.0;
 /// Main menu ids (= the game's mode numbers, FRONTEND.md 2).
-const ARCADE: u32 = 0;
+pub const ARCADE: u32 = 0;
 pub const VS: u32 = 1;
 const TEAM: u32 = 2;
 const TIME_ATTACK: u32 = 3;
@@ -589,8 +589,9 @@ impl Run {
     /// player's character and costume takes the next free costume (the boss; the ladder after CONTINUE's new picks).
     /// shortcut: a one-costume character keeps its costume, every Tekken Tag character has two or more.
     fn apart(&mut self, roster: &Roster) {
-        let mine = self.teams[0].clone();
-        for p in self.ladder.iter_mut().map(|f| &mut f.0).chain([&mut self.teams[1]]).flatten() {
+        let h = self.human().unwrap_or(0);
+        let mine = self.teams[h].clone();
+        for p in self.ladder.iter_mut().map(|f| &mut f.0).chain([&mut self.teams[1 - h]]).flatten() {
             let (i, want) = *p;
             let n = roster.characters.get(i).map_or(1, |c| c.costumes.len());
             p.1 = crate::menu::free_costume(n, want, |c| mine.contains(&(i, c))).unwrap_or(want);
@@ -608,9 +609,9 @@ impl Run {
             BALL => Mode::Ball,
             _ => Mode::Practice,
         };
-        let cpu = self.ladder.get(self.fight);
-        let side = |k: usize| match (k, cpu) {
-            (1, Some((t, _))) => t.first().copied().unwrap_or((0, 0)),
+        let cpu = self.ladder.get(self.fight).filter(|_| self.humans.contains(&false));
+        let side = |k: usize| match cpu {
+            Some((t, _)) if !self.humans[k] => t.first().copied().unwrap_or((0, 0)),
             _ => self.teams[k].get(self.member[k]).or(self.teams[k].first()).copied().unwrap_or((0, 0)),
         };
         // the CPU's profile (0x380120): the DIFFICULTY option and the fight's number (0..7); TIME ATTACK at NORMAL;
@@ -638,7 +639,7 @@ impl Run {
 
     /// The player's character ids.
     fn members(&self, roster: &Roster) -> Vec<usize> {
-        self.teams[0].iter().filter_map(|p| roster.characters.get(p.0)).map(|c| c.id).collect()
+        self.teams[self.human().unwrap_or(0)].iter().filter_map(|p| roster.characters.get(p.0)).map(|c| c.id).collect()
     }
 
     /// The arcade ladder's STAGE (1..8).
@@ -663,8 +664,25 @@ impl Run {
 
     /// The tag partners of this fight (None: one on one).
     pub fn bench(&self) -> Option<[(usize, usize); 2]> {
-        let cpu = self.ladder.get(self.fight).map(|c| &c.0).unwrap_or(&self.teams[1]);
-        tag(self.mode).then_some([*self.teams[0].get(1)?, *cpu.get(1)?])
+        let team = |k: usize| self.ladder.get(self.fight).filter(|_| !self.humans[k]).map_or(&self.teams[k], |c| &c.0);
+        tag(self.mode).then_some([*team(0).get(1)?, *team(1).get(1)?])
+    }
+
+    /// A NEW CHALLENGER (0x3B1200): both sides pick again on the select (as the PS2 shows), the challenger on side
+    /// `side`; the match on an arena of the pool, then the winner goes on with the run's fight.
+    pub fn challenger(mut self, d: &Data, side: usize, seed: &mut u32) -> Page {
+        self.stage = pick(&d.pool(&progress()), seed).unwrap_or(self.stage);
+        let mut s = Select::new(self.mode, d, None);
+        for (k, x) in s.sides.iter_mut().enumerate() {
+            x.player = (self.humans[k] || k == side).then_some(k);
+        }
+        s.cont = Some(Box::new(self));
+        Page::Select(Box::new(s))
+    }
+
+    /// The side its one player plays (a challenger's match: None).
+    fn human(&self) -> Option<usize> {
+        (self.humans[0] != self.humans[1]).then(|| usize::from(self.humans[1]))
     }
 
     /// The fight's rounds to win and round clock (frames; None: untimed), from OPTIONS: FIGHT COUNT, ROUND TIME; the
@@ -679,12 +697,22 @@ impl Run {
     #[allow(clippy::too_many_arguments)]
     pub fn after(mut self, d: &Data, roster: &Roster, progress: &mut Progress, winner: Option<usize>, health: [i32; 2], max: [i32; 2], tag: Option<Members>, frames: u32, seed: &mut u32) -> Next {
         self.frames = frames;
-        let won = winner == Some(0);
+        let h = self.human().unwrap_or(0);
+        let won = winner == Some(h);
         match self.mode {
+            // a challenger's match (0x359C40, two players): the loser drops out (its GAME OVER), the winner goes on
+            // with the run's fight
+            ARCADE if self.human().is_none() => {
+                if let Some(w) = winner {
+                    self.humans[1 - w] = false;
+                }
+                log::info!("arcade: a challenger's match won by {winner:?}");
+                Next::Fight(Box::new(self))
+            }
             ARCADE | TIME_ATTACK | ONE_ARCADE if won && self.fight + 1 >= self.ladder.len() => {
                 // (by the game's costume numbers)
                 let members: Vec<(usize, usize)> =
-                    (self.teams[0].iter()).filter_map(|p| roster.characters.get(p.0).map(|c| (c.id, c.costumes.get(p.1).and_then(|r| roster.costume_of.get(r)).copied().unwrap_or(0)))).collect();
+                    (self.teams[h].iter()).filter_map(|p| roster.characters.get(p.0).map(|c| (c.id, c.costumes.get(p.1).and_then(|r| roster.costume_of.get(r)).copied().unwrap_or(0)))).collect();
                 let ending = d.endings.as_ref().and_then(|e| e.pick(&members, progress.seen));
                 let up = progress.played(d, ending.map(|e| e.0));
                 let mut lines = vec!["CONGRATULATIONS!".to_string()];
@@ -1270,7 +1298,10 @@ impl Select {
             return None;
         }
         if let Some(mut run) = self.cont.take() {
-            run.teams[0] = self.sides[0].picks.clone();
+            // (the run's player again, or a challenger's match: who picked plays)
+            for k in (0..2).filter(|&k| self.sides[k].player.is_some()) {
+                (run.teams[k], run.humans[k]) = (self.sides[k].picks.clone(), true);
+            }
             run.apart(roster);
             return Some(*run);
         }
@@ -1584,7 +1615,12 @@ impl Front {
                 Key::Start => {
                     sfx::play(sound(&d, "start"));
                     if progress.setting(&d, CHANGE_ROW) == 1 {
-                        Some(Page::Select(Box::new(Select { cont: Some(run.clone()), ..Select::new(run.mode, &d, None) })))
+                        let mut s = Select { cont: Some(run.clone()), ..Select::new(run.mode, &d, None) };
+                        // (2P's run, won from a challenger: 2P picks)
+                        if run.humans == [false, true] {
+                            (s.sides[0].player, s.sides[1].player) = (None, Some(1));
+                        }
+                        Some(Page::Select(Box::new(s)))
                     } else {
                         return Outcome::TttFight(run.clone());
                     }
@@ -3679,6 +3715,11 @@ fn chrome(painter: &egui::Painter, v: &View, art: &Art, d: &Data, text: &str, x:
     at
 }
 
+/// A NEW CHALLENGER! (0x35B228: the chrome font at size 8 in colour 2, from x 25 on the foot 220).
+pub fn draw_challenger(painter: &egui::Painter, v: &View, art: &Art, d: &Data) {
+    chrome(painter, v, art, d, "A NEW CHALLENGER!", 25.0, 220.0, Some(2), 8.0);
+}
+
 /// A round text of `hud.banners` (its format with `n`).
 fn banner(painter: &egui::Painter, v: &View, art: &Art, d: &Data, key: &str, n: u32) {
     banner_at(painter, v, art, d, &d.raw["hud"]["banners"][key], n);
@@ -4949,7 +4990,7 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
             let ins = &d.raw["select"]["insert"];
             // (INSERT COIN's blinking and alternation, centred on x)
             let blink = |texts: [&str; 2], x: f32| {
-                if frame & int(&ins["show_mask"]) as u32 != 0 {
+                if frame & int(&ins["show_mask"]) as u32 != 0 && !info.quiet {
                     let text = texts[usize::from(frame & int(&ins["second_mask"]) as u32 != 0)];
                     text_at(text, x - num(&ins["measure"]) * text.chars().count() as f32 / 2.0, "insert_colour");
                 }
@@ -4984,7 +5025,10 @@ pub fn hud(painter: &egui::Painter, v: &View, art: &Art, d: &Data, bout: &Bout, 
         }
         return;
     }
-    // the round's texts
+    // the round's texts (none under A NEW CHALLENGER!)
+    if info.quiet {
+        return;
+    }
     let rounds = bout.game.rounds.as_ref();
     let later = usize::from(bout.round > 1);
     let f = bout.phase_frame;

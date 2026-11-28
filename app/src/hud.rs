@@ -43,6 +43,10 @@ pub struct HudInfo {
     pub partners: Option<[String; 2]>,
     /// Tekken Tag's front end: its HUD drawn from its pictures (else the plain one).
     pub ttt: Option<std::sync::Arc<crate::ttt::Data>>,
+    /// Arcade, a challenger's match: WINNER and LOSER over the sides once it is decided (0x8003E408).
+    pub winner_labels: bool,
+    /// A NEW CHALLENGER (0x800AFF63): no round texts, no PUSH START.
+    pub quiet: bool,
 }
 
 /// The timer: two 16x46 digits of the clock's seconds, the infinity sign (glyphs 10 and 11) when it is off (Ball).
@@ -681,6 +685,7 @@ impl Hud {
                 let (y, x) = (d.under_y, d.under_x[i]);
                 match under {
                     Under::None => {}
+                    Under::Push if info.quiet => {}
                     Under::Push => self.push(&painter, &v, art, d, i),
                     Under::GameOver(t, c, dx) => art.text(&painter, &v, 0, *c, x + dx, y, t, Color32::WHITE),
                     Under::Label(t, c) => art.text(&painter, &v, 0, *c, x, y, t, Color32::WHITE),
@@ -705,7 +710,7 @@ impl Hud {
             for (k, m) in ["'", "\""].iter().enumerate() {
                 art.text(&painter, &v, 0, d.time_colour, x + d.marks_dx[k], y + d.marks_dy, m, Color32::WHITE);
             }
-            if info.under[1] == Under::None {
+            if info.under[1] == Under::None && !info.quiet {
                 self.push(&painter, &v, art, d, 1);
             }
         }
@@ -722,6 +727,9 @@ impl Hud {
             if info.ttt.is_none() {
                 return;
             }
+        }
+        if info.quiet {
+            return;
         }
         let first = usize::from(bout.round != 1);
         match bout.phase {
@@ -761,6 +769,10 @@ impl Hud {
                     t.draw(&painter, &v, art);
                 } else if !info.no_result {
                     self.result(d, &painter, &v, art, winner, info);
+                    if let (Some(w), true) = (winner, info.winner_labels && bout.decided()) {
+                        art.text(&painter, &v, 1, 9, 47.0 + 196.0 * w as f32, 104.0, "WINNER", Color32::WHITE);
+                        art.text(&painter, &v, 1, 9, 54.0 + 195.0 * (1 - w) as f32, 104.0, "LOSER", Color32::WHITE);
+                    }
                 }
             }
             _ => {}
