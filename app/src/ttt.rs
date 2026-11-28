@@ -724,7 +724,7 @@ impl Run {
                 }
                 // (TIME ATTACK cleared: BGM 2 "RESULT", state 0x11 at 0x35B2BC)
                 let music = (self.mode == TIME_ATTACK).then_some(2);
-                let mut page = Page::Message { lines, frame: 0, title: true, music };
+                let mut page = Page::Message { lines, frame: 0, then: Box::new(Page::Title), music };
                 let record = Record { score: self.frames, members: self.members(roster), name: String::new() };
                 if self.mode == TIME_ATTACK && progress.rank(d, false, &record).is_some() {
                     page = Page::NameEntry { survival: false, record, letter: 0, then: Box::new(page) };
@@ -790,7 +790,7 @@ impl Run {
                     "YOU LOSE".into()
                 };
                 // (BGM 2 "RESULT": state 0x14 at 0x35B340)
-                Next::Screen(Page::Message { lines: vec!["TEAM BATTLE".into(), text], frame: 0, title: false, music: Some(2) })
+                Next::Screen(Page::Message { lines: vec!["TEAM BATTLE".into(), text], frame: 0, then: Box::new(Page::Menu { cursor: 0, scroll: 0, idle: 0 }), music: Some(2) })
             }
             // VS BATTLE, 1 ON 1 VS: the tally, both pick again
             _ => {
@@ -976,11 +976,11 @@ pub enum Page {
     GameOver {
         frame: u32,
     },
-    /// A run's end (or GAME OVER): its lines, then the title or the main menu; its BGM.
+    /// A run's end (or GAME OVER): its lines, then `then` (the title, the main menu, RECORDS); its BGM.
     Message {
         lines: Vec<String>,
         frame: u32,
-        title: bool,
+        then: Box<Page>,
         music: Option<usize>,
     },
     /// RECORDS (0x3B2978): the page (CHARACTER USAGE, GREATEST SURVIVORS, TIME ATTACK), the first row shown;
@@ -1631,8 +1631,8 @@ impl Front {
                 }
                 _ => None,
             },
-            Page::Message { title, .. } => match key {
-                Key::Start | Key::Button(_) => Some(if *title { Page::Title } else { Page::Menu { cursor: 0, scroll: 0, idle: 0 } }),
+            Page::Message { then, .. } => match key {
+                Key::Start | Key::Button(_) => Some(std::mem::replace(then.as_mut(), Page::Title)),
                 _ => None,
             },
             Page::GameOver { .. } => None,
@@ -1882,10 +1882,10 @@ impl Front {
                 self.page = Page::Title;
                 self.frame = 0;
             }
-            Page::Message { frame, title, .. } => {
+            Page::Message { frame, then, .. } => {
                 *frame += 1;
                 if *frame >= MESSAGE_FRAMES {
-                    self.page = if *title { Page::Title } else { Page::Menu { cursor: 0, scroll: 0, idle: 0 } };
+                    self.page = std::mem::replace(then.as_mut(), Page::Title);
                 }
             }
             // the attract (0x3BCC88): the logo's 300 frames out of white, then the opening movie (the first of Theater's);
@@ -6033,7 +6033,7 @@ mod tests {
         let mut p = Progress::default();
         assert!(matches!(run.clone().after(&d, &r, &mut p, Some(1), [0; 2], [1; 2], None, 0, &mut seed), Next::Screen(Page::Continue { .. })));
         assert!(matches!(run.clone().after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], None, 0, &mut seed), Next::Fight(f) if f.fight == 1));
-        assert!(matches!(last.after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], None, 0, &mut seed), Next::Ending(0, 0, Page::Message { title: true, .. })));
+        assert!(matches!(last.after(&d, &r, &mut p, Some(0), [0; 2], [1; 2], None, 0, &mut seed), Next::Ending(0, 0, Page::Message { then, .. }) if matches!(*then, Page::Title)));
         assert_eq!((p.stage, p.seen), (1, 1));
     }
 

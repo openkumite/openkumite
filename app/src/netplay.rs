@@ -431,7 +431,7 @@ pub fn apply<G: NetGame>(net: &mut NetPlay, game: &mut G, requests: Requests, st
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests: a failure stops them
     use super::*;
     use std::cell::{Cell, RefCell};
@@ -548,7 +548,7 @@ mod tests {
 
     /// Tekken Tag's game root with the Tekken 3 slice (its extras: Ball, Force) installed from both games' data, as
     /// `kumite_game`'s crossover tests do; needs OPENKUMITE_ASSETS too.
-    fn ttt_slice_assets() -> Option<kumite_assets::Assets> {
+    pub(crate) fn ttt_slice_assets() -> Option<kumite_assets::Assets> {
         let (Some(t3), Some(ttt)) = (std::env::var_os("OPENKUMITE_ASSETS"), std::env::var_os("OK_TTT_ASSETS")) else {
             eprintln!("skipped: OPENKUMITE_ASSETS or OK_TTT_ASSETS unset");
             return None;
