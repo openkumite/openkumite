@@ -932,8 +932,9 @@ fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
     let flat = |v: glam::Vec3| glam::Vec3::new(v.x, 0.0, v.z);
     let dist2 = |a: glam::Vec3, b: glam::Vec3| flat(a - b).length_squared();
     let pos = |i: usize| f.actor(i).map_or(p, Fighter::root);
-    // a chicken (+50) when 50 down: the lowest of the players hurt takes its nearest first
-    let hurt = |a: &Fighter| a.health <= a.max_health - 50 * ONE;
+    // a chicken (+50) when 50 down (co-op, with a few times the game's health: under half): the lowest of the players
+    // hurt takes its nearest first
+    let hurt = |a: &Fighter| a.health <= a.max_health - 50 * ONE && (!coop || a.health <= a.max_health / 2);
     if hurt(me) {
         let mut players: Vec<usize> = (0..f.actor_count()).filter(|&i| Fight::is_player(i) && standing(i).is_some_and(hurt)).collect();
         players.sort_by_key(|&i| (standing(i).map_or(0, |a| a.health), i));
@@ -950,10 +951,12 @@ fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
     }
     let near: Vec<usize> = (0..f.actor_count()).filter(|&i| !Fight::is_player(i) && standing(i).is_some() && dist2(pos(i), p) < 2500.0 * 2500.0).collect();
     // co-op: my foe (the co-op melee's pick, spread over the soldiers) standing out of reach, a partner's or one
-    // waiting as I do: in to it, as a player does (forward: along the line to it)
+    // waiting as I do: in to it, as a player does, dashing on into a run (forward: along the line to it; f, n, f
+    // held)
     let op = sight.op;
     if coop && !op.inactive && op.health > 0 && dist2(op.root(), p) > 1100.0 * 1100.0 {
-        return Some(Pad { right: sight.facing_right, left: !sight.facing_right, ..Pad::default() });
+        let tap = matches!(f.frame % 40, 0 | 1 | 5 | 6);
+        return Some(Pad { right: sight.facing_right && !tap, left: !sight.facing_right && !tap, ..Pad::default() });
     }
     if near.is_empty() || op.inactive {
         let ahead = |q: glam::Vec3| q.dot(f.screen_right);
@@ -1019,6 +1022,8 @@ pub struct Ai {
     mixt: i32,
     /// A Force player seat (its lean on the profile on top of the style's).
     force: bool,
+    /// ... in co-op (more of the lean).
+    coop: bool,
     /// Statistics: chain-throw continuations and reaction picks (4.M / 4.O), sidesteps started.
     pub followups: u32,
     pub sidesteps: u32,
@@ -1243,6 +1248,7 @@ impl Ai {
             playing: Style::Classic,
             mixt: 0,
             force: false,
+            coop: false,
             followups: 0,
             sidesteps: 0,
             strings: 0,
@@ -1420,6 +1426,7 @@ impl Ai {
             self.mix(rng);
         }
         self.force = s.force.is_some();
+        self.coop = s.force.as_ref().is_some_and(|f| f.fight.coop.is_some());
         self.load_profile(data, s.me, s.op, -1, -1);
         self.h_vs = data.handlers_of(s.op.moveset.moveset_id).0;
         self.h_self = data.handlers_of(s.me.moveset.moveset_id).1;
@@ -1551,6 +1558,16 @@ impl Ai {
             }
             p.pressure_on_stun_prob = 4096;
             self.natk_max += 4;
+        }
+        // ... in co-op, where its partners share the soldiers' attacks: guard most of them, strings too, and attack
+        // again sooner
+        if self.coop {
+            for g in [&mut p.guard_prob, &mut p.guard_prob_cap, &mut p.in_string_guard_prob, &mut p.in_string_guard_cap] {
+                at_least(g, 3072);
+            }
+            for c in [&mut p.attack_cooldown_0, &mut p.attack_cooldown_1, &mut p.attack_cooldown_2, &mut p.attack_cooldown_3] {
+                *c /= 2;
+            }
         }
     }
 
