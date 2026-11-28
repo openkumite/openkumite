@@ -359,6 +359,9 @@ pub struct ForceStage {
     pub events: Vec<ForceEvent>,
     /// The boss met at this stage (character, costume).
     pub boss: Option<(usize, usize)>,
+    /// Every boss character met at this stage (co-op's and an extra stage's too; the app keeps them from the run's
+    /// later stages).
+    pub met: Vec<usize>,
     /// The player's selection and character (boss routes).
     selection: usize,
     player_char: usize,
@@ -412,6 +415,7 @@ impl ForceStage {
             kills_total: kills,
             events: Vec::new(),
             boss: None,
+            met: Vec::new(),
             selection,
             player_char,
         }
@@ -1102,6 +1106,7 @@ impl ForceStage {
         game.fight.ko_rule = kumite_sim::KoRule::Both;
         self.boss_phase = true;
         self.boss = Some(boss);
+        self.met = vec![boss.0];
         self.clock0 = game.fight.clock;
         self.state = 6;
         self.events.push(ForceEvent::Boss(boss.0, boss.1));
@@ -1147,6 +1152,7 @@ impl ForceStage {
                 f.root_yaw = f.yaw;
             }
             self.slots[slot] = Slot { state: 5, class: 4, kind: slot % 2, ..Default::default() };
+            self.met.push(bosses[j].0);
         }
         if n > 1 {
             // (the stage logic ends the round: the first boss down alone must not)

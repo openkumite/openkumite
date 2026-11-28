@@ -38,6 +38,8 @@ pub struct ForceRun {
     pub clock: u32,
     /// The bosses met (character, costume) per stage before the final.
     pub bosses: Vec<Option<(usize, usize)>>,
+    /// Every boss character met in the stages cleared (co-op's too): the later stages' bosses are others.
+    pub met: Vec<usize>,
     /// The stage being played.
     pub stage: Option<ForceStage>,
     /// Frames since the boss went down (STAGE CLEAR!!).
@@ -74,6 +76,8 @@ pub struct ForceStart {
     pub more_players: [Option<(usize, usize, usize)>; 2],
     #[serde(default)]
     pub player_scores: [u32; 4],
+    #[serde(default)]
+    pub met: Vec<usize>,
 }
 
 impl ForceRun {
@@ -98,6 +102,7 @@ impl ForceRun {
             partner_costume: self.partner_costume,
             more_players: self.more_players,
             player_scores: self.player_scores,
+            met: self.met.clone(),
         }
     }
 
@@ -107,6 +112,7 @@ impl ForceRun {
         (run.player_costume, run.index, run.extra, run.pending_final, run.score, run.flags, run.kills, run.clock) =
             (s.player_costume, s.index, s.extra, s.pending_final, s.score, s.flags, s.kills, s.clock);
         (run.partner, run.partner_costume, run.more_players, run.player_scores) = (s.partner, s.partner_costume, s.more_players, s.player_scores);
+        run.met.clone_from(&s.met);
         run
     }
 
@@ -132,6 +138,7 @@ impl ForceRun {
             kills: 0,
             clock: kumite_game::force::CLOCK,
             bosses: vec![None; stages],
+            met: Vec::new(),
             stage: None,
             clear_frames: 0,
             bars: Default::default(),
@@ -170,6 +177,7 @@ impl ForceRun {
         (self.score, self.player_scores) = (st.score, st.player_scores);
         self.keys = st.keys;
         self.kills = st.kills_total;
+        self.met.extend(&st.met);
         if let (Some(b), None) = (st.boss, self.extra) {
             if let Some(slot) = self.bosses.get_mut(self.index) {
                 *slot = Some(b);

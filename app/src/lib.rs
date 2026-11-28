@@ -2239,8 +2239,13 @@ impl App {
                 if let Some(code) = sfx {
                     menu::sfx::play(code);
                 }
+                // then the records (result.ovl goes to the ranking, state 16, as the other results do; Tekken Tag's:
+                // its RECORDS, as after its GAME OVER)
                 if done {
-                    *screen = Screen::title();
+                    match self.roster.ttt {
+                        Some(_) => *screen = Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Records { page: 0, scroll: 0, attract: true }, frame: 0 })),
+                        None => self.open_records = Some(records::RESULTS_LOAD),
+                    }
                 }
             }
             // an arcade select: the CPU plays the sides nobody plays on it (a challenger's: neither)
@@ -4837,7 +4842,8 @@ impl App {
             audio.sfx(&s.file, s.volume, s.speed);
         }
         let lines = vec![sc.text("thanks", "THANKS FOR PLAYING MISHIMA LANE!")];
-        self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, title: false, music: None }, frame: 0 })));
+        self.screen =
+            Some(Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, then: Box::new(ttt::Page::Menu { cursor: 0, scroll: 0, idle: 0 }), music: None }, frame: 0 })));
     }
 
     /// The attract demo fight (battle type 6, 0x800D2E3C): P1 the next of the demo list (unlocked only), P2 picked
@@ -5386,7 +5392,7 @@ impl App {
             if let Some(run) = self.force.as_ref().filter(|r| r.extra.is_none()) {
                 let first = data.boss(run.selection, run.player_char, run.index.min(data.final_index()));
                 let model_of = |(c, k): (usize, usize)| self.roster.by_id(c).and_then(|r| r.costumes.get(k.min(r.costumes.len().saturating_sub(1))).copied());
-                records.extend(force_boss_picks(data, &ForceCtx::of(run), first, 4).into_iter().filter_map(model_of));
+                records.extend(std::iter::once(first).chain(force_boss_picks(&self.roster, data, &ForceCtx::of(run), first, 4)).filter_map(model_of));
             }
         }
         for &(c, costume) in setup.partners.iter().flat_map(|d| d.partners.iter()).filter(|p| p.0 < self.roster.characters.len()) {
@@ -7408,29 +7414,39 @@ struct ForceCtx {
     selection: usize,
     player_char: usize,
     player: (usize, usize),
+    met: Vec<usize>,
 }
 
 impl ForceCtx {
     fn of(run: &forcerun::ForceRun) -> Self {
-        Self { difficulty: run.difficulty, index: run.index, selection: run.selection, player_char: run.player_char, player: run.player }
+        Self { difficulty: run.difficulty, index: run.index, selection: run.selection, player_char: run.player_char, player: run.player, met: run.met.clone() }
     }
 }
 
-/// A Force stage's bosses for `players` (`first`, the stage's own; more players: a boss each, the next stages'
-/// bosses beside it, none twice); for fewer players, the first of those for more.
-fn force_boss_picks(data: &kumite_game::force::ForceData, ctx: &ForceCtx, first: (usize, usize), players: usize) -> Vec<(usize, usize)> {
-    let mut picks = vec![first];
-    let n = data.final_index().max(1);
-    let all = data.boss_characters();
-    let new = |c: usize, picks: &[(usize, usize)]| picks.iter().all(|&(p, _)| p != c);
-    for j in 1..players {
-        // the next stages' bosses in turn, the first one not in the fight yet; a route of one boss (the Tekken 2
-        // players') any of Force's bosses, from one by the stage on (never the same character twice)
-        let boss = |o: usize| data.boss(ctx.selection, ctx.player_char, (ctx.index + j + o) % n);
-        let other = || (0..all.len()).map(|o| all[(ctx.index * 3 + j + o) % all.len()]).find(|&c| new(c, &picks)).map(|c| (c, usize::from(c == ctx.player_char)));
-        let pick = (0..n).map(boss).find(|&(c, _)| new(c, &picks)).or_else(other).unwrap_or_else(|| {
-            let (c, k) = boss(0);
-            (c, if picks.contains(&(c, k)) { k + 1 } else { k })
+/// A Force stage's bosses for `players` (`first`, the stage's own by the PS1's table; more players: a boss each).
+/// No boss of an earlier stage of the run comes again (OpenKumite's own: co-op and Tekken Tag; Tekken 3 alone keeps the
+/// PS1's table, which has a few, e.g. Nina's Anna twice); the others are none of the later stages' own, from Force's
+/// bosses (Tekken Tag: its roster). For fewer players, the first of those for more.
+fn force_boss_picks(roster: &Roster, data: &kumite_game::force::ForceData, ctx: &ForceCtx, first: (usize, usize), players: usize) -> Vec<(usize, usize)> {
+    let n = data.final_index();
+    let pool: Vec<usize> = match roster.ttt {
+        Some(_) => roster.characters.iter().map(|c| c.id).filter(|&c| c != data.constants.last.character).collect(),
+        None => data.boss_characters(),
+    };
+    let later: Vec<usize> = (ctx.index + 1..n).map(|i| data.boss(ctx.selection, ctx.player_char, i).0).collect();
+    let fresh = roster.ttt.is_some() || players > 1;
+    let mut picks = Vec::new();
+    if !(fresh && ctx.met.contains(&first.0)) {
+        picks.push(first);
+    }
+    while picks.len() < players {
+        let new = |c: &usize| !ctx.met.contains(c) && picks.iter().all(|&(p, _)| p != *c);
+        let from = ctx.index * 3 + picks.len();
+        let order = || (0..pool.len()).map(|o| pool[(from + o) % pool.len()]);
+        let pick = order().find(|c| new(c) && !later.contains(c)).or_else(|| order().find(new)).map(|c| (c, usize::from(c == ctx.player_char))).unwrap_or_else(|| {
+            // (every one met: the stage's own again, in another costume)
+            let k = picks.iter().filter(|&&(c, _)| c == first.0).count();
+            (first.0, first.1 + k)
         });
         picks.push(pick);
     }
@@ -7483,12 +7499,12 @@ fn force_sim(
             match e {
                 ForceEvent::Swapped => bout.swap_cpus(),
                 ForceEvent::LoadBoss(ch, cos) => {
-                    // more players (OpenKumite's own): a boss each, the next stages' bosses beside this one's
-                    let picks = force_boss_picks(&st.data, ctx, (ch, cos), bout.game.players().len());
+                    // more players (OpenKumite's own): a boss each, none met at an earlier stage
+                    let picks = force_boss_picks(roster, &st.data, ctx, (ch, cos), bout.game.players().len());
                     let actors: Vec<kumite_game::Actor> = picks.iter().filter_map(|&(c, k)| cached_actor(assets, cache, model_of(c, k)?)).collect();
                     if actors.len() == picks.len() {
                         if actors.len() == 1 {
-                            st.set_boss(&mut bout.game, &actors[0], (ch, cos));
+                            st.set_boss(&mut bout.game, &actors[0], picks[0]);
                         } else {
                             st.set_bosses(&mut bout.game, &actors, &picks);
                             bout.extra_cpu = Some(kumite_sim::ai::Ai::new(d, l, 1));
@@ -7506,7 +7522,10 @@ fn force_sim(
                 // load of each is a read inside the rollback step; extra stages come from players' own data
                 ForceEvent::LoadBosses { pool, n } => {
                     let n = n.max(bout.game.players().len());
-                    let mut pool: Vec<usize> = pool.iter().copied().filter(|&c| roster.by_id(c).is_some()).collect();
+                    let pool: Vec<usize> = pool.iter().copied().filter(|&c| roster.by_id(c).is_some()).collect();
+                    // (none met at an earlier stage, while the pool has enough others)
+                    let fresh: Vec<usize> = pool.iter().copied().filter(|c| !ctx.met.contains(c)).collect();
+                    let mut pool = if fresh.len() >= n { fresh } else { pool };
                     let mut picks = Vec::new();
                     while picks.len() < n && !pool.is_empty() {
                         st.rng = st.rng.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
@@ -7597,14 +7616,12 @@ fn scene_lights(gd: &Path) -> (std::collections::HashMap<usize, kumite_render::S
     (lights, json["fill"].as_array().into_iter().flatten().map(art::num).collect())
 }
 
-/// Tekken Tag's message page (back to its main menu).
-fn ttt_message(lines: Vec<String>) -> Screen {
-    Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, title: false, music: None }, frame: 0 }))
-}
-
-/// Tekken Force's end on Tekken Tag's message page: `head`, the run's score, each co-op player's.
+/// Tekken Force's end on Tekken Tag's message page: `head`, the run's score, each co-op player's; then its RECORDS
+/// (the PS1's Force result and GAME OVER go to the ranking; Tekken Tag's GAME OVER to its RECORDS).
 fn force_message(head: &str, score: u32, players: &[(usize, u32)]) -> Screen {
-    ttt_message([head.to_string(), format!("SCORE {score}")].into_iter().chain(players.iter().map(|(n, p)| format!("{n}P {p}"))).collect())
+    let lines = [head.to_string(), format!("SCORE {score}")].into_iter().chain(players.iter().map(|(n, p)| format!("{n}P {p}"))).collect();
+    let then = Box::new(ttt::Page::Records { page: 0, scroll: 0, attract: true });
+    Screen::Ttt(Box::new(ttt::Front { page: ttt::Page::Message { lines, frame: 0, then, music: None }, frame: 0 }))
 }
 
 /// The stage's light and the fighters' shadows on a camera.
@@ -10019,6 +10036,41 @@ mod tests {
     }
 
     use super::*;
+
+    /// Force's bosses over a run, for every character and 1, 2 and 4 players: Tekken 3 alone has the PS1's table's
+    /// (0x800B685C), else no boss of an earlier stage comes again and none twice in a stage; Tekken 3 and Tekken Tag
+    /// (its slice's force.json and roster). Fewer players get the first of the picks for more.
+    #[test]
+    fn force_bosses_never_come_again_in_a_run() {
+        let t3 = Assets::new(test_assets()).map_err(|e| eprintln!("skipping Tekken 3: {e:#}")).ok();
+        for a in [t3, crate::netplay::tests::ttt_slice_assets()].into_iter().flatten() {
+            let roster = menu::Roster::load(&a.root.join("gamedata"));
+            let data: kumite_game::force::ForceData = a.gamedata("force.json").unwrap();
+            let stride = if roster.ttt.is_some() { 8 } else { 4 };
+            for (k, c) in roster.characters.iter().enumerate() {
+                let selection = c.id * stride + roster.costume_of.get(&c.costumes[0]).copied().unwrap_or(0);
+                for players in [1, 2, 4] {
+                    let mut met = Vec::new();
+                    for index in 0..data.final_index() {
+                        let ctx = ForceCtx { difficulty: 0, index, selection, player_char: c.id, player: (k, 0), met: met.clone() };
+                        let first = data.boss(selection, c.id, index);
+                        let picks = force_boss_picks(&roster, &data, &ctx, first, players);
+                        let say = format!("{} stage {index}, {players} players: {picks:?} after {met:?}", c.name);
+                        assert_eq!(picks.len(), players, "{say}");
+                        if players > 1 {
+                            assert_eq!(force_boss_picks(&roster, &data, &ctx, first, 4)[..players], picks[..], "{say}");
+                        }
+                        if roster.ttt.is_none() && players == 1 {
+                            assert_eq!(picks, [first], "{say}: the PS1's");
+                        } else {
+                            assert!(picks.iter().enumerate().all(|(j, p)| !met.contains(&p.0) && picks[..j].iter().all(|q| q.0 != p.0)), "{say}");
+                        }
+                        met.extend(picks.iter().map(|p| p.0));
+                    }
+                }
+            }
+        }
+    }
 
     /// A CPU-vs-CPU match on the test assets, with its HUD and the sound data (None: no test assets).
     fn cpu_match() -> Option<(Bout, hud::Hud)> {
