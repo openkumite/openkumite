@@ -31,11 +31,12 @@ pub enum LaunchMode {
     TagArcade,
     ExtraLevels,
     TttVersus,
+    TttArcade,
 }
 
 impl LaunchMode {
     /// (flag value, mode)
-    pub const NAMES: [(&'static str, LaunchMode); 12] = [
+    pub const NAMES: [(&'static str, LaunchMode); 13] = [
         ("arcade", LaunchMode::Arcade),
         ("vs", LaunchMode::Versus),
         ("practice", LaunchMode::Practice),
@@ -48,6 +49,7 @@ impl LaunchMode {
         ("tag-arcade", LaunchMode::TagArcade),
         ("levels", LaunchMode::ExtraLevels),
         ("ttt-vs", LaunchMode::TttVersus),
+        ("ttt-arcade", LaunchMode::TttArcade),
     ];
 }
 

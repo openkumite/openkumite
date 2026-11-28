@@ -1349,6 +1349,10 @@ pub struct Select {
     pub label: String,
     /// The page of faces shown (two rows a page; the extra fighters' is 1): the last moved cursor's.
     pub page: usize,
+    /// Arcade: the side a second player joined on (START on this screen, or A NEW CHALLENGER's), and the run's
+    /// ladder and stage it goes on with (a challenger's).
+    pub joined: Option<usize>,
+    challenge: Option<(Vec<usize>, usize)>,
 }
 
 impl Screen {
@@ -2244,10 +2248,26 @@ impl Select {
             stage: None,
             label: String::new(),
             page: 0,
+            joined: None,
+            challenge: None,
         };
         for k in 0..2 {
             s.sides[k].slot = s.valid_slot(roster, s.sides[k].slot);
         }
+        s
+    }
+
+    /// A NEW CHALLENGER's select (0x80050710 -> sub-state 0): the challenger on side `side` chooses, the run's
+    /// player keeps its fighter (0x800AE484), the run goes on with `ladder` at `setup`'s stage after the match.
+    pub fn challenger(roster: &Roster, setup: &FightSetup, ladder: Vec<usize>, side: usize, seed: u32) -> Self {
+        let mut s = Self::new(Mode::Arcade, setup.difficulty, roster, seed);
+        let (c, costume) = setup.players[1 - side];
+        let id = roster.characters.get(c).map(|c| c.id);
+        let kept = &mut s.sides[1 - side];
+        kept.slot = roster.ui.slots.iter().position(|&x| Some(x) == id).unwrap_or(kept.slot);
+        (kept.costume, kept.state) = (costume, SideState::Chosen);
+        s.sides[side].state = SideState::Choosing;
+        (s.joined, s.challenge) = (Some(side), Some((ladder, setup.level)));
         s
     }
 
@@ -2356,6 +2376,11 @@ impl Select {
                 sfx::play(sfx::start());
                 (self.sides[1].state, self.sides[1].fade) = (SideState::Choosing, 28);
             }
+            // arcade: START from the side nobody plays joins, a challenger (0x8010E23C)
+            (SideState::Off, Key::Start) if self.mode == Mode::Arcade => {
+                sfx::play(sfx::join());
+                (self.sides[k].state, self.sides[k].fade, self.joined) = (SideState::Choosing, 28, Some(k));
+            }
             (SideState::Choosing | SideState::CpuChoosing, Key::Left | Key::Right | Key::Up | Key::Down) => self.move_cursor(k, key, roster),
             (SideState::Choosing | SideState::CpuChoosing, Key::Button(_) | Key::Start) => {
                 if let Some(c) = self.character(roster, self.sides[k].slot).and_then(|i| roster.characters[i].costume_for(key)) {
@@ -2414,8 +2439,15 @@ impl Select {
         let pick = |k: usize| (self.character(roster, self.sides[k].slot).unwrap_or(0), self.sides[k].costume);
         let p1 = pick(0);
         if self.mode == Mode::Arcade {
-            let ladder = arcade_ladder(roster, roster.characters[p1.0].id, seed);
-            return Outcome::Fight(arcade_setup(roster, p1, self.difficulty, &ladder, 0), ladder);
+            // (a new run: the ladder of 1P's character, 0x800B0C5C; a challenger's: the run's)
+            let (p2, joined) = (pick(1), self.joined.map(pick));
+            let (ladder, level) = self.challenge.take().unwrap_or_else(|| (arcade_ladder(roster, roster.characters[p1.0].id, seed), 0));
+            let mut setup = arcade_setup(roster, p1, self.difficulty, &ladder, level);
+            // two players: on the challenger's home stage (0x8004F698, the other player's)
+            if let Some(p) = joined {
+                (setup.players, setup.stage) = ([p1, p2], roster.home_stage(roster.characters[p.0].id, p.1));
+            }
+            return Outcome::Fight(setup, ladder);
         }
         match self.mode {
             Mode::TimeAttack => return Outcome::Run(Box::new(crate::modes::Run::time_attack(roster, p1, seed))),

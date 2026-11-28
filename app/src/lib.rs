@@ -526,6 +526,8 @@ struct Fight {
     cloth: std::cell::RefCell<Vec<kumite_game::Cloth>>,
     /// Ball 2 ON 2: who plays each actor (0, 1 the sides' first, 2 the other side's partner, 3 P1's side's).
     seats: Option<[Option<usize>; 4]>,
+    /// A NEW CHALLENGER: the frames since a player joined, whether the fight stands still yet, and the side joined.
+    challenger: Option<(u32, bool, usize)>,
 }
 
 /// The sounds of each recorded frame (aligned with the game's replay record), replayed with it; the fight step picks
@@ -648,6 +650,9 @@ struct App {
     /// (ctx+0x44 + 2c, the least drawn come first).
     ball_cpu: [bool; 2],
     ball_counts: Vec<u32>,
+    /// Arcade: which sides the CPU plays (its select's: a side nobody plays; a challenger in, neither; after the
+    /// challenge, the loser's).
+    arcade_cpu: [bool; 2],
     /// Force: the run in progress and its data (force.json).
     force: Option<forcerun::ForceRun>,
     /// Testing (`--ko-boss`): a Force boss goes down as soon as it is in.
@@ -1073,9 +1078,14 @@ impl App {
             None => bout = bout.free_fight(),
             Some(Mode::Arcade) => {
                 let Some(s) = setup.as_ref() else { anyhow::bail!("the mode's setup is missing") };
-                bout.set_cpu(1, Some((s.difficulty, s.level)));
-                // the last stage's boss turns into the one it becomes after the human's first round win (0x80051204)
-                bout.interlude_check = self.boss_change.as_ref().is_some_and(|d| s.level == d.trigger.stage_index && self.roster.characters.get(s.players[1].0).is_some_and(|c| c.id != d.becomes));
+                for k in (0..2).filter(|&k| self.arcade_cpu[k]) {
+                    bout.set_cpu(k, Some((s.difficulty, s.level)));
+                }
+                // the last stage's boss turns into the one it becomes after the human's first round win (0x80051204;
+                // one human, no challenger in)
+                // shortcut: 1P's side only; a 2P who won a challenge meets the boss without its scene
+                bout.interlude_check = self.arcade_cpu == [false, true]
+                    && self.boss_change.as_ref().is_some_and(|d| s.level == d.trigger.stage_index && self.roster.characters.get(s.players[1].0).is_some_and(|c| c.id != d.becomes));
             }
             Some(Mode::Versus) => {}
             Some(Mode::ExtraLevels) => {
@@ -1214,6 +1224,13 @@ impl App {
             ..Default::default()
         };
         let mut info = info;
+        // arcade with 2P in it: a challenger's match shows no stage (WINNER and LOSER at its end, 0x8003E408); 2P's
+        // run shows it over its own bar, PUSH START over the CPU's
+        if mode == Some(Mode::Arcade) && self.roster.ttt.is_none() && self.arcade_cpu != [false, true] {
+            info.under = if self.arcade_cpu == [true, false] { [hud::Under::Push, hud::Under::Stage(info.stage.unwrap_or(1))] } else { Default::default() };
+            info.winner_labels = self.arcade_cpu == [false, false];
+            info.stage = None;
+        }
         info.ttt = self.roster.ttt.clone();
         info.ball_partners = setup.as_ref().and_then(|s| s.partners).map(|d| {
             d.partners.map(|(c, k)| {
@@ -1269,6 +1286,7 @@ impl App {
             characters,
             cutscene: None,
             seats: None,
+            challenger: None,
             secondary: Default::default(),
             cloth: Default::default(),
         });
@@ -1913,7 +1931,7 @@ impl App {
         // (online: two players at this computer split the keyboard too)
         let two_here = self.room.as_ref().is_some_and(|r| r.mine().len() > 1);
         let two_bowl = self.bowl.as_ref().is_some_and(|b| b.scene.bowl.players.len() > 1);
-        let versus = coop || two_here || two_bowl || self.fight.as_ref().and_then(|f| f.setup.as_ref()).is_some_and(|s| s.mode == Mode::Versus);
+        let versus = coop || two_here || two_bowl || self.arcade_keys().1 || self.fight.as_ref().and_then(|f| f.setup.as_ref()).is_some_and(|s| s.mode == Mode::Versus);
         let kb = self.keyboard_pads(versus);
         let pads = self.gamepads.as_mut().map_or([None; 4], |g| g.pads4(&self.records.controls));
         std::array::from_fn(|i| {
@@ -2095,6 +2113,7 @@ impl App {
             let you_lose = |w: usize| b.cpu[w].is_some() && b.cpu[1 - w].is_none() && f.setup.as_ref().is_none_or(|s| !matches!(s.mode, Mode::TeamBattle | Mode::Survival));
             b.game.rounds.is_none() && b.decided() && matches!(b.phase, Phase::Result { winner } | Phase::MatchOver { winner } if !winner.is_some_and(you_lose))
         });
+        let joined = self.fight.as_ref().is_some_and(|f| f.challenger.is_some());
         if let Some(audio) = self.audio.as_mut() {
             // Tekken 3's voices keyed off in a pause and out of a fight (0x8004B688)
             if ducked || !fighting {
@@ -2104,7 +2123,11 @@ impl App {
             if faded || called {
                 audio.pause_level = (0.0, if faded { 240 } else { 180 });
             }
-            audio.duck(ducked || faded || called);
+            // A NEW CHALLENGER: the music out (Tekken 3: over 30 frames; Tekken Tag: stopped, 0x35B170)
+            if joined {
+                audio.pause_level = (0.0, if self.roster.ttt.is_some() { 1 } else { 30 });
+            }
+            audio.duck(ducked || faded || called || joined);
             audio.pause_level = pause;
         }
         // the menus' sounds queued since the last step
@@ -2218,6 +2241,12 @@ impl App {
                 }
                 if done {
                     *screen = Screen::title();
+                }
+            }
+            // an arcade select: the CPU plays the sides nobody plays on it (a challenger's: neither)
+            if let Screen::Select(s) = &*screen {
+                if s.mode == Mode::Arcade {
+                    self.arcade_cpu = s.sides.map(|x| x.state == menu::SideState::Off);
                 }
             }
             let was_playing = matches!(screen, Screen::Movie(m, _) if m.playing);
@@ -2356,16 +2385,32 @@ impl App {
         }
         let mode = fight.setup.as_ref().map(|s| s.mode);
         // P2: the second keyboard player in VS, a script, the debug dummy modes (sandbox / practice), or the CPU
-        let p2_human = mode == Some(Mode::Versus) || (matches!(mode, Some(Mode::TeamBattle | Mode::Ball)) && fight.bout.cpu[1].is_none());
+        let p2_human = mode == Some(Mode::Versus) || (matches!(mode, Some(Mode::TeamBattle | Mode::Ball | Mode::Arcade)) && fight.bout.cpu[1].is_none());
         let mut pads = self.debug.pads(p1, p2_script.or(p2_human.then_some(kb2)));
         if mode == Some(Mode::Practice) {
             fight.bout.game.fight.clock = kumite_sim::ROUND_FRAMES;
         }
-        if matches!(mode, Some(Mode::Arcade | Mode::Watch | Mode::TimeAttack | Mode::Survival | Mode::Force | Mode::ExtraLevels)) && p2_script.is_none() {
+        if matches!(mode, Some(Mode::Watch | Mode::TimeAttack | Mode::Survival | Mode::Force | Mode::ExtraLevels)) && p2_script.is_none() {
             pads[1] = Pad::default(); // the CPU decides
         }
-        if matches!(mode, Some(Mode::TeamBattle | Mode::Ball)) && fight.bout.cpu[1].is_some() && p2_script.is_none() {
+        if matches!(mode, Some(Mode::TeamBattle | Mode::Ball | Mode::Arcade)) && fight.bout.cpu[1].is_some() && p2_script.is_none() {
             pads[1] = Pad::default();
+        }
+        // (arcade: 2P won a challenge, the CPU plays 1P's side)
+        if mode == Some(Mode::Arcade) && fight.bout.cpu[0].is_some() {
+            pads[0] = Pad::default();
+        }
+        // A NEW CHALLENGER (Tekken 3: 0x80050710's sub-states 13-14, 66 frames; Tekken Tag: 0x35A6A0's 14-15, 82):
+        // the fight runs on until it stands still, once past its round call or 16 frames in; then the select
+        if let Some((n, still, side)) = fight.challenger {
+            fight.challenger = Some((n + 1, still || fight.bout.phase != Phase::Call || n >= 16, side));
+            if n + 1 >= if self.roster.ttt.is_some() { 0x52 } else { 0x4A - 8 } {
+                self.challenge();
+                return;
+            }
+            if still {
+                return;
+            }
         }
         // Tekken Tag's practice dummy: its TRAINING DUMMY, the second pad (CONTROLLER), or VS CPU's CPU
         if let (Some(p), Some(d), None) = (fight.ttt_practice.as_ref(), self.roster.ttt.as_deref(), p2_script) {
@@ -2549,10 +2594,16 @@ impl App {
             let (t, c, dx) = self.roster.modes.game_over.clone();
             fight.info.under[0] = hud::Under::GameOver(t, c, dx);
         }
-        // arcade lost: GAME OVER over the CPU's bar from the K.O. that decides it (record 5 0x800B1CA8, ctx+0x12)
-        if mode == Some(Mode::Arcade) && fight.bout.decided() && fight.bout.wins[0] < fight.bout.rounds_to_win {
-            let (t, c, dx) = self.roster.modes.game_over.clone();
-            fight.info.under[1] = hud::Under::GameOver(t, c, dx);
+        // arcade lost: GAME OVER over the CPU's bar from the K.O. that decides it (record 5 0x800B1CA8, ctx+0x12); a
+        // challenger's match: over the loser's (PCSX-Redux)
+        if mode == Some(Mode::Arcade) && fight.bout.decided() {
+            let b = &fight.bout;
+            let lost = (0..2).find(|&k| !self.arcade_cpu[k] && b.wins[k] < b.rounds_to_win);
+            if let Some(k) = lost {
+                let (t, c, dx) = self.roster.modes.game_over.clone();
+                let over = if self.arcade_cpu.contains(&true) { 1 - k } else { k };
+                fight.info.under[over] = hud::Under::GameOver(t, c, dx);
+            }
         }
         // scripted moves (--play): own set first, then the common set (not online: one computer's fight only)
         while self.net.is_none() && self.play_script.first().is_some_and(|p| p.0 <= self.steps + 1) {
@@ -2714,7 +2765,9 @@ impl App {
                 self.replay_ended();
                 return;
             }
-            let hold = load_hold(fight.setup.as_ref(), fight.ladder.len(), fight.bout.phase);
+            // (the sides the players play, not the AI's seats: `--ai 1` holds as a player would)
+            let cpu = if fight.setup.as_ref().is_some_and(|s| s.mode == Mode::Arcade) { self.arcade_cpu } else { [false, true] };
+            let hold = load_hold(fight.setup.as_ref(), fight.ladder.len(), fight.bout.phase, cpu);
             if hold > 0 {
                 self.ending_hold = hold;
                 return;
@@ -3565,7 +3618,14 @@ impl App {
             return;
         }
         // a lost arcade match keeps its scene: CONTINUE? shows over the loser shot
-        let continues = matches!(setup.mode, Mode::Arcade | Mode::TimeAttack) && winner != Some(0);
+        // (arcade: the side its player plays; a challenger's match: None)
+        let human = match self.arcade_cpu {
+            [false, true] => Some(0),
+            [true, false] => Some(1),
+            _ => None,
+        }
+        .filter(|_| setup.mode == Mode::Arcade);
+        let continues = (setup.mode == Mode::TimeAttack && winner != Some(0)) || human.is_some_and(|h| winner != Some(h));
         if !continues {
             self.scene = None;
         }
@@ -3610,15 +3670,40 @@ impl App {
             }
             return;
         }
+        let h = human.unwrap_or(0);
+        // the run's next fight: its player on its side against the ladder's (the CPU yields in a mirror match)
+        let ladder_fight = |roster: &Roster, h: usize, level: usize| {
+            let mut next = menu::arcade_setup(roster, setup.players[h], setup.difficulty, &fight.ladder, level);
+            menu::distinct_models(roster, &mut next);
+            if h == 1 {
+                next.players.swap(0, 1);
+            }
+            next
+        };
         match setup.mode {
-            Mode::Arcade if winner == Some(0) && setup.level + 1 >= fight.ladder.len() => {
+            // a challenger's match (0x800B134C, two players): the loser drops out, the winner goes on with the
+            // run's fight
+            Mode::Arcade if human.is_none() => {
+                self.records.two_player(ids, winner);
+                self.records.save();
+                if let Some(w) = winner {
+                    self.arcade_cpu[1 - w] = true;
+                }
+                log::info!("arcade: a challenger's match won by {winner:?}");
+                let next = match winner {
+                    Some(w) => ladder_fight(&self.roster, w, setup.level),
+                    None => setup,
+                };
+                self.start_fight(next, fight.ladder);
+            }
+            Mode::Arcade if winner == Some(h) && setup.level + 1 >= fight.ladder.len() => {
                 self.continue_player = None;
-                self.records.played(ids[0]);
+                self.records.played(ids[h]);
                 self.records.save();
                 // the champion's ending movie, then the ending screen
                 // the ending flags (0x800B1E88), then the champion's ending movie (0x800FEFD4) and the staff roll
-                let id = fight.characters[0];
-                let costume = self.roster.costume_of.get(&fight.bout.game.bodies[0].model_record).copied().unwrap_or(0);
+                let id = fight.characters[h];
+                let costume = self.roster.costume_of.get(&fight.bout.game.bodies[h].model_record).copied().unwrap_or(0);
                 self.screen = Some(match self.roster.theater.clone() {
                     Some(t) => {
                         t.clear(id, costume, &mut self.records.endings, &mut self.records.alternate);
@@ -3641,12 +3726,12 @@ impl App {
                     None => Screen::title(),
                 });
             }
-            Mode::Arcade if winner == Some(0) => {
-                let next = menu::arcade_setup(&self.roster, setup.players[0], setup.difficulty, &fight.ladder, setup.level + 1);
+            Mode::Arcade if winner == Some(h) => {
+                let next = ladder_fight(&self.roster, h, setup.level + 1);
                 self.start_fight(next, fight.ladder);
             }
             Mode::Arcade => {
-                self.continue_player = Some(ids[0]);
+                self.continue_player = Some(ids[h]);
                 // the loser shot keeps running under CONTINUE?
                 self.screen = Some(Screen::Continue { setup, ladder: fight.ladder.clone(), countdown: menu::CONTINUE_FRAMES });
                 self.fight = Some(fight);
@@ -3689,6 +3774,20 @@ impl App {
             }
             mode => self.screen = Some(Screen::Select(Box::new(menu::Select::new(mode, setup.difficulty, &self.roster, self.seed)))),
         }
+    }
+
+    /// A NEW CHALLENGER's text over: the select, where the challenger picks and the run's player keeps its fighter
+    /// (Tekken 3: sub-state 0, 0x800AE484 kept; Tekken Tag: 0x35B254's sub-state 0).
+    fn challenge(&mut self) {
+        let Some(fight) = self.fight.take() else { return };
+        self.scene = None;
+        let side = fight.challenger.map_or(1, |c| c.2);
+        if let (Some(run), Some(d)) = (self.ttt_run.take(), self.roster.ttt.clone()) {
+            self.screen = Some(Screen::Ttt(Box::new(ttt::Front { page: run.challenger(&d, side, &mut self.seed), frame: 0 })));
+            return;
+        }
+        let Some(setup) = fight.setup else { return };
+        self.screen = Some(Screen::Select(Box::new(menu::Select::challenger(&self.roster, &setup, fight.ladder, side, self.seed))));
     }
 
     /// The boss-change scene: started when the bout stops for it, one frame per step, then the swap.
@@ -3838,6 +3937,7 @@ impl App {
         self.debug.say(format!("arcade stage {} against {opponent}", level + 1));
         self.fight = None;
         self.scene = None;
+        self.arcade_cpu = [false, true];
         self.start_fight(setup, ladder);
     }
 
@@ -3969,6 +4069,7 @@ impl App {
                 if let Some(s) = spec.stage {
                     setup.stage = s;
                 }
+                self.arcade_cpu = [false, true];
                 self.load_fight(setup, ladder);
             }
             L::Versus | L::Practice | L::Ball => {
@@ -4108,15 +4209,20 @@ impl App {
                 self.start_tag(setup);
                 self.tag_stage = None;
             }
-            L::TttVersus => {
-                // Tekken Tag's VS as its select starts it: --fighters' four a tag battle (A & C vs B & D), else 1 ON 1
+            L::TttVersus | L::TttArcade => {
+                // Tekken Tag's VS as its select starts it: --fighters' four a tag battle (A & C vs B & D), else 1 ON 1;
+                // its ARCADE: --player and --opponent the pair
                 let Some(d) = roster.ttt.clone() else {
-                    log::error!("--mode ttt-vs: not Tekken Tag's game data");
+                    log::error!("--mode ttt-vs / ttt-arcade: not Tekken Tag's game data");
                     return;
                 };
                 let tag = spec.given[2] && spec.given[3];
-                let teams = if tag { [vec![p1, p3], vec![p2, p4]] } else { [vec![p1], vec![p2]] };
-                let mut run = ttt::Run::new(&d, roster, &ttt::progress(), if tag { ttt::VS } else { ttt::ONE_VS }, teams, &mut self.seed);
+                let (mode, teams) = match spec.mode {
+                    L::TttArcade => (ttt::ARCADE, [vec![p1, p2], vec![]]),
+                    _ if tag => (ttt::VS, [vec![p1, p3], vec![p2, p4]]),
+                    _ => (ttt::ONE_VS, [vec![p1], vec![p2]]),
+                };
+                let mut run = ttt::Run::new(&d, roster, &ttt::progress(), mode, teams, &mut self.seed);
                 run.stage = spec.stage.unwrap_or(run.stage);
                 self.outcome(Outcome::TttFight(Box::new(run)));
             }
@@ -4780,6 +4886,7 @@ impl App {
         let humans = match setup.mode {
             Mode::Versus => 2,
             Mode::Watch => 0,
+            Mode::Arcade => self.ttt_run.as_ref().map_or(self.arcade_cpu, |r| r.humans.map(|h| !h)).iter().filter(|c| !**c).count(),
             _ => run.map_or(1, |r| r.humans().iter().filter(|h| **h).count()),
         };
         let teams = match run.map(|r| &r.kind) {
@@ -4957,6 +5064,7 @@ impl App {
             characters,
             cutscene: None,
             seats: None,
+            challenger: None,
             secondary: Default::default(),
             cloth: Default::default(),
         });
@@ -5089,6 +5197,18 @@ impl App {
     /// The fight on is a Force stage.
     fn force_fight(&self) -> bool {
         self.force.is_some() && self.fight.as_ref().is_some_and(|f| f.setup.as_ref().is_some_and(|s| s.mode == Mode::Force))
+    }
+
+    /// An arcade fight or its select: the second keyboard layout's START is 2P's (a challenger's), and with 2P in
+    /// the run each layout plays its own player.
+    fn arcade_keys(&self) -> (bool, bool) {
+        let fight = self.fight.as_ref().is_some_and(|f| f.setup.as_ref().is_some_and(|s| s.mode == Mode::Arcade));
+        let select = matches!(&self.screen, Some(Screen::Select(s)) if s.mode == Mode::Arcade);
+        let two = match &self.ttt_run {
+            Some(r) => r.humans != [true, false],
+            None => self.arcade_cpu != [false, true],
+        };
+        (fight || select, fight && two)
     }
 
     /// Force's co-op (OpenKumite's own): the second player comes in beside the player, as the player's
@@ -5874,6 +5994,20 @@ impl App {
         // (online: a key outside the pads changes one computer's fight only, a desync: skipping goes through the pads,
         // joining is not done)
         let online = self.net.is_some();
+        // arcade: START from a player who is not playing is A NEW CHALLENGER (Tekken 3: 0x80051244, from a round's 8th
+        // frame on, sound 0x49A1; Tekken Tag: 0x3B1200 in the fight, sounds 0x41 and 0x42 at 0x35B178)
+        let arcade = fight.setup.as_ref().is_some_and(|s| s.mode == Mode::Arcade) || self.ttt_run.as_ref().is_some_and(|r| r.mode == ttt::ARCADE);
+        let side = player.min(1);
+        if key == Key::Start && arcade && !online && fight.bout.cpu[side].is_some() {
+            let ttt = self.roster.ttt.is_some();
+            let early = !ttt && fight.bout.phase == Phase::Call && fight.bout.phase_frame < 8;
+            if fight.challenger.is_none() && fight.pause.is_none() && !early && !matches!(fight.bout.phase, Phase::MatchOver { .. } | Phase::Interlude | Phase::TeamIntro { .. }) {
+                fight.challenger = Some((0, false, side));
+                let codes = if ttt { vec![0x41, 0x42] } else { vec![menu::sfx::join()] };
+                codes.into_iter().for_each(menu::sfx::play);
+            }
+            return true;
+        }
         // START skips the replay (and with rounds to go the win pose) or ends the win pose
         if matches!(fight.bout.phase, Phase::Replay { .. } | Phase::Result { .. }) {
             if key == Key::Start {
@@ -6763,8 +6897,23 @@ impl App {
                             }
                         };
                         if replay_view.as_ref().is_none_or(|v| v.hud) {
-                            hud.draw_with(ctx, art, &f.bout, &f.info, wide_hud, &pickups);
+                            let quiet = f.challenger.map(|_| HudInfo { quiet: true, ..f.info.clone() });
+                            hud.draw_with(ctx, art, &f.bout, quiet.as_ref().unwrap_or(&f.info), wide_hud, &pickups);
                             draw_target_marks(ctx, &cam, size, &marks);
+                        }
+                        // A NEW CHALLENGER, blinking with the count (its step's: Tekken 3's from 8 up, colour 7 in the
+                        // big font at (8, 288), a line of 42 (0x80022710); Tekken Tag's from 82 down, 0x35B228)
+                        if let Some((n, ..)) = f.challenger {
+                            let view = art::Screen::fit(ctx.content_rect());
+                            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("challenger"))).with_clip_rect(view.rect);
+                            match roster.ttt.as_deref() {
+                                Some(d) if (0x53 - n) & 0x18 != 0 => ttt::draw_challenger(&painter, &view, art, d),
+                                None if (7 + n) & 0x18 != 0 => {
+                                    art.text(&painter, &view, 2, 7, 8.0, 288.0, "A NEW CHALLENGER", egui::Color32::WHITE);
+                                    art.text(&painter, &view, 2, 7, 8.0, 330.0, "     ENTERS!!", egui::Color32::WHITE);
+                                }
+                                _ => {}
+                            }
                         }
                         if let Some(run) = force {
                             let view = art::Screen::fit(ctx.content_rect());
@@ -7631,12 +7780,13 @@ fn sky_row(p: &kumite_assets::SkyPicture, pitch: f32) -> f32 {
 
 /// Round state 9 on the PS1: the fight's last picture holds, still, while what follows loads (vsyncs from the result's
 /// end): the arcade cleared 164 (the ending), a Team Battle match 70 (the next member or the results, #347), the next
-/// Survival, Arcade or Time Attack opponent as long (the same VS screen's load); 0: none.
-fn load_hold(setup: Option<&menu::FightSetup>, ladder: usize, phase: Phase) -> u32 {
+/// Survival, Arcade or Time Attack opponent as long (the same VS screen's load); 0: none. `cpu`: the sides the CPU
+/// plays.
+fn load_hold(setup: Option<&menu::FightSetup>, ladder: usize, phase: Phase, cpu: [bool; 2]) -> u32 {
     match (setup, phase) {
-        (Some(s), Phase::MatchOver { winner: Some(0) }) if s.mode == Mode::Arcade && s.level + 1 >= ladder => menu::ENDING_HOLD,
+        (Some(s), Phase::MatchOver { winner: Some(w) }) if !cpu[w] && cpu[1 - w] && s.mode == Mode::Arcade && s.level + 1 >= ladder => menu::ENDING_HOLD,
         (Some(s), Phase::MatchOver { .. }) if s.mode == Mode::TeamBattle => menu::LOAD_HOLD,
-        (Some(s), Phase::MatchOver { winner: Some(0) }) if matches!(s.mode, Mode::Arcade | Mode::TimeAttack | Mode::Survival) => menu::LOAD_HOLD,
+        (Some(s), Phase::MatchOver { winner: Some(w) }) if !cpu[w] && matches!(s.mode, Mode::Arcade | Mode::TimeAttack | Mode::Survival) => menu::LOAD_HOLD,
         _ => 0,
     }
 }
@@ -8262,12 +8412,14 @@ impl App {
                 let in_menu = self.in_menu();
                 if state == ElementState::Pressed && !repeat {
                     // Force: P2's START key (right Shift / numpad Enter) is the second player's (the co-op join)
-                    let p2_start = self.force_fight() && self.records.controls.keyboard[1].commands_of(code).any(|c| c == controls::Command::Start);
+                    let p2_start = (self.force_fight() || self.arcade_keys().0) && self.records.controls.keyboard[1].commands_of(code).any(|c| c == controls::Command::Start);
                     let mapped = self.records.controls.menu_key(code);
                     if let Some(k) = if p2_start { Some(Key::Start) } else { mapped.map(|m| m.1) } {
                         // on the VS select screen the second keyboard layout moves P2's cursor
                         // (KEY CONFIGURATION: each layout drives its player's panel)
-                        let versus = matches!(&self.screen, Some(Screen::Select(s)) if s.mode == Mode::Versus) || matches!(&self.screen, Some(Screen::Grid(_) | Screen::KeyConfig(_)));
+                        let versus = matches!(&self.screen, Some(Screen::Select(s)) if s.mode == Mode::Versus || s.joined.is_some())
+                            || matches!(&self.screen, Some(Screen::Ttt(f)) if matches!(&f.page, ttt::Page::Select(s) if s.sides[1].player == Some(1)))
+                            || matches!(&self.screen, Some(Screen::Grid(_) | Screen::KeyConfig(_)));
                         let player = usize::from(versus && mapped.is_some_and(|m| m.0 == 1) || p2_start);
                         if (in_menu || matches!(k, Key::Back | Key::Start)) && !self.input_key(player, k) {
                             event_loop.exit();
@@ -9214,7 +9366,8 @@ Game:
 
 Straight into a mode (debugging; past the menus):
   --mode NAME                  arcade, vs, practice, time-attack, survival, ball, force, tag-free, tag-teams,
-                               tag-arcade, levels; ttt-vs: Tekken Tag's VS (--fighters A,B,C,D: A & C vs B & D)
+                               tag-arcade, levels; ttt-vs: Tekken Tag's VS (--fighters A,B,C,D: A & C vs B & D);
+                               ttt-arcade: Tekken Tag's ARCADE (--player & --opponent the pair)
   --player NAME|ID[:C]         P1 (a name as the roster has it, any case; PREFIX:NAME for one of the same name
   --opponent NAME|ID[:C]       with the roster's prefix; :C the costume 1..); P2: the opponent, Practice's dummy,
                                Force's 2P
@@ -9582,6 +9735,7 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
         vs_record: Default::default(),
         run: None,
         ball_cpu: [false; 2],
+        arcade_cpu: [false, true],
         ball_counts: Vec::new(),
         force: None,
         force_ko_boss: flag("--ko-boss"),
@@ -9788,14 +9942,16 @@ mod tests {
         use super::{load_hold, menu, Mode, Phase};
         let setup = |mode, level| menu::FightSetup { mode, players: [(0, 0); 2], stage: 0, difficulty: 0, level, handicap: [100; 2], ball: None, partners: None };
         let over = |w| Phase::MatchOver { winner: w };
-        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 9)), 10, over(Some(0))), menu::ENDING_HOLD);
-        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 3)), 10, over(Some(0))), menu::LOAD_HOLD);
-        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 3)), 10, over(Some(1))), 0);
-        assert_eq!(load_hold(Some(&setup(Mode::Survival, 0)), 0, over(Some(0))), menu::LOAD_HOLD);
-        assert_eq!(load_hold(Some(&setup(Mode::TeamBattle, 0)), 0, over(Some(0))), menu::LOAD_HOLD);
-        assert_eq!(load_hold(Some(&setup(Mode::TeamBattle, 0)), 0, over(Some(1))), menu::LOAD_HOLD);
-        assert_eq!(load_hold(Some(&setup(Mode::Versus, 0)), 0, over(Some(0))), 0);
-        assert_eq!(load_hold(None, 0, over(Some(0))), 0);
+        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 9)), 10, over(Some(0)), [false, true]), menu::ENDING_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 3)), 10, over(Some(0)), [false, true]), menu::LOAD_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 3)), 10, over(Some(1)), [false, true]), 0);
+        assert_eq!(load_hold(Some(&setup(Mode::Survival, 0)), 0, over(Some(0)), [false, true]), menu::LOAD_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::TeamBattle, 0)), 0, over(Some(0)), [false, true]), menu::LOAD_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::TeamBattle, 0)), 0, over(Some(1)), [false, true]), menu::LOAD_HOLD);
+        assert_eq!(load_hold(Some(&setup(Mode::Versus, 0)), 0, over(Some(0)), [false, true]), 0);
+        assert_eq!(load_hold(None, 0, over(Some(0)), [false, true]), 0);
+        // (2P's run, won from a challenger)
+        assert_eq!(load_hold(Some(&setup(Mode::Arcade, 3)), 10, over(Some(1)), [true, false]), menu::LOAD_HOLD);
     }
 
     /// Force's final stage at its start (eye (0, -3500, -7000), pitch 170): the floor from row 324, as the PS1 shows
