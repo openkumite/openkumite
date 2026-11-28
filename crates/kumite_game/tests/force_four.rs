@@ -246,12 +246,12 @@ fn tekken_tag_a_downed_player_lies_where_it_fell() {
 /// those it spent stuck (in the last second it neither moved 150 units nor struck, threw or was struck: standing
 /// about, walking into a wall or a partner, swinging at air), the players' and the soldiers'; the longest stretch with
 /// every standing player stuck at once, and the longest a soldier or boss lay with health left; the frame the stage
-/// was cleared (None: not within `frames`, or the clock ran out).
-fn stuck(a: &Assets, models: &[usize], stride: usize, stage: usize, styles: [Style; 4], seed: u32, frames: usize) -> ([[usize; 2]; 2], [usize; 2], Option<usize>) {
+/// was cleared (None: not within `frames`, or the clock ran out); whether it ended (cleared, lost or out of time).
+fn stuck(a: &Assets, models: &[usize], stride: usize, stage: usize, styles: [Style; 4], seed: u32, frames: usize) -> ([[usize; 2]; 2], [usize; 2], Option<usize>, bool) {
     const SECOND: usize = 60;
     let (mut trail, mut last_hit, mut lying) = (vec![Vec::<glam::Vec3>::new(); 12], [0usize; 12], [0usize; 12]);
     let (mut counts, mut all, mut longest, mut cleared) = ([[0; 2]; 2], 0, [0; 2], None);
-    coop(a, models, stride, stage, frames, Some((styles, seed)), &mut |f, b, _| {
+    let (_, b, _) = coop(a, models, stride, stage, frames, Some((styles, seed)), &mut |f, b, _| {
         let time_up = matches!(b.game.fight.state, kumite_sim::RoundState::TimeUp { .. });
         if matches!(b.phase, Phase::RoundOver { winner: Some(0) } | Phase::MatchOver { winner: Some(0) }) && !time_up {
             cleared.get_or_insert(f);
@@ -290,11 +290,13 @@ fn stuck(a: &Assets, models: &[usize], stride: usize, stage: usize, styles: [Sty
         all = if standing > 0 && stuck == standing { all + 1 } else { 0 };
         longest[0] = longest[0].max(all);
     });
-    (counts, longest, cleared)
+    (counts, longest, cleared, !matches!(b.phase, Phase::Fight | Phase::Call))
 }
 
 /// Four AI seats on Tekken Tag's Force stages 1 to 3, ten seeds each, play like players: little time stuck, never all
-/// of them at once for long, no soldier or boss lying about for good, stage 1 cleared in good time. (The 0.7.0
+/// of them at once for long, no soldier or boss lying about for good, stage 1 cleared in good time, every stage over
+/// (cleared, lost or out of time) within 300 s. (A time up is GAME OVER: the app's seed 61 went so from stage 2 to
+/// the title, logging nothing, which looked like a hang.) (The 0.7.0
 /// video's four stood bunched against a wall for half a minute, a soldier out of their reach past the view's side.
 /// After that, stage 2 ran out of time on some seeds with all four standing about for over 90 s: a soldier back in a
 /// fallen one's place lay as it fell, in Tekken Tag's K.O. loop (here one lay 35 s, stage 3 14.0% stuck); or one seat
@@ -319,7 +321,11 @@ fn tekken_tag_four_ai_players_keep_fighting() {
         // (ten seeds, the picks in turn)
         for (k, seed) in (11..=101).step_by(10).enumerate() {
             let (models, styles) = picks[k % picks.len()];
-            let (c, l, cleared) = stuck(&a, &models, 8, stage, styles, seed, 60 * 300);
+            let (c, l, cleared, ended) = stuck(&a, &models, 8, stage, styles, seed, 60 * 300);
+            // (the clock ends every stage: the next one, or GAME OVER, always comes)
+            if !ended {
+                failed.push(format!("stage {} seed {seed}: still on after 300 s", stage + 1));
+            }
             println!("stage {} {models:?} {styles:?} seed {seed}: players stuck {:?}, soldiers {:?}, all at once {}, a foe lying {}, cleared at {cleared:?}", stage + 1, c[0], c[1], l[0], l[1]);
             for (s, k) in all.iter_mut().flatten().zip(c.iter().flatten()) {
                 *s += k;
