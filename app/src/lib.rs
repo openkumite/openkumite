@@ -2276,6 +2276,10 @@ impl App {
                     audio.music(m.audio.as_deref().map(|p| kumite_game::sound::Track::plain(p, m.looped)).as_ref());
                 }
             }
+            // a lost Force run: GAME OVER, then the ranking after its load (PS1: as after the result)
+            if matches!(screen, Screen::GameOver { frames, records: true } if *frames >= menu::GAME_OVER_FRAMES) {
+                self.open_records = Some(records::RESULTS_LOAD);
+            }
             if matches!(screen, Screen::GameOver { .. }) {
                 if let Some(id) = self.continue_player.take() {
                     self.records.played(id);
@@ -5337,7 +5341,7 @@ impl App {
         self.scene = None;
         self.screen = Some(match self.roster.ttt {
             Some(_) => force_message("GAME OVER", score, &players),
-            None => Screen::GameOver { frames: 0 },
+            None => Screen::GameOver { frames: 0, records: true },
         });
     }
 
@@ -7415,18 +7419,22 @@ struct ForceCtx {
     player_char: usize,
     player: (usize, usize),
     met: Vec<usize>,
+    /// Co-op's other players (roster indices).
+    others: Vec<usize>,
 }
 
 impl ForceCtx {
     fn of(run: &forcerun::ForceRun) -> Self {
-        Self { difficulty: run.difficulty, index: run.index, selection: run.selection, player_char: run.player_char, player: run.player, met: run.met.clone() }
+        let others = run.partner.iter().map(|p| p.0).chain(run.more_players.iter().flatten().map(|p| p.0)).collect();
+        Self { difficulty: run.difficulty, index: run.index, selection: run.selection, player_char: run.player_char, player: run.player, met: run.met.clone(), others }
     }
 }
 
 /// A Force stage's bosses for `players` (`first`, the stage's own by the PS1's table; more players: a boss each).
 /// No boss of an earlier stage of the run comes again (OpenKumite's own: co-op and Tekken Tag; Tekken 3 alone keeps the
 /// PS1's table, which has a few, e.g. Nina's Anna twice); the others are none of the later stages' own, from Force's
-/// bosses (Tekken Tag: its roster). For fewer players, the first of those for more.
+/// bosses (Tekken Tag: its roster); in co-op none is a player's own character. For fewer players, the first of those
+/// for more.
 fn force_boss_picks(roster: &Roster, data: &kumite_game::force::ForceData, ctx: &ForceCtx, first: (usize, usize), players: usize) -> Vec<(usize, usize)> {
     let n = data.final_index();
     let pool: Vec<usize> = match roster.ttt {
@@ -7435,15 +7443,18 @@ fn force_boss_picks(roster: &Roster, data: &kumite_game::force::ForceData, ctx: 
     };
     let later: Vec<usize> = (ctx.index + 1..n).map(|i| data.boss(ctx.selection, ctx.player_char, i).0).collect();
     let fresh = roster.ttt.is_some() || players > 1;
+    let own: Vec<usize> = if !ctx.others.is_empty() { std::iter::once(ctx.player_char).chain(ctx.others.iter().filter_map(|&i| roster.characters.get(i).map(|c| c.id))).collect() } else { Vec::new() };
     let mut picks = Vec::new();
-    if !(fresh && ctx.met.contains(&first.0)) {
+    if !(fresh && ctx.met.contains(&first.0)) && !own.contains(&first.0) {
         picks.push(first);
     }
     while picks.len() < players {
-        let new = |c: &usize| !ctx.met.contains(c) && picks.iter().all(|&(p, _)| p != *c);
+        let new = |c: &usize| !ctx.met.contains(c) && !own.contains(c) && picks.iter().all(|&(p, _)| p != *c);
         let from = ctx.index * 3 + picks.len();
         let order = || (0..pool.len()).map(|o| pool[(from + o) % pool.len()]);
-        let pick = order().find(|c| new(c) && !later.contains(c)).or_else(|| order().find(new)).map(|c| (c, usize::from(c == ctx.player_char))).unwrap_or_else(|| {
+        // (Tekken 3's bosses all met or played: the roster's others)
+        let rest = || roster.characters.iter().map(|c| c.id).filter(|&c| c != data.constants.last.character);
+        let pick = order().find(|c| new(c) && !later.contains(c)).or_else(|| order().find(new)).or_else(|| rest().find(new)).map(|c| (c, usize::from(c == ctx.player_char))).unwrap_or_else(|| {
             // (every one met: the stage's own again, in another costume)
             let k = picks.iter().filter(|&&(c, _)| c == first.0).count();
             (first.0, first.1 + k)
@@ -10038,8 +10049,8 @@ mod tests {
     use super::*;
 
     /// Force's bosses over a run, for every character and 1, 2 and 4 players: Tekken 3 alone has the PS1's table's
-    /// (0x800B685C), else no boss of an earlier stage comes again and none twice in a stage; Tekken 3 and Tekken Tag
-    /// (its slice's force.json and roster). Fewer players get the first of the picks for more.
+    /// (0x800B685C), else no boss of an earlier stage comes again and none twice in a stage, in co-op none a player's own;
+    /// Tekken 3 and Tekken Tag (its slice's force.json and roster). Fewer players get the first of the picks for more.
     #[test]
     fn force_bosses_never_come_again_in_a_run() {
         let t3 = Assets::new(test_assets()).map_err(|e| eprintln!("skipping Tekken 3: {e:#}")).ok();
@@ -10052,7 +10063,9 @@ mod tests {
                 for players in [1, 2, 4] {
                     let mut met = Vec::new();
                     for index in 0..data.final_index() {
-                        let ctx = ForceCtx { difficulty: 0, index, selection, player_char: c.id, player: (k, 0), met: met.clone() };
+                        let others: Vec<usize> = (1..players).map(|j| (k + 3 * j + 1) % roster.characters.len()).collect();
+                        let own: Vec<usize> = std::iter::once(c.id).chain(others.iter().map(|&i| roster.characters[i].id)).collect();
+                        let ctx = ForceCtx { difficulty: 0, index, selection, player_char: c.id, player: (k, 0), met: met.clone(), others };
                         let first = data.boss(selection, c.id, index);
                         let picks = force_boss_picks(&roster, &data, &ctx, first, players);
                         let say = format!("{} stage {index}, {players} players: {picks:?} after {met:?}", c.name);
@@ -10064,6 +10077,9 @@ mod tests {
                             assert_eq!(picks, [first], "{say}: the PS1's");
                         } else {
                             assert!(picks.iter().enumerate().all(|(j, p)| !met.contains(&p.0) && picks[..j].iter().all(|q| q.0 != p.0)), "{say}");
+                        }
+                        if players > 1 {
+                            assert!(picks.iter().all(|p| !own.contains(&p.0)), "{say}: a player's own {own:?}");
                         }
                         met.extend(picks.iter().map(|p| p.0));
                     }
