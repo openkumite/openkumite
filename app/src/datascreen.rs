@@ -53,7 +53,8 @@ impl Root {
     fn switch(&mut self, event_loop: &ActiveEventLoop) {
         match &mut self.now {
             Now::Game(app) if app.game_data => {
-                let d = Data::new(&self.root, app.window.take(), app.renderer.take());
+                let mut d = Data::new(&self.root, app.window.take(), app.renderer.take());
+                d.message = app.data_message.take();
                 self.now = Now::Data(Box::new(d));
             }
             Now::Data(d) if d.play => {

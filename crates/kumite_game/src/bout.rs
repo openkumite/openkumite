@@ -59,7 +59,13 @@ impl RoundRules {
         let at = |p: &str| -> anyhow::Result<u32> { r.pointer(p).and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()).with_context(|| format!("{}: {p}", path.display())) };
         let both = |p: &str| -> anyhow::Result<[u32; 2]> { Ok([at(&format!("{p}/first_round"))?, at(&format!("{p}/other_rounds"))?]) };
         let pose = |k: usize| at(&format!("/win_poses/aliases/{k}")).map(|a| a as usize);
-        let table = |p: &str| r.pointer(p).cloned().with_context(|| format!("{}: {p}", path.display()));
+        // (the pair tables came with a later conversion: an older one's pairs pose the normal way, as before them)
+        let table = |p: &str| {
+            r.pointer(p).cloned().unwrap_or_else(|| {
+                log::warn!("{}: no {p} (an older conversion; CONVERT AGAIN): the normal win poses", path.display());
+                serde_json::json!([])
+            })
+        };
         Ok(Self {
             fight_starts: both("/call/fight_starts")?,
             banner: [[at("/call/banner/first_round/0")?, at("/call/banner/first_round/1")?], [at("/call/banner/other_rounds/0")?, at("/call/banner/other_rounds/1")?]],
@@ -75,9 +81,9 @@ impl RoundRules {
             // (the default option is not written by any code found: the 60 s one, option 2)
             round_frames: at("/round_time/options_frames/2")?,
             team_lose: (at("/team_lose/alias")? as usize, at("/team_lose/frames")?),
-            win_pairs: serde_json::from_value(table("/win_poses/pairs")?)?,
-            lose_pairs: serde_json::from_value(table("/team_lose/pairs")?)?,
-            win_nudges: serde_json::from_value(table("/win_poses/nudges")?)?,
+            win_pairs: serde_json::from_value(table("/win_poses/pairs"))?,
+            lose_pairs: serde_json::from_value(table("/team_lose/pairs"))?,
+            win_nudges: serde_json::from_value(table("/win_poses/nudges"))?,
         })
     }
 
