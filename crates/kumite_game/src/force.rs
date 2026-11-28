@@ -754,8 +754,12 @@ impl ForceStage {
             }
             4 => {
                 // (the same kind again reuses the actor: one that went down held in a throw still plays its
-                // thrower's victim move, with no thrower to end it, so it never moves again; a fresh one instead)
-                if self.fighter_ref(game, k).is_some_and(|f| f.current.bank == kumite_sim::data::Bank::Partner) {
+                // thrower's victim move, with no thrower to end it, so it never moves again; a fresh one instead. So
+                // too under Tekken Tag's moves for one in the shared set's: a K.O. there ends in its lying loop (5679,
+                // 5680) with nothing to get up by)
+                use kumite_sim::data::Bank;
+                let tag = game.fight.data.tag_moves;
+                if self.fighter_ref(game, k).is_some_and(|f| f.current.bank == Bank::Partner || (tag && f.current.bank == Bank::Common)) {
                     let actor = self.soldiers[self.slots[k].kind.min(1)].clone();
                     game.set_actor(self.slot_actor(k), &actor);
                 }
