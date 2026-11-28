@@ -2751,7 +2751,9 @@ impl App {
                 replay::Match::Force { start, .. } => {
                     let number = self.force.as_ref().and_then(|r| r.card().0);
                     let stage = number.map_or_else(|| "FINAL STAGE".to_string(), |n| format!("STAGE {}", n + 1));
-                    (tape, format!("FORCE · {} · {}", name(start.player), stage), if winner == Some(0) { "STAGE CLEAR".into() } else { "GAME OVER".into() })
+                    // (a round won on the clock is the clock run out: GAME OVER)
+                    let cleared = winner == Some(0) && self.force.as_ref().and_then(|r| r.stage.as_ref()).is_some_and(|s| force_cleared(s.state, s.tally_done));
+                    (tape, format!("FORCE · {} · {}", name(start.player), stage), if cleared { "STAGE CLEAR".into() } else { "GAME OVER".into() })
                 }
                 replay::Match::Fight { setup, ttt, .. } => {
                     let mode = match setup.mode {
@@ -5201,6 +5203,7 @@ impl App {
         }
         // lost: the hi-score is kept, GAME OVER
         let (score, player) = (run.stage.as_ref().map_or(run.score, |s| s.score), run.player_char);
+        log::info!("Force: GAME OVER ({}), score {score}", if winner == Some(0) { "the clock ran out" } else { "all players down" });
         let players = run.shares(run.stage.as_ref().map_or(run.player_scores, |s| s.player_scores));
         self.keep_force(0, score, Some(player));
         self.force = None;
