@@ -437,6 +437,12 @@ impl Melee {
                 }
             }
         }
+        // (Tekken Tag's struck flag of the last hit pass, +0x12F, is cleared as the pass starts, 0x371DBC, as in its
+        // pair fight: else a move started later keeps its struck-in-move +0xF3, and a CPU facing it never counts
+        // its attacks in a row down again, so stops attacking)
+        for f in &mut self.actors {
+            f.struck_last = false;
+        }
         // the moves' damage to themselves (timed ops 0x0C / 0x0D), then the throws'
         for f in self.actors.iter_mut().filter(|_| !self.fight.ball_rules) {
             if f.self_damage != 0 {

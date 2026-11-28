@@ -237,18 +237,20 @@ impl ForceData {
 /// 22, 22 and 18 of 24 cleared, against none of 60 with the solo numbers). The soldiers in play at once: one a
 /// player (two a player, four at once, overran the pair every time).
 pub const COOP_SOLDIERS_A_PLAYER: usize = 1;
-/// ... the players' full health, in percent of the game's (`Game::handicap`, set by the app as a co-op stage loads).
-pub const COOP_PLAYER_HEALTH: i32 = 300;
-/// ... the bosses' health in percent (a boss a player, each the stage's).
-const COOP_BOSS_HEALTH: i32 = 60;
+/// ... the players' full health, in percent of the game's (`Game::handicap`, set by the app as a co-op stage loads; 3P's
+/// and 4P's too).
+pub const COOP_PLAYER_HEALTH: i32 = 400;
+/// ... the soldiers' and the bosses' health (a boss a player) in percent of the stage's, by the number of players
+/// (2, 3, 4): more players meet more soldiers, tougher ones, and more boss health in all, as in co-op beat-'em-ups.
+/// (With the CPUs' attacks in a row counted down again in the melee, the soldiers at the game's health and the
+/// players at 300 % beat teams of 2, 3 and 4 hard CPUs on stages 2 and 3 every time, 60 seeds; with these and the
+/// co-op seats' lean, all 90 of stages 1 to 3 cleared, the players down to about half health.)
+const COOP_FOE_HEALTH: [[i32; 2]; 3] = [[50, 60], [60, 60], [60, 50]];
 
-/// A boss's health `hp` with `players` players: in co-op [`COOP_BOSS_HEALTH`] of it.
-fn coop_boss_health(hp: i32, players: usize) -> i32 {
-    if players > 1 {
-        (hp * COOP_BOSS_HEALTH / 100).max(1)
-    } else {
-        hp
-    }
+/// A soldier's (`boss` false) or boss's health `hp` with `players` players: in co-op [`COOP_FOE_HEALTH`]'s of it.
+fn coop_health(hp: i32, players: usize, boss: bool) -> i32 {
+    let Some(row) = players.checked_sub(2).map(|k| COOP_FOE_HEALTH[k.min(2)]) else { return hp };
+    (hp * row[usize::from(boss)] / 100).max(1)
 }
 
 /// The clock (60 s), its cap (99 s).
@@ -732,7 +734,7 @@ impl ForceStage {
     /// The slot machine (0x800B20C4).
     fn run_slot(&mut self, game: &mut Game, k: usize) {
         let i = self.index.min(self.data.final_index());
-        let hp = self.data.health.get(i).map_or(20, |h| h[self.slots[k].class.min(4)]);
+        let hp = coop_health(self.data.health.get(i).map_or(20, |h| h[self.slots[k].class.min(4)]), game.players().len(), false);
         let f_now = self.f;
         match self.slots[k].state {
             0 => {
@@ -1076,7 +1078,7 @@ impl ForceStage {
         }
         game.set_actor(1, actor);
         let hp = self.data.health.get(i).map_or(130, |h| h[4]);
-        let hp = coop_boss_health(hp, game.players().len());
+        let hp = coop_health(hp, game.players().len(), true);
         let x = self.cam_x as f32 + 4096.0;
         let player = game.fight.fighters[0].root();
         let f = &mut game.fight.fighters[1];
@@ -1124,7 +1126,7 @@ impl ForceStage {
         let i = self.index.min(self.data.final_index());
         // the others beside it, spread across the line (actor 2, then the wider melee's 6..)
         let hp = self.data.health.get(i).map_or(130, |h| h[4]);
-        let hp = coop_boss_health(hp, game.players().len());
+        let hp = coop_health(hp, game.players().len(), true);
         let x = self.cam_x as f32 + 4096.0;
         let side = self.route().map_or(1100.0, |r| (r.half_width * UNITS * 0.6).min(1100.0));
         let player = game.fight.fighters[0].root();

@@ -1724,7 +1724,8 @@ impl Game {
     pub fn join_player(&mut self, p: usize, actor: &Actor) {
         let k = 2 + p.clamp(2, 3);
         self.widen_coop(12);
-        let max = self.fight.data.max_health * kumite_sim::ONE;
+        // (1P's full health, Force co-op's balance, as 2P's)
+        let max = self.fight.data.max_health * self.handicap[0] / 100 * kumite_sim::ONE;
         let lead = &self.fight.fighters[0];
         let pos = lead.position + Vec3::new(-400.0 * (p as f32 - 1.0), 0.0, if p == 2 { -900.0 } else { 1800.0 });
         let mut f = kumite_sim::Fighter::new(actor.moveset.clone(), max, pos, lead.yaw, lead.side);
